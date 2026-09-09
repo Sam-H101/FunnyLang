@@ -77,11 +77,24 @@ class Upvalue:
 
 
 class Closure:
-    __slots__ = ("proto", "upvalues")
+    """A callable function value. `const_pool`/`protos` are the owning
+    CompiledUnit's — every closure needs its own, since once modules (M7)
+    can load independently-compiled units mid-execution, a shared
+    VM-level const_pool/protos would get clobbered by whichever module ran
+    most recently. `module_globals`/`module_exports` are shared by every
+    closure compiled from the same module (nested closures inherit them from
+    their enclosing one at CLOSURE-creation time), giving each module its
+    own isolated global namespace per §3.8 ("non-flexed names are private")."""
 
-    def __init__(self, proto, upvalues: list):
+    __slots__ = ("proto", "upvalues", "const_pool", "protos", "module_globals", "module_exports")
+
+    def __init__(self, proto, upvalues: list, const_pool=None, protos=None, module_globals=None, module_exports=None):
         self.proto = proto
         self.upvalues = upvalues
+        self.const_pool = const_pool
+        self.protos = protos
+        self.module_globals = module_globals if module_globals is not None else {}
+        self.module_exports = module_exports if module_exports is not None else {}
 
     def __repr__(self) -> str:  # pragma: no cover - debug convenience
         return f"<bet {self.proto.name}/{self.proto.arity}>"

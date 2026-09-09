@@ -29,3 +29,9 @@ All notable changes to FunnyLang are documented here.
   stack traces) wired into `funny run`. All 10 stdlib modules (`mafs yapper stash groupchat rizz
   filez clock sus computer internet`) plus the always-in-scope builtins. Stash/groupchat/yapstring/
   numba instance methods share their implementation with the matching free-function module.
+
+### M7 — Modules
+- `gimme` works for both user files (with §3.8's full resolution order, caching, and cycle
+  detection) and stdlib modules. Each module gets its own isolated global namespace — a real
+  architectural change (constant pools and globals moved from the VM onto each Closure) documented
+  in PLAN.md §16.

@@ -55,26 +55,29 @@ def install_builtins(vm) -> None:
     from . import builtins as builtins_mod
 
     for name, value in builtins_mod.build_globals().items():
-        vm.globals[name] = value
+        vm.builtins[name] = value
 
 
-def _stdlib_module_loader(vm, path: str, mode: int):
-    if mode == 2:
-        module = get_stdlib_module(path)
-        if module is None:
-            raise ImportSkillIssue(
-                f"no stdlib module named '{path}'.",
-                roast=f"can't find `{path}`. did you make it up?",
-            )
-        return module
-    # File-based imports (modes 0/1) need the real module resolver — M7.
-    raise ImportSkillIssue(
-        f"can't find '{path}'. file imports land in M7.",
-        roast=f"can't find `{path}`. did you make it up?",
-    )
+def _make_module_loader(vm):
+    def _loader(vm, path: str, mode: int):
+        if mode == 2:
+            module = get_stdlib_module(path)
+            if module is None:
+                raise ImportSkillIssue(
+                    f"no stdlib module named '{path}'.",
+                    roast=f"can't find `{path}`. did you make it up?",
+                )
+            return module
+        importing_file = getattr(vm.source, "path", None)
+        return vm.module_resolver.load(path, importing_file)
+
+    return _loader
 
 
 def install_stdlib(vm) -> None:
-    """Wires builtins + stdlib `gimme` support into a fresh VM."""
+    """Wires builtins + stdlib/file `gimme` support into a fresh VM."""
+    from ..modules import ModuleResolver
+
     install_builtins(vm)
-    vm.module_loader = _stdlib_module_loader
+    vm.module_resolver = ModuleResolver(vm)
+    vm.module_loader = _make_module_loader(vm)

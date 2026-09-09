@@ -62,22 +62,46 @@ class VM:
         self.stack: list = []
         self.frames: list[Frame] = []
         self.open_upvalues: list[Upvalue] = []
-        self.globals: dict[str, object] = {}
+        # Shared, read-only-from-user-code globals (builtins + nothing
+        # else) — every module's own globals (Closure.module_globals) are
+        # isolated from each other, per §3.8's "non-flexed names are
+        # private". install_stdlib() populates this.
+        self.builtins: dict[str, object] = {}
         self.stdout = stdout if stdout is not None else sys.stdout
-        self.const_pool = None
-        self.protos = None
         self.source = None
         self.module_loader = None  # wired up in M7
+        self.module_resolver = None  # wired up in M7 (install_stdlib)
 
     # -- entry points -------------------------------------------------------
 
     def interpret(self, unit, source=None):
-        self.const_pool = unit.const_pool
-        self.protos = unit.protos
         self.source = source
+        entry_path = getattr(source, "path", None)
+        if self.module_resolver is not None:
+            self.module_resolver.enter(entry_path)
+        try:
+            closure = self._make_entry_closure(unit)
+            return self.call_value(closure, [])
+        finally:
+            if self.module_resolver is not None:
+                self.module_resolver.exit(entry_path)
+
+    def _make_entry_closure(self, unit) -> Closure:
         entry = unit.protos[unit.entry_proto]
-        closure = Closure(entry, [])
-        return self.call_value(closure, [])
+        return Closure(entry, [], const_pool=unit.const_pool, protos=unit.protos)
+
+    def run_module(self, unit, source, module_name: str):
+        """Runs a freshly-compiled file's top-level code once, in its own
+        isolated global namespace, and returns a Module of its `flex`ed
+        exports (PLAN.md §M7 task 3)."""
+        prior_source = self.source
+        closure = self._make_entry_closure(unit)
+        try:
+            self.source = source
+            self.call_value(closure, [])
+        finally:
+            self.source = prior_source
+        return Module(module_name, dict(closure.module_exports))
 
     def call_value(self, callee, args: list):
         if isinstance(callee, NativeFn):
@@ -151,12 +175,12 @@ class VM:
 
     # -- constants ----------------------------------------------------------
 
-    def _const(self, idx: int):
-        tag, value = self.const_pool.entries[idx]
+    def _const(self, frame: Frame, idx: int):
+        tag, value = frame.closure.const_pool.entries[idx]
         return value
 
-    def _const_str(self, idx: int) -> str:
-        return self.const_pool.entries[idx][1]
+    def _const_str(self, frame: Frame, idx: int) -> str:
+        return frame.closure.const_pool.entries[idx][1]
 
     # -- upvalues -------------------------------------------------------
 
@@ -190,7 +214,7 @@ class VM:
             try:
                 if op == Op.CONST:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    stack.append(self._const(idx))
+                    stack.append(self._const(frame, idx))
                     frame.ip = ip + 2
                 elif op == Op.GET_LOCAL:
                     stack.append(stack[frame.slot_base + code[ip]])
@@ -313,10 +337,15 @@ class VM:
                     frame.ip = ip
                 elif op == Op.GET_GLOBAL:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    name = self._const_str(idx)
-                    if name not in self.globals:
+                    name = self._const_str(frame, idx)
+                    mg = frame.closure.module_globals
+                    if name in mg:
+                        stack.append(mg[name])
+                    elif name in self.builtins:
+                        stack.append(self.builtins[name])
+                    else:
                         from .errors import suggest_name
-                        hint = suggest_name(name, self.globals.keys())
+                        hint = suggest_name(name, list(mg.keys()) + list(self.builtins.keys()))
                         roast = f"`{name}` who? never heard of them."
                         if hint:
                             roast += f" did you mean `{hint}`?"
@@ -327,15 +356,14 @@ class VM:
                             span=_FakeSpan(*frame.closure.proto.line_for_offset(frame.ip)),
                             source=self.source,
                         )
-                    stack.append(self.globals[name])
                     frame.ip = ip + 2
                 elif op == Op.SET_GLOBAL:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    self.globals[self._const_str(idx)] = stack[-1]
+                    frame.closure.module_globals[self._const_str(frame, idx)] = stack[-1]
                     frame.ip = ip + 2
                 elif op == Op.DEF_GLOBAL:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    self.globals[self._const_str(idx)] = stack.pop()
+                    frame.closure.module_globals[self._const_str(frame, idx)] = stack.pop()
                     frame.ip = ip + 2
                 elif op == Op.GET_UPVAL:
                     stack.append(frame.closure.upvalues[code[ip]].get())
@@ -349,19 +377,19 @@ class VM:
                     frame.ip = ip
                 elif op == Op.GET_PROP:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    name = self._const_str(idx)
+                    name = self._const_str(frame, idx)
                     obj = stack.pop()
                     stack.append(self._get_prop(obj, name))
                     frame.ip = ip + 2
                 elif op == Op.GET_PROP_SAFE:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    name = self._const_str(idx)
+                    name = self._const_str(frame, idx)
                     obj = stack.pop()
                     stack.append(GHOST if obj is GHOST else self._get_prop(obj, name))
                     frame.ip = ip + 2
                 elif op == Op.SET_PROP:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    name = self._const_str(idx)
+                    name = self._const_str(frame, idx)
                     value = stack.pop()
                     obj = stack.pop()
                     self._set_prop(obj, name, value)
@@ -387,20 +415,20 @@ class VM:
                 elif op == Op.INVOKE:
                     idx = (code[ip] << 8) | code[ip + 1]
                     argc = code[ip + 2]
-                    name = self._const_str(idx)
+                    name = self._const_str(frame, idx)
                     frame.ip = ip + 3
                     self._do_invoke(name, argc)
                 elif op == Op.INVOKE_OG:
                     idx = (code[ip] << 8) | code[ip + 1]
                     argc = code[ip + 2]
-                    name = self._const_str(idx)
+                    name = self._const_str(frame, idx)
                     frame.ip = ip + 3
                     self._do_invoke_og(name, argc)
                 elif op == Op.CLOSURE:
                     const_idx = (code[ip] << 8) | code[ip + 1]
                     pos = ip + 2
-                    tag, proto_idx = self.const_pool.entries[const_idx]
-                    proto = self.protos[proto_idx]
+                    tag, proto_idx = frame.closure.const_pool.entries[const_idx]
+                    proto = frame.closure.protos[proto_idx]
                     upvalues = []
                     for _ in range(proto.upvalue_count):
                         is_local = code[pos]; uv_idx = code[pos + 1]
@@ -409,7 +437,11 @@ class VM:
                             upvalues.append(self._capture_upvalue(frame.slot_base + uv_idx))
                         else:
                             upvalues.append(frame.closure.upvalues[uv_idx])
-                    stack.append(Closure(proto, upvalues))
+                    stack.append(Closure(
+                        proto, upvalues,
+                        const_pool=frame.closure.const_pool, protos=frame.closure.protos,
+                        module_globals=frame.closure.module_globals, module_exports=frame.closure.module_exports,
+                    ))
                     frame.ip = pos
                 elif op == Op.RETURN:
                     value = stack.pop()
@@ -482,19 +514,20 @@ class VM:
                 elif op == Op.IMPORT:
                     idx = (code[ip] << 8) | code[ip + 1]
                     mode = code[ip + 2]
-                    path = self._const_str(idx)
+                    path = self._const_str(frame, idx)
                     stack.append(self._do_import(path, mode))
                     frame.ip = ip + 3
                 elif op == Op.EXPORT:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    frame.ip = ip + 2  # M7 gives this real semantics; value stays on stack
+                    frame.closure.module_exports[self._const_str(frame, idx)] = stack[-1]
+                    frame.ip = ip + 2
                 elif op == Op.SQUAD:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    stack.append(Squad(self._const_str(idx)))
+                    stack.append(Squad(self._const_str(frame, idx)))
                     frame.ip = ip + 2
                 elif op == Op.METHOD:
                     idx = (code[ip] << 8) | code[ip + 1]
-                    name = self._const_str(idx)
+                    name = self._const_str(frame, idx)
                     method = stack.pop()
                     squad = stack[-1]
                     if name == "spawn":
@@ -575,7 +608,10 @@ class VM:
     def _get_prop(self, obj, name: str):
         if isinstance(obj, Module):
             if name not in obj.members:
-                raise WhoDis(f"'{name}' isn't in module '{obj.name}'.", roast=f"`{name}` who? never heard of them.")
+                raise WhoDis(
+                    f"'{name}' isn't exported by module '{obj.name}'.",
+                    roast=f"`{name}` isn't flexed. it's shy.",
+                )
             return obj.members[name]
         if isinstance(obj, Instance):
             if name in obj.fields:

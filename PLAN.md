@@ -1502,3 +1502,26 @@ Format: `- [Mn] <what changed> — <why>`.
   its own top-level expression statement is the one remaining edge case that still misparses;
   wrapping it (`yo _ = sus.foo()`, or using it inside `yap`/an argument list/a condition) sidesteps
   it, which covers every realistic usage.
+- [M7] A real architectural gap surfaced while building the module loader: `VM.const_pool`/`.protos`
+  were VM-level singletons set once by `interpret()`. Once a `gimme`'d file can be compiled and run
+  *mid-execution* as its own independently-compiled unit, overwriting those singletons while it ran
+  would have corrupted every constant-pool lookup in the importer's own (still-suspended) frames the
+  moment control returned to them. Fixed by moving `const_pool`/`protos` onto `Closure` itself —
+  every closure carries its owning CompiledUnit's tables, inherited by nested closures created via
+  `CLOSURE` at the point they're made, so each frame always decodes against the right unit.
+- [M7] The same fix extends to globals: `Closure` now also carries `module_globals` (read/written by
+  `GET_GLOBAL`/`SET_GLOBAL`/`DEF_GLOBAL`) and `module_exports` (written by `EXPORT`), inherited the
+  same way. `VM.builtins` is the one namespace every module shares (installed once by
+  `install_stdlib`); `GET_GLOBAL` checks the current module's own globals first, then falls back to
+  builtins. This is what actually gives §3.8's "non-flexed names are private" its teeth — before
+  this, every module would have shared one global dict.
+- [M7] `GET_PROP` on a `Module` for a name that isn't in `.members` always means "not flexed" —
+  `Module.members` is constructed *only* from a file's exports, so there's no other reason a lookup
+  there can fail. Its `WhoDis` roast is exactly `` `{name}` isn't flexed. it's shy. `` from §M7 task 5,
+  used identically whether the access came from `mod.name`, a named import, or anything else.
+- [M7] Cycle detection needed the *entry* script tracked the same way `gimme`'d modules are, or a
+  cycle that loops back through the entry file goes undetected (the entry file was never in
+  `ModuleResolver.loading`, so re-importing it looked like a fresh load — silently re-running the
+  entire program a second time instead of raising `ImportSkillIssue`). Fixed by having
+  `VM.interpret()` register/unregister the entry path with the resolver the same way
+  `ModuleResolver.load()` does for every nested import.
