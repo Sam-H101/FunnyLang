@@ -1,0 +1,45 @@
+gimme internet
+
+sketchy {
+    internet.go_brrrr("http://example.com")
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    internet.go_brrrr("http://example.com", {"method": "POST", "body": "hi"})
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+yap internet.is_it_up("http://example.com")
+
+sketchy {
+    internet.download("http://example.com", "build/n4/should_not_exist.txt")
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    internet.speed_test()
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    internet.ping("example.com")
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    internet.go_brrrr(42)
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    internet.go_brrrr("http://example.com", "not a groupchat")
+} my_bad (e) {
+    yap "caught:", e.flavor
+}

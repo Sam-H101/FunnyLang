@@ -43,6 +43,14 @@ struct GC;
    copies -- no ownership-transfer variant, since nothing needs one). */
 ObjString *string_new(struct GC *gc, const char *chars, uint32_t len);
 
+/* Like string_new, but for bytes that aren't guaranteed to already be
+   well-formed UTF-8 (an HTTP response body, unlike a source file) --
+   any invalid byte is replaced with U+FFFD, matching Python's own
+   bytes.decode("utf-8", errors="replace"). Everything else in this file
+   trusts well-formed input by construction (see the file header); this
+   is the one exception, for internet.c's go_brrrr(). */
+ObjString *string_new_utf8_lossy(struct GC *gc, const char *bytes, uint32_t len);
+
 bool string_equal(const ObjString *a, const ObjString *b);
 
 /* -- UTF-8 primitives, shared by string.c's own construction and vm.c's

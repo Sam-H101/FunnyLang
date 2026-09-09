@@ -8,6 +8,7 @@
 #include "filez.h"
 #include "gc.h"
 #include "groupchat.h"
+#include "internet.h"
 #include "mafs.h"
 #include "rizz.h"
 #include "stash.h"
@@ -28,8 +29,8 @@ ObjModule *module_new(GC *gc, ObjString *name, Value members) {
 }
 
 /* The stdlib registry (funnylang/stdlib/__init__.py's own STDLIB_NAMES/
-   _build): one entry per module `gimme modulename` can resolve. Grows as
-   the last N5 sub-phase ports internet. */
+   _build): one entry per module `gimme modulename` can resolve. All 12
+   modules are now ported (N5 task 2 complete). */
 typedef Value (*StdlibBuilderFn)(VM *vm);
 
 typedef struct {
@@ -47,6 +48,7 @@ static const StdlibEntry STDLIB_REGISTRY[] = {
     {"clock", clock_build},
     {"sus", sus_build},
     {"computer", computer_build},
+    {"internet", internet_build},
 };
 #define STDLIB_REGISTRY_COUNT (int)(sizeof(STDLIB_REGISTRY) / sizeof(STDLIB_REGISTRY[0]))
 

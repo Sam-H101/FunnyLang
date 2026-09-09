@@ -105,4 +105,53 @@ void platform_os_info(char *sysname_out, size_t sysname_len, char *release_out, 
    unknown. */
 int platform_cpu_count(void);
 
+/* -- networking (NATIVE_PLAN.md N5 task 5, `internet`) --------------- */
+
+/* True when FUNNY_NO_NET=1 -- every internet.* function checks this
+   itself (funnylang/stdlib/internet.py's own _net_disabled(), checked at
+   the top of every function with per-function handling of what "disabled"
+   means: most raise, is_it_up() just returns false), so it isn't baked
+   into platform_http_request/platform_tcp_ping themselves. */
+bool platform_net_disabled(void);
+
+typedef struct {
+    char *name;  /* malloc'd */
+    char *value; /* malloc'd */
+} PlatformHttpHeader;
+
+typedef struct {
+    bool ok;
+    int status;
+    char *body; /* malloc'd; may contain embedded NULs, use bodyLen */
+    size_t bodyLen;
+    PlatformHttpHeader *headers;
+    int headerCount;
+} PlatformHttpResponse;
+
+/* A full HTTP/1.1 request/response cycle over a raw socket -- plain HTTP
+   only (NATIVE_PLAN.md N5 task 5: "the plain-HTTP path only; HTTPS is
+   N5b's job"). An https:// url fails immediately with ok=false and no
+   socket touched at all, never a silent downgrade to plain HTTP.
+   Follows up to 10 redirects (a Location header on 301/302/303/307/308;
+   301/302/303 switch to GET and drop the body, 307/308 preserve both,
+   matching ordinary browser/urllib redirect behavior; a relative
+   Location is treated as a failure -- see NATIVE_PLAN.md's own §9 log
+   for why). Decodes `Transfer-Encoding: chunked`, honors `Content-
+   Length`, and falls back to read-until-EOF when neither header is
+   present. `timeoutMs` bounds the connect phase and the overall
+   remaining read budget together, not each independently.
+   On any failure (network error, malformed response, too many
+   redirects, a non-http scheme, a relative Location) returns ok=false
+   with every other field zeroed -- the caller always raises the same
+   generic "the internet said no" SkillIssue for any failure, exactly
+   matching funnylang/stdlib/internet.py's own single _no_net_error()
+   catch-all around every possible urllib/socket exception. */
+PlatformHttpResponse platform_http_request(const char *method, const char *url,
+                                            const PlatformHttpHeader *headers, int headerCount,
+                                            const char *body, size_t bodyLen, int timeoutMs);
+void platform_http_response_free(PlatformHttpResponse *resp);
+
+/* Raw TCP connect-and-time (no HTTP involved) for internet.ping(). */
+bool platform_tcp_ping(const char *host, int port, int timeoutMs, double *outMs);
+
 #endif /* FUNNY_PLATFORM_H */

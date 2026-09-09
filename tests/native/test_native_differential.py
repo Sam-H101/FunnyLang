@@ -40,6 +40,14 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 PROGRAMS_DIR = Path(__file__).resolve().parent / "programs"
 PROGRAMS = sorted(PROGRAMS_DIR.glob("*.funny"))
 
+# `internet` (N5 task 5) is the one module that can touch the real network.
+# No program under programs/ exercises live network I/O -- same policy
+# tests/test_stdlib.py's own internet tests already follow, always under
+# FUNNY_NO_NET=1 -- so this is set unconditionally for the whole
+# differential suite. `_native_run`'s subprocess inherits it automatically
+# (no `env=` override there), so one line covers both VMs.
+os.environ["FUNNY_NO_NET"] = "1"
+
 
 @pytest.fixture(scope="session")
 def native_binary(tmp_path_factory):

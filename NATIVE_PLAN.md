@@ -1353,3 +1353,65 @@ gets an entry explaining what changed and why.
   `blue_screen`, `flex()` excluded) plus 2 standalone empirical checks (`flex_check.sh`'s side-by-side
   OS/CPU/RAM comparison, `check_explode_exit.sh`'s exit-69 confirmation) plus the full suite re-run,
   byte-identical, gcc and clang, `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.
+
+- **N5 · sub-phase 5j complete · `internet` (task 2's last module, and all of task 5).** All 5
+  functions port from `funnylang/stdlib/internet.py`. **User decision (asked explicitly, since the
+  plan's own task 5 line — "the plain-HTTP path only" — reads narrower than what N5b's own task list
+  separately claims):** chunked transfer-decoding and redirect-following (capped at 10 hops) are
+  pulled forward into N5 instead of deferred to N5b alongside TLS, so the plain-HTTP path is
+  genuinely useful against real servers today, not just a Content-Length-only toy. TLS/HTTPS itself
+  stays N5b's job exactly as planned — an `https://` URL fails immediately in `platform_http_request`
+  before any socket is touched, never a silent downgrade to plain HTTP.
+  **New in `platform.c`:** `platform_net_disabled()` (checked per-function in `internet.c`, matching
+  Python's own `_net_disabled()` call sites and per-function disabled-behavior exactly — most raise,
+  `is_it_up()` just returns false), `platform_http_request()`/`platform_http_response_free()` (URL
+  parsing, non-blocking connect with a `poll()`-based timeout then restored to blocking for the data
+  phase, HTTP/1.1 request building, status-line/header parsing, `Content-Length` and chunked body
+  decoding, redirect-following with 301/302/303 switching to `GET` and dropping the body while
+  307/308 preserve both — a relative `Location` is treated as a failure rather than resolved against
+  the base URL, a deliberate scope line given full URL-resolution is its own separate can of worms),
+  and `platform_tcp_ping()` for `ping()`'s raw-connect timing.
+  **New in `string.c`:** `string_new_utf8_lossy()` — an HTTP response body isn't guaranteed to be
+  valid UTF-8 the way a source file always is, so `go_brrrr`'s `body` field needs Python's own
+  `bytes.decode("utf-8", errors="replace")` semantics rather than the well-formed-input assumption
+  every other yapstring constructor is allowed to make. AGENT CHOICE: replaces one invalid byte at a
+  time with U+FFFD rather than replicating Python's exact "maximal subpart" grouping for a run of
+  invalid bytes — never corrupts the codepointCount invariant either way, and nothing differential-
+  tests the exact grouping (no live network in the automated suite).
+  **Every internet.py failure mode collapses to the same generic `SkillIssue`** (confirmed by reading
+  `_no_net_error()`'s single catch-all around every possible `urllib`/socket exception), which
+  simplified the port considerably: `platform_http_request` just reports ok/not-ok, with no
+  distinct-reason plumbing needed anywhere above it.
+  **A real bug, caught before it shipped, not by the differential suite (which structurally can't
+  reach this code — see below) but by a live local-server check:** the very first working version
+  sent `Connection: close\r\n` with a hardcoded length of `20`, one past the string's actual 19
+  bytes, silently including the literal's NUL terminator as if it were request data. That stray `\0`
+  landed between the header block and the blank-line terminator, so the two `\r\n`s a real HTTP
+  server looks for to recognize "end of headers" were never adjacent — the server sat waiting for
+  more, and the client's own `recv()` correctly timed out with nothing to show for it. Read as "the
+  socket must still be non-blocking despite the restore" at first; ruled that out by writing an
+  isolated minimal reproduction outside the whole VM, which worked fine and pointed straight at the
+  request bytes actually sent. Fixed by using `strlen()` on the literal instead of a second,
+  independently-typed count. A related, smaller finding from the same session: `bb_append(buf, p, 0)`
+  with a still-unallocated (`NULL`) buffer reached `memcpy(NULL, p, 0)` — well-defined in practice on
+  every real libc, but undefined by the C standard regardless of length, and UBSan correctly flagged
+  it the moment a real 0-byte response body (an intermediate redirect hop, in this case) exercised
+  that path; fixed with an early return for `n == 0`.
+  **Testing split three ways, since real network I/O can't be part of the automated differential
+  suite at all:** (1) the differential test file exercises only `FUNNY_NO_NET=1` — the *only* path
+  `tests/test_stdlib.py`'s own existing `internet` tests ever exercise either, so this isn't a new
+  gap this port introduces — which needed `tests/native/test_native_differential.py` itself to set
+  `FUNNY_NO_NET=1` unconditionally for the whole differential session (harmless: no other program
+  under `programs/` touches networking, and `_native_run`'s subprocess inherits it automatically with
+  no `env=` change needed); (2) the real HTTP/1.1 client (Content-Length, chunked, redirects,
+  redirect chains, EOF-terminated bodies, POST with a body and custom headers, HTTPS rejection, a
+  sub-timeout request against a deliberately slow endpoint, `ping()`, `download()`) is verified
+  end-to-end against a local throwaway Python `http.server` (`build/n4/test_http_server.py`,
+  `build/n4/http_check.funny` run through both VMs via `build/n4/http_check2.sh`) — byte-identical to
+  the Python reference, including under `FUNNY_GC_STRESS=1`; (3) the actual bug above was found by
+  exactly this local-server check, not by (1), which structurally cannot reach any of this code —
+  concrete confirmation that (2)'s empirical-verification step is pulling real weight this milestone,
+  not just ceremony.
+  Verified: 1 new differential program (`FUNNY_NO_NET=1` path) plus the local-server empirical check
+  above (normal and `FUNNY_GC_STRESS=1`) plus the full suite re-run, byte-identical, gcc and clang,
+  `-Werror`, ASan/UBSan.

@@ -86,6 +86,55 @@ ObjString *string_new(GC *gc, const char *chars, uint32_t len) {
     return s;
 }
 
+/* Not a byte-for-byte replica of Python's exact "maximal subpart"
+   grouping for a run of invalid bytes (this advances one byte at a time
+   on failure instead) -- reasonable given nothing differential-tests
+   this against Python (no live network in the automated suite; see
+   internet.c's own test file), and it never corrupts the codepointCount
+   invariant either way. */
+ObjString *string_new_utf8_lossy(GC *gc, const char *bytes, uint32_t len) {
+    char *out = (char *)malloc((size_t)len * 3 + 1);
+    size_t o = 0;
+    uint32_t i = 0;
+    while (i < len) {
+        unsigned char c = (unsigned char)bytes[i];
+        uint32_t seqLen;
+        if (c < 0x80) seqLen = 1;
+        else if ((c & 0xE0) == 0xC0) seqLen = 2;
+        else if ((c & 0xF0) == 0xE0) seqLen = 3;
+        else if ((c & 0xF8) == 0xF0) seqLen = 4;
+        else seqLen = 0;
+        bool valid = seqLen > 0 && i + seqLen <= len;
+        if (valid) {
+            for (uint32_t k = 1; k < seqLen; k++) {
+                if (((unsigned char)bytes[i + k] & 0xC0) != 0x80) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        uint32_t cp = 0;
+        if (valid) {
+            cp = utf8_decode_cp(bytes, seqLen, i);
+            if ((seqLen == 2 && cp < 0x80) || (seqLen == 3 && cp < 0x800) || (seqLen == 4 && cp < 0x10000) ||
+                (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) {
+                valid = false;
+            }
+        }
+        if (valid) {
+            memcpy(out + o, bytes + i, seqLen);
+            o += seqLen;
+            i += seqLen;
+        } else {
+            o += utf8_encode_cp(0xFFFD, out + o);
+            i += 1;
+        }
+    }
+    ObjString *s = string_new(gc, out, (uint32_t)o);
+    free(out);
+    return s;
+}
+
 bool string_equal(const ObjString *a, const ObjString *b) {
     if (a == b) return true;
     if (a->byteLen != b->byteLen) return false;
