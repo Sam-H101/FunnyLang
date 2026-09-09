@@ -49,4 +49,8 @@ bool groupchat_remove(ObjGroupChat *g, Value key);
 
 NativeMethodFn groupchat_find_method(const char *name, int *outMinArity, int *outMaxArity);
 
+/* `gimme groupchat`'s own Module: all 11 instance methods, plus the 2
+   free-function-only extras (invert, from_pairs) -- N5 task 2. */
+Value groupchat_build(VM *vm);
+
 #endif /* FUNNY_GROUPCHAT_H */

@@ -1148,6 +1148,7 @@ static Value vm_pow(VM *vm, Value a, Value b) {
 }
 
 Value vm_numeric_pow(VM *vm, Value a, Value b) { return vm_pow(vm, a, b); }
+Value vm_numeric_add(VM *vm, Value a, Value b) { return vm_add(vm, a, b); }
 
 /* -- unary -------------------------------------------------------------- */
 

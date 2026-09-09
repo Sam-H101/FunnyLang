@@ -217,5 +217,11 @@ bool vm_value_equal(VM *vm, Value a, Value b);
    `^`/POW opcode's own -- exposes vm_pow (otherwise private to vm.c)
    rather than reimplementing bignum exponentiation a second time. */
 Value vm_numeric_pow(VM *vm, Value a, Value b);
+/* stash.sum_up needs the exact same numeric +/promotion semantics as the
+   `+` opcode -- exposes vm_add rather than reimplementing int64-overflow-
+   to-bignum promotion a second time. Only ever called with confirmed-
+   numeric operands, so vm_add's own string/stash/pointer branches never
+   trigger. */
+Value vm_numeric_add(VM *vm, Value a, Value b);
 
 #endif /* FUNNY_VM_H */

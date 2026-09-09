@@ -5,6 +5,7 @@
 
 #include "error.h"
 #include "gc.h"
+#include "modules.h"
 #include "stash.h"
 
 #define INITIAL_GROUPCHAT_CAPACITY 4
@@ -185,6 +186,48 @@ static Value m_clear(VM *vm, Value *a, int argc) {
     return a[0];
 }
 
+/* -- module-only extras (funnylang/stdlib/groupchat.py's build(), beyond
+   the 11 METHODS): invert, from_pairs. `gimme groupchat` exposes all 11
+   methods too, as free functions -- see groupchat_build below. */
+
+static Value m_invert(VM *vm, Value *a, int argc) {
+    (void)argc;
+    bool ok;
+    ObjGroupChat *g = as_groupchat(vm, a[0], "invert", &ok);
+    if (!ok) return GHOST_VAL;
+    ObjGroupChat *out = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    /* Later duplicates win -- matches Python's own dict comprehension
+       `{v: k for k, v in m.items.items()}`, which overwrites earlier
+       entries as it walks insertion order. */
+    for (int i = 0; i < g->count; i++) groupchat_set(&vm->gc, out, g->entries[i].value, g->entries[i].key);
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
+}
+
+static Value m_from_pairs(VM *vm, Value *a, int argc) {
+    (void)argc;
+    if (!(IS_OBJ(a[0]) && AS_OBJ(a[0])->type == OBJ_STASH)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'from_pairs' needs a stash of [key, value] pairs.");
+        return GHOST_VAL;
+    }
+    ObjStash *pairs = (ObjStash *)AS_OBJ(a[0]);
+    ObjGroupChat *out = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    for (int i = 0; i < pairs->count; i++) {
+        Value p = pairs->items[i];
+        if (!(IS_OBJ(p) && AS_OBJ(p)->type == OBJ_STASH && ((ObjStash *)AS_OBJ(p))->count == 2)) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'from_pairs' needs each entry to be a 2-element stash.");
+            gc_pop_temp(&vm->gc);
+            return GHOST_VAL;
+        }
+        ObjStash *pair = (ObjStash *)AS_OBJ(p);
+        groupchat_set(&vm->gc, out, pair->items[0], pair->items[1]);
+    }
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
+}
+
 typedef struct {
     const char *name;
     NativeMethodFn fn;
@@ -216,4 +259,29 @@ NativeMethodFn groupchat_find_method(const char *name, int *outMinArity, int *ou
         }
     }
     return NULL;
+}
+
+Value groupchat_build(VM *vm) {
+    ObjGroupChat *members = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(members));
+    for (int i = 0; i < METHOD_TABLE_COUNT; i++) {
+        const GroupChatMethodEntry *e = &METHOD_TABLE[i];
+        ObjString *name = string_new(&vm->gc, e->name, (uint32_t)strlen(e->name));
+        ObjNativeFn *fn = native_fn_new(&vm->gc, e->fn, name->chars, e->minArity + 1, e->maxArity + 1);
+        groupchat_set(&vm->gc, members, OBJ_VAL(name), OBJ_VAL(fn));
+    }
+    static const GroupChatMethodEntry EXTRA_FUNCTIONS[] = {
+        {"invert", m_invert, 1, 1},
+        {"from_pairs", m_from_pairs, 1, 1},
+    };
+    for (int i = 0; i < (int)(sizeof(EXTRA_FUNCTIONS) / sizeof(EXTRA_FUNCTIONS[0])); i++) {
+        const GroupChatMethodEntry *e = &EXTRA_FUNCTIONS[i];
+        ObjString *name = string_new(&vm->gc, e->name, (uint32_t)strlen(e->name));
+        ObjNativeFn *fn = native_fn_new(&vm->gc, e->fn, name->chars, e->minArity, e->maxArity);
+        groupchat_set(&vm->gc, members, OBJ_VAL(name), OBJ_VAL(fn));
+    }
+    ObjString *moduleName = string_new(&vm->gc, "groupchat", 9);
+    ObjModule *mod = module_new(&vm->gc, moduleName, OBJ_VAL(members));
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(mod);
 }

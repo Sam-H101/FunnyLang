@@ -2,10 +2,13 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "bignum.h"
 #include "error.h"
 #include "gc.h"
+#include "groupchat.h"
+#include "modules.h"
 #include "string.h"
 
 #define INITIAL_STASH_CAPACITY 4
@@ -405,6 +408,229 @@ static Value m_extend(VM *vm, Value *a, int argc) {
     return a[0];
 }
 
+/* -- module-only extras (funnylang/stdlib/stash.py's build(), beyond the
+   21 METHODS): sort_by, group_by, unique, flatten, chunk, sum_up,
+   shuffle_it. `gimme stash` exposes all 21 methods too, as free
+   functions (the stash itself becomes an explicit first arg) -- see
+   stash_build below. ------------------------------------------------- */
+
+/* Mirrors funnylang/stdlib/stash.py's own `_SortKeyWrap.__lt__`: if
+   *either* operand is boolski, compare truthiness (Python's `bool(a) <
+   bool(b)`, which converts a non-bool operand via truthiness too, not
+   just the bool one) -- a different rule than `.sort()`'s own default
+   (`default_less`, numbers-always-first), which sort_by does NOT use.
+   Otherwise defers to default_less's numeric/string comparison. */
+static bool sort_by_less(VM *vm, Value a, Value b, bool *hadErr) {
+    if (IS_BOOL(a) || IS_BOOL(b)) {
+        return (int)value_is_truthy(a) < (int)value_is_truthy(b);
+    }
+    return default_less(vm, a, b, hadErr);
+}
+
+static void insertion_sort_pairs_by_key(VM *vm, Value *pairs, int n, bool *hadErr) {
+    for (int i = 1; i < n && !*hadErr && !vm->hadError; i++) {
+        Value keyItem = pairs[i];
+        int j = i - 1;
+        for (;;) {
+            if (j < 0) break;
+            ObjStash *pj = (ObjStash *)AS_OBJ(pairs[j]);
+            ObjStash *pk = (ObjStash *)AS_OBJ(keyItem);
+            bool shouldMove = sort_by_less(vm, pk->items[0], pj->items[0], hadErr);
+            if (*hadErr || vm->hadError) return;
+            if (!shouldMove) break;
+            pairs[j + 1] = pairs[j];
+            j--;
+        }
+        pairs[j + 1] = keyItem;
+    }
+}
+
+static Value m_sort_by(VM *vm, Value *a, int argc) {
+    (void)argc;
+    bool ok;
+    ObjStash *s = as_stash(vm, a[0], "sort_by", &ok);
+    if (!ok) return GHOST_VAL;
+    Value keyFn = a[1];
+    int n = s->count;
+    /* Keys computed once up front (matching Python's own sorted(key=...)
+       semantics), held as [key, item] pair-stashes inside one rooted
+       container so every key/item stays reachable across every
+       subsequent vm_call_value call in the sort itself. */
+    ObjStash *pairsHolder = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(pairsHolder));
+    for (int i = 0; i < n && !vm->hadError; i++) {
+        Value keyArgs[1] = {s->items[i]};
+        Value key = vm_call_value(vm, keyFn, keyArgs, 1);
+        if (vm->hadError) break;
+        Value pairItems[2] = {key, s->items[i]};
+        stash_push(&vm->gc, pairsHolder, OBJ_VAL(stash_new(&vm->gc, pairItems, 2)));
+    }
+    if (vm->hadError) {
+        gc_pop_temp(&vm->gc);
+        return GHOST_VAL;
+    }
+    bool hadErr = false;
+    insertion_sort_pairs_by_key(vm, pairsHolder->items, n, &hadErr);
+    if (hadErr || vm->hadError) {
+        gc_pop_temp(&vm->gc);
+        return GHOST_VAL;
+    }
+    ObjStash *out = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    for (int i = 0; i < n; i++) {
+        ObjStash *pair = (ObjStash *)AS_OBJ(pairsHolder->items[i]);
+        stash_push(&vm->gc, out, pair->items[1]);
+    }
+    gc_pop_temp(&vm->gc); /* out */
+    gc_pop_temp(&vm->gc); /* pairsHolder */
+    return OBJ_VAL(out);
+}
+
+/* funnylang/stdlib/stash.py's `_group_by` groups by Python dict-key
+   equality (which, for a bool/int key mix, treats them as interchangeable
+   the way Python's own `1 == True` does -- a quirk of using a plain
+   Python dict, not `funny_eq`). Grouped here by FunnyLang's own
+   `groupchat_set`/`value_equal_narrow` key equality instead (bool and
+   int always distinct) -- AGENT CHOICE: correct for this runtime's own
+   semantics, not exactly Python's dict-key aliasing, which no real
+   program should be relying on. */
+static Value m_group_by(VM *vm, Value *a, int argc) {
+    (void)argc;
+    bool ok;
+    ObjStash *s = as_stash(vm, a[0], "group_by", &ok);
+    if (!ok) return GHOST_VAL;
+    Value keyFn = a[1];
+    ObjGroupChat *out = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    for (int i = 0; i < s->count && !vm->hadError; i++) {
+        Value keyArgs[1] = {s->items[i]};
+        Value key = vm_call_value(vm, keyFn, keyArgs, 1);
+        if (vm->hadError) break;
+        GroupChatEntry *e = groupchat_find(out, key);
+        if (e != NULL) {
+            stash_push(&vm->gc, (ObjStash *)AS_OBJ(e->value), s->items[i]);
+        } else {
+            Value oneItem[1] = {s->items[i]};
+            groupchat_set(&vm->gc, out, key, OBJ_VAL(stash_new(&vm->gc, oneItem, 1)));
+        }
+    }
+    gc_pop_temp(&vm->gc);
+    if (vm->hadError) return GHOST_VAL;
+    return OBJ_VAL(out);
+}
+
+static Value m_unique(VM *vm, Value *a, int argc) {
+    (void)argc;
+    bool ok;
+    ObjStash *s = as_stash(vm, a[0], "unique", &ok);
+    if (!ok) return GHOST_VAL;
+    ObjStash *out = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    for (int i = 0; i < s->count && !vm->hadError; i++) {
+        bool found = false;
+        for (int j = 0; j < out->count; j++) {
+            if (vm_value_equal(vm, s->items[i], out->items[j])) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) stash_push(&vm->gc, out, s->items[i]);
+    }
+    gc_pop_temp(&vm->gc);
+    if (vm->hadError) return GHOST_VAL;
+    return OBJ_VAL(out);
+}
+
+static void flatten_into(VM *vm, ObjStash *out, ObjStash *items) {
+    for (int i = 0; i < items->count; i++) {
+        if (IS_OBJ(items->items[i]) && AS_OBJ(items->items[i])->type == OBJ_STASH) {
+            flatten_into(vm, out, (ObjStash *)AS_OBJ(items->items[i]));
+        } else {
+            stash_push(&vm->gc, out, items->items[i]);
+        }
+    }
+}
+
+static Value m_flatten(VM *vm, Value *a, int argc) {
+    (void)argc;
+    bool ok;
+    ObjStash *s = as_stash(vm, a[0], "flatten", &ok);
+    if (!ok) return GHOST_VAL;
+    ObjStash *out = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    flatten_into(vm, out, s);
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
+}
+
+static Value m_chunk(VM *vm, Value *a, int argc) {
+    (void)argc;
+    bool ok;
+    ObjStash *s = as_stash(vm, a[0], "chunk", &ok);
+    if (!ok) return GHOST_VAL;
+    if (!arg_is_int(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'chunk' needs a whole numba size.");
+        return GHOST_VAL;
+    }
+    int64_t n = AS_INT(a[1]);
+    if (n <= 0) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'chunk' needs a positive size.");
+        return GHOST_VAL;
+    }
+    ObjStash *out = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    for (int64_t i = 0; i < s->count; i += n) {
+        int64_t end = i + n < s->count ? i + n : s->count;
+        stash_push(&vm->gc, out, OBJ_VAL(stash_new(&vm->gc, s->items + i, (int)(end - i))));
+    }
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
+}
+
+static Value m_sum_up(VM *vm, Value *a, int argc) {
+    (void)argc;
+    bool ok;
+    ObjStash *s = as_stash(vm, a[0], "sum_up", &ok);
+    if (!ok) return GHOST_VAL;
+    Value total = INT_VAL(0);
+    for (int i = 0; i < s->count; i++) {
+        Value x = s->items[i];
+        if (IS_BOOL(x) || !IS_NUM(x)) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'sum_up' needs numbas, found a %s.", vm_type_name(x));
+            return GHOST_VAL;
+        }
+        total = vm_numeric_add(vm, total, x);
+    }
+    return total;
+}
+
+/* funnylang/stdlib/stash.py's own `_shuffle_it` uses Python's global
+   `random` module -- a separate stream from anything this VM's own
+   `rizz` module will ever produce, so there was never a way to match it
+   byte-for-byte. Deliberately not tested for exact output, the same
+   established exception as examples/chaos.funny's own randomness and
+   ask()'s interactive-input dependency -- only that it produces a valid
+   permutation. Seeded once, lazily, from the current time. */
+static Value m_shuffle_it(VM *vm, Value *a, int argc) {
+    (void)argc;
+    bool ok;
+    ObjStash *s = as_stash(vm, a[0], "shuffle_it", &ok);
+    if (!ok) return GHOST_VAL;
+    static bool seeded = false;
+    if (!seeded) {
+        srand((unsigned)time(NULL));
+        seeded = true;
+    }
+    ObjStash *out = stash_new(&vm->gc, s->items, s->count);
+    for (int i = out->count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        Value tmp = out->items[i];
+        out->items[i] = out->items[j];
+        out->items[j] = tmp;
+    }
+    return OBJ_VAL(out);
+}
+
 typedef struct {
     const char *name;
     NativeMethodFn fn;
@@ -446,4 +672,37 @@ NativeMethodFn stash_find_method(const char *name, int *outMinArity, int *outMax
         }
     }
     return NULL;
+}
+
+Value stash_build(VM *vm) {
+    ObjGroupChat *members = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(members));
+    /* All 21 instance methods, also as free functions (the stash itself
+       becomes an explicit first arg -- +1 on each of METHOD_TABLE's own
+       receiver-excluded arities). */
+    for (int i = 0; i < METHOD_TABLE_COUNT; i++) {
+        const StashMethodEntry *e = &METHOD_TABLE[i];
+        ObjString *name = string_new(&vm->gc, e->name, (uint32_t)strlen(e->name));
+        ObjNativeFn *fn = native_fn_new(&vm->gc, e->fn, name->chars, e->minArity + 1, e->maxArity + 1);
+        groupchat_set(&vm->gc, members, OBJ_VAL(name), OBJ_VAL(fn));
+    }
+    static const StashMethodEntry EXTRA_FUNCTIONS[] = {
+        {"sort_by", m_sort_by, 2, 2},
+        {"group_by", m_group_by, 2, 2},
+        {"unique", m_unique, 1, 1},
+        {"flatten", m_flatten, 1, 1},
+        {"chunk", m_chunk, 2, 2},
+        {"sum_up", m_sum_up, 1, 1},
+        {"shuffle_it", m_shuffle_it, 1, 1},
+    };
+    for (int i = 0; i < (int)(sizeof(EXTRA_FUNCTIONS) / sizeof(EXTRA_FUNCTIONS[0])); i++) {
+        const StashMethodEntry *e = &EXTRA_FUNCTIONS[i];
+        ObjString *name = string_new(&vm->gc, e->name, (uint32_t)strlen(e->name));
+        ObjNativeFn *fn = native_fn_new(&vm->gc, e->fn, name->chars, e->minArity, e->maxArity);
+        groupchat_set(&vm->gc, members, OBJ_VAL(name), OBJ_VAL(fn));
+    }
+    ObjString *moduleName = string_new(&vm->gc, "stash", 5);
+    ObjModule *mod = module_new(&vm->gc, moduleName, OBJ_VAL(members));
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(mod);
 }

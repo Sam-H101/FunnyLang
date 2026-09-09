@@ -33,4 +33,10 @@ void stash_push(struct GC *gc, ObjStash *s, Value v);
    the receiver. */
 NativeMethodFn stash_find_method(const char *name, int *outMinArity, int *outMaxArity);
 
+/* `gimme stash`'s own Module: every one of the 21 methods above, plus
+   the 7 free-function-only extras (sort_by/group_by/unique/flatten/
+   chunk/sum_up/shuffle_it) that funnylang/stdlib/stash.py's own build()
+   exposes -- N5 task 2. */
+Value stash_build(VM *vm);
+
 #endif /* FUNNY_STASH_H */

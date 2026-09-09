@@ -1171,3 +1171,30 @@ gets an entry explaining what changed and why.
   throughout, the `join` boolean quirk, `format`'s positional placeholders, and two error paths)
   plus the full suite re-run, byte-identical, gcc and clang, `-Werror`, ASan/UBSan, and
   `FUNNY_GC_STRESS=1`.
+- **N5 · sub-phase 5d complete · `stash`/`groupchat` as `gimme`-able modules (task 2's fourth and
+  fifth).** `gimme stash`/`gimme groupchat` expose every existing instance method as a free function
+  too (`stash_build`/`groupchat_build`, in stash.c/groupchat.c right next to the methods they wrap --
+  the stash/groupchat itself becomes an explicit first arg, reusing the *exact same* `NativeMethodFn`
+  bodies already written for N4's own `.method()` dispatch, the same "one function, two calling
+  conventions" pattern `yapper`'s sub-phase already established), plus the 7 (`sort_by` `group_by`
+  `unique` `flatten` `chunk` `sum_up` `shuffle_it`) and 2 (`invert` `from_pairs`) free-function-only
+  extras `funnylang/stdlib/stash.py`/`groupchat.py`'s own `build()` adds beyond their `METHODS`
+  dicts. `sum_up` reuses `vm_add`'s numeric-promotion logic directly (newly exposed as
+  `vm_numeric_add`, the same pattern `mafs.pow`'s own `vm_numeric_pow` already established) rather
+  than reimplementing int64-overflow-to-bignum promotion a third time.
+  **Two AGENT CHOICEs, both logged rather than silently matched or silently diverged:**
+  `sort_by`'s own key-comparator (`sort_by_less`) mirrors `_SortKeyWrap.__lt__` exactly -- a
+  *different* rule from `.sort()`'s own default (`default_less`'s numbers-always-first tiering):
+  either operand being boolski compares *truthiness*, not identity. `group_by` groups by this
+  runtime's own `groupchat_set`/`value_equal_narrow` key equality (bool and int always distinct)
+  rather than Python's own dict-key equality (where, because Python's `bool` is an `int` subtype,
+  `1` and `fax` would land in the same bucket) -- correct for FunnyLang's own semantics, not a
+  literal port of an aliasing quirk nothing should be relying on.
+  `shuffle_it` (like `funnylang/stdlib/stash.py`'s own, which uses Python's global `random` module)
+  is deliberately not tested for exact output -- no shared stream with whatever `rizz` eventually
+  implements, the same established exception as `examples/chaos.funny`'s own randomness and
+  `ask()`'s interactive-input dependency. Seeded once, lazily, from the current time; the
+  differential test only checks it returns a same-length permutation of the same elements.
+  Verified: 1 new differential program (every extra function on both modules, nested/typed
+  `sort_by`/`group_by` keys, an error path per fallible function) plus the full suite re-run,
+  byte-identical, gcc and clang, `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.

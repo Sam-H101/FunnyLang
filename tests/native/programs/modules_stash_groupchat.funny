@@ -1,0 +1,55 @@
+gimme stash
+gimme groupchat
+
+yap stash.sort_by([3, 1, 2], lowkey (x) => { bounce -x })
+yap stash.sort_by(["bb", "a", "ccc"], lowkey (x) => { bounce x.how_thicc() })
+yap stash.sort_by([fax, cap, fax], lowkey (x) => { bounce x })
+
+yap stash.group_by([1, 2, 3, 4, 5, 6], lowkey (x) => { bounce x % 2 })
+yap stash.group_by(["apple", "banana", "avocado", "blueberry"], lowkey (x) => { bounce x.at(0) })
+
+yap stash.unique([1, 2, 2, 3, 1, 4])
+yap stash.unique(["a", "b", "a", "c"])
+
+yap stash.flatten([1, [2, 3], [4, [5, 6]], 7])
+yap stash.flatten([1, 2, 3])
+
+yap stash.chunk([1, 2, 3, 4, 5], 2)
+yap stash.chunk([1, 2, 3, 4, 5, 6], 3)
+
+sketchy {
+    stash.chunk([1, 2, 3], 0)
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+yap stash.sum_up([1, 2, 3, 4, 5])
+yap stash.sum_up([1.5, 2.5])
+yap stash.sum_up([])
+
+sketchy {
+    stash.sum_up([1, "x", 3])
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+yo shuffled = stash.shuffle_it([1, 2, 3, 4, 5])
+yap shuffled.how_thicc()
+yap shuffled.sort()
+
+yo m = {"a": 1, "b": 2, "c": 3}
+yap groupchat.invert(m)
+yap groupchat.invert({"x": 1, "y": 1})
+
+yap groupchat.from_pairs([["a", 1], ["b", 2]])
+sketchy {
+    groupchat.from_pairs([["a", 1, 2]])
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+yo g2 = {"z": 9}
+yap groupchat.how_thicc(g2)
+yap groupchat.keys(g2)
+yap stash.how_thicc([1, 2, 3])
+yap stash.yeet_in([1, 2], 3)
