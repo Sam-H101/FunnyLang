@@ -11,10 +11,14 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
+#include "builtins.h"
 #include "chunk.h"
 #include "error.h"
 #include "gc.h"
+#include "stash.h"
+#include "string.h"
 #include "value.h"
 #include "vm.h"
 
@@ -57,6 +61,16 @@ int main(int argc, char **argv) {
 
     VM vm;
     vm_init(&vm); /* sets up vm.gc, which the loader below tracks constants in */
+    builtins_install(&vm);
+
+    /* the_args(): every argument past the .funnyc path itself, matching
+       funnylang/cli.py's own `vm.program_args = list(extra_args)`. */
+    ObjStash *programArgs = stash_new(&vm.gc, NULL, 0);
+    for (int i = 2; i < argc; i++) {
+        ObjString *s = string_new(&vm.gc, argv[i], (uint32_t)strlen(argv[i]));
+        stash_push(&vm.gc, programArgs, OBJ_VAL(s));
+    }
+    vm.programArgs = OBJ_VAL(programArgs);
 
     char *err = NULL;
     CompiledUnit *unit = chunk_load_funnyc(data, len, &vm.gc, &err);
@@ -71,11 +85,18 @@ int main(int argc, char **argv) {
     VmResult result = vm_run(&vm, unit, stdout);
     int exitCode = 0;
     if (result == VM_ERROR) {
-        /* Not the real diagnostic renderer (N6's diag.c) -- just enough to
-           report what went wrong until that exists. */
-        ObjError *e = (ObjError *)AS_OBJ(vm.uncaughtError);
-        fprintf(stderr, "%s: %s\n", e->flavor->chars, e->message->chars);
-        exitCode = 1;
+        int64_t systemExitCode;
+        if (vm_is_system_exit(vm.uncaughtError, &systemExitCode)) {
+            /* dip(n): a clean process exit, not a crash -- no message,
+               matching an uncaught Python SystemExit(n). */
+            exitCode = (int)systemExitCode;
+        } else {
+            /* Not the real diagnostic renderer (N6's diag.c) -- just
+               enough to report what went wrong until that exists. */
+            ObjError *e = (ObjError *)AS_OBJ(vm.uncaughtError);
+            fprintf(stderr, "%s: %s\n", e->flavor->chars, e->message->chars);
+            exitCode = 1;
+        }
     }
 
     chunk_free_unit(unit);

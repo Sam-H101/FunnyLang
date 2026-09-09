@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "bignum.h"
+#include "builtins.h"
 #include "error.h"
 #include "groupchat.h"
 #include "iterator.h"
@@ -103,7 +104,9 @@ static const char *type_name_of(Value v) {
         switch (AS_OBJ(v)->type) {
             case OBJ_CLOSURE:
             case OBJ_BOUND_NATIVE:
-            case OBJ_BOUND_METHOD: return "bet";
+            case OBJ_BOUND_METHOD:
+            case OBJ_NATIVE_FN:
+            case OBJ_COMBO: return "bet";
             case OBJ_ERROR: return "error";
             case OBJ_POINTA: return "pointa";
             case OBJ_STASH: return "stash";
@@ -259,6 +262,15 @@ static char *display_value_rec(VM *vm, Value v, SeenStack *seen) {
         snprintf(buf, sizeof buf, "<bet %s/bound>", bm->method->proto->name);
         return dup_str(buf);
     }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_NATIVE_FN) {
+        ObjNativeFn *nf = (ObjNativeFn *)AS_OBJ(v);
+        char buf[128];
+        snprintf(buf, sizeof buf, "<bet %s/native>", nf->name);
+        return dup_str(buf);
+    }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_COMBO) {
+        return dup_str("<bet combo/native>");
+    }
     if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_SQUAD) {
         ObjSquad *s = (ObjSquad *)AS_OBJ(v);
         char buf[160];
@@ -363,6 +375,41 @@ void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...) {
 const char *vm_type_name(Value v) { return type_name_of(v); }
 char *vm_value_to_display(VM *vm, Value v) { return value_to_display(vm, v); }
 
+char *vm_value_to_repr(VM *vm, Value v) {
+    /* Same rooting reasoning as value_to_display's own wrapper -- an
+       Instance anywhere in `v` (directly, or nested) may call back into
+       FunnyLang via `to_yap`, which can trigger a collection. */
+    gc_push_temp(&vm->gc, v);
+    SeenStack seen = {0};
+    char *r = repr_value_rec(vm, v, &seen);
+    free(seen.items);
+    gc_pop_temp(&vm->gc);
+    return r;
+}
+
+/* dip()'s sentinel flavor -- an ObjError users never see printed, since
+   an uncaught one is recognized and turned into a real process exit
+   (vm_run/main.c) rather than reported like an ordinary crash, and a
+   caught one is impossible (vm_unwind_to_handler refuses to search for a
+   handler once it sees this). Not exposed in any public header -- only
+   vm_request_exit/vm_is_system_exit ever need to know the actual string. */
+#define SYSTEM_EXIT_FLAVOR "__SystemExit__"
+
+void vm_request_exit(VM *vm, int64_t code) {
+    if (vm->hadError) return; /* first error at this position wins, same rule vm_throw uses */
+    ObjError *e = error_new(&vm->gc, SYSTEM_EXIT_FLAVOR, "", 0, 0, "", INT_VAL(code), NULL, 0);
+    vm->pendingError = OBJ_VAL(e);
+    vm->hadError = true;
+}
+
+bool vm_is_system_exit(Value errValue, int64_t *outCode) {
+    if (!(IS_OBJ(errValue) && AS_OBJ(errValue)->type == OBJ_ERROR)) return false;
+    ObjError *e = (ObjError *)AS_OBJ(errValue);
+    if (strcmp(e->flavor->chars, SYSTEM_EXIT_FLAVOR) != 0) return false;
+    *outCode = AS_INT(e->payload);
+    return true;
+}
+
 /* Structural equality (funnylang/values.py's funny_eq, ported): unlike
    value_equal_narrow (value.c -- deliberately the "narrow" scalar-only
    piece), Stash/GroupChat compare by contents here, recursively, and two
@@ -456,6 +503,20 @@ ObjBoundNative *bound_native_new(GC *gc, Value receiver, NativeMethodFn fn, cons
     return bn;
 }
 
+ObjNativeFn *native_fn_new(GC *gc, NativeMethodFn fn, const char *name, int minArity, int maxArity) {
+    ObjNativeFn *nf = (ObjNativeFn *)malloc(sizeof(ObjNativeFn));
+    nf->obj.type = OBJ_NATIVE_FN;
+    nf->obj.marked = false;
+    nf->obj.size = 0;
+    nf->obj.next = NULL;
+    nf->fn = fn;
+    nf->name = name;
+    nf->minArity = minArity;
+    nf->maxArity = maxArity;
+    gc_track(gc, (Obj *)nf, sizeof(ObjNativeFn));
+    return nf;
+}
+
 /* -- setup / teardown ------------------------------------------------- */
 
 #define INITIAL_STACK_CAPACITY 256
@@ -481,6 +542,11 @@ void vm_init(VM *vm) {
     vm->globals = (GlobalEntry *)malloc((size_t)vm->globalCapacity * sizeof(GlobalEntry));
     vm->globalCount = 0;
 
+    vm->builtinCapacity = INITIAL_GLOBALS_CAPACITY;
+    vm->builtins = (GlobalEntry *)malloc((size_t)vm->builtinCapacity * sizeof(GlobalEntry));
+    vm->builtinCount = 0;
+    vm->programArgs = GHOST_VAL;
+
     vm->unit = NULL;
     vm->out = NULL;
     vm->currentFrameIndex = -1;
@@ -496,6 +562,7 @@ void vm_destroy(VM *vm) {
     free(vm->frames);
     free(vm->openUpvalues);
     free(vm->globals);
+    free(vm->builtins);
     gc_destroy(&vm->gc);
 }
 
@@ -510,6 +577,11 @@ static void mark_vm_roots(GC *gc, void *userdata) {
         gc_mark_object(gc, (Obj *)vm->globals[i].name);
         gc_mark_value(gc, vm->globals[i].value);
     }
+    for (int i = 0; i < vm->builtinCount; i++) {
+        gc_mark_object(gc, (Obj *)vm->builtins[i].name);
+        gc_mark_value(gc, vm->builtins[i].value);
+    }
+    gc_mark_value(gc, vm->programArgs);
     gc_mark_value(gc, vm->pendingError);
     gc_mark_value(gc, vm->uncaughtError);
     /* Every constant any live proto can CONST-push must stay reachable
@@ -548,6 +620,23 @@ static GlobalEntry *globals_find(VM *vm, ObjString *name) {
         if (string_equal(vm->globals[i].name, name)) return &vm->globals[i];
     }
     return NULL;
+}
+
+static GlobalEntry *builtins_find(VM *vm, ObjString *name) {
+    for (int i = 0; i < vm->builtinCount; i++) {
+        if (string_equal(vm->builtins[i].name, name)) return &vm->builtins[i];
+    }
+    return NULL;
+}
+
+void vm_define_builtin(VM *vm, ObjString *name, Value value) {
+    if (vm->builtinCount == vm->builtinCapacity) {
+        vm->builtinCapacity *= 2;
+        vm->builtins = (GlobalEntry *)realloc(vm->builtins, (size_t)vm->builtinCapacity * sizeof(GlobalEntry));
+    }
+    vm->builtins[vm->builtinCount].name = name;
+    vm->builtins[vm->builtinCount].value = value;
+    vm->builtinCount++;
 }
 
 static void globals_set(VM *vm, ObjString *name, Value value) {
@@ -679,6 +768,13 @@ static void vm_throw_fmt(VM *vm, const char *flavor, const char *fmt, ...) {
    uncaught error. Returns false if nothing between the current frame and
    baseFrameCount catches it. */
 static bool vm_unwind_to_handler(VM *vm, Value errValue, int baseFrameCount) {
+    /* dip()'s sentinel is never caught, at any level -- mirrors Python's
+       SystemExit not being a FunnyError, so `except FunnyError` (the
+       only thing that ever calls _unwind there) never even sees it;
+       every `sketchy`/`regardless` on the way out is skipped the same
+       way. See vm_request_exit's own comment. */
+    int64_t ignoredCode;
+    if (vm_is_system_exit(errValue, &ignoredCode)) return false;
     while (vm->frameCount > baseFrameCount) {
         Frame *frame = current_frame(vm);
         if (frame->handlerCount > 0) {
@@ -1328,11 +1424,58 @@ static void vm_set_prop(VM *vm, Value obj, ObjString *name, Value value);
 static Value vm_get_index(VM *vm, Value obj, Value key);
 static void vm_set_index(VM *vm, Value obj, Value key, Value value);
 
+/* Like call_bound_native, but for a plain ObjNativeFn: no receiver to
+   prepend, args are exactly [argStart, argStart+argc). Same GC-rooting
+   reasoning -- a native function (how_thicc's Instance dispatch, combo's
+   captured calls, ...) can call back into FunnyLang, which can trigger a
+   collection while its own args are off vm->stack. */
+static void call_native_fn(VM *vm, ObjNativeFn *nf, int argc, int argStart) {
+    if (argc < nf->minArity || argc > nf->maxArity) {
+        char wantBuf[32];
+        if (nf->minArity == nf->maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", nf->minArity);
+        else snprintf(wantBuf, sizeof wantBuf, "%d-%d", nf->minArity, nf->maxArity);
+        vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", nf->name, wantBuf, argc);
+        return;
+    }
+    Value args[256];
+    for (int i = 0; i < argc; i++) args[i] = vm->stack[argStart + i];
+    vm->stackCount = argStart - 1;
+    for (int i = 0; i < argc; i++) gc_push_temp(&vm->gc, args[i]);
+    Value result = nf->fn(vm, args, argc);
+    for (int i = 0; i < argc; i++) gc_pop_temp(&vm->gc);
+    if (vm->hadError) return;
+    push(vm, result);
+}
+
+static void call_combo(VM *vm, ObjCombo *combo, int argc, int argStart) {
+    if (argc > 1) {
+        vm_throw_fmt(vm, "WrongNumberOfHomies", "'combo' wants 0-1 args, got %d.", argc);
+        return;
+    }
+    Value arg = argc > 0 ? vm->stack[argStart] : GHOST_VAL;
+    gc_push_temp(&vm->gc, OBJ_VAL(combo));
+    if (argc > 0) gc_push_temp(&vm->gc, arg);
+    Value result = combo_call(vm, combo, arg);
+    if (argc > 0) gc_pop_temp(&vm->gc);
+    gc_pop_temp(&vm->gc);
+    vm->stackCount = argStart - 1;
+    if (vm->hadError) return;
+    push(vm, result);
+}
+
 static void do_call(VM *vm, int argc) {
     int argStart = vm->stackCount - argc;
     Value callee = vm->stack[argStart - 1];
     if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_BOUND_NATIVE) {
         call_bound_native(vm, (ObjBoundNative *)AS_OBJ(callee), argc, argStart);
+        return;
+    }
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_NATIVE_FN) {
+        call_native_fn(vm, (ObjNativeFn *)AS_OBJ(callee), argc, argStart);
+        return;
+    }
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_COMBO) {
+        call_combo(vm, (ObjCombo *)AS_OBJ(callee), argc, argStart);
         return;
     }
     if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_SQUAD) {
@@ -1840,6 +1983,7 @@ static Value pointa_deref_value(VM *vm, ObjPointa *ptr) {
     if (ptr->kind == POINTA_CELL) return upvalue_get(ptr->cell);
     if (ptr->kind == POINTA_GLOBAL) {
         GlobalEntry *g = globals_find(vm, ptr->globalName);
+        if (g == NULL) g = builtins_find(vm, ptr->globalName);
         if (g == NULL) {
             vm_throw_fmt(vm, "WhoDis", "'%s' isn't defined.", ptr->globalName->chars);
             return GHOST_VAL;
@@ -2048,10 +2192,13 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 vm->stack[frame->slotBase + code[frame->ip++]] = peek(vm, 0);
                 break;
             case OP_GET_GLOBAL: {
+                /* Module globals first, then the always-in-scope builtins
+                   -- matches funnylang/vm.py's own _read_global exactly. */
                 uint16_t idx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[idx].value);
                 GlobalEntry *g = globals_find(vm, name);
+                if (g == NULL) g = builtins_find(vm, name);
                 if (g == NULL) {
                     vm_throw_fmt(vm, "WhoDis", "'%s' isn't defined.", name->chars);
                     break;
@@ -2654,6 +2801,25 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
         full[0] = bn->receiver;
         for (int i = 0; i < argc; i++) full[i + 1] = args[i];
         return bn->fn(vm, full, argc + 1);
+    }
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_NATIVE_FN) {
+        ObjNativeFn *nf = (ObjNativeFn *)AS_OBJ(callee);
+        if (argc < nf->minArity || argc > nf->maxArity) {
+            char wantBuf[32];
+            if (nf->minArity == nf->maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", nf->minArity);
+            else snprintf(wantBuf, sizeof wantBuf, "%d-%d", nf->minArity, nf->maxArity);
+            vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", nf->name, wantBuf, argc);
+            return GHOST_VAL;
+        }
+        return nf->fn(vm, args, argc);
+    }
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_COMBO) {
+        ObjCombo *combo = (ObjCombo *)AS_OBJ(callee);
+        if (argc > 1) {
+            vm_throw_fmt(vm, "WrongNumberOfHomies", "'combo' wants 0-1 args, got %d.", argc);
+            return GHOST_VAL;
+        }
+        return combo_call(vm, combo, argc > 0 ? args[0] : GHOST_VAL);
     }
     if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_CLOSURE) {
         ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);

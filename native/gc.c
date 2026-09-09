@@ -5,6 +5,7 @@
 #include "bignum.h"
 #include "error.h"
 #include "frames.h"
+#include "builtins.h"
 #include "groupchat.h"
 #include "iterator.h"
 #include "pointa.h"
@@ -101,6 +102,12 @@ static void free_object(Obj *obj) {
         }
         case OBJ_BOUND_METHOD:
             free(obj); /* receiver is a Value field; method is a separate GC object */
+            return;
+        case OBJ_NATIVE_FN:
+            free(obj); /* name points into a separately-GC-owned ObjString; never freed here */
+            return;
+        case OBJ_COMBO:
+            free(obj); /* fns is a Value field (an ObjStash), a separate GC object */
             return;
     }
 }
@@ -264,6 +271,16 @@ static void blacken_object(GC *gc, Obj *obj) {
             ObjBoundMethod *bm = (ObjBoundMethod *)obj;
             gc_mark_value(gc, bm->receiver);
             gc_mark_object(gc, (Obj *)bm->method);
+            return;
+        }
+        case OBJ_NATIVE_FN:
+            /* `name` is a raw char* into a separately-rooted ObjString
+               (the same one vm->builtins' own GlobalEntry keys on) --
+               nothing here to mark through it directly. */
+            return;
+        case OBJ_COMBO: {
+            ObjCombo *c = (ObjCombo *)obj;
+            gc_mark_value(gc, c->fns);
             return;
         }
     }

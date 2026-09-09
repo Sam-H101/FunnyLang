@@ -1062,3 +1062,44 @@ gets an entry explaining what changed and why.
   done across five sub-phases this session, each independently tested and committed. `unicode_tbl.c`
   (task 2) remains deferred to N5, confirmed still correct: its only consumers
   (`yapper.is_letter`/`is_alnum`) are stdlib module functions not wired up until then.
+- **N5 · sub-phase 5a complete · native-function registration (task 1) + the always-in-scope
+  builtins (task 2's first module, `funnylang/stdlib/builtins.py`'s 16 functions).** `ObjNativeFn`
+  (vm.h) is the registration mechanism itself -- mirrors `funnylang/values.py`'s own `NativeFn`
+  exactly: `fn(vm, args) -> value`, no implicit receiver (unlike `ObjBoundNative`'s methods, where
+  `args[0]` is always the receiver). `vm->builtins`, a namespace *separate* from `vm->globals`, with
+  `GET_GLOBAL` (and the `POINTA_GLOBAL` deref path, which needed the identical fallback and didn't
+  have it) checking `globals` first, then falling back to `builtins` -- matching
+  `funnylang/vm.py`'s own `_read_global` exactly. `native/builtins.c` implements all 16 functions,
+  reusing every primitive already built this milestone (`vm_call_value`, `vm_value_to_display`, a new
+  `vm_value_to_repr` public wrapper, `squad_find_method`, bignum parsing for `to_numba`/`to_int`).
+  **`dip()` needed real design work, not just porting:** Python's `SystemExit` (what `dip()` raises)
+  isn't a `FunnyError` subclass, so `sketchy`/`my_bad`/`regardless` never even see it at any nesting
+  level -- confirmed empirically against the real Python CLI (`dip(5)` inside a `sketchy...my_bad...
+  regardless` block skips all three and exits the whole process with code 5, no output past the
+  `dip()` call). Replicated with a sentinel `ObjError` flavor (`vm_request_exit`/`vm_is_system_exit`)
+  that `vm_unwind_to_handler` refuses to search for a handler on, at any level, before its normal
+  logic runs -- reusing 100% of the already-tested nested-error-propagation machinery from the N4
+  callback work rather than threading a new flag through every call site. `main.c` recognizes an
+  uncaught one and calls it a clean exit, not a crash.
+  **`combo()` needed a new, dedicated Obj type (`ObjCombo`, native/builtins.h):** it returns a native
+  function that closes over a list of callables, and neither existing native-calling convention
+  (`ObjBoundNative`'s receiver, `ObjNativeFn`'s plain args) can express "a native function with its
+  own captured state" -- a small dedicated type was simpler than generalizing `NativeMethodFn`'s
+  signature for the sake of this one function.
+  **Bug caught by the differential test, not assumed correct:** `range_stash`'s float path initially
+  promoted `start` to a float *upfront* whenever *any* argument was a float, which isn't what Python
+  actually does -- `range_stash(0, 1, 0.25)` there yields `[0, 0.25, 0.5, 0.75]` (an int `0` first!),
+  because Python's `n` starts as whatever type `start` itself is and only becomes a float once a
+  float `step` is actually *added* to it on the first `n += step`, not merely because some argument
+  somewhere is a float. Fixed to track the promotion exactly where it actually happens.
+  the_args() returns a fresh Stash copy every call (not the same object), matching Python's own
+  `Stash(list(...))` -- Stash has reference semantics, so aliasing here would be observable.
+  Verified: 1 new differential program (all 16 functions, including nested combos, mixed-type
+  range_stash, deep_clone's independence from the original, and squad `how_thicc` dispatch) plus a
+  separate manual verification of `dip()`'s exit code and try/catch/finally-skipping behavior against
+  the real Python CLI -- byte-identical/exit-code-identical, gcc and clang, `-Werror`, ASan/UBSan,
+  and `FUNNY_GC_STRESS=1`. `ask()` is implemented but not exercised in the differential suite, same
+  exception as `chaos.funny`'s randomness -- its behavior is interactive-input-dependent by design.
+  Real stdlib modules (`mafs yapper stash groupchat rizz filez clock sus computer internet`),
+  `IMPORT`/`EXPORT`/per-module namespaces (task 3), `computer.explode()`/`blue_screen()` (task 4),
+  `internet` (task 5), and `rizz`'s PRNG (task 6) remain as N5's next sub-phases.

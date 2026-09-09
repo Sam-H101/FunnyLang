@@ -30,6 +30,8 @@ typedef enum {
     OBJ_SQUAD,
     OBJ_INSTANCE,
     OBJ_BOUND_METHOD,
+    OBJ_NATIVE_FN,
+    OBJ_COMBO,
 } ObjType;
 
 /* The common header. Every concrete object type (e.g. ObjBignum) is a

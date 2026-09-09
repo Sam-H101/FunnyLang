@@ -49,6 +49,25 @@ typedef struct {
 struct GC;
 ObjBoundNative *bound_native_new(struct GC *gc, Value receiver, NativeMethodFn fn, const char *name, int minArity, int maxArity);
 
+/* A builtin/stdlib-module function with no implicit receiver (unlike
+ * ObjBoundNative) -- mirrors funnylang/values.py's own NativeFn exactly:
+ * `fn(vm, args) -> value`, `args` being only the call's own arguments.
+ * Used for the always-in-scope globals (native/builtins.c) and, from N5's
+ * later sub-phases, real stdlib module members (mafs.sqrt, yapper.upper,
+ * ...).
+ */
+typedef struct {
+    Obj obj;
+    NativeMethodFn fn; /* same C signature as a bound method's; the
+                           difference is purely convention -- nothing here
+                           treats args[0] as a receiver. */
+    const char *name;
+    int minArity;
+    int maxArity;
+} ObjNativeFn;
+
+ObjNativeFn *native_fn_new(struct GC *gc, NativeMethodFn fn, const char *name, int minArity, int maxArity);
+
 /* PLAN.md M11's recursion cap -- ported unchanged (funnylang/vm.py's
    MAX_FRAMES). */
 #define VM_MAX_FRAMES 10000
@@ -78,6 +97,22 @@ struct VM {
     GlobalEntry *globals;
     int globalCount;
     int globalCapacity;
+
+    /* The always-in-scope builtins (native/builtins.c), a *separate*
+       namespace from `globals` -- GET_GLOBAL checks `globals` first, then
+       falls back to this, exactly matching funnylang/vm.py's own
+       `_read_global` (module-globals, then vm.builtins). Once real module
+       namespacing (N5 task 3) exists, every module's own globals dict
+       falls back to this same table, unchanged. */
+    GlobalEntry *builtins;
+    int builtinCount;
+    int builtinCapacity;
+
+    /* the_args() wraps this in a Stash; GHOST_VAL (not an empty Stash)
+       until the embedder (main.c) sets it, matching
+       funnylang/stdlib/builtins.py's own `getattr(vm, "program_args",
+       [])` default. */
+    Value programArgs;
 
     CompiledUnit *unit; /* borrowed; caller keeps it alive */
 
@@ -144,6 +179,32 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc);
 void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...);
 const char *vm_type_name(Value v);
 char *vm_value_to_display(VM *vm, Value v);
+/* Like vm_value_to_display, but a string is quoted (json-style) --
+   funnylang/values.py's own `to_repr`, for the one builtin (sheesh) that
+   calls it directly rather than through a stash/groupchat's own nested
+   repr. */
+char *vm_value_to_repr(VM *vm, Value v);
+
+/* dip()'s "terminate the whole process now, no `my_bad`/`regardless`
+   gets a chance to run at any nesting level" -- deliberately not a normal
+   FunnyError: matches Python's SystemExit not being a FunnyError
+   subclass, so `except FunnyError` (and therefore _unwind) never even
+   sees it there either. vm_unwind_to_handler refuses to search for a
+   handler at all once it recognizes this, at every level, the same way
+   Python's own exception propagation skips every `except FunnyError`
+   clause on its way out. */
+void vm_request_exit(VM *vm, int64_t code);
+/* True (with *outCode set) if `errValue` is exactly that sentinel --
+   for vm_run/main.c to notice an uncaught one and exit(code) cleanly
+   instead of reporting it as a crash. */
+bool vm_is_system_exit(Value errValue, int64_t *outCode);
+
+/* Registers a name in vm->builtins (native/builtins.c's own setup code;
+   never called by opcode dispatch -- SET_GLOBAL/DEF_GLOBAL only ever
+   write to vm->globals, matching funnylang/vm.py's own SET_GLOBAL, which
+   always targets module_globals and never vm.builtins). Overwrites an
+   existing entry for `name` if one exists. */
+void vm_define_builtin(VM *vm, ObjString *name, Value value);
 
 /* Structural equality (funnylang/values.py's `funny_eq`): unlike
    value_equal_narrow (value.h), Stash/GroupChat compare by contents here,
