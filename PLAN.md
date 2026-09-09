@@ -1438,3 +1438,28 @@ Format: `- [Mn] <what changed> — <why>`.
   (`lowkey () => {"a": 1}`); JS's arrow functions have the identical ambiguity. Resolved the same
   way JS does: `=> { ... }` always parses as a statement block. To return a groupchat literal
   directly from an arrow body, wrap it in parens: `lowkey () => ({"a": 1})`.
+- [M4] `CLOSURE`'s `protoIdx` operand (§5.1 op 54) is a **constant-pool** index holding a
+  tag-5 `proto_ref` entry, not a direct index into the `protos` array — consistent with every
+  other opcode whose operand is named `...Idx` (`CONST`, `GET_GLOBAL`, `GET_PROP`, ...), all of
+  which are const-pool indices. This is also the only thing tag 5 (`proto_ref`) is for.
+- [M4] `TRY_PUSH`'s `handlerOff`/`finallyOff` (op 61) use `0xFFFF` as an explicit "absent"
+  sentinel (no `my_bad` / no `regardless`) rather than `0`, since a real relative offset of `0`
+  is reachable (an empty catch body sitting immediately after the try body). Both offsets are
+  relative to the address right after `TRY_PUSH`'s own operands, matching `JUMP`'s "ip after the
+  instruction" convention.
+- [M4] `ITER_NEXT` (op 69) operates in place on the iterator already on top of the stack rather
+  than consuming and re-pushing it: the not-done path leaves `[iterator, value]`, the done path
+  leaves `[iterator]` completely untouched (doesn't consume it) and jumps to `doneOff`. The
+  iterator therefore needs exactly one persistent stack slot for the whole loop, never re-fetched
+  via `GET_LOCAL` each iteration.
+- [M4] Named imports (`gimme { a, b } from "path"`) compile as: `IMPORT` (mode 1) pushes the
+  target module object; then for each name, `DUP; GET_PROP <name>; DEF_GLOBAL <name>` (or the
+  local-slot equivalent), followed by one final `POP` to drop the module reference. This achieves
+  the correct observable behavior (each name becomes a binding) without needing the "BUILD_STASH
+  of names first" detail floated in §M7 task 2, whose exact mechanics were underspecified (`IMPORT`'s
+  own stack-effect row shows no input operand at all). Revisit if M7's module loader needs a
+  different calling convention once it actually exists.
+- [M4] Constant folding's foldable operator set is exactly `+ - * & | ^ << >> == != < <= > >=`.
+  `/`, `\`, `%`, and `**` are never folded, even between two literals, since they can throw
+  (`MathAintMathin` on div-by-zero / bad domain) and folding must never change what a program can
+  observe (§M4 task 3: "fold only when... the op can't throw").

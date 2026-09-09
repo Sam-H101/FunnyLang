@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from funnylang.ast_nodes import Program, dump_ast
+from funnylang.chunk import CompiledUnit
+from funnylang.compiler import Compiler
 from funnylang.lexer import Lexer
 from funnylang.parser import parse_source
 from funnylang.resolver import resolve_program
@@ -50,3 +52,36 @@ def resolve_prog(src: str, path: str = "<test>"):
     prog = parse_source(source)
     result = resolve_program(prog, source)
     return prog, result
+
+
+def compile_prog(src: str, path: str = "<test>", fold_constants: bool = True) -> CompiledUnit:
+    source = make_source(src, path)
+    prog = parse_source(source)
+    result = resolve_program(prog, source)
+    return Compiler(result, source, fold_constants=fold_constants).compile_program(prog, path)
+
+
+def entry_proto(unit: CompiledUnit):
+    return unit.protos[unit.entry_proto]
+
+
+def op_sequence(unit: CompiledUnit, proto=None):
+    """The list of opcode names (no operands) in a proto's code, in order —
+    for compact assertions in compiler tests."""
+    from funnylang.opcodes import OPERANDS, Op
+
+    proto = proto if proto is not None else entry_proto(unit)
+    names = []
+    code = proto.code
+    ip = 0
+    while ip < len(code):
+        op = Op(code[ip])
+        names.append(op.name)
+        if op == Op.CLOSURE:
+            const_idx = int.from_bytes(code[ip + 1:ip + 3], "big")
+            tag, ref = unit.const_pool.entries[const_idx]
+            n_upvals = unit.protos[ref].upvalue_count if tag == 5 else 0
+            ip = ip + 3 + 2 * n_upvals
+        else:
+            ip += 1 + sum(OPERANDS[op])
+    return names

@@ -65,7 +65,7 @@ class FuncInfo:
 @dataclass
 class ResolverResult:
     identifier_resolutions: dict  # id(node) -> Resolution, for Identifier/Assign/Set.obj etc. reads
-    decl_slots: dict  # id(decl node) -> local slot (absent => global)
+    decl_slots: dict  # (id(decl node), name) -> local slot (absent => global)
     func_info: dict  # id(Program|FuncDecl|Lambda) -> FuncInfo
 
 
@@ -198,7 +198,7 @@ class Resolver:
             # globals carry no slot: decl_slots simply has no entry for them.
             return
         slot = self._declare_local(name, is_const, span)
-        self.result.decl_slots[id(decl_node)] = slot
+        self.result.decl_slots[(id(decl_node), name)] = slot
 
     def _resolve_local(self, scope: _FunctionScope, name: str) -> int | None:
         for i in range(len(scope.locals) - 1, -1, -1):
@@ -301,7 +301,7 @@ class Resolver:
             if p.default is not None:
                 self._resolve_expr(p.default)
             slot = self._declare_local(p.name, False, p.span)
-            self.result.decl_slots[id(p)] = slot
+            self.result.decl_slots[(id(p), p.name)] = slot
         if variadic is not None:
             self._declare_local(variadic, False, node.span)
         for stmt in body_statements:
