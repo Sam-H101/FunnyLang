@@ -1,0 +1,12 @@
+// Test driver (not part of the toolchain): tokenizes the file named by the
+// first CLI arg and prints one "kind line col" line per token, for
+// cross-checking against funnylang/lexer.py's own output.
+gimme filez
+gimme { tokenize } from "../lexer.funny"
+
+yo path = the_args()[0]
+yo src = filez.slurp(path)
+yo toks = tokenize(src)
+grind t in toks {
+    yap t["kind"] + " " + to_yap(t["line"]) + " " + to_yap(t["col"])
+}

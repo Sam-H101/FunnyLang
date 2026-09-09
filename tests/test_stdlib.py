@@ -202,6 +202,31 @@ def test_yapper_is_numba():
     assert _r('gimme yapper\nyap yapper.is_numba("3.5")\nyap yapper.is_numba("abc")\n') == "fax\ncap\n"
 
 
+def test_yapper_is_letter():
+    src = (
+        'gimme yapper\n'
+        'yap yapper.is_letter("a")\n'
+        'yap yapper.is_letter("中")\n'
+        'yap yapper.is_letter("é")\n'
+        'yap yapper.is_letter("1")\n'
+        'yap yapper.is_letter("_")\n'
+        'yap yapper.is_letter("🎉")\n'
+    )
+    assert _r(src) == "fax\nfax\nfax\ncap\ncap\ncap\n"
+
+
+def test_yapper_is_alnum():
+    src = (
+        'gimme yapper\n'
+        'yap yapper.is_alnum("a")\n'
+        'yap yapper.is_alnum("1")\n'
+        'yap yapper.is_alnum("中")\n'
+        'yap yapper.is_alnum("_")\n'
+        'yap yapper.is_alnum(" ")\n'
+    )
+    assert _r(src) == "fax\nfax\nfax\ncap\ncap\n"
+
+
 def test_yapper_pad():
     assert _r('gimme yapper\nyap yapper.pad_left("5", 3, "0")\nyap yapper.pad_right("5", 3, "0")\n') == "005\n500\n"
 

@@ -130,6 +130,14 @@ def _is_numba(vm, a):
         return False
 
 
+def _is_letter(vm, a):
+    return _str(a[0], "is_letter").isalpha()
+
+
+def _is_alnum(vm, a):
+    return _str(a[0], "is_alnum").isalnum()
+
+
 def _lines(vm, a):
     return Stash(_str(a[0], "lines").splitlines())
 
@@ -194,6 +202,8 @@ def build() -> Module:
         "chr_of": _nf("chr_of", _chr_of, 1),
         "format": _nf("format", _format, 1, 255),
         "is_numba": _nf("is_numba", _is_numba, 1),
+        "is_letter": _nf("is_letter", _is_letter, 1),
+        "is_alnum": _nf("is_alnum", _is_alnum, 1),
         "lines": _nf("lines", _lines, 1),
         "words": _nf("words", _words, 1),
         "title_case": _nf("title_case", _title_case, 1),

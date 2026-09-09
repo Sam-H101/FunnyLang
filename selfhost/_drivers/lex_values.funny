@@ -1,0 +1,33 @@
+// Test driver (not part of the toolchain): tokenizes the file named by the
+// first CLI arg and prints "kind\x1ftext\x1fvalue" per token (skipping
+// NEWLINE/EOF), for cross-checking literal values against lexer.py.
+gimme filez
+gimme { tokenize } from "../lexer.funny"
+
+// Values can legitimately contain raw newlines/tabs (a triple-quoted
+// string's value, say) -- escape them to visible 2-char sequences so this
+// driver's one-line-per-token output stays parseable.
+flex bet escape_for_print(s) {
+    yo out = []
+    grind ch in s.chars() {
+        sus (ch == "\n") {
+            out.yeet_in("\\n")
+        } kinda_sus (ch == "\t") {
+            out.yeet_in("\\t")
+        } kinda_sus (ch == "\r") {
+            out.yeet_in("\\r")
+        } nah {
+            out.yeet_in(ch)
+        }
+    }
+    bounce out.join("")
+}
+
+yo path = the_args()[0]
+yo src = filez.slurp(path)
+yo toks = tokenize(src)
+grind t in toks {
+    sus (t["kind"] != "NEWLINE" && t["kind"] != "EOF") {
+        yap t["kind"] + "\u{1F}" + escape_for_print(t["text"]) + "\u{1F}" + escape_for_print(to_yap(t["value"]))
+    }
+}

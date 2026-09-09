@@ -1,0 +1,40 @@
+// Test driver (not part of the toolchain): tokenizes the file named by the
+// first CLI arg and, for every TEMPLATE token found, prints its parts --
+// "STR:<text>" or "TOKENS:<kind1,kind2,...>" -- one line each.
+gimme filez
+gimme { tokenize } from "../lexer.funny"
+
+flex bet escape_for_print(s) {
+    yo out = []
+    grind ch in s.chars() {
+        sus (ch == "\n") {
+            out.yeet_in("\\n")
+        } kinda_sus (ch == "\t") {
+            out.yeet_in("\\t")
+        } kinda_sus (ch == "\r") {
+            out.yeet_in("\\r")
+        } nah {
+            out.yeet_in(ch)
+        }
+    }
+    bounce out.join("")
+}
+
+yo path = the_args()[0]
+yo src = filez.slurp(path)
+yo toks = tokenize(src)
+grind t in toks {
+    sus (t["kind"] == "TEMPLATE") {
+        grind p in t["value"] {
+            sus (p["kind"] == "str") {
+                yap "STR:" + escape_for_print(p["text"])
+            } nah {
+                yo kinds = []
+                grind sub in p["tokens"] {
+                    kinds.yeet_in(sub["kind"])
+                }
+                yap "TOKENS:" + kinds.join(",")
+            }
+        }
+    }
+}

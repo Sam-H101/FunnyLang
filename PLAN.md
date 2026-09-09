@@ -1643,3 +1643,19 @@ Format: `- [Mn] <what changed> — <why>`.
   size regression tests for all of these live in `tests/test_hardening.py` alongside M11's other
   hardening checks (self-referential `stash`/`groupchat` display, unicode identifiers/strings/file
   paths end to end).
+- [M12] Added `yapper.is_letter(s)`/`yapper.is_alnum(s)` (thin wrappers over Python's own
+  `str.isalpha()`/`str.isalnum()`), a small, deliberate stdlib addition needed for self-hosting.
+  `lexer.py`'s `_is_ident_start`/`_is_ident_continue` (§M1) accept any Unicode letter in any
+  script — Latin, CJK, Cyrillic, Greek, and more — via Python's `str.isalpha()`/`.isalnum()`, not
+  just ASCII. `selfhost/lexer.funny` must replicate that exactly (byte-for-byte identical
+  tokenization is the whole point of self-hosting), but nothing in the self-hosting subset's legal
+  stdlib (`yapper stash groupchat mafs filez sus`, §8) exposes any character classification, and
+  hand-rolling a Unicode general-category table inside `selfhost/lexer.funny` itself would be both
+  absurd and a maintenance liability no reasonable implementer would choose. `is_digit` was
+  considered and rejected: the lexer's own number-scanning already uses an explicit ASCII-only
+  digit set (`_DEC_DIGITS`), not `.isdigit()` (which is broader than ASCII in Python), so no new
+  primitive is needed there — a plain FunnyLang string-membership check suffices. Both new
+  functions live in `yapper` (already legal in the subset) as ordinary module-level functions,
+  matching the existing `yapper.is_numba(s)` precedent (a whole-string classification predicate,
+  not a `YAPSTRING_METHODS` instance method) rather than introducing a new stdlib module or
+  expanding §8's legal keyword/stdlib list.

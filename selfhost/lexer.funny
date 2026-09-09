@@ -1,0 +1,555 @@
+// selfhost/lexer.funny — PLAN.md §M12 task 2, second file: a port of
+// funnylang/lexer.py + tokens.py.
+//
+// Tokens are groupchat records, per the plan's own example:
+//   {"kind": "IDENT", "text": "x", "value": ghost, "line": 3, "col": 5,
+//    "start": 40, "end": 41}
+// `kind` is always the TokenKind name as a yapstring (there are no enums in
+// the self-hosting subset). `value` carries the parsed literal for INT,
+// FLOAT and STRING tokens, the parts stash for TEMPLATE, and the identifier
+// text for IDENT; it's `ghost` for everything else (keywords, operators,
+// punctuation), matching tokens.py's Token.value exactly.
+//
+// Lexer state is threaded explicitly as a groupchat (`st`) passed into every
+// helper and mutated in place -- there's no `squad` in the self-hosting
+// subset, so this is the idiomatic stand-in for "an object with methods".
+
+gimme yapper
+
+// -- keyword table (PLAN.md §3.3 -- frozen) ---------------------------------
+
+flex deadass KEYWORDS = {
+    "yo": "YO", "deadass": "DEADASS", "yap": "YAP", "yeet": "YEET",
+    "mumble": "MUMBLE", "bet": "BET", "lowkey": "LOWKEY", "bounce": "BOUNCE",
+    "sus": "SUS", "kinda_sus": "KINDA_SUS", "nah": "NAH", "bruh": "BRUH",
+    "grind": "GRIND", "from": "FROM", "to": "TO", "step": "STEP", "in": "IN",
+    "bail": "BAIL", "nvm": "NVM", "sketchy": "SKETCHY", "my_bad": "MY_BAD",
+    "regardless": "REGARDLESS", "chuck": "CHUCK", "gimme": "GIMME", "as": "AS",
+    "flex": "FLEX", "squad": "SQUAD", "inherits": "INHERITS", "me": "ME",
+    "og": "OG", "spawn": "SPAWN", "fax": "FAX", "cap": "CAP", "ghost": "GHOST",
+    "fr": "FR", "orr": "ORR", "aint": "AINT", "same_energy": "SAME_ENERGY",
+    "diff_energy": "DIFF_ENERGY", "vibe": "VIBE",
+    "vibin": "VIBIN", "async_ngl": "ASYNC_NGL", "await_fr": "AWAIT_FR",
+    "yield_lol": "YIELD_LOL", "match_this": "MATCH_THIS", "when": "WHEN",
+}
+
+// Maximal-munch operator tables, longest lexeme first.
+flex deadass OPERATORS_3 = {
+    "**=": "STAR_STAR_EQ", "||=": "PIPE_PIPE_EQ", "...": "ELLIPSIS",
+}
+
+flex deadass OPERATORS_2 = {
+    "+=": "PLUS_EQ", "-=": "MINUS_EQ", "*=": "STAR_EQ", "/=": "SLASH_EQ",
+    "%=": "PERCENT_EQ", "==": "EQ_EQ", "!=": "BANG_EQ", "<=": "LE", ">=": "GE",
+    "<<": "LT_LT", ">>": "GT_GT", "&&": "AMP_AMP", "||": "PIPE_PIPE",
+    "**": "STAR_STAR", "??": "QUESTION_QUESTION", "|>": "PIPE_GT",
+    "=>": "ARROW", "?.": "QUESTION_DOT",
+}
+
+flex deadass OPERATORS_1 = {
+    "=": "EQ", "+": "PLUS", "-": "MINUS", "*": "STAR", "/": "SLASH",
+    "\\": "BACKSLASH", "%": "PERCENT", "<": "LT", ">": "GT", "!": "BANG",
+    "~": "TILDE", "&": "AMP", "|": "PIPE", "^": "CARET", "?": "QUESTION",
+    ":": "COLON", ".": "DOT", ",": "COMMA", ";": "SEMICOLON",
+    "(": "LPAREN", ")": "RPAREN", "[": "LBRACKET", "]": "RBRACKET",
+    "{": "LBRACE", "}": "RBRACE",
+}
+
+flex deadass SIMPLE_ESCAPES = {
+    "n": "\n", "t": "\t", "r": "\r", "\\": "\\", "\"": "\"", "'": "'",
+    "0": "\0", "{": "{", "`": "`",
+}
+
+// Common emoji code-point ranges (mirrors lexer.py's `_EMOJI_RANGES` --
+// Python's `.isalpha()`/`.isalnum()` already cover every non-emoji script).
+flex deadass EMOJI_RANGES = [
+    [0x2600, 0x27BF], [0x2190, 0x21FF], [0x2300, 0x23FF], [0x25A0, 0x25FF],
+    [0x2B00, 0x2BFF], [0x1F1E6, 0x1F1FF], [0x1F300, 0x1F5FF],
+    [0x1F600, 0x1F64F], [0x1F680, 0x1F6FF], [0x1F700, 0x1F77F],
+    [0x1F900, 0x1F9FF], [0x1FA00, 0x1FA6F], [0x1FA70, 0x1FAFF],
+    [0xFE0F, 0xFE0F], [0x200D, 0x200D],
+]
+
+flex bet is_emoji_char(cp) {
+    grind range in EMOJI_RANGES {
+        sus (cp >= range[0] && cp <= range[1]) {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
+flex bet is_ident_start(ch) {
+    bounce ch == "_" || yapper.is_letter(ch) || is_emoji_char(ch.code_at(0))
+}
+
+flex bet is_ident_continue(ch) {
+    bounce ch == "_" || yapper.is_alnum(ch) || is_emoji_char(ch.code_at(0))
+}
+
+flex deadass DEC_DIGITS = "0123456789"
+flex deadass HEX_DIGITS = "0123456789abcdefABCDEF"
+
+// `"".contains("")` is fax (empty needle "contained" in anything) but an
+// out-of-bounds peek must never count as a digit -- guard explicitly.
+flex bet is_dec_digit(ch) {
+    bounce ch != "" && DEC_DIGITS.contains(ch)
+}
+
+// -- state / low-level helpers -----------------------------------------
+
+flex bet new_state(text) {
+    bounce {"text": text, "n": text.how_thicc(), "pos": 0, "line": 1, "col": 1}
+}
+
+flex bet st_peek(st, offset) {
+    yo i = st["pos"] + offset
+    sus (i < 0 || i >= st["n"]) {
+        bounce ""
+    }
+    bounce st["text"].at(i)
+}
+
+flex bet st_cur(st) {
+    bounce st_peek(st, 0)
+}
+
+// Advances `pos` by one character, keeping `line`/`col` in sync -- every
+// raw position bump in the whole lexer goes through this single place.
+flex bet st_advance(st) {
+    yo ch = st_peek(st, 0)
+    st["pos"] += 1
+    sus (ch == "\n") {
+        st["line"] += 1
+        st["col"] = 1
+    } nah {
+        st["col"] += 1
+    }
+}
+
+flex bet st_advance_n(st, n) {
+    grind i in range_stash(n) {
+        st_advance(st)
+    }
+}
+
+flex bet slice_text(st, start, stop) {
+    bounce st["text"].slice(start, stop)
+}
+
+flex bet make_token(kind, text, value, line, col, start, end) {
+    bounce {"kind": kind, "text": text, "value": value, "line": line, "col": col, "start": start, "end": end}
+}
+
+flex bet lexer_error(st, start_line, start_col, message) {
+    chuck "LexerSaidNah at " + to_yap(start_line) + ":" + to_yap(start_col) + ": " + message
+}
+
+// -- comments -------------------------------------------------------------
+
+flex bet skip_line_comment(st) {
+    bruh (st["pos"] < st["n"] && st_cur(st) != "\r" && st_cur(st) != "\n") {
+        st_advance(st)
+    }
+}
+
+flex bet skip_block_comment(st, start_line, start_col) {
+    st_advance_n(st, 2) // consume '/*'
+    yo depth = 1
+    bruh (depth > 0) {
+        sus (st["pos"] >= st["n"]) {
+            lexer_error(st, start_line, start_col, "you opened a /* comment and never closed it.")
+        }
+        sus (st_cur(st) == "/" && st_peek(st, 1) == "*") {
+            depth += 1
+            st_advance_n(st, 2)
+        } kinda_sus (st_cur(st) == "*" && st_peek(st, 1) == "/") {
+            depth -= 1
+            st_advance_n(st, 2)
+        } nah {
+            st_advance(st)
+        }
+    }
+}
+
+// -- numbers ----------------------------------------------------------
+
+flex bet scan_radix_int(st, start, start_line, start_col, digits, base, name) {
+    st_advance_n(st, 2) // consume '0x' / '0b' / '0o'
+    yo digits_start = st["pos"]
+    bruh (st["pos"] < st["n"] && (digits.contains(st_cur(st)) || st_cur(st) == "_")) {
+        st_advance(st)
+    }
+    yo raw_digits = yapper.replace(slice_text(st, digits_start, st["pos"]), "_", "")
+    sus (raw_digits.how_thicc() == 0) {
+        lexer_error(st, start_line, start_col, "that's a '" + slice_text(st, start, st["pos"]) + "' with no " + name + " digits after it.")
+    }
+    yo value = radix_str_to_int(raw_digits, base)
+    bounce make_token("INT", slice_text(st, start, st["pos"]), value, start_line, start_col, start, st["pos"])
+}
+
+flex bet radix_str_to_int(digits, base) {
+    yo value = 0
+    grind ch in digits.chars() {
+        value = value * base + hex_digit_value(ch)
+    }
+    bounce value
+}
+
+flex bet hex_digit_value(ch) {
+    yo cp = ch.code_at(0)
+    sus (cp >= 97) {
+        bounce cp - 97 + 10 // 'a'-'f'
+    }
+    sus (cp >= 65) {
+        bounce cp - 65 + 10 // 'A'-'F'
+    }
+    bounce cp - 48 // '0'-'9'
+}
+
+flex bet scan_decimal(st, start, start_line, start_col) {
+    yo is_float = cap
+    bruh (st["pos"] < st["n"] && (DEC_DIGITS.contains(st_cur(st)) || st_cur(st) == "_")) {
+        st_advance(st)
+    }
+    sus (st_cur(st) == "." && is_dec_digit(st_peek(st, 1))) {
+        is_float = fax
+        st_advance(st)
+        bruh (st["pos"] < st["n"] && (DEC_DIGITS.contains(st_cur(st)) || st_cur(st) == "_")) {
+            st_advance(st)
+        }
+    }
+    sus (st_cur(st) == "e" || st_cur(st) == "E") {
+        yo exp_len = 1
+        sus (st_peek(st, 1) == "+" || st_peek(st, 1) == "-") {
+            exp_len = 2
+        }
+        sus (is_dec_digit(st_peek(st, exp_len))) {
+            is_float = fax
+            st_advance_n(st, exp_len)
+            bruh (st["pos"] < st["n"] && is_dec_digit(st_cur(st))) {
+                st_advance(st)
+            }
+        }
+    }
+    yo raw = slice_text(st, start, st["pos"])
+    yo cleaned = yapper.replace(raw, "_", "")
+    yo value = ghost
+    sus (is_float) {
+        value = to_numba(cleaned)
+        bounce make_token("FLOAT", raw, value, start_line, start_col, start, st["pos"])
+    }
+    value = decimal_str_to_int(cleaned)
+    bounce make_token("INT", raw, value, start_line, start_col, start, st["pos"])
+}
+
+flex bet decimal_str_to_int(digits) {
+    yo value = 0
+    grind ch in digits.chars() {
+        value = value * 10 + (ch.code_at(0) - 48)
+    }
+    bounce value
+}
+
+flex bet scan_number(st) {
+    yo start = st["pos"]
+    yo start_line = st["line"]
+    yo start_col = st["col"]
+    sus (st_cur(st) == "0" && (st_peek(st, 1) == "x" || st_peek(st, 1) == "X")) {
+        bounce scan_radix_int(st, start, start_line, start_col, HEX_DIGITS, 16, "hex")
+    }
+    sus (st_cur(st) == "0" && (st_peek(st, 1) == "b" || st_peek(st, 1) == "B")) {
+        bounce scan_radix_int(st, start, start_line, start_col, "01", 2, "binary")
+    }
+    sus (st_cur(st) == "0" && (st_peek(st, 1) == "o" || st_peek(st, 1) == "O")) {
+        bounce scan_radix_int(st, start, start_line, start_col, "01234567", 8, "octal")
+    }
+    bounce scan_decimal(st, start, start_line, start_col)
+}
+
+// -- strings ----------------------------------------------------------
+
+flex bet scan_escape(st, start_line, start_col) {
+    yo bs_line = st["line"]
+    yo bs_col = st["col"]
+    st_advance(st) // consume backslash
+    sus (st["pos"] >= st["n"]) {
+        lexer_error(st, bs_line, bs_col, "this string ends mid-escape. finish your sentence.")
+    }
+    yo ch = st_cur(st)
+    sus (SIMPLE_ESCAPES.has(ch)) {
+        st_advance(st)
+        bounce SIMPLE_ESCAPES.get(ch)
+    }
+    sus (ch == "u") {
+        st_advance(st)
+        sus (st_cur(st) != "{") {
+            lexer_error(st, bs_line, bs_col, "\\u escapes need braces, like \\u{1F480}.")
+        }
+        st_advance(st)
+        yo hex_start = st["pos"]
+        bruh (st["pos"] < st["n"] && st_cur(st) != "}") {
+            st_advance(st)
+        }
+        sus (st["pos"] >= st["n"]) {
+            lexer_error(st, bs_line, bs_col, "that \\u{...} escape never closes its brace.")
+        }
+        yo hex_digits = slice_text(st, hex_start, st["pos"])
+        st_advance(st) // consume '}'
+        yo ok = hex_digits.how_thicc() > 0
+        grind hc in hex_digits.chars() {
+            sus (!HEX_DIGITS.contains(hc)) {
+                ok = cap
+            }
+        }
+        sus (!ok) {
+            lexer_error(st, bs_line, bs_col, "'" + hex_digits + "' isn't a hex codepoint.")
+        }
+        bounce yapper.chr_of(radix_str_to_int(hex_digits, 16))
+    }
+    lexer_error(st, bs_line, bs_col, "'\\" + ch + "' isn't an escape sequence i recognize.")
+}
+
+flex bet scan_string(st, quote) {
+    yo start = st["pos"]
+    yo start_line = st["line"]
+    yo start_col = st["col"]
+    sus (slice_text(st, start, start + 3) == quote + quote + quote) {
+        bounce scan_triple_string(st, quote, start, start_line, start_col)
+    }
+    st_advance(st)
+    yo chars = []
+    bruh (fax) {
+        sus (st["pos"] >= st["n"]) {
+            lexer_error(st, start_line, start_col, "this string never closes.")
+        }
+        yo ch = st_cur(st)
+        sus (ch == quote) {
+            st_advance(st)
+            bail
+        }
+        sus (ch == "\r" || ch == "\n") {
+            lexer_error(st, start_line, start_col, "this string hits a newline before it closes.")
+        }
+        sus (ch == "\\") {
+            chars.yeet_in(scan_escape(st, start_line, start_col))
+            nvm
+        }
+        chars.yeet_in(ch)
+        st_advance(st)
+    }
+    yo value = chars.join("")
+    bounce make_token("STRING", slice_text(st, start, st["pos"]), value, start_line, start_col, start, st["pos"])
+}
+
+flex bet scan_triple_string(st, quote, start, start_line, start_col) {
+    st_advance_n(st, 3)
+    yo chars = []
+    bruh (fax) {
+        sus (st["pos"] >= st["n"]) {
+            lexer_error(st, start_line, start_col, "this triple-quoted string never closes.")
+        }
+        sus (slice_text(st, st["pos"], st["pos"] + 3) == quote + quote + quote) {
+            st_advance_n(st, 3)
+            bail
+        }
+        yo ch = st_cur(st)
+        sus (ch == "\\") {
+            chars.yeet_in(scan_escape(st, start_line, start_col))
+            nvm
+        }
+        chars.yeet_in(ch)
+        st_advance(st)
+    }
+    yo value = chars.join("")
+    bounce make_token("STRING", slice_text(st, start, st["pos"]), value, start_line, start_col, start, st["pos"])
+}
+
+// -- templates --------------------------------------------------------
+
+flex bet scan_template(st) {
+    yo start = st["pos"]
+    yo start_line = st["line"]
+    yo start_col = st["col"]
+    st_advance(st) // consume opening backtick
+    yo parts = []
+    yo literal = []
+    bruh (fax) {
+        sus (st["pos"] >= st["n"]) {
+            lexer_error(st, start_line, start_col, "this template string never closes.")
+        }
+        yo ch = st_cur(st)
+        sus (ch == "`") {
+            st_advance(st)
+            bail
+        }
+        sus (ch == "\\") {
+            literal.yeet_in(scan_escape(st, start_line, start_col))
+            nvm
+        }
+        sus (ch == "{") {
+            sus (literal.how_thicc() > 0) {
+                parts.yeet_in({"kind": "str", "text": literal.join("")})
+                literal = []
+            }
+            st_advance(st) // consume '{'
+            parts.yeet_in({"kind": "tokens", "tokens": consume_template_expr(st, start_line, start_col)})
+            nvm
+        }
+        literal.yeet_in(ch)
+        st_advance(st)
+    }
+    sus (literal.how_thicc() > 0) {
+        parts.yeet_in({"kind": "str", "text": literal.join("")})
+    }
+    bounce make_token("TEMPLATE", slice_text(st, start, st["pos"]), parts, start_line, start_col, start, st["pos"])
+}
+
+flex bet consume_template_expr(st, template_line, template_col) {
+    yo result = []
+    yo depth = 1
+    bruh (fax) {
+        yo tok = next_token(st)
+        sus (tok["kind"] == "EOF") {
+            lexer_error(st, template_line, template_col, "a `{...}` substitution in this template never closes.")
+        }
+        sus (tok["kind"] == "LBRACE") {
+            depth += 1
+        } kinda_sus (tok["kind"] == "RBRACE") {
+            depth -= 1
+            sus (depth == 0) {
+                bail
+            }
+        }
+        sus (tok["kind"] == "NEWLINE" && (result.how_thicc() == 0 || result.last()["kind"] == "NEWLINE")) {
+            nvm
+        }
+        result.yeet_in(tok)
+    }
+    result.yeet_in(make_token("EOF", "", ghost, st["line"], st["col"], st["pos"], st["pos"]))
+    bounce result
+}
+
+// -- identifiers / keywords --------------------------------------------
+
+flex bet scan_ident(st) {
+    yo start = st["pos"]
+    yo start_line = st["line"]
+    yo start_col = st["col"]
+    st_advance(st)
+    bruh (st["pos"] < st["n"] && is_ident_continue(st_cur(st))) {
+        st_advance(st)
+    }
+    yo text = slice_text(st, start, st["pos"])
+    sus (KEYWORDS.has(text)) {
+        bounce make_token(KEYWORDS.get(text), text, ghost, start_line, start_col, start, st["pos"])
+    }
+    bounce make_token("IDENT", text, text, start_line, start_col, start, st["pos"])
+}
+
+// -- operators ----------------------------------------------------------
+
+flex bet scan_operator(st) {
+    yo start = st["pos"]
+    yo start_line = st["line"]
+    yo start_col = st["col"]
+    yo three = slice_text(st, start, start + 3)
+    sus (OPERATORS_3.has(three)) {
+        st_advance_n(st, 3)
+        bounce make_token(OPERATORS_3.get(three), three, ghost, start_line, start_col, start, st["pos"])
+    }
+    yo two = slice_text(st, start, start + 2)
+    sus (OPERATORS_2.has(two)) {
+        st_advance_n(st, 2)
+        bounce make_token(OPERATORS_2.get(two), two, ghost, start_line, start_col, start, st["pos"])
+    }
+    yo one = slice_text(st, start, start + 1)
+    sus (OPERATORS_1.has(one)) {
+        st_advance(st)
+        bounce make_token(OPERATORS_1.get(one), one, ghost, start_line, start_col, start, st["pos"])
+    }
+    st_advance(st)
+    lexer_error(st, start_line, start_col, "i don't know what '" + one + "' is supposed to mean here.")
+}
+
+// -- top-level dispatch ----------------------------------------------
+
+flex bet scan_one(st) {
+    sus (st["pos"] >= st["n"]) {
+        bounce make_token("EOF", "", ghost, st["line"], st["col"], st["pos"], st["pos"])
+    }
+    yo ch = st_cur(st)
+    sus (ch == "\r") {
+        yo start = st["pos"]
+        yo start_line = st["line"]
+        yo start_col = st["col"]
+        st_advance(st)
+        sus (st_cur(st) == "\n") {
+            st_advance(st)
+        }
+        bounce make_token("NEWLINE", "\n", ghost, start_line, start_col, start, st["pos"])
+    }
+    sus (ch == "\n") {
+        yo start = st["pos"]
+        yo start_line = st["line"]
+        yo start_col = st["col"]
+        st_advance(st)
+        bounce make_token("NEWLINE", "\n", ghost, start_line, start_col, start, st["pos"])
+    }
+    sus (ch == " " || ch == "\t") {
+        st_advance(st)
+        bounce ghost
+    }
+    sus (ch == "/" && st_peek(st, 1) == "/") {
+        skip_line_comment(st)
+        bounce ghost
+    }
+    sus (ch == "/" && st_peek(st, 1) == "*") {
+        yo start_line = st["line"]
+        yo start_col = st["col"]
+        skip_block_comment(st, start_line, start_col)
+        bounce ghost
+    }
+    sus (DEC_DIGITS.contains(ch)) {
+        bounce scan_number(st)
+    }
+    sus (ch == "'" || ch == "\"") {
+        bounce scan_string(st, ch)
+    }
+    sus (ch == "`") {
+        bounce scan_template(st)
+    }
+    sus (is_ident_start(ch)) {
+        bounce scan_ident(st)
+    }
+    bounce scan_operator(st)
+}
+
+flex bet next_token(st) {
+    bruh (fax) {
+        yo tok = scan_one(st)
+        sus (tok != ghost) {
+            bounce tok
+        }
+    }
+}
+
+// -- public API ---------------------------------------------------------
+
+flex bet tokenize(text) {
+    yo st = new_state(text)
+    yo tokens = []
+    bruh (fax) {
+        yo tok = next_token(st)
+        sus (tok["kind"] == "NEWLINE") {
+            sus (tokens.how_thicc() == 0 || tokens.last()["kind"] == "NEWLINE") {
+                nvm
+            }
+        }
+        tokens.yeet_in(tok)
+        sus (tok["kind"] == "EOF") {
+            bail
+        }
+    }
+    bounce tokens
+}

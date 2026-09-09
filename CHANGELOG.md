@@ -42,6 +42,18 @@ All notable changes to FunnyLang are documented here.
   appended plus a 17-byte trailer. Verified end to end: hello world, a multi-module bundle, an
   uncaught-error exit code, a naked stub, and running after being moved to a different directory.
 
+### M12 — Self-hosting (in progress)
+- `selfhost/prelude.funny`: assert helpers and `.funnyc`-format byte-buffer writers (u8/u16/u32/u64
+  big-endian, a hand-rolled UTF-8 encoder, and the arbitrary-precision int-magnitude encoding for
+  §5.2's tag-2 constants), cross-checked byte-for-byte against Python's own `struct`-based encoding.
+- `selfhost/lexer.funny`: a full port of `lexer.py`/`tokens.py` — numbers (decimal/hex/binary/octal,
+  underscores, floats, exponents), strings (escapes, `\u{...}`, triple-quotes), templates, unicode
+  identifiers, comments, and NEWLINE collapsing. Cross-checked against the Python lexer's token
+  kind/line/col across the entire `tests/lang/` + `examples/` corpus, plus targeted value and
+  template-structure checks. Needed a small, deliberate stdlib addition — `yapper.is_letter`/
+  `yapper.is_alnum` — since nothing in the self-hosting subset previously exposed Unicode character
+  classification; see PLAN.md §16.
+
 ### M11 — Hardening pass
 - No Python traceback ever escapes the CLI (a clean "COMPILER SKILL ISSUE" message + exit 70
   instead), recursion is bounded (`sys.setrecursionlimit(20_000)`, 10,000-frame VM cap), a 2000-
