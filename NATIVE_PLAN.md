@@ -1029,3 +1029,36 @@ gets an entry explaining what changed and why.
   milestone NATIVE_PLAN.md itself calls out as "safe pointers are either true or aren't," and this
   is that verification.
   Real UTF-8 yapstring (task 1) is now N4's only remaining task.
+- **N4 · sub-phase 4e complete · real UTF-8 yapstring (task 1) -- N4 is now fully complete.**
+  `ObjString` gains `codepointCount`/`isAscii` (string.c's new `utf8_seq_len`/`utf8_decode_cp`/
+  `utf8_codepoint_count`/`utf8_byte_offset_of` primitives, computed once at construction, an O(n)
+  pass amortized over every later index/slice/measure). `GET_INDEX` is now codepoint-indexed
+  (`len("héllo👋") == 6`, matching Python exactly) with an O(1) fast path when `isAscii`, an O(n) walk
+  otherwise -- exactly the tradeoff this task's own line in the plan asks for. `GET_SLICE`'s
+  non-ASCII path builds a codepoint→byte-offset table once (a single O(n) walk) rather than
+  re-walking from byte 0 for every codepoint in the result, which would have made reversing a
+  non-ASCII string (`s[::-1]`, the classic case that stresses this hardest) quadratic. `ITER_NEW`
+  walks codepoint-at-a-time, matching Python's own `iter(str)`. `json_quote_string` (stash/groupchat
+  repr's string-quoting, deferred here explicitly in the earlier stash/groupchat sub-phase's own
+  changelog entry) now emits `\uXXXX` for every non-ASCII codepoint, with a UTF-16 surrogate pair for
+  anything above U+FFFF (a 4-byte UTF-8 sequence) -- matching Python's `json.dumps(...,
+  ensure_ascii=True)` default byte-for-byte, astral codepoints included. yapstring\*int/int\*yapstring
+  repetition (`_mul`, also deferred to this sub-phase in that same earlier entry) is plain byte
+  repetition -- repeating valid UTF-8 N times stays valid UTF-8, no codepoint awareness needed.
+  Byte-level comparison (`vm_compare`), substring search (`OP_IN`), concatenation, and sort's default
+  ordering were *already* correct for UTF-8 without any change -- a well-known property of the
+  encoding (byte-wise ordering/matching of valid UTF-8 always agrees with codepoint-wise ordering/
+  matching), confirmed rather than assumed by this sub-phase's own differential test.
+  **AGENT CHOICE · no string interning**, despite task 1's own line mentioning it: every yapstring
+  already compares by content (`string_equal`/`vm_value_equal`), never by identity, so interning
+  would only be a memory/allocation optimization here, not a correctness requirement -- deferred
+  until a milestone that actually needs the memory savings, logged rather than silently dropped.
+  Verified: 1 new differential program (multi-byte codepoints, an astral emoji, indexing/slicing/
+  reversing/striding/iterating/concatenating/repeating/comparing all of it, plus a stash holding a
+  mix of plain-ASCII and non-ASCII strings to exercise the new JSON escaping) byte-identical against
+  the Python VM, gcc and clang, `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.
+  **N4 ("Strings, collections, classes") is now fully complete** -- all 8 tasks (yapstring, stash,
+  groupchat, the collection/property opcodes, squad, self-referential print, pointers to places)
+  done across five sub-phases this session, each independently tested and committed. `unicode_tbl.c`
+  (task 2) remains deferred to N5, confirmed still correct: its only consumers
+  (`yapper.is_letter`/`is_alnum`) are stdlib module functions not wired up until then.

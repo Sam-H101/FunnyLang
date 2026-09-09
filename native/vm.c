@@ -144,32 +144,54 @@ static void seen_push(SeenStack *s, Obj *o) {
     s->items[s->count++] = o;
 }
 
+/* Matches Python's json.dumps(..., ensure_ascii=True) -- the default,
+   and what to_repr's own `json.dumps(v)` call uses -- exactly: every
+   non-ASCII codepoint becomes \uXXXX, or a UTF-16 surrogate pair for
+   anything above U+FFFF (a 4-byte UTF-8 sequence), since JSON strings
+   are defined over UTF-16 code units. Buffer sized for the worst case
+   (every byte its own 1-byte codepoint needing "\u00XX", 6 chars) --
+   still a safe upper bound now that multi-byte codepoints are decoded
+   and re-encoded as (at most 2) 6-char escapes each, using fewer bytes
+   of output per input byte than the all-ASCII worst case. */
 static char *json_quote_string(const char *chars, uint32_t len) {
-    /* A reasonable approximation of Python's json.dumps(..., ensure_ascii=True)
-       for the common ASCII case that PLAN.md's own examples and this
-       milestone's differential tests exercise -- bytes >= 0x80 are copied
-       through unescaped rather than \uXXXX-encoded, a known, deliberate gap
-       left for the yapstring-UTF8 sub-phase (this file is still working
-       with the plain byte-buffer ObjString from N2/N3, not real codepoints
-       yet -- see string.h's own note on that). */
-    char *buf = (char *)malloc(len * 6 + 3);
+    char *buf = (char *)malloc((size_t)len * 6 + 3);
     size_t o = 0;
     buf[o++] = '"';
-    for (uint32_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)chars[i];
-        switch (c) {
-            case '"': buf[o++] = '\\'; buf[o++] = '"'; break;
-            case '\\': buf[o++] = '\\'; buf[o++] = '\\'; break;
-            case '\n': buf[o++] = '\\'; buf[o++] = 'n'; break;
-            case '\r': buf[o++] = '\\'; buf[o++] = 'r'; break;
-            case '\t': buf[o++] = '\\'; buf[o++] = 't'; break;
-            default:
-                if (c < 0x20) {
-                    o += (size_t)snprintf(buf + o, 7, "\\u%04x", c);
-                } else {
-                    buf[o++] = (char)c;
-                }
+    uint32_t i = 0;
+    while (i < len) {
+        uint32_t seqLen = utf8_seq_len(chars, len, i);
+        if (seqLen == 1) {
+            unsigned char c = (unsigned char)chars[i];
+            switch (c) {
+                case '"': buf[o++] = '\\'; buf[o++] = '"'; break;
+                case '\\': buf[o++] = '\\'; buf[o++] = '\\'; break;
+                case '\n': buf[o++] = '\\'; buf[o++] = 'n'; break;
+                case '\r': buf[o++] = '\\'; buf[o++] = 'r'; break;
+                case '\t': buf[o++] = '\\'; buf[o++] = 't'; break;
+                default:
+                    if (c < 0x20 || c >= 0x80) {
+                        /* c >= 0x80 here only from a malformed/truncated
+                           leading byte (utf8_seq_len's own fallback) --
+                           shouldn't arise (see string.h's own note), but
+                           escaping it by its raw byte value rather than
+                           passing it through unescaped is the least
+                           surprising thing to do with it. */
+                        o += (size_t)snprintf(buf + o, 7, "\\u%04x", c);
+                    } else {
+                        buf[o++] = (char)c;
+                    }
+            }
+        } else {
+            uint32_t cp = utf8_decode_cp(chars, seqLen, i);
+            if (cp > 0xFFFF) {
+                uint32_t v = cp - 0x10000;
+                o += (size_t)snprintf(buf + o, 7, "\\u%04x", 0xD800 + (v >> 10));
+                o += (size_t)snprintf(buf + o, 7, "\\u%04x", 0xDC00 + (v & 0x3FF));
+            } else {
+                o += (size_t)snprintf(buf + o, 7, "\\u%04x", cp);
+            }
         }
+        i += seqLen;
     }
     buf[o++] = '"';
     buf[o] = '\0';
@@ -894,12 +916,35 @@ static Value stash_repeat(VM *vm, ObjStash *s, int64_t n) {
     return OBJ_VAL(r);
 }
 
+/* yapstring*int / int*yapstring repetition (funnylang/vm.py's own `_mul`)
+   -- plain byte repetition: repeating a valid UTF-8 byte sequence N times
+   is still valid UTF-8, so this needs no codepoint awareness at all. */
+static Value string_repeat(VM *vm, ObjString *s, int64_t n) {
+    if (n <= 0) return OBJ_VAL(string_new(&vm->gc, "", 0));
+    size_t total = (size_t)s->byteLen * (size_t)n;
+    char *buf = (char *)malloc(total > 0 ? total : 1);
+    size_t o = 0;
+    for (int64_t i = 0; i < n; i++) {
+        memcpy(buf + o, s->chars, s->byteLen);
+        o += s->byteLen;
+    }
+    ObjString *r = string_new(&vm->gc, buf, (uint32_t)total);
+    free(buf);
+    return OBJ_VAL(r);
+}
+
 static Value vm_mul(VM *vm, Value a, Value b) {
     if (IS_OBJ(a) && AS_OBJ(a)->type == OBJ_STASH && IS_INT_LIKE(b)) {
         return stash_repeat(vm, (ObjStash *)AS_OBJ(a), as_int64_like(b));
     }
     if (IS_INT_LIKE(a) && IS_OBJ(b) && AS_OBJ(b)->type == OBJ_STASH) {
         return stash_repeat(vm, (ObjStash *)AS_OBJ(b), as_int64_like(a));
+    }
+    if (IS_STRING(a) && IS_INT_LIKE(b)) {
+        return string_repeat(vm, AS_STRING(a), as_int64_like(b));
+    }
+    if (IS_INT_LIKE(a) && IS_STRING(b)) {
+        return string_repeat(vm, AS_STRING(b), as_int64_like(a));
     }
     if (!(IS_NUM(a) && IS_NUM(b))) {
         vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
@@ -1558,23 +1603,26 @@ static Value vm_get_index(VM *vm, Value obj, Value key) {
         return s->items[idx];
     }
     if (IS_STRING(obj)) {
-        /* Byte indexing, not codepoint indexing -- string.h is still the
-           plain byte-buffer ObjString from N2/N3; real UTF-8 codepoint
-           indexing is the yapstring-UTF8 sub-phase's job (see string.h's
-           own note). Correct for ASCII, a known gap otherwise. */
+        /* Codepoint indexing: `n`/`idx` are in codepoints throughout,
+           matching Python's own str indexing exactly (len("héllo") == 5).
+           isAscii gives an O(1) byte offset (index == offset); otherwise
+           an O(n) walk translates the codepoint index into a byte offset
+           -- exactly the tradeoff NATIVE_PLAN.md's own task asks for. */
         ObjString *str = AS_STRING(obj);
         if (!IS_INT_LIKE(key)) {
             vm_throw_fmt(vm, "TypeVibeMismatch", "can't index a yapstring with a %s.", type_name_of(key));
             return GHOST_VAL;
         }
         int64_t k = as_int64_like(key);
-        int64_t n = str->byteLen;
+        int64_t n = str->codepointCount;
         int64_t idx = k < 0 ? k + n : k;
         if (idx < 0 || idx >= n) {
             vm_throw_fmt(vm, "OutOfPocket", "index %lld on a yapstring of length %lld.", (long long)k, (long long)n);
             return GHOST_VAL;
         }
-        return OBJ_VAL(string_new(&vm->gc, str->chars + idx, 1));
+        uint32_t byteStart = str->isAscii ? (uint32_t)idx : utf8_byte_offset_of(str->chars, str->byteLen, (uint32_t)idx);
+        uint32_t seqLen = utf8_seq_len(str->chars, str->byteLen, byteStart);
+        return OBJ_VAL(string_new(&vm->gc, str->chars + byteStart, seqLen));
     }
     if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_GROUPCHAT) {
         ObjGroupChat *g = (ObjGroupChat *)AS_OBJ(obj);
@@ -1707,7 +1755,7 @@ static Value vm_get_slice(VM *vm, Value obj, Value startV, Value stopV, Value st
         }
         return GHOST_VAL;
     }
-    int64_t length = isStash ? ((ObjStash *)AS_OBJ(obj))->count : (int64_t)AS_STRING(obj)->byteLen;
+    int64_t length = isStash ? ((ObjStash *)AS_OBJ(obj))->count : (int64_t)AS_STRING(obj)->codepointCount;
     int64_t step = IS_GHOST(stepV) ? 1 : as_int64_like(stepV);
     if (step == 0) {
         vm_throw(vm, "MathAintMathin", "slice step can't be zero.");
@@ -1735,14 +1783,51 @@ static Value vm_get_slice(VM *vm, Value obj, Value startV, Value stopV, Value st
         return OBJ_VAL(r);
     }
     ObjString *str = AS_STRING(obj);
-    char *buf = count > 0 ? (char *)malloc((size_t)count) : NULL;
-    int64_t n = 0;
-    if (step > 0) {
-        for (int64_t i = start; i < stop; i += step) buf[n++] = str->chars[i];
-    } else {
-        for (int64_t i = start; i > stop; i += step) buf[n++] = str->chars[i];
+    if (str->isAscii) {
+        /* Codepoint index == byte offset: identical to plain byte slicing. */
+        char *buf = count > 0 ? (char *)malloc((size_t)count) : NULL;
+        int64_t n = 0;
+        if (step > 0) {
+            for (int64_t i = start; i < stop; i += step) buf[n++] = str->chars[i];
+        } else {
+            for (int64_t i = start; i > stop; i += step) buf[n++] = str->chars[i];
+        }
+        ObjString *r = string_new(&vm->gc, buf, (uint32_t)count);
+        free(buf);
+        return OBJ_VAL(r);
     }
-    ObjString *r = string_new(&vm->gc, buf, (uint32_t)count);
+    /* Non-ASCII: a per-codepoint byte-offset table, built once in a
+       single O(n) walk, turns the rest of this (potentially reversed,
+       potentially strided) slice into O(m) lookups instead of re-walking
+       from byte 0 for every codepoint in the result -- avoids the
+       O(n*m) blowup a naive per-index utf8_byte_offset_of call in this
+       loop would have (reversing a whole non-ASCII string is exactly
+       the case that would hit it hardest). */
+    uint32_t cpCount = str->codepointCount;
+    uint32_t *offsets = (uint32_t *)malloc((size_t)(cpCount + 1) * sizeof(uint32_t));
+    uint32_t bi = 0;
+    for (uint32_t ci = 0; ci < cpCount; ci++) {
+        offsets[ci] = bi;
+        bi += utf8_seq_len(str->chars, str->byteLen, bi);
+    }
+    offsets[cpCount] = str->byteLen;
+    char *buf = (char *)malloc((size_t)count * 4 + 1);
+    size_t o = 0;
+    if (step > 0) {
+        for (int64_t i = start; i < stop; i += step) {
+            uint32_t seqLen = offsets[i + 1] - offsets[i];
+            memcpy(buf + o, str->chars + offsets[i], seqLen);
+            o += seqLen;
+        }
+    } else {
+        for (int64_t i = start; i > stop; i += step) {
+            uint32_t seqLen = offsets[i + 1] - offsets[i];
+            memcpy(buf + o, str->chars + offsets[i], seqLen);
+            o += seqLen;
+        }
+    }
+    free(offsets);
+    ObjString *r = string_new(&vm->gc, buf, (uint32_t)o);
     free(buf);
     return OBJ_VAL(r);
 }
@@ -1849,13 +1934,16 @@ static ObjIterator *make_iterator(VM *vm, Value iterable) {
         return iterator_new(&vm->gc, s->items, s->count);
     }
     if (IS_STRING(iterable)) {
-        /* Byte-at-a-time, not codepoint-at-a-time -- string.h is still the
-           plain byte-buffer ObjString; correct for ASCII, a known gap
-           otherwise, same as GET_INDEX's (see string.h's own note). */
+        /* Codepoint-at-a-time, matching Python's own `iter(str)` exactly. */
         ObjString *str = AS_STRING(iterable);
-        Value *chars = str->byteLen > 0 ? (Value *)malloc((size_t)str->byteLen * sizeof(Value)) : NULL;
-        for (uint32_t i = 0; i < str->byteLen; i++) chars[i] = OBJ_VAL(string_new(&vm->gc, str->chars + i, 1));
-        ObjIterator *it = iterator_new(&vm->gc, chars, (int)str->byteLen);
+        Value *chars = str->codepointCount > 0 ? (Value *)malloc((size_t)str->codepointCount * sizeof(Value)) : NULL;
+        uint32_t bi = 0;
+        for (uint32_t ci = 0; ci < str->codepointCount; ci++) {
+            uint32_t seqLen = utf8_seq_len(str->chars, str->byteLen, bi);
+            chars[ci] = OBJ_VAL(string_new(&vm->gc, str->chars + bi, seqLen));
+            bi += seqLen;
+        }
+        ObjIterator *it = iterator_new(&vm->gc, chars, (int)str->codepointCount);
         free(chars);
         return it;
     }

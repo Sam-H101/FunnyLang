@@ -5,6 +5,48 @@
 
 #include "gc.h"
 
+uint32_t utf8_seq_len(const char *chars, uint32_t byteLen, uint32_t offset) {
+    unsigned char c = (unsigned char)chars[offset];
+    uint32_t len;
+    if (c < 0x80) len = 1;
+    else if ((c & 0xE0) == 0xC0) len = 2;
+    else if ((c & 0xF0) == 0xE0) len = 3;
+    else if ((c & 0xF8) == 0xF0) len = 4;
+    else len = 1; /* a stray continuation/invalid leading byte -- see string.h's own note */
+    if (offset + len > byteLen) len = byteLen - offset;
+    return len;
+}
+
+uint32_t utf8_decode_cp(const char *chars, uint32_t seqLen, uint32_t offset) {
+    unsigned char c0 = (unsigned char)chars[offset];
+    if (seqLen == 1) return c0;
+    if (seqLen == 2) return (uint32_t)((c0 & 0x1F) << 6) | ((unsigned char)chars[offset + 1] & 0x3F);
+    if (seqLen == 3) {
+        return (uint32_t)((c0 & 0x0F) << 12) | (uint32_t)(((unsigned char)chars[offset + 1] & 0x3F) << 6) |
+               ((unsigned char)chars[offset + 2] & 0x3F);
+    }
+    return (uint32_t)((c0 & 0x07) << 18) | (uint32_t)(((unsigned char)chars[offset + 1] & 0x3F) << 12) |
+           (uint32_t)(((unsigned char)chars[offset + 2] & 0x3F) << 6) | ((unsigned char)chars[offset + 3] & 0x3F);
+}
+
+uint32_t utf8_codepoint_count(const char *chars, uint32_t byteLen) {
+    uint32_t count = 0, i = 0;
+    while (i < byteLen) {
+        i += utf8_seq_len(chars, byteLen, i);
+        count++;
+    }
+    return count;
+}
+
+uint32_t utf8_byte_offset_of(const char *chars, uint32_t byteLen, uint32_t codepointIdx) {
+    uint32_t i = 0, cp = 0;
+    while (cp < codepointIdx && i < byteLen) {
+        i += utf8_seq_len(chars, byteLen, i);
+        cp++;
+    }
+    return i;
+}
+
 ObjString *string_new(GC *gc, const char *chars, uint32_t len) {
     ObjString *s = (ObjString *)malloc(sizeof(ObjString));
     s->obj.type = OBJ_STRING;
@@ -15,6 +57,8 @@ ObjString *string_new(GC *gc, const char *chars, uint32_t len) {
     memcpy(s->chars, chars, len);
     s->chars[len] = '\0';
     s->byteLen = len;
+    s->codepointCount = utf8_codepoint_count(s->chars, len);
+    s->isAscii = s->codepointCount == len;
     gc_track(gc, (Obj *)s, sizeof(ObjString) + (size_t)len + 1);
     return s;
 }
