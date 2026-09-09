@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -268,4 +269,43 @@ size_t platform_strftime_now(const char *fmt, char *out, size_t out_len) {
     struct tm tmv;
     localtime_r(&t, &tmv);
     return strftime(out, out_len, fmt, &tmv);
+}
+
+uint64_t platform_ram_bytes(void) {
+    long pageSize = sysconf(_SC_PAGESIZE);
+    long pages = sysconf(_SC_PHYS_PAGES);
+    if (pageSize <= 0 || pages <= 0) return 0;
+    return (uint64_t)pageSize * (uint64_t)pages;
+}
+
+double platform_uptime_seconds(void) {
+    FILE *f = fopen("/proc/uptime", "r");
+    if (f) {
+        double up;
+        int ok = fscanf(f, "%lf", &up);
+        fclose(f);
+        if (ok == 1) return up;
+    }
+    static double processStart = 0.0;
+    static bool started = false;
+    if (!started) {
+        processStart = platform_now_seconds();
+        started = true;
+    }
+    return platform_now_seconds() - processStart;
+}
+
+void platform_os_info(char *sysname_out, size_t sysname_len, char *release_out, size_t release_len) {
+    if (sysname_len > 0) sysname_out[0] = '\0';
+    if (release_len > 0) release_out[0] = '\0';
+    struct utsname u;
+    if (uname(&u) == 0) {
+        snprintf(sysname_out, sysname_len, "%s", u.sysname);
+        snprintf(release_out, release_len, "%s", u.release);
+    }
+}
+
+int platform_cpu_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int)n : 0;
 }

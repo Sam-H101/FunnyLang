@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "clock.h"
+#include "computer.h"
 #include "filez.h"
 #include "gc.h"
 #include "groupchat.h"
@@ -28,7 +29,7 @@ ObjModule *module_new(GC *gc, ObjString *name, Value members) {
 
 /* The stdlib registry (funnylang/stdlib/__init__.py's own STDLIB_NAMES/
    _build): one entry per module `gimme modulename` can resolve. Grows as
-   later N5 sub-phases port computer/internet. */
+   the last N5 sub-phase ports internet. */
 typedef Value (*StdlibBuilderFn)(VM *vm);
 
 typedef struct {
@@ -45,6 +46,7 @@ static const StdlibEntry STDLIB_REGISTRY[] = {
     {"filez", filez_build},
     {"clock", clock_build},
     {"sus", sus_build},
+    {"computer", computer_build},
 };
 #define STDLIB_REGISTRY_COUNT (int)(sizeof(STDLIB_REGISTRY) / sizeof(STDLIB_REGISTRY[0]))
 

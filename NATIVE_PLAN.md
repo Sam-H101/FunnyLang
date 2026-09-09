@@ -1313,3 +1313,43 @@ gets an entry explaining what changed and why.
   is parser-level and identical on both sides.
   Verified: 1 new differential program plus the full suite re-run, byte-identical, gcc and clang,
   `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.
+
+- **N5 · sub-phase 5i complete · `computer` (task 2's tenth module, and task 4's
+  `explode()`/`blue_screen()`).** All 8 functions port from `funnylang/stdlib/computer.py`, "the
+  harmless joke module" — still true here: printing and (for `explode()` alone) an exit code,
+  nothing else, per §7.9. `explode`/`beep`/`clear`/`blue_screen` print fully fixed literal content
+  (the mushroom-cloud art extracted byte-for-byte via a throwaway script rather than hand-transcribed,
+  `build/n4/dump_mushroom_cloud.py`), so they're fully byte-diffable in the differential suite same as
+  anything else — no properties-only carve-out needed for them.
+  **`ComputerExploded` is an ordinary catchable `FunnyError`, not a second `dip()`-style sentinel:**
+  confirmed by reading `funnylang/cli.py`, which catches it in a dedicated `except ComputerExploded`
+  clause *only at the top CLI level*, mapping an uncaught one to exit code 69 (any other uncaught
+  `FunnyError` gets the generic 1) — inside the VM itself, `sketchy`/`my_bad` catches it exactly like
+  any other error. Ported as exactly that: `vm_throw_native` (same as every other stdlib error), plus
+  one small addition to `main.c`'s existing uncaught-error branch, `exitCode = strcmp(e->flavor->chars,
+  "ComputerExploded") == 0 ? 69 : 1`. No new error-unwinding machinery.
+  **`ram`/`uptime`/`flex` needed 4 new platform.c functions** (`platform_ram_bytes`,
+  `platform_uptime_seconds`, `platform_os_info`, `platform_cpu_count` — `sysconf`/`/proc/uptime`/
+  `uname`, POSIX-only per the same deferred-Win32-branch note as every other platform.c addition this
+  milestone). Verified empirically (`build/n4/flex_check.sh`) that OS/CPU/RAM come back byte-identical
+  to the Python reference on the same machine, confirming the `platform.c` queries are equivalent to
+  Python's own `platform.system()`/`os.cpu_count()`/`sysconf`-based RAM calculation, not just
+  plausible-looking.
+  **AGENT CHOICE (funnylang-no-python-runtime-dependency, a standing project constraint): `flex()`'s
+  one Python-specific line** (`f"python: {platform.python_version()}"`) has no native equivalent —
+  this VM isn't running Python, and the shipped binary must not depend on Python being present at all.
+  Replaced with `"runtime: FunnyLang native (C)\n"` rather than inventing a fake version number (no
+  versioning scheme exists yet; that's N7's `--version` job). Because of that one irreducible
+  difference, `flex()` itself is the one function excluded from the byte-diffed differential test
+  file — verified instead by the empirical side-by-side script above, which confirms every other line
+  matches exactly and only the intentionally-different line differs.
+  **`explode()`'s exit-69 path is also excluded from the differential suite specifically** (verified
+  instead via `build/n4/check_explode_exit.sh`, which confirms `RC=69`): the harness's own
+  `_native_run` asserts `returncode == 0` for every program it diffs, so an uncaught error of any kind
+  can't appear in that suite by construction — `explode()`'s catchable-error behavior and printed
+  output are still fully covered there, wrapped in `sketchy`/`my_bad` like every other error test this
+  milestone.
+  Verified: 1 new differential program (`explode`/`ram`/`uptime`/`yeet_to_void`/`beep`/`clear`/
+  `blue_screen`, `flex()` excluded) plus 2 standalone empirical checks (`flex_check.sh`'s side-by-side
+  OS/CPU/RAM comparison, `check_explode_exit.sh`'s exit-69 confirmation) plus the full suite re-run,
+  byte-identical, gcc and clang, `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.

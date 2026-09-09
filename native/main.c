@@ -95,7 +95,13 @@ int main(int argc, char **argv) {
                enough to report what went wrong until that exists. */
             ObjError *e = (ObjError *)AS_OBJ(vm.uncaughtError);
             fprintf(stderr, "%s: %s\n", e->flavor->chars, e->message->chars);
-            exitCode = 1;
+            /* computer.explode()'s ComputerExploded is an ordinary
+               catchable FunnyError everywhere else (sketchy/my_bad
+               catches it like any other) -- exit 69 is purely a
+               top-level uncaught-error mapping, matching
+               funnylang/cli.py's own dedicated `except ComputerExploded`
+               clause (NATIVE_PLAN.md N5 task 4). */
+            exitCode = strcmp(e->flavor->chars, "ComputerExploded") == 0 ? 69 : 1;
         }
     }
 

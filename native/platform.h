@@ -24,6 +24,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* Reads the whole file at `path` into a freshly malloc'd buffer (caller
    frees it). *out_len excludes the NUL terminator platform.c always adds
@@ -82,5 +83,26 @@ void platform_sleep_seconds(double seconds);
    small -- out_len is generous enough in every caller that the two never
    need distinguishing). Matches Python's time.strftime(fmt). */
 size_t platform_strftime_now(const char *fmt, char *out, size_t out_len);
+
+/* -- system info (NATIVE_PLAN.md N5 task 2, `computer`) -------------- */
+
+/* Total physical RAM in bytes -- matches Python's own
+   sysconf(SC_PAGE_SIZE) * sysconf(SC_PHYS_PAGES); 0 if either sysconf
+   query is unsupported, same graceful fallback funnylang/stdlib/
+   computer.py's own _ram_bytes() uses. */
+uint64_t platform_ram_bytes(void);
+/* Seconds since boot -- matches Python's own /proc/uptime read on
+   Linux; falls back to elapsed process time (platform_now_seconds()
+   minus a start time captured on first call) if /proc/uptime can't be
+   read, the same fallback computer.py's own _uptime_seconds() uses. */
+double platform_uptime_seconds(void);
+/* uname(2)'s sysname/release fields (e.g. "Linux"/"5.15.0-91-generic")
+   -- matches Python's platform.system()/platform.release() on POSIX,
+   which read the exact same fields. Either buffer left as "" on
+   failure. */
+void platform_os_info(char *sysname_out, size_t sysname_len, char *release_out, size_t release_len);
+/* Number of logical CPUs -- matches Python's os.cpu_count(); 0 if
+   unknown. */
+int platform_cpu_count(void);
 
 #endif /* FUNNY_PLATFORM_H */
