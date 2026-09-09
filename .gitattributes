@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.funny text eol=lf
+*.funnyc binary
+*.funnypak binary
+*.exe binary

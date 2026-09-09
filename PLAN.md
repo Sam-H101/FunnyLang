@@ -200,7 +200,7 @@ Encoding: UTF-8. Emoji are legal in strings, comments, and — yes — identifie
 | Array | `[1, 2, 3]` | `stash` |
 | Map | `{"a": 1, "b": 2}` | `groupchat` |
 | Function | `bet f() {}` / `lowkey (x) => x + 1` | `bet` |
-
+| Pointer | `*`, `&`  | `pointa` | 
 String escapes: `\n \t \r \\ \" \' \0 \u{1F480}` and `\{` to escape a `{` in an interpolated string.
 
 Integers are arbitrary precision (Python `int`). Floats are IEEE-754 doubles.
@@ -1431,3 +1431,10 @@ Format: `- [Mn] <what changed> — <why>`.
 - [M1] AGENT CHOICE: templates additionally support `` \` `` as an escape for a literal backtick
   inside a `` `...` `` template string. The frozen escape table (§3.2) doesn't list one, but
   without it a template could never contain a literal backtick at all.
+- [M2] Resolved a tension between §3.3's keyword table (which shows only two `lowkey` forms:
+  `lowkey (x) => x + 1` and `lowkey (x) { bounce x*2 }`) and the closures example in §3.5, which
+  uses a third form, `lowkey () => { n += 1; bounce n }` — arrow syntax immediately followed by a
+  `{ }` block. A `{` right after `=>` is genuinely ambiguous with a groupchat-literal expression
+  (`lowkey () => {"a": 1}`); JS's arrow functions have the identical ambiguity. Resolved the same
+  way JS does: `=> { ... }` always parses as a statement block. To return a groupchat literal
+  directly from an arrow body, wrap it in parens: `lowkey () => ({"a": 1})`.

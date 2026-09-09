@@ -44,3 +44,19 @@ class LexerSaidNah(FunnyError):
     """Unrecognized character, or an unterminated string/comment/template."""
 
     flavor = "LexerSaidNah"
+
+
+class ParserHadAStroke(FunnyError):
+    """A syntax error."""
+
+    flavor = "ParserHadAStroke"
+
+
+class ParseErrorBundle(Exception):
+    """Raised once parsing finishes with one or more ParserHadAStroke errors
+    collected via error recovery. `errors` holds every one that was found;
+    the diagnostic renderer (M6) shows the first 5 and summarizes the rest."""
+
+    def __init__(self, errors: list[ParserHadAStroke]):
+        self.errors = errors
+        super().__init__(f"{len(errors)} syntax error(s)")
