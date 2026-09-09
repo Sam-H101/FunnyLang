@@ -200,6 +200,7 @@ Encoding: UTF-8. Emoji are legal in strings, comments, and — yes — identifie
 | Array | `[1, 2, 3]` | `stash` |
 | Map | `{"a": 1, "b": 2}` | `groupchat` |
 | Function | `bet f() {}` / `lowkey (x) => x + 1` | `bet` |
+| Pointer | `&x`, `&arr[i]`, `&obj.field` (make) · `*p` (read/write) | `pointa` |
 String escapes: `\n \t \r \\ \" \' \0 \u{1F480}` and `\{` to escape a `{` in an interpolated string.
 
 Integers are arbitrary precision (Python `int`). Floats are IEEE-754 doubles.
@@ -263,7 +264,7 @@ Lowest to highest binding. All binary operators are left-associative except wher
 
 | Lvl | Operators | Notes |
 |---|---|---|
-| 1 | `=` `+=` `-=` `*=` `/=` `%=` `**=` `\|\|=` | assignment, **right-assoc**, target must be ident / index / property |
+| 1 | `=` `+=` `-=` `*=` `/=` `%=` `**=` `\|\|=` | assignment, **right-assoc**, target must be ident / index / property / deref (`*p`) |
 | 2 | `? :` | ternary, right-assoc |
 | 3 | `\|>` | pipe: `x \|> f \|> g` == `g(f(x))` |
 | 4 | `??` | ghost-coalesce: `a ?? b` yields `b` only if `a` is `ghost` |
@@ -278,7 +279,7 @@ Lowest to highest binding. All binary operators are left-associative except wher
 | 13 | `+` `-` | `+` also concatenates yapstrings and stashes |
 | 14 | `*` `/` `\` `%` | `*` also repeats yapstring/stash: `"ha" * 3`. `\` is floor division (see §16). |
 | 15 | `**` | **right-assoc** |
-| 16 | unary `-` `!` `aint` `~` | |
+| 16 | unary `-` `!` `aint` `~` `&` `*` | `&x` takes a pointa, `*p` reads through one (§3.10) |
 | 17 | postfix `(...)` `[...]` `.name` `?.name` | call, index, member, safe-member |
 | 18 | primary | literal, ident, `(expr)`, `me`, `og` |
 
@@ -463,6 +464,102 @@ Immutable.
 **`error`** — fields `.flavor` (yapstring, the error class name), `.message`, `.line`, `.col`,
 `.file`, `.trace` (stash of yapstrings), `.payload` (whatever was `chuck`ed).
 
+**`pointa`** — `deref()`, `set(v)`, `valid()`, `where()`. See §3.10.
+
+---
+
+### 3.10 Pointers (`pointa`)
+
+A `pointa` is a **safe reference to a place** — a named slot the runtime knows how to read and write.
+It is emphatically *not* a machine address: FunnyLang is garbage-collected, objects move and die at
+the collector's discretion, and handing out raw addresses would make every other guarantee in this
+document a lie. A `pointa` keeps its target alive and always knows what it points *at*, not merely
+where it currently sits in memory.
+
+What it buys you is the thing reference semantics can't already do: `stash` and `groupchat` are
+already reference types, but a `numba`, a `yapstring`, or a `boolski` held in a variable is not, so
+there has been no way to write a function that updates a caller's scalar. Now there is.
+
+**Five kinds of place**, all produced by unary `&`:
+
+| Form | Points at |
+|---|---|
+| `&x` | a local variable |
+| `&g` | a global |
+| `&captured` | a captured upvalue |
+| `&arr[i]` | element `i` of a stash (or a groupchat key: `&m["k"]`) |
+| `&obj.field` | a property of a groupchat or a squad instance |
+
+`&` applied to anything that is not one of those five is a **compile-time** `ParserHadAStroke` —
+`&42`, `&f()`, and `&(a + b)` designate no place and are rejected before the program runs.
+
+```funny
+bet level_up(hp) {
+    *hp += 10                    // writes through, into the caller's variable
+}
+yo health = 5
+level_up(&health)
+yap health                       // => 15
+```
+
+**Reading and writing.** `*p` reads. `*p = v` writes. Compound assignment works and desugars the
+obvious way, evaluating `p` exactly once: `*p += 1` is `*p = *p + 1`.
+
+**Taking a pointer to a local boxes it.** This is precisely the machinery closures already use for
+captured locals (§3.6, the Lua/`clox` upvalue model), so the resolver's existing "is this local
+captured?" analysis simply widens to "is this local captured *or addressed?*". No new runtime
+concept is introduced; `&x` and a closure capturing `x` produce the same box, so they alias each
+other correctly and for free.
+
+**Pointer arithmetic, where it means something.** A pointa into a `stash` supports the C idioms,
+because a stash index is a genuine ordinal:
+
+```funny
+yo arr = [10, 20, 30, 40]
+yo p = &arr[0]
+yo end = &arr[4]                 // one-past-the-end is legal to *form*, illegal to read
+bruh (p < end) {
+    yap *p
+    p = p + 1
+}
+yap end - &arr[1]                // => 3   (pointer difference, a numba)
+```
+
+`p + n` / `p - n` shift the index. `p - q` yields the distance between two pointas into the same
+stash. `<` `<=` `>` `>=` compare their indices. Every one of these on a local/global/property/
+groupchat-key pointa is a `TypeVibeMismatch` — those places have no ordinal, so arithmetic on them
+is meaningless rather than merely unsupported.
+
+**Nothing is `ghost`.** There is no separate null pointer; `ghost` already fills that role, and
+`*ghost` raises `GhostError` ("you dereferenced a ghost, king.").
+
+**Bounds and liveness are checked on every read, not on construction.** Forming
+`&arr[99]` or a one-past-the-end pointer is fine; *reading* through one that no longer designates a
+live place is a clean error. This is the entire safety story, and it means no pointer operation
+anywhere in FunnyLang can corrupt memory or crash the VM:
+
+| Situation | Flavor |
+|---|---|
+| `*p` where `p` indexes past the end of its stash (`arr.yoink()`'d out from under it) | `OutOfPocket` |
+| `*p` where `p`'s groupchat key was `remove()`d | `KeyGhosted` |
+| `*ghost` | `GhostError` |
+| `*x` where `x` is not a pointa | `TypeVibeMismatch` |
+| arithmetic on a non-stash pointa | `TypeVibeMismatch` |
+
+Note that §4.1 needs no new error class: every pointer failure is already one of the fifteen.
+
+**Equality is place identity.** `p == q` is `fax` when both designate the *same* place — the same
+box, or the same container and key. It does not compare pointed-to values; use `*p == *q` for that.
+
+**Pointers to pointers** need no special support: a pointa is an ordinary value, so `&p` and `**pp`
+work by composition.
+
+**Other behaviour.** `what_is_it(p)` is `"pointa"`. Every pointa is truthy. `to_yap(&arr[2])` renders
+as `pointa -> stash[2]`, `to_yap(&x)` as `pointa -> x`. Methods: `p.deref()` and `p.set(v)` are the
+method forms of `*p` and `*p = v`; `p.valid()` returns a `boolski` for whether a read would succeed,
+so the careful can check before dereferencing; `p.where()` returns the index or key as a `numba` /
+`yapstring`, or the variable name for a local, global, or upvalue pointa.
+
 ---
 
 ## 4. The error system (FROZEN)
@@ -614,7 +711,21 @@ Constant-pool indices are **unsigned 16-bit big-endian** unless noted. Local/upv
 | 69 | `ITER_NEXT` | u16 doneOff | iterator → iterator value |
 | 70 | `HALT` | — | — |
 
-Reserve 71–99 for future opcodes. **Never renumber.** Bump `BYTECODE_VERSION` if you must.
+| 71 | `JUMP_LONG` | u32 off | — (ip += off) · added in M11, see §16 |
+| 72 | `LOOP_LONG` | u32 back | — (ip -= back) · added in M11, see §16 |
+| 73 | `PTR_LOCAL` | u8 slot | → pointa (forces the local to be boxed) |
+| 74 | `PTR_GLOBAL` | u16 nameIdx | → pointa |
+| 75 | `PTR_UPVAL` | u8 idx | → pointa |
+| 76 | `PTR_INDEX` | — | obj key → pointa |
+| 77 | `PTR_PROP` | u16 nameIdx | obj → pointa |
+| 78 | `DEREF` | — | pointa → value |
+| 79 | `SET_DEREF` | — | pointa value → value |
+
+Reserve 80–99 for future opcodes. **Never renumber.** Bump `BYTECODE_VERSION` if you must.
+
+71–72 land in M11 and 73–79 in M15; both were appended rather than renumbered, per the rule above.
+`BYTECODE_VERSION` goes to **2** in M15 — a `.funnyc` using 73–79 is genuinely unreadable by a v1
+runtime, and failing on the version field with a clear message beats failing on an unknown opcode.
 
 ### 5.2 `.funnyc` file format
 
@@ -1189,6 +1300,68 @@ a VS Code extension with syntax highlighting · a package registry called **the 
 
 ---
 
+### M15 — Pointers (`pointa`)
+
+**Goal:** implement §3.10 in full. Not a stretch item — this takes priority over everything in M14,
+and over `NATIVE_PLAN.md`'s N2, so that the C VM inherits a feature the Python VM can already act as
+a differential oracle for. Building it in C first would leave the largest language addition since M9
+with nothing to test against.
+
+**Tasks**
+1. **Lexer.** No new tokens — `&` and `*` already lex. Add the regression test that maximal munch
+   still resolves `&&&x` to `&&` then `&x`, and document that `a & &b` needs the space (`a && b`
+   lexes as the logical operator, exactly as in C).
+2. **Parser.** Unary `&` and `*` at precedence 16 (§3.4), prefix position only — the same
+   position-based disambiguation the parser already does for unary vs. binary `-`. New AST nodes
+   `AddressOf(place)` and `Deref(expr)`. `*p` becomes a fourth assignment-target form alongside
+   ident/index/property.
+3. **Place validation.** `&` over anything but the five forms in §3.10 is a compile-time
+   `ParserHadAStroke` naming what was written (`&42`, `&f()`, `&(a+b)`).
+4. **Resolver.** Widen the existing captured-local analysis to *captured or addressed* — an addressed
+   local gets boxed by the identical mechanism (§3.6). Verify the aliasing case: a closure capturing
+   `x` and an `&x` taken in the same scope must share one box.
+5. **Compiler.** Emit opcodes 73–79. Compound assignment through a deref (`*p += 1`) must evaluate
+   the pointer expression exactly once — the classic place-expression bug, and the one most worth a
+   dedicated test.
+6. **`values.py`.** A `Pointa` type over the five place kinds, with `deref`/`set`/`valid`/`where`,
+   place-identity equality, and the §3.10 `to_yap` rendering.
+7. **VM.** The seven opcodes; stash-pointer arithmetic, difference, and ordering; the §3.10 error
+   table mapped onto the existing §4.1 flavors. **No new error class.**
+8. **Serializer.** `BYTECODE_VERSION` → 2, with a clear "this file needs a newer funny" diagnostic
+   when a v1 runtime meets it. Disassembler renders the new opcodes.
+9. **`selfhost/`.** `parser.funny` and `compiler.funny` learn to *compile* pointers while using none
+   themselves (§8). This is the part that keeps self-hosting honest.
+10. **Regenerate stage0** and re-verify the bootstrap fixed point.
+11. **Tests.** `tests/lang/ptr_*.funny` goldens covering all five place kinds, write-through,
+    arithmetic, the aliasing case, and every row of §3.10's error table.
+12. **Docs.** `docs/LANGUAGE.md` gains §3.10; `docs/BYTECODE.md` gains opcodes 71–79 (71/72 were
+    never added to the table when M11 shipped them — fix that too); `docs/STDLIB.md` gains the
+    `pointa` methods.
+
+**Comedy check** (Rule 6 — `examples/pointers.funny`):
+
+```funny
+bet glow_up(stat) { *stat += 100 }
+yo clout = 0
+glow_up(&clout)
+yap "clout:", clout                  // => clout: 100
+yap *ghost                           // => GhostError: you dereferenced a ghost, king.
+```
+
+**Acceptance**
+```funny
+bet swap(a, b) { yo t = *a; *a = *b; *b = t }
+yo x = 1; yo y = 2
+swap(&x, &y)
+yap x, y                             // => 2 1
+```
+plus: the pointer-arithmetic loop in §3.10 prints `10 20 30 40`; every §3.10 error row raises its
+listed flavor and never crashes the VM; `funny bootstrap --verify` still reaches its fixed point; and
+the entire pre-existing `tests/lang/` + `examples/` corpus produces byte-identical output to before
+(this feature adds syntax, it changes no existing semantics).
+
+---
+
 ## 7. Signature stdlib bits (must match exactly)
 
 ### 7.9 `computer` module
@@ -1253,7 +1426,11 @@ my_bad chuck gimme flex yap` · all operators · `stash groupchat yapstring numb
 stdlib `yapper stash groupchat mafs filez sus`.
 
 Illegal in `selfhost/`: `squad inherits me og spawn regardless` · template strings · `?.` · `|>` ·
-slices with steps · stdlib `rizz clock computer internet`.
+slices with steps · **pointers (`&x`, `*p`)** · stdlib `rizz clock computer internet`.
+
+As always, this restricts how the self-hosted compiler is *written*, never what it can *compile* —
+`selfhost/` must compile pointers correctly (M15) while using none itself, exactly as it already
+handles `squad` and template strings.
 
 Reason: every feature the self-hosted compiler uses is a feature that must be *bug-free* for
 bootstrapping to work at all. Keep the surface small.
@@ -1721,3 +1898,28 @@ Format: `- [Mn] <what changed> — <why>`.
   never caught. Fixed with `out.parent.mkdir(parents=True, exist_ok=True)` in `packager.yeet`,
   matching how `filez.mkdir` and ordinary CLI tools already behave. Regression test:
   `test_packager.py::test_yeet_creates_missing_output_directory`.
+- [M15] **Pointers added at the project owner's direction — a deliberate reversal of the M13
+  removal above.** The two decisions are consistent rather than contradictory: M13 deleted a §3.2
+  table row that described a `pointa` type nothing implemented, referenced, or planned, because
+  shipping a user-facing reference documenting a type that did not exist would have been a lie.
+  M15 adds the feature for real — a specification (§3.10), seven opcodes (73–79), an implementation
+  milestone, a test plan, and a self-hosting story. Removing dead spec text and later building the
+  thing properly is the correct order of operations, not a flip-flop.
+  The one genuine design constraint is that a `pointa` **cannot be a machine address**. FunnyLang is
+  garbage-collected and stack-allocated values move; handing out raw addresses would make the
+  collector unsound and hand users a way to crash the VM, which no amount of comedy would excuse.
+  So a `pointa` is a *place reference* — a (container, key) pair or a box — which preserves memory
+  safety absolutely while still supporting `&x`, `*p`, write-through out-parameters, `&arr[i]`,
+  pointer arithmetic over a stash, and pointer difference and ordering. C's ergonomics, none of C's
+  footguns. Notably this needed **no new error class**: all five failure modes in §3.10 map onto
+  existing §4.1 flavors (`OutOfPocket`, `KeyGhosted`, `GhostError`, `TypeVibeMismatch`), so §4.1
+  stays frozen.
+  Two pieces of existing machinery made this far cheaper than it looks. Boxing an addressed local is
+  the *identical* mechanism the resolver already uses for closure-captured locals (§3.6), so `&x`
+  reuses the upvalue path rather than inventing a parallel one — and the two alias correctly for
+  free. And unary `&`/`*` need no lexer work at all, since prefix-vs-infix position already
+  disambiguates unary from binary `-`.
+  Also corrected here: §5.1's opcode table never listed `JUMP_LONG`/`LOOP_LONG` (71/72) after M11
+  shipped them — they existed only in this change log. The table now documents 71–79, and the
+  reserved range moves to 80–99. `BYTECODE_VERSION` goes to 2, because a `.funnyc` using 73–79 is
+  genuinely unreadable by a v1 runtime and a clear version diagnostic beats an unknown-opcode crash.
