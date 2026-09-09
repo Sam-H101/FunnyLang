@@ -1,109 +1,224 @@
-/* native/platform.c -- see platform.h. Feature-test macros come first,
- * before any header, to pull POSIX.1-2008 (realpath, strdup, mkdir,
- * rmdir, unlink, opendir/readdir/closedir, getcwd) back into scope under
- * `-std=c11`, which otherwise hides them exactly the way it hid <math.h>'s
- * M_PI/M_E for mafs.c -- the one exception build.sh's -std=c11 allows,
- * confined to this file per ARCHITECTURE.md's platform-boundary rule. */
+/* native/platform.c -- see platform.h. The only file in native/ allowed
+ * an #ifdef _WIN32 (ARCHITECTURE.md's platform boundary) -- everything
+ * OS-specific (filesystem, timing, system info, sockets) lives behind the
+ * portable functions platform.h declares. Two real build entry points
+ * exist for this project (build.sh for gcc/clang, build.bat for MSVC's
+ * cl.exe), so both branches below are real, compiled, and tested code,
+ * not one live path and one aspirational stub.
+ */
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#else
+/* Feature-test macros must come before any header (POSIX.1-2008: realpath,
+   mkdir, rmdir, unlink, opendir/readdir/closedir, getcwd, clock_gettime,
+   nanosleep, localtime_r) -- otherwise -std=c11 hides them, the same way
+   it hid <math.h>'s M_PI/M_E for mafs.c. */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#endif
 
 #include "platform.h"
 
+#ifdef _WIN32
+#include <direct.h>
+#include <io.h>
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+typedef SOCKET SockFd;
+#define SOCK_INVALID INVALID_SOCKET
+#else
 #include <dirent.h>
-#include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netdb.h>
 #include <poll.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
-#include <time.h>
 #include <unistd.h>
+typedef int SockFd;
+#define SOCK_INVALID (-1)
+#endif
+
+#include <ctype.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 static void set_errbuf(char *errbuf, size_t n, int err) {
     if (!errbuf || n == 0) return;
     snprintf(errbuf, n, "%s", strerror(err));
 }
 
+#ifdef _WIN32
+static void set_errbuf_win32(char *errbuf, size_t n, DWORD err) {
+    if (!errbuf || n == 0) return;
+    char buf[256];
+    DWORD len =
+        FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, 0, buf, sizeof(buf), NULL);
+    if (len > 0) {
+        while (len > 0 && (buf[len - 1] == '\r' || buf[len - 1] == '\n')) buf[--len] = '\0';
+        snprintf(errbuf, n, "%s", buf);
+    } else {
+        snprintf(errbuf, n, "Windows error %lu", (unsigned long)err);
+    }
+}
+#endif
+
+/* -- portable case-insensitive helpers (replace strcasecmp/strcasestr,
+   which MSVC doesn't provide) -- used only by the HTTP header parser
+   below. */
+static bool ci_eq(const char *a, const char *b) {
+    while (*a && *b) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static bool ci_contains(const char *haystack, const char *needle) {
+    size_t hn = strlen(haystack), nn = strlen(needle);
+    if (nn == 0) return true;
+    for (size_t i = 0; i + nn <= hn; i++) {
+        size_t j = 0;
+        for (; j < nn; j++) {
+            if (tolower((unsigned char)haystack[i + j]) != tolower((unsigned char)needle[j])) break;
+        }
+        if (j == nn) return true;
+    }
+    return false;
+}
+
+#ifdef _WIN32
+static bool path_is_dir(const char *path) {
+    DWORD attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+#else
+static bool path_is_dir(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+#endif
+
+/* -- file I/O: plain standard-C stdio, portable without any #ifdef -----
+   (open/read/write/close's own errno-setting behavior is standardized by
+   the C runtime on both platforms, so strerror(errno) still gives the
+   right human-readable reason either way). */
+
 bool platform_read_file(const char *path, unsigned char **out_data, size_t *out_len, char *errbuf,
                          size_t errbuf_len) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        set_errbuf(errbuf, errbuf_len, errno);
-        return false;
-    }
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
-        int e = errno;
-        close(fd);
-        set_errbuf(errbuf, errbuf_len, e);
-        return false;
-    }
-    if (S_ISDIR(st.st_mode)) {
-        close(fd);
+    if (path_is_dir(path)) {
         set_errbuf(errbuf, errbuf_len, EISDIR);
         return false;
     }
-    size_t size = (size_t)st.st_size;
-    unsigned char *buf = (unsigned char *)malloc(size + 1);
-    size_t total = 0;
-    while (total < size) {
-        ssize_t n = read(fd, buf + total, size - total);
-        if (n < 0) {
-            int e = errno;
-            free(buf);
-            close(fd);
-            set_errbuf(errbuf, errbuf_len, e);
-            return false;
-        }
-        if (n == 0) break; /* file shrank underneath us mid-read */
-        total += (size_t)n;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        set_errbuf(errbuf, errbuf_len, errno);
+        return false;
     }
-    close(fd);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    long size = ftell(f);
+    if (size < 0) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    unsigned char *buf = (unsigned char *)malloc((size_t)size + 1);
+    size_t total = size > 0 ? fread(buf, 1, (size_t)size, f) : 0;
+    if (total != (size_t)size && ferror(f)) {
+        int e = errno;
+        free(buf);
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    fclose(f);
     buf[total] = '\0';
     *out_data = buf;
     *out_len = total;
     return true;
 }
 
-static bool write_impl(const char *path, const unsigned char *data, size_t len, int flags, char *errbuf,
+static bool write_impl(const char *path, const unsigned char *data, size_t len, const char *mode, char *errbuf,
                         size_t errbuf_len) {
-    int fd = open(path, flags, 0644);
-    if (fd < 0) {
+    FILE *f = fopen(path, mode);
+    if (!f) {
         set_errbuf(errbuf, errbuf_len, errno);
         return false;
     }
-    size_t total = 0;
-    while (total < len) {
-        ssize_t n = write(fd, data + total, len - total);
-        if (n < 0) {
-            int e = errno;
-            close(fd);
-            set_errbuf(errbuf, errbuf_len, e);
-            return false;
-        }
-        total += (size_t)n;
+    size_t written = len > 0 ? fwrite(data, 1, len, f) : 0;
+    if (written != len) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
     }
-    if (close(fd) != 0) {
+    if (fclose(f) != 0) {
         set_errbuf(errbuf, errbuf_len, errno);
         return false;
     }
     return true;
 }
 
-bool platform_write_file(const char *path, const unsigned char *data, size_t len, char *errbuf,
-                          size_t errbuf_len) {
-    return write_impl(path, data, len, O_WRONLY | O_CREAT | O_TRUNC, errbuf, errbuf_len);
+bool platform_write_file(const char *path, const unsigned char *data, size_t len, char *errbuf, size_t errbuf_len) {
+    return write_impl(path, data, len, "wb", errbuf, errbuf_len);
 }
 
-bool platform_append_file(const char *path, const unsigned char *data, size_t len, char *errbuf,
-                           size_t errbuf_len) {
-    return write_impl(path, data, len, O_WRONLY | O_CREAT | O_APPEND, errbuf, errbuf_len);
+bool platform_append_file(const char *path, const unsigned char *data, size_t len, char *errbuf, size_t errbuf_len) {
+    return write_impl(path, data, len, "ab", errbuf, errbuf_len);
 }
+
+#ifdef _WIN32
+
+bool platform_path_exists(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
+
+bool platform_remove_path(const char *path, char *errbuf, size_t errbuf_len) {
+    if (!platform_path_exists(path)) {
+        set_errbuf_win32(errbuf, errbuf_len, ERROR_FILE_NOT_FOUND);
+        return false;
+    }
+    BOOL ok = path_is_dir(path) ? RemoveDirectoryA(path) : DeleteFileA(path);
+    if (!ok) {
+        set_errbuf_win32(errbuf, errbuf_len, GetLastError());
+        return false;
+    }
+    return true;
+}
+
+static bool make_one_dir(const char *path, char *errbuf, size_t errbuf_len) {
+    if (_mkdir(path) != 0) {
+        if (errno == EEXIST) {
+            if (!path_is_dir(path)) {
+                set_errbuf(errbuf, errbuf_len, EEXIST);
+                return false;
+            }
+        } else {
+            set_errbuf(errbuf, errbuf_len, errno);
+            return false;
+        }
+    }
+    return true;
+}
+
+#else
 
 bool platform_path_exists(const char *path) {
     struct stat st;
@@ -124,6 +239,24 @@ bool platform_remove_path(const char *path, char *errbuf, size_t errbuf_len) {
     return true;
 }
 
+static bool make_one_dir(const char *path, char *errbuf, size_t errbuf_len) {
+    if (mkdir(path, 0755) != 0) {
+        if (errno == EEXIST) {
+            struct stat st;
+            if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+                set_errbuf(errbuf, errbuf_len, EEXIST);
+                return false;
+            }
+        } else {
+            set_errbuf(errbuf, errbuf_len, errno);
+            return false;
+        }
+    }
+    return true;
+}
+
+#endif
+
 bool platform_mkdir_p(const char *path, char *errbuf, size_t errbuf_len) {
     size_t len = strlen(path);
     char buf[4096];
@@ -136,20 +269,7 @@ bool platform_mkdir_p(const char *path, char *errbuf, size_t errbuf_len) {
         if (buf[i] != '/' && i != len) continue;
         char saved = buf[i];
         buf[i] = '\0';
-        if (buf[0] != '\0') {
-            if (mkdir(buf, 0755) != 0) {
-                if (errno == EEXIST) {
-                    struct stat st;
-                    if (stat(buf, &st) != 0 || !S_ISDIR(st.st_mode)) {
-                        set_errbuf(errbuf, errbuf_len, EEXIST);
-                        return false;
-                    }
-                } else {
-                    set_errbuf(errbuf, errbuf_len, errno);
-                    return false;
-                }
-            }
-        }
+        if (buf[0] != '\0' && !make_one_dir(buf, errbuf, errbuf_len)) return false;
         buf[i] = saved;
     }
     return true;
@@ -161,8 +281,53 @@ static int cmp_cstr(const void *a, const void *b) {
     return strcmp(*sa, *sb);
 }
 
-bool platform_list_dir(const char *path, char ***out_names, size_t *out_count, char *errbuf,
-                        size_t errbuf_len) {
+#ifdef _WIN32
+
+bool platform_list_dir(const char *path, char ***out_names, size_t *out_count, char *errbuf, size_t errbuf_len) {
+    char pattern[4100];
+    snprintf(pattern, sizeof(pattern), "%s/*", path);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        set_errbuf_win32(errbuf, errbuf_len, GetLastError());
+        return false;
+    }
+    size_t cap = 16, count = 0;
+    char **names = (char **)malloc(cap * sizeof(char *));
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+        if (count == cap) {
+            cap *= 2;
+            names = (char **)realloc(names, cap * sizeof(char *));
+        }
+        names[count++] = _strdup(fd.cFileName);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    qsort(names, count, sizeof(char *), cmp_cstr);
+    *out_names = names;
+    *out_count = count;
+    return true;
+}
+
+bool platform_abs_path(const char *path, char *out, size_t out_len, char *errbuf, size_t errbuf_len) {
+    char resolved[4096];
+    if (_fullpath(resolved, path, sizeof(resolved)) == NULL) {
+        set_errbuf(errbuf, errbuf_len, errno);
+        return false;
+    }
+    /* _fullpath uses backslashes; normalize to '/' so the rest of the
+       runtime's own path-string functions (filez.c) stay POSIX-style --
+       Windows accepts '/' just as well as '\' in every API used here. */
+    for (char *p = resolved; *p; p++) {
+        if (*p == '\\') *p = '/';
+    }
+    snprintf(out, out_len, "%s", resolved);
+    return true;
+}
+
+#else
+
+bool platform_list_dir(const char *path, char ***out_names, size_t *out_count, char *errbuf, size_t errbuf_len) {
     DIR *d = opendir(path);
     if (!d) {
         set_errbuf(errbuf, errbuf_len, errno);
@@ -248,11 +413,46 @@ bool platform_abs_path(const char *path, char *out, size_t out_len, char *errbuf
     return true;
 }
 
+#endif
+
+/* -- timing ------------------------------------------------------------ */
+
 double platform_now_seconds(void) {
+    /* timespec_get is plain C11 (<time.h>), portable without any #ifdef --
+       unlike a monotonic clock, wall-clock time has a standard cross-
+       platform API. */
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    timespec_get(&ts, TIME_UTC);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
+
+#ifdef _WIN32
+
+double platform_monotonic_seconds(void) {
+    static LARGE_INTEGER freq;
+    static bool init = false;
+    if (!init) {
+        QueryPerformanceFrequency(&freq);
+        init = true;
+    }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart / (double)freq.QuadPart;
+}
+
+void platform_sleep_seconds(double seconds) {
+    if (seconds <= 0.0) return;
+    Sleep((DWORD)(seconds * 1000.0));
+}
+
+size_t platform_strftime_now(const char *fmt, char *out, size_t out_len) {
+    time_t t = time(NULL);
+    struct tm tmv;
+    localtime_s(&tmv, &t);
+    return strftime(out, out_len, fmt, &tmv);
+}
+
+#else
 
 double platform_monotonic_seconds(void) {
     struct timespec ts;
@@ -274,6 +474,55 @@ size_t platform_strftime_now(const char *fmt, char *out, size_t out_len) {
     localtime_r(&t, &tmv);
     return strftime(out, out_len, fmt, &tmv);
 }
+
+#endif
+
+/* -- system info --------------------------------------------------------
+   Both branches mirror funnylang/stdlib/computer.py's own platform-
+   specific fallbacks exactly (its Windows path already uses ctypes to
+   call GlobalMemoryStatusEx/GetTickCount64; this is the same two calls,
+   just from C instead of ctypes). Excluded from the byte-diffed suite
+   either way (computer.flex()'s own AGENT CHOICE, logged in NATIVE_PLAN.
+   md's §9), so exact parity with Python's formatting isn't the bar here
+   -- just genuinely working values. */
+
+#ifdef _WIN32
+
+uint64_t platform_ram_bytes(void) {
+    MEMORYSTATUSEX stat;
+    stat.dwLength = sizeof(stat);
+    if (!GlobalMemoryStatusEx(&stat)) return 0;
+    return (uint64_t)stat.ullTotalPhys;
+}
+
+double platform_uptime_seconds(void) { return (double)GetTickCount64() / 1000.0; }
+
+void platform_os_info(char *sysname_out, size_t sysname_len, char *release_out, size_t release_len) {
+    snprintf(sysname_out, sysname_len, "Windows");
+    if (release_len > 0) release_out[0] = '\0';
+/* GetVersionExA is deprecated (and lies without an app manifest on 8.1+)
+   but this is a "your rig: mid" joke line no test ever compares byte for
+   byte -- the modern replacement (RtlGetVersion via a runtime GetProcAddress
+   lookup) isn't worth the extra ceremony for a value nothing checks. */
+#pragma warning(push)
+#pragma warning(disable : 4996)
+    OSVERSIONINFOA vi;
+    memset(&vi, 0, sizeof(vi));
+    vi.dwOSVersionInfoSize = sizeof(vi);
+    if (GetVersionExA(&vi)) {
+        snprintf(release_out, release_len, "%lu.%lu.%lu", (unsigned long)vi.dwMajorVersion,
+                 (unsigned long)vi.dwMinorVersion, (unsigned long)vi.dwBuildNumber);
+    }
+#pragma warning(pop)
+}
+
+int platform_cpu_count(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (int)si.dwNumberOfProcessors;
+}
+
+#else
 
 uint64_t platform_ram_bytes(void) {
     long pageSize = sysconf(_SC_PAGESIZE);
@@ -314,12 +563,101 @@ int platform_cpu_count(void) {
     return n > 0 ? (int)n : 0;
 }
 
-/* -- networking -------------------------------------------------------- */
+#endif
+
+/* -- networking ---------------------------------------------------------
+   The socket primitives just below (ensure_winsock/sock_*) are the only
+   platform-conditional pieces; every algorithm above them in the call
+   graph (URL parsing, the HTTP/1.1 request/response cycle, chunked
+   decoding, redirect-following) is identical C compiled on both
+   platforms, using these as its only OS-facing surface. */
 
 bool platform_net_disabled(void) {
     const char *v = getenv("FUNNY_NO_NET");
     return v != NULL && strcmp(v, "1") == 0;
 }
+
+#ifdef _WIN32
+
+static void ensure_winsock(void) {
+    static bool started = false;
+    if (!started) {
+        WSADATA wsaData;
+        WSAStartup(MAKEWORD(2, 2), &wsaData);
+        started = true;
+    }
+}
+
+static void sock_set_nonblocking(SockFd fd, bool nonblocking) {
+    u_long mode = nonblocking ? 1 : 0;
+    ioctlsocket(fd, FIONBIO, &mode);
+}
+
+static bool sock_in_progress(void) {
+    int e = WSAGetLastError();
+    return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;
+}
+
+static void sock_close(SockFd fd) { closesocket(fd); }
+
+static bool sock_set_recv_timeout(SockFd fd, int ms) {
+    if (ms < 1) ms = 1;
+    DWORD tv = (DWORD)ms;
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv)) == 0;
+}
+
+static int sock_poll_writable(SockFd fd, int timeoutMs) {
+    WSAPOLLFD pfd;
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    pfd.revents = 0;
+    return WSAPoll(&pfd, 1, timeoutMs);
+}
+
+static long sock_send(SockFd fd, const char *buf, size_t len) {
+    int n = len > (size_t)INT_MAX ? INT_MAX : (int)len;
+    return (long)send(fd, buf, n, 0);
+}
+
+static long sock_recv(SockFd fd, char *buf, size_t len) {
+    int n = len > (size_t)INT_MAX ? INT_MAX : (int)len;
+    return (long)recv(fd, buf, n, 0);
+}
+
+#else
+
+static void ensure_winsock(void) {}
+
+static void sock_set_nonblocking(SockFd fd, bool nonblocking) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (nonblocking) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    else fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+}
+
+static bool sock_in_progress(void) { return errno == EINPROGRESS; }
+
+static void sock_close(SockFd fd) { close(fd); }
+
+static bool sock_set_recv_timeout(SockFd fd, int ms) {
+    if (ms < 1) ms = 1;
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
+}
+
+static int sock_poll_writable(SockFd fd, int timeoutMs) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    return poll(&pfd, 1, timeoutMs);
+}
+
+static long sock_send(SockFd fd, const char *buf, size_t len) { return (long)send(fd, buf, len, 0); }
+
+static long sock_recv(SockFd fd, char *buf, size_t len) { return (long)recv(fd, buf, len, 0); }
+
+#endif
 
 typedef struct {
     char *data;
@@ -387,7 +725,8 @@ static bool parse_url(const char *url, ParsedUrl *out) {
     return true;
 }
 
-static int connect_with_timeout(const char *host, int port, int timeoutMs) {
+static SockFd connect_with_timeout(const char *host, int port, int timeoutMs) {
+    ensure_winsock();
     char portStr[16];
     snprintf(portStr, sizeof(portStr), "%d", port);
     struct addrinfo hints;
@@ -395,57 +734,45 @@ static int connect_with_timeout(const char *host, int port, int timeoutMs) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     struct addrinfo *res = NULL;
-    if (getaddrinfo(host, portStr, &hints, &res) != 0 || !res) return -1;
-    int fd = -1;
+    if (getaddrinfo(host, portStr, &hints, &res) != 0 || !res) return SOCK_INVALID;
+    SockFd fd = SOCK_INVALID;
     for (struct addrinfo *rp = res; rp != NULL; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (fd < 0) continue;
-        int flags = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-        int rc = connect(fd, rp->ai_addr, rp->ai_addrlen);
+        if (fd == SOCK_INVALID) continue;
+        sock_set_nonblocking(fd, true);
+        int rc = connect(fd, rp->ai_addr, (int)rp->ai_addrlen);
         bool connected = false;
         if (rc == 0) {
             connected = true;
-        } else if (errno == EINPROGRESS) {
-            struct pollfd pfd;
-            pfd.fd = fd;
-            pfd.events = POLLOUT;
-            int pr = poll(&pfd, 1, timeoutMs);
+        } else if (sock_in_progress()) {
+            int pr = sock_poll_writable(fd, timeoutMs);
             if (pr > 0) {
                 int soErr = 0;
                 socklen_t elen = sizeof(soErr);
-                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &elen) == 0 && soErr == 0) connected = true;
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&soErr, &elen) == 0 && soErr == 0) connected = true;
             }
         }
         if (connected) {
-            fcntl(fd, F_SETFL, flags); /* back to blocking for the data phase */
+            sock_set_nonblocking(fd, false); /* back to blocking for the data phase */
             break;
         }
-        close(fd);
-        fd = -1;
+        sock_close(fd);
+        fd = SOCK_INVALID;
     }
     freeaddrinfo(res);
     return fd;
-}
-
-static bool set_recv_timeout(int fd, int ms) {
-    if (ms < 1) ms = 1;
-    struct timeval tv;
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (ms % 1000) * 1000;
-    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
 }
 
 /* Reads whatever's available into `buf`, bounded by `deadline` (an
    absolute platform_monotonic_seconds() time). Returns false on timeout,
    error, or a clean EOF (0 bytes read) -- callers distinguish "EOF" from
    "error" by checking how much of the response they'd already parsed. */
-static bool recv_some(int fd, ByteBuf *buf, double deadline) {
+static bool recv_some(SockFd fd, ByteBuf *buf, double deadline) {
     double now = platform_monotonic_seconds();
     if (now >= deadline) return false;
-    set_recv_timeout(fd, (int)((deadline - now) * 1000.0));
+    sock_set_recv_timeout(fd, (int)((deadline - now) * 1000.0));
     char tmp[8192];
-    ssize_t n = recv(fd, tmp, sizeof(tmp), 0);
+    long n = sock_recv(fd, tmp, sizeof(tmp));
     if (n <= 0) return false;
     bb_append(buf, tmp, (size_t)n);
     return true;
@@ -554,11 +881,11 @@ static bool parse_response_head(const ByteBuf *buf, ParsedResponseHead *out) {
             headers[count].name = name;
             headers[count].value = value;
             count++;
-            if (strcasecmp(name, "transfer-encoding") == 0 && strcasestr(value, "chunked") != NULL) {
+            if (ci_eq(name, "transfer-encoding") && ci_contains(value, "chunked")) {
                 out->chunked = true;
-            } else if (strcasecmp(name, "content-length") == 0) {
+            } else if (ci_eq(name, "content-length")) {
                 out->contentLength = atol(value);
-            } else if (strcasecmp(name, "location") == 0 && !out->location) {
+            } else if (ci_eq(name, "location") && !out->location) {
                 out->location = dup_range(value, strlen(value));
             }
         }
@@ -582,8 +909,8 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
                        const char *body, size_t bodyLen, double deadline, ParsedResponseHead *outHead, ByteBuf *outBody) {
     double now = platform_monotonic_seconds();
     if (now >= deadline) return false;
-    int fd = connect_with_timeout(u->host, u->port, (int)((deadline - now) * 1000.0));
-    if (fd < 0) return false;
+    SockFd fd = connect_with_timeout(u->host, u->port, (int)((deadline - now) * 1000.0));
+    if (fd == SOCK_INVALID) return false;
 
     ByteBuf req;
     memset(&req, 0, sizeof(req));
@@ -595,8 +922,8 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
     bb_append(&req, "Connection: close\r\n", strlen("Connection: close\r\n"));
     bool sawContentLength = false, sawHost = false;
     for (int i = 0; i < reqHeaderCount; i++) {
-        if (strcasecmp(reqHeaders[i].name, "host") == 0) sawHost = true;
-        if (strcasecmp(reqHeaders[i].name, "content-length") == 0) sawContentLength = true;
+        if (ci_eq(reqHeaders[i].name, "host")) sawHost = true;
+        if (ci_eq(reqHeaders[i].name, "content-length")) sawContentLength = true;
         n = snprintf(line, sizeof(line), "%s: %s\r\n", reqHeaders[i].name, reqHeaders[i].value);
         bb_append(&req, line, (size_t)n);
     }
@@ -616,7 +943,7 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
             sendOk = false;
             break;
         }
-        ssize_t w = send(fd, req.data + sent, req.len - sent, 0);
+        long w = sock_send(fd, req.data + sent, req.len - sent);
         if (w <= 0) {
             sendOk = false;
             break;
@@ -625,19 +952,20 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
     }
     bb_free(&req);
     if (!sendOk) {
-        close(fd);
+        sock_close(fd);
         return false;
     }
 
     ByteBuf raw;
     memset(&raw, 0, sizeof(raw));
     ParsedResponseHead head;
+    memset(&head, 0, sizeof(head)); /* parse_response_head only fills it in once it succeeds */
     bool haveHead = false;
     while (!haveHead) {
         if (!parse_response_head(&raw, &head)) {
             if (!recv_some(fd, &raw, deadline)) {
                 bb_free(&raw);
-                close(fd);
+                sock_close(fd);
                 return false;
             }
             continue;
@@ -676,7 +1004,7 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
             bb_append(&outBuf, bodyStart, bodyAvail);
         }
     }
-    close(fd);
+    sock_close(fd);
     bb_free(&raw);
     if (!bodyOk) {
         bb_free(&outBuf);
@@ -752,9 +1080,9 @@ void platform_http_response_free(PlatformHttpResponse *resp) {
 
 bool platform_tcp_ping(const char *host, int port, int timeoutMs, double *outMs) {
     double start = platform_monotonic_seconds();
-    int fd = connect_with_timeout(host, port, timeoutMs);
-    if (fd < 0) return false;
-    close(fd);
+    SockFd fd = connect_with_timeout(host, port, timeoutMs);
+    if (fd == SOCK_INVALID) return false;
+    sock_close(fd);
     *outMs = (platform_monotonic_seconds() - start) * 1000.0;
     return true;
 }

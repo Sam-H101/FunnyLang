@@ -1304,6 +1304,59 @@ gets an entry explaining what changed and why.
   once at compile time from the literal `.funny` path string and identical in both the Python and
   native runs of the same differential test file, so the new test asserts exact trace-line content
   rather than falling back to a properties-only check.
+
+  ---
+
+  **Correction, reported by the user: `build.bat` (the real Windows/MSVC build entry point) had been
+  broken since the filez sub-phase and no one had noticed, including this log.** Every "defer the
+  Win32 branch" AGENT CHOICE logged above (filez, clock, computer, internet) was reasoned from
+  `build.sh`'s own comment ("gcc or clang on Linux/macOS") without ever checking whether a sibling
+  Windows build script existed — it did (`build.bat`, an N0-task-1 deliverable, MSVC's `cl.exe`), and
+  it had been silently failing (`fatal error C1083: Cannot open include file: 'dirent.h'`) since the
+  first POSIX-only header landed in `platform.c`. The user caught this by running it themselves.
+  Fixed properly rather than re-deferred: `platform.c` now has real `#ifdef _WIN32` implementations
+  for every function that had one, verified against actual `cl.exe` (Visual Studio 2022 Community,
+  reachable via `vcvarsall.bat x64`) rather than assumed correct from reading MSDN alone --
+  - **Filesystem:** `read`/`write`/`append` rewritten over plain standard-C stdio (`fopen`/`fread`/
+    `fwrite`), portable without any `#ifdef` at all -- simpler than maintaining two OS-call paths.
+    `exists`/`remove`/`mkdir_p`/`list_dir` get real Win32 implementations (`GetFileAttributesA`/
+    `DeleteFileA`/`RemoveDirectoryA`/`_mkdir`/`FindFirstFileA`+`FindNextFileA`). `abs_path` uses
+    `_fullpath` (simpler than the POSIX side: it never requires existence, so no lexical-fallback
+    path is even needed on Windows).
+  - **Timing:** `now_seconds` uses plain C11 `timespec_get` (`<time.h>`), portable on both platforms
+    without an `#ifdef` -- only a *monotonic* clock genuinely has no portable C11 equivalent
+    (`QueryPerformanceCounter` vs `clock_gettime(CLOCK_MONOTONIC)`), and only `sleep`/`strftime`
+    need one for `Sleep`/`localtime_s` vs `nanosleep`/`localtime_r`.
+  - **System info:** `GlobalMemoryStatusEx`/`GetTickCount64` mirror funnylang/stdlib/computer.py's own
+    Windows ctypes fallback exactly (same two calls); `GetSystemInfo`/a deprecated-but-locally-
+    suppressed `GetVersionExA` cover CPU count and OS release (still excluded from the byte-diffed
+    suite regardless, per `flex()`'s own already-logged AGENT CHOICE).
+  - **Networking, the big one:** real WinSock2 (`getaddrinfo`/`socket`/`connect`/`send`/`recv` are
+    near-identical in name and shape to POSIX; `ioctlsocket`+`WSAPoll`+`WSAGetLastError()` replace
+    `fcntl`+`poll`+`errno` for the non-blocking-connect-with-timeout dance, and `SO_RCVTIMEO` takes a
+    raw `DWORD` milliseconds instead of a `struct timeval`). Isolated all of this behind 8 small
+    platform-conditional primitives (`ensure_winsock`/`sock_set_nonblocking`/`sock_in_progress`/
+    `sock_close`/`sock_set_recv_timeout`/`sock_poll_writable`/`sock_send`/`sock_recv`) so the entire
+    HTTP/1.1 request/response/chunked-decode/redirect-following algorithm stays identical, platform-
+    neutral C compiled unchanged on both sides -- not a parallel implementation to keep in sync.
+    `strcasecmp`/`strcasestr` (POSIX, absent from MSVC) were replaced with two small hand-rolled
+    portable helpers (`ci_eq`/`ci_contains`) used on *both* platforms, removing that difference
+    entirely rather than adding a third `#ifdef`.
+  Verified on Windows: both `build.bat` and `build.bat debug` (MSVC's ASan) compile and link clean
+  under `/W4 /WX`; the release binary runs standalone, and the debug/ASan binary runs (needing its
+  runtime DLL on `PATH`, normal for any ASan Windows binary) with zero ASan reports. Every existing
+  differential `.funnyc` (filez, clock, sus, computer, internet) produces byte-identical output to
+  the already-established Linux expected output, including `computer.explode()`'s uncaught exit 69.
+  Real HTTP/1.1 networking (not just the `FUNNY_NO_NET=1` path) verified end-to-end against the same
+  local `http.server` used for the Linux-side check -- Content-Length, chunked encoding, redirects,
+  redirect chains, EOF-terminated bodies, POST with a body and custom headers, HTTPS rejection, and
+  `download()` all byte-identical to the Python reference from native Windows. Re-verified the
+  Linux/WSL side is unaffected by the rewrite: gcc and clang debug builds clean, the full differential
+  suite (47/47) and the N5 acceptance corpus (78/80, same well-understood skips as before) still pass
+  under `FUNNY_GC_STRESS=1`, and the complete pytest suite (1112 tests) passes in release mode.
+  **Lesson for future platform.c work (N5b's HTTPS backends especially): check every `build.*` script
+  in the repo root before writing "no build exists for platform X yet," not just the one already
+  open.**
   **Found a language-grammar quirk while writing the test, not a bug in either VM:** `sus` is itself
   a reserved statement-leading keyword (FunnyLang's own conditional, "sus (cond) { }"), so
   `sus.dump(x)` as a bare statement fails to parse on *both* VMs identically — confirmed by checking
