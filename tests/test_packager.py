@@ -58,6 +58,20 @@ def test_yeet_exe_works_after_moving(built_stub, tmp_path):
     assert result.stdout == "yo sup world\n"
 
 
+def test_yeet_creates_missing_output_directory(built_stub, tmp_path):
+    # PLAN.md §16 (M13): `-o some/nonexistent/dir/name` used to crash with a
+    # raw FileNotFoundError (only caught by the top-level "compiler skill
+    # issue" handler) instead of just creating the directory, like any
+    # ordinary CLI tool that writes a named output file.
+    exe = tmp_path / "does" / "not" / "exist" / ("hello.exe" if sys.platform == "win32" else "hello")
+    assert not exe.parent.exists()
+    _yeet(built_stub, "examples/hello.funny", exe)
+    assert exe.exists()
+    result = subprocess.run([str(exe)], capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0
+    assert result.stdout == "yo sup world\n"
+
+
 def test_yeet_multi_module_bundle(built_stub, tmp_path):
     exe = tmp_path / ("main.exe" if sys.platform == "win32" else "main")
     _yeet(built_stub, "examples/modules/main.funny", exe)

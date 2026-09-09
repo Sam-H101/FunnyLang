@@ -112,6 +112,7 @@ def yeet(pak_bytes: bytes, out_path: str, *, icon: str | None = None, rebuild_st
     final file's total size in bytes."""
     stub = ensure_stub(icon=icon, rebuild=rebuild_stub)
     out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(stub, out)
     with open(out, "ab") as f:
         f.write(pak_bytes)

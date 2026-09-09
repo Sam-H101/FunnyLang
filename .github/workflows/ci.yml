@@ -1,0 +1,119 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: ci (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    # Everything below runs under bash on every runner so the flow is one
+    # script rather than three dialects.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dev dependencies
+        run: python -m pip install --upgrade pip pytest pytest-cov pyinstaller
+
+      # `python -m pytest` (not bare `pytest`) so the repo root lands on
+      # sys.path -- tests/test_cli.py and friends shell out to
+      # `python -m funnylang`. FUNNY_NO_NET keeps the `internet` stdlib
+      # module's tests hermetic in CI.
+      - name: Run the test suite
+        env:
+          FUNNY_NO_NET: "1"
+        run: python -m pytest -q
+
+      # The self-hosting fixed point: the FunnyLang compiler written in
+      # FunnyLang (selfhost/) must reproduce itself byte for byte.
+      - name: Verify self-hosting bootstrap
+        run: python -m funnylang bootstrap --verify
+
+      # Freeze a real standalone executable and prove it runs with no Python
+      # on its PATH assumptions beyond what's baked into the stub.
+      - name: Build a native executable
+        run: python -m funnylang yeet examples/hello.funny -o hello-exe/hello
+
+      # `-o` is used literally, with no platform-specific extension appended
+      # (that only happens when `-o` is omitted), so the output file is
+      # exactly `hello-exe/hello` on every OS.
+      - name: Run the frozen executable
+        shell: bash
+        run: |
+          chmod +x ./hello-exe/hello
+          ./hello-exe/hello
+
+      - name: Upload the executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: funnylang-hello-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: hello-exe/
+          retention-days: 7
+
+  package:
+    name: package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Exercises the real packaging path: pyproject metadata, the
+      # packages-find config, and the `funny` console script landing on PATH.
+      - name: Install the package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: funny --version
+        run: funny --version
+
+      # Runs every examples/*.funny that has a matching .expected and diffs
+      # the output, via the installed script rather than `python -m funnylang`.
+      - name: Run the example suite
+        env:
+          FUNNY_NO_NET: "1"
+        run: funny test examples
+
+      # A .funnypak must resolve its own imports with no filesystem access,
+      # so build the module tree and run it from a directory where the
+      # sources are not reachable by relative import.
+      - name: Build and run a linked .funnypak
+        run: |
+          mkdir -p pak-out
+          funny build examples/modules/main.funny -o pak-out/main.funnypak
+          cd pak-out
+          funny run main.funnypak

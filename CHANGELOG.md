@@ -2,7 +2,7 @@
 
 All notable changes to FunnyLang are documented here.
 
-## [Unreleased]
+## [1.0.0] — 2026-09-09
 
 ### M0 — Scaffolding
 - Repository initialized. Package skeleton, packaging metadata, and test harness in place.
@@ -114,3 +114,27 @@ All notable changes to FunnyLang are documented here.
   continuation, last-expression auto-print, `.help/.exit/.clear/.xray/.time`. `yeet`/`bootstrap`
   cleanly report "lands in M10/M12" until those milestones. `fmt` is an AST pretty-printer (drops
   comments, a documented limitation — see PLAN.md §16).
+
+### M13 — Polish, docs, examples, release
+- `docs/LANGUAGE.md`, `docs/BYTECODE.md` (with a real, verified worked disassembly and file-format
+  walkthrough), and `docs/STDLIB.md` (its function signatures generated directly from the
+  `NativeFn` registry, so they can't drift from the real implementation).
+- README rewritten: the real banner, an honest "what this is / what this isn't" section (the
+  compiler self-hosts, the VM never was meant to), and the self-hosting bootstrap shown as the
+  headline feature it is.
+- `examples/chaos.funny` exercises `computer.explode()`, `internet.go_brrrr()` (wrapped in a real
+  `sketchy`/`my_bad`/`regardless`, so it's deterministic under CI's `FUNNY_NO_NET=1` regardless of
+  whether the network call itself succeeds or fails), `rizz.gamble()`, and `yapper.sarcasm_case()`.
+  Every `examples/*.funny` now has a matching `.expected` and passes `funny test examples/`.
+- `.github/workflows/ci.yml` replaces the earlier `tests.yml`: the full matrix (Windows, Linux,
+  macOS × Python 3.10/3.11/3.12) runs `pytest -q`, then `funny bootstrap --verify`, then freezes
+  and runs a real `funny yeet` executable and uploads it as an artifact — one consolidated workflow
+  instead of two overlapping ones.
+- Version bumped to `1.0.0`.
+- Found and fixed two more real bugs while writing this milestone's docs and CI, both logged in
+  PLAN.md §16: §3.2's frozen literals table listed a "Pointer" type (`pointa`, `*`/`&` syntax) that
+  was never implemented anywhere in the project — a dead spec row, removed rather than built, since
+  no milestone ever actually planned pointers. And `funny yeet file.funny -o some/new/dir/name`
+  crashed with a raw, uncaught `FileNotFoundError` whenever `-o`'s parent directory didn't already
+  exist (every existing packager test happened to pre-create it by hand, which is exactly why this
+  was never caught) — fixed by creating the parent directory, like any ordinary CLI tool would.

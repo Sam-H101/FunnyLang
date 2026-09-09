@@ -35,6 +35,14 @@ RESOLVE_TIME_FAILURES = {"err_immutable_reassign.funny", "err_undefined_variable
 # `.funnyc` output for these has exactly the same limitation.
 REQUIRES_BUNDLING = {"main.funny"}
 
+# chaos.funny deliberately uses rizz.gamble() (genuine randomness). Compiling
+# it is fully deterministic (covered by test_funnyc_bytes_match_python
+# above), but *running* it twice as two independent subprocesses -- once via
+# the emitted .funnyc, once via source -- will occasionally disagree on that
+# one random line for reasons that have nothing to do with self-hosting
+# correctness. Excluded only from the stdout-diffing execution check below.
+NON_DETERMINISTIC = {"chaos.funny"}
+
 
 def _python_funnyc_bytes(path: Path) -> bytes:
     text = path.read_text(encoding="utf-8")
@@ -87,7 +95,7 @@ def test_selfhost_emitted_funnyc_runs_for_whole_corpus(tmp_path):
     for path in CORPUS:
         if path.name in RESOLVE_TIME_FAILURES or path.name.startswith("err_"):
             continue  # runtime-error goldens exit non-zero by design
-        if path.name in REQUIRES_BUNDLING:
+        if path.name in REQUIRES_BUNDLING or path.name in NON_DETERMINISTIC:
             continue
         out_path = tmp_path / f"{path.stem}.funnyc"
         emit_result = subprocess.run(

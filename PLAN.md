@@ -200,7 +200,6 @@ Encoding: UTF-8. Emoji are legal in strings, comments, and — yes — identifie
 | Array | `[1, 2, 3]` | `stash` |
 | Map | `{"a": 1, "b": 2}` | `groupchat` |
 | Function | `bet f() {}` / `lowkey (x) => x + 1` | `bet` |
-| Pointer | `*`, `&`  | `pointa` | 
 String escapes: `\n \t \r \\ \" \' \0 \u{1F480}` and `\{` to escape a `{` in an interpolated string.
 
 Integers are arbitrary precision (Python `int`). Floats are IEEE-754 doubles.
@@ -1704,3 +1703,21 @@ Format: `- [Mn] <what changed> — <why>`.
   detection) for a purely mechanical linking step the existing resolution order already handles for
   free, without weakening what the fixed point actually proves — stage3 and stage4 are still
   produced by *running* the self-hosted compiler's real logic on real source text, byte for byte.
+- [M13] Removed §3.2's "Pointer" literal row (`*`/`&` syntax, a `pointa` runtime type) while writing
+  `docs/LANGUAGE.md` -- a genuine spec contradiction, not a documentation gap. Nothing named
+  `pointa` or any pointer/reference concept exists anywhere in `funnylang/` (no opcode, no keyword
+  in §3.3, no mention in §5's frozen opcode table, no test), `*` and `&` are already the multiply
+  and bitwise-and operators (§3.4), and no milestone's task list ever mentions implementing
+  pointers. This row was dead from the start -- a leftover placeholder, not a deferred feature --
+  and documenting it in the user-facing reference would describe something that never existed and
+  isn't planned. Removed rather than implemented: a pointer type was never part of any milestone's
+  actual scope, and inventing one now would be a real, unplanned language change.
+- [M13] Found and fixed a real bug while writing the CI workflow (task 8): `funny yeet file.funny
+  -o some/new/dir/name` crashed with a raw `FileNotFoundError` from `shutil.copyfile` (only caught
+  by the top-level generic "compiler skill issue" handler, not a clean diagnostic) whenever `-o`'s
+  parent directory didn't already exist — an entirely ordinary situation for a CI job writing its
+  output into a fresh directory, not a compiler bug. Every existing packager test happened to
+  pre-create the parent directory by hand before calling `yeet()`, which is exactly why this was
+  never caught. Fixed with `out.parent.mkdir(parents=True, exist_ok=True)` in `packager.yeet`,
+  matching how `filez.mkdir` and ordinary CLI tools already behave. Regression test:
+  `test_packager.py::test_yeet_creates_missing_output_directory`.

@@ -1,0 +1,27 @@
+// chaos.funny — a deliberately unhinged tour of FunnyLang's spicier
+// corners (PLAN.md §M13 task 6). Ends in a computer.explode(), so this one
+// is meant to exit 69 — see chaos.expected.
+
+gimme computer
+gimme internet
+gimme rizz
+gimme yapper
+
+yap yapper.sarcasm_case("this is fine everything is fine")
+
+yo odds_of_success = rizz.gamble(0.5)
+yap "shipped without testing:", odds_of_success
+
+// a deliberate caught error — the network is unreachable in CI
+// (FUNNY_NO_NET=1), so this always fails the same clean way.
+sketchy {
+    yo res = internet.go_brrrr("https://example.com")
+    yap "the internet said:", res["status"]
+} my_bad (e) {
+    yap "caught it:", e.flavor, "-", e.message
+} regardless {
+    yap "well, we tried"
+}
+
+yap "deploying to production on a friday"
+computer.explode()

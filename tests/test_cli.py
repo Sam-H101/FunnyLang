@@ -218,6 +218,13 @@ def test_test_command_reports_failures(tmp_path):
     assert "FAIL" in result.stdout
 
 
+def test_test_command_runs_examples_directory():
+    # PLAN.md §M13 acceptance: `funny test examples/` passes.
+    result = _run_cli("test", "examples")
+    assert result.returncode == 0, result.stdout
+    assert "9/9 passed" in result.stdout
+
+
 # -- vibe (REPL) --------------------------------------------------------
 
 
