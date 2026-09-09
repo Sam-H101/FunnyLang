@@ -1,0 +1,66 @@
+/* native/platform.h -- NATIVE_PLAN.md N5 task 2 (`filez`) / ARCHITECTURE.md
+ * "The platform boundary": platform.c is the only file in native/ allowed
+ * an #ifdef _WIN32 (or any other platform conditional). Filesystem access
+ * goes through the functions declared here; nothing above this layer
+ * (filez.c included) touches dirent.h, sys/stat.h, unistd.h, or any other
+ * OS header directly.
+ *
+ * Only the POSIX implementation exists so far (build.sh only targets
+ * Linux/macOS today) -- the same deferral native/main.c already applies
+ * to its own Unicode banner (real Win32 filesystem calls land whenever a
+ * Windows build actually exists to compile and test them against, not
+ * before; see ARCHITECTURE.md's own note on why main.c's banner is
+ * plain-ASCII for now).
+ *
+ * Every function below returns true on success. On failure they return
+ * false and copy a human-readable reason into errbuf (sized errbuf_len)
+ * -- the same strerror() text an OSError.strerror would carry on the
+ * same OS, since funnylang/stdlib/filez.py's own error wrapping surfaces
+ * that exact string and the differential suite diffs against it byte for
+ * byte.
+ */
+#ifndef FUNNY_PLATFORM_H
+#define FUNNY_PLATFORM_H
+
+#include <stdbool.h>
+#include <stddef.h>
+
+/* Reads the whole file at `path` into a freshly malloc'd buffer (caller
+   frees it). *out_len excludes the NUL terminator platform.c always adds
+   for convenience, though callers dealing with arbitrary bytes (filez's
+   own read_bytes) should only trust the first *out_len bytes. */
+bool platform_read_file(const char *path, unsigned char **out_data, size_t *out_len, char *errbuf,
+                         size_t errbuf_len);
+
+bool platform_write_file(const char *path, const unsigned char *data, size_t len, char *errbuf,
+                          size_t errbuf_len);
+bool platform_append_file(const char *path, const unsigned char *data, size_t len, char *errbuf,
+                           size_t errbuf_len);
+
+bool platform_path_exists(const char *path);
+
+/* Removes a file, or an empty directory (dispatched the same way
+   filez.py's own `obliterate` picks between unlink() and rmdir()). */
+bool platform_remove_path(const char *path, char *errbuf, size_t errbuf_len);
+
+/* `mkdir -p` semantics: creates every missing intermediate component,
+   succeeds silently if `path` already exists as a directory (matches
+   Python's Path.mkdir(parents=True, exist_ok=True)). */
+bool platform_mkdir_p(const char *path, char *errbuf, size_t errbuf_len);
+
+/* *out_names is a malloc'd array of malloc'd strings (caller frees each
+   string, then the array), sorted byte-wise -- equal to Unicode-codepoint
+   order for well-formed UTF-8, which is what Python's own sorted() gives
+   filez.py's list_dir. "." and ".." are never included. */
+bool platform_list_dir(const char *path, char ***out_names, size_t *out_count, char *errbuf,
+                        size_t errbuf_len);
+
+/* Absolute, normalized form of `path` (relative paths resolved against
+   the current working directory). Resolves symlinks when the path fully
+   exists, same as realpath(3)/Python's Path.resolve(); falls back to
+   plain lexical normalization (collapsing "." and "..") for a path that
+   doesn't exist yet, since Path.resolve()'s default strict=False doesn't
+   require existence either. */
+bool platform_abs_path(const char *path, char *out, size_t out_len, char *errbuf, size_t errbuf_len);
+
+#endif /* FUNNY_PLATFORM_H */

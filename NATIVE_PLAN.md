@@ -1222,3 +1222,34 @@ gets an entry explaining what changed and why.
   a differential test structurally cannot exercise either side of).
   Verified: 1 new differential program plus the full suite re-run, byte-identical, gcc and clang,
   `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.
+
+- **N5 · sub-phase 5f complete · `filez` (task 2's seventh module) and the platform boundary's first
+  tenant.** All 14 functions port from `funnylang/stdlib/filez.py`. `slurp`/`yeet_out`/`append_to`/
+  `exists`/`obliterate`/`list_dir`/`mkdir`/`read_bytes`/`write_bytes`/`abs_path` are real filesystem
+  access, so — per ARCHITECTURE.md's platform-boundary rule that only one file may know the OS exists
+  — they go through a brand-new `native/platform.c`/`.h`, the first file to actually need it.
+  `join_path`/`dir_of`/`base_of`/`ext_of` stay in `filez.c` itself: pathlib never touches the
+  filesystem for these either, they're pure string manipulation over a POSIX-flavoured parse
+  (splitting on `/`, dropping empty/`.` segments, keeping `..` literal), which `filez.c` replicates
+  directly rather than routing through `platform.c` for no reason.
+  **AGENT CHOICE:** `platform.c` implements the POSIX path only (open/read/write/close, opendir/
+  readdir, mkdir/rmdir/unlink, realpath, getcwd) — not the `#ifdef _WIN32` branch ARCHITECTURE.md's
+  own contract reserves this file for. `build.sh` itself only targets Linux/macOS today (its own
+  comment: "gcc or clang on Linux/macOS"), so there is no Windows build to compile or test a WinHTTP-
+  style Win32 filesystem path against yet — the same deferral `main.c` already applies to its own
+  Unicode banner, extended here rather than writing untested `FindFirstFile`/`_mkdir`/`_fullpath`
+  code with zero way to exercise it this session. Lands whenever an actual Windows build target
+  exists (N7, or N5b's own WinHTTP work, whichever comes first).
+  `abs_path` tries `realpath()` first (exact, symlink-resolving, matches `Path.resolve()` when the
+  path fully exists) and falls back to lexical `.`/`..` normalization of `cwd + path` when it
+  doesn't — `Path.resolve()`'s default `strict=False` doesn't require existence either, and this
+  covers every case the differential test (or any realistic caller) exercises without needing a
+  component-by-component symlink walk for a nonexistent trailing segment.
+  `write_bytes`'s `int(x) & 0xFF` per byte is replicated for bool/int/float/bignum inputs, except a
+  bignum too large for `int64_t`, which throws a clean `TypeVibeMismatch` instead of chasing Python's
+  arbitrary-precision `&` for a case no realistic byte-stash will ever hit — the same rationale as
+  `rizz.roll`'s own narrow safety improvement two sub-phases ago.
+  Verified: 1 new differential program (creates, reads, appends, lists, byte-round-trips, and cleans
+  up real files/directories under `build/n4/filez_scratch`, plus every path-string edge case the test
+  program exercises against the real Python CLI first) plus the full suite re-run, byte-identical,
+  gcc and clang, `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.

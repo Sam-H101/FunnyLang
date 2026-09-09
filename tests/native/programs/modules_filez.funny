@@ -1,0 +1,63 @@
+gimme filez
+
+yo dir = filez.join_path("build", "n4", "filez_scratch")
+filez.mkdir(dir)
+yap filez.exists(dir)
+
+yo f1 = filez.join_path(dir, "hello.txt")
+yo written = filez.yeet_out(f1, "hello, world! 你好")
+yap written
+
+yo back = filez.slurp(f1)
+yap back
+
+yo appended = filez.append_to(f1, "!!!")
+yap appended
+yap filez.slurp(f1)
+
+yo names = filez.list_dir(dir)
+filez.yeet_out(filez.join_path(dir, "a.txt"), "a")
+filez.yeet_out(filez.join_path(dir, "z.txt"), "z")
+yap filez.list_dir(dir)
+
+yo bytesFile = filez.join_path(dir, "data.bin")
+yo n = filez.write_bytes(bytesFile, [0, 1, 2, 255, 128, 65])
+yap n
+yo readBack = filez.read_bytes(bytesFile)
+yap readBack
+
+yo abs1 = filez.abs_path(f1)
+yap abs1.contains("hello.txt")
+
+yap filez.dir_of("a/b/c.txt")
+yap filez.dir_of("c.txt")
+yap filez.dir_of("/a/b")
+yap filez.dir_of("/a")
+yap filez.base_of("a/b/c.txt")
+yap filez.base_of("/a/b/")
+yap filez.ext_of("a/b/c.tar.gz")
+yap filez.ext_of("a/.hidden")
+yap filez.ext_of("a/noext")
+yap filez.join_path("a", "b", "c.txt")
+yap filez.join_path("a/", "b")
+yap filez.join_path("a", "/root", "b")
+
+sketchy {
+    filez.slurp(filez.join_path(dir, "does_not_exist.txt"))
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    filez.slurp(42)
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+filez.obliterate(filez.join_path(dir, "a.txt"))
+filez.obliterate(filez.join_path(dir, "z.txt"))
+filez.obliterate(filez.join_path(dir, "data.bin"))
+filez.obliterate(f1)
+yap filez.exists(f1)
+filez.obliterate(dir)
+yap filez.exists(dir)

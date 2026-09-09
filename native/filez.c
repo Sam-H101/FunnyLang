@@ -1,0 +1,389 @@
+#include "filez.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "bignum.h"
+#include "gc.h"
+#include "groupchat.h"
+#include "modules.h"
+#include "platform.h"
+#include "stash.h"
+#include "string.h"
+#include "vm.h"
+
+static const char *path_str(VM *vm, Value v, const char *fn_name) {
+    if (!IS_STRING(v)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'%s' needs a yapstring path, not a %s.", fn_name,
+                         vm_type_name(v));
+        return NULL;
+    }
+    return AS_STRING(v)->chars;
+}
+
+static void io_fail(VM *vm, const char *fn_name, const char *path, const char *errbuf) {
+    vm_throw_native(vm, "SkillIssue", "'%s' on '%s' failed: %s.", fn_name, path, errbuf);
+}
+
+/* -- pure path-string helpers (funnylang/stdlib/filez.py never touches
+   the filesystem for these -- pathlib's join/parent/name/suffix are all
+   string manipulation over a POSIX-flavoured parse) ---------------- */
+
+typedef struct {
+    bool absolute;
+    char **parts;
+    int count;
+} ParsedPath;
+
+static ParsedPath parse_path(const char *path) {
+    ParsedPath p;
+    p.absolute = path[0] == '/';
+    p.parts = (char **)malloc(sizeof(char *) * 256);
+    p.count = 0;
+    char *copy = (char *)malloc(strlen(path) + 1);
+    memcpy(copy, path, strlen(path) + 1);
+    char *tok = strtok(copy, "/");
+    while (tok && p.count < 256) {
+        if (strcmp(tok, ".") != 0) {
+            size_t len = strlen(tok);
+            char *dup = (char *)malloc(len + 1);
+            memcpy(dup, tok, len + 1);
+            p.parts[p.count++] = dup;
+        }
+        tok = strtok(NULL, "/");
+    }
+    free(copy);
+    return p;
+}
+
+static void free_parsed(ParsedPath *p) {
+    for (int i = 0; i < p->count; i++) free(p->parts[i]);
+    free(p->parts);
+}
+
+static Value m_join_path(VM *vm, Value *a, int argc) {
+    for (int i = 0; i < argc; i++) {
+        if (!IS_STRING(a[i])) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'join_path' needs a yapstring path, not a %s.",
+                             vm_type_name(a[i]));
+            return GHOST_VAL;
+        }
+    }
+    size_t cap = 256, len = 0;
+    char *buf = (char *)malloc(cap);
+    buf[0] = '\0';
+    for (int i = 0; i < argc; i++) {
+        ObjString *part = AS_STRING(a[i]);
+        if (part->byteLen == 0) continue;
+        if (i == 0 || part->chars[0] == '/') {
+            /* An absolute later part overrides everything before it,
+               matching pathlib's Path.__truediv__ / os.path.join. */
+            if (part->byteLen + 1 > cap) {
+                cap = part->byteLen + 1;
+                buf = (char *)realloc(buf, cap);
+            }
+            memcpy(buf, part->chars, part->byteLen);
+            len = part->byteLen;
+            buf[len] = '\0';
+            continue;
+        }
+        bool needSlash = len > 0 && buf[len - 1] != '/';
+        size_t needed = len + (needSlash ? 1 : 0) + part->byteLen + 1;
+        if (needed > cap) {
+            cap = needed;
+            buf = (char *)realloc(buf, cap);
+        }
+        if (needSlash) buf[len++] = '/';
+        memcpy(buf + len, part->chars, part->byteLen);
+        len += part->byteLen;
+        buf[len] = '\0';
+    }
+    Value result = OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)len));
+    free(buf);
+    return result;
+}
+
+static Value m_dir_of(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "dir_of");
+    if (!path) return GHOST_VAL;
+    ParsedPath p = parse_path(path);
+    char buf[4096];
+    if (p.count <= 1) {
+        snprintf(buf, sizeof(buf), "%s", p.absolute ? "/" : ".");
+    } else {
+        size_t pos = 0;
+        if (p.absolute) buf[pos++] = '/';
+        for (int i = 0; i < p.count - 1; i++) {
+            if (i > 0) buf[pos++] = '/';
+            size_t l = strlen(p.parts[i]);
+            if (pos + l < sizeof(buf)) {
+                memcpy(buf + pos, p.parts[i], l);
+                pos += l;
+            }
+        }
+        buf[pos] = '\0';
+    }
+    free_parsed(&p);
+    return OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)strlen(buf)));
+}
+
+static Value m_base_of(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "base_of");
+    if (!path) return GHOST_VAL;
+    ParsedPath p = parse_path(path);
+    const char *name = p.count > 0 ? p.parts[p.count - 1] : "";
+    Value result = OBJ_VAL(string_new(&vm->gc, name, (uint32_t)strlen(name)));
+    free_parsed(&p);
+    return result;
+}
+
+static Value m_ext_of(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "ext_of");
+    if (!path) return GHOST_VAL;
+    ParsedPath p = parse_path(path);
+    const char *name = p.count > 0 ? p.parts[p.count - 1] : "";
+    size_t nameLen = strlen(name);
+    const char *suffix = "";
+    /* pathlib's Path.suffix: the last dot, provided it's neither the
+       first nor the last character of the name. */
+    for (size_t i = nameLen; i-- > 0;) {
+        if (name[i] == '.') {
+            if (i > 0 && i < nameLen - 1) suffix = name + i;
+            break;
+        }
+    }
+    Value result = OBJ_VAL(string_new(&vm->gc, suffix, (uint32_t)strlen(suffix)));
+    free_parsed(&p);
+    return result;
+}
+
+/* -- real filesystem access, all via platform.h --------------------- */
+
+static Value m_slurp(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "slurp");
+    if (!path) return GHOST_VAL;
+    unsigned char *data;
+    size_t len;
+    char errbuf[256];
+    if (!platform_read_file(path, &data, &len, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "slurp", path, errbuf);
+        return GHOST_VAL;
+    }
+    Value result = OBJ_VAL(string_new(&vm->gc, (const char *)data, (uint32_t)len));
+    free(data);
+    return result;
+}
+
+static Value m_yeet_out(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "yeet_out");
+    if (!path) return GHOST_VAL;
+    if (!IS_STRING(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'yeet_out' needs a yapstring, not a %s.", vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjString *text = AS_STRING(a[1]);
+    char errbuf[256];
+    if (!platform_write_file(path, (const unsigned char *)text->chars, text->byteLen, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "yeet_out", path, errbuf);
+        return GHOST_VAL;
+    }
+    return INT_VAL(text->codepointCount);
+}
+
+static Value m_append_to(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "append_to");
+    if (!path) return GHOST_VAL;
+    if (!IS_STRING(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'append_to' needs a yapstring, not a %s.", vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjString *text = AS_STRING(a[1]);
+    char errbuf[256];
+    if (!platform_append_file(path, (const unsigned char *)text->chars, text->byteLen, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "append_to", path, errbuf);
+        return GHOST_VAL;
+    }
+    return INT_VAL(text->codepointCount);
+}
+
+static Value m_exists(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "exists");
+    if (!path) return GHOST_VAL;
+    return BOOL_VAL(platform_path_exists(path));
+}
+
+static Value m_obliterate(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "obliterate");
+    if (!path) return GHOST_VAL;
+    char errbuf[256];
+    if (!platform_remove_path(path, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "obliterate", path, errbuf);
+        return GHOST_VAL;
+    }
+    return BOOL_VAL(true);
+}
+
+static Value m_list_dir(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "list_dir");
+    if (!path) return GHOST_VAL;
+    char **names;
+    size_t count;
+    char errbuf[256];
+    if (!platform_list_dir(path, &names, &count, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "list_dir", path, errbuf);
+        return GHOST_VAL;
+    }
+    ObjStash *s = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(s));
+    for (size_t i = 0; i < count; i++) {
+        stash_push(&vm->gc, s, OBJ_VAL(string_new(&vm->gc, names[i], (uint32_t)strlen(names[i]))));
+    }
+    gc_pop_temp(&vm->gc);
+    for (size_t i = 0; i < count; i++) free(names[i]);
+    free(names);
+    return OBJ_VAL(s);
+}
+
+static Value m_mkdir(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "mkdir");
+    if (!path) return GHOST_VAL;
+    char errbuf[256];
+    if (!platform_mkdir_p(path, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "mkdir", path, errbuf);
+        return GHOST_VAL;
+    }
+    return BOOL_VAL(true);
+}
+
+static Value m_read_bytes(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "read_bytes");
+    if (!path) return GHOST_VAL;
+    unsigned char *data;
+    size_t len;
+    char errbuf[256];
+    if (!platform_read_file(path, &data, &len, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "read_bytes", path, errbuf);
+        return GHOST_VAL;
+    }
+    ObjStash *s = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(s));
+    for (size_t i = 0; i < len; i++) stash_push(&vm->gc, s, INT_VAL(data[i]));
+    gc_pop_temp(&vm->gc);
+    free(data);
+    return OBJ_VAL(s);
+}
+
+/* int(x) & 0xFF, matching write_bytes.py's `bytes(int(x) & 0xFF for x in
+   data.items)` for the ordinary numba cases; a bignum too large for
+   int64_t is a narrower, safety-improving TypeVibeMismatch here instead
+   of chasing Python's arbitrary-precision `& 0xFF` for a case no
+   realistic byte-stash will ever hit (see rizz.roll's own precedent,
+   NATIVE_PLAN.md §9). */
+static bool value_to_byte(Value v, unsigned char *out) {
+    int64_t n;
+    if (IS_BOOL(v)) {
+        n = AS_BOOL(v) ? 1 : 0;
+    } else if (IS_INT(v)) {
+        n = AS_INT(v);
+    } else if (IS_FLOAT(v)) {
+        n = (int64_t)AS_FLOAT(v);
+    } else if (IS_BIGNUM(v)) {
+        if (!bignum_to_int64(AS_BIGNUM(v), &n)) return false;
+    } else {
+        return false;
+    }
+    *out = (unsigned char)(n & 0xFF);
+    return true;
+}
+
+static Value m_write_bytes(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "write_bytes");
+    if (!path) return GHOST_VAL;
+    if (!(IS_OBJ(a[1]) && AS_OBJ(a[1])->type == OBJ_STASH)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'write_bytes' needs a stash of numbas.");
+        return GHOST_VAL;
+    }
+    ObjStash *s = (ObjStash *)AS_OBJ(a[1]);
+    unsigned char *payload = (unsigned char *)malloc(s->count > 0 ? (size_t)s->count : 1);
+    for (int i = 0; i < s->count; i++) {
+        if (!value_to_byte(s->items[i], &payload[i])) {
+            free(payload);
+            vm_throw_native(vm, "TypeVibeMismatch", "'write_bytes' needs a stash of numbas.");
+            return GHOST_VAL;
+        }
+    }
+    char errbuf[256];
+    if (!platform_write_file(path, payload, (size_t)s->count, errbuf, sizeof(errbuf))) {
+        free(payload);
+        io_fail(vm, "write_bytes", path, errbuf);
+        return GHOST_VAL;
+    }
+    free(payload);
+    return INT_VAL(s->count);
+}
+
+static Value m_abs_path(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "abs_path");
+    if (!path) return GHOST_VAL;
+    char out[4096];
+    char errbuf[256];
+    if (!platform_abs_path(path, out, sizeof(out), errbuf, sizeof(errbuf))) {
+        io_fail(vm, "abs_path", path, errbuf);
+        return GHOST_VAL;
+    }
+    return OBJ_VAL(string_new(&vm->gc, out, (uint32_t)strlen(out)));
+}
+
+typedef struct {
+    const char *name;
+    NativeMethodFn fn;
+    int minArity;
+    int maxArity;
+} FilezEntry;
+
+static const FilezEntry FILEZ_FUNCTIONS[] = {
+    {"slurp", m_slurp, 1, 1},
+    {"yeet_out", m_yeet_out, 2, 2},
+    {"append_to", m_append_to, 2, 2},
+    {"exists", m_exists, 1, 1},
+    {"obliterate", m_obliterate, 1, 1},
+    {"list_dir", m_list_dir, 1, 1},
+    {"mkdir", m_mkdir, 1, 1},
+    {"read_bytes", m_read_bytes, 1, 1},
+    {"write_bytes", m_write_bytes, 2, 2},
+    {"abs_path", m_abs_path, 1, 1},
+    {"join_path", m_join_path, 1, 255},
+    {"dir_of", m_dir_of, 1, 1},
+    {"base_of", m_base_of, 1, 1},
+    {"ext_of", m_ext_of, 1, 1},
+};
+#define FILEZ_FUNCTIONS_COUNT (int)(sizeof(FILEZ_FUNCTIONS) / sizeof(FILEZ_FUNCTIONS[0]))
+
+Value filez_build(VM *vm) {
+    ObjGroupChat *members = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(members));
+    for (int i = 0; i < FILEZ_FUNCTIONS_COUNT; i++) {
+        const FilezEntry *e = &FILEZ_FUNCTIONS[i];
+        ObjString *name = string_new(&vm->gc, e->name, (uint32_t)strlen(e->name));
+        ObjNativeFn *fn = native_fn_new(&vm->gc, e->fn, name->chars, e->minArity, e->maxArity);
+        groupchat_set(&vm->gc, members, OBJ_VAL(name), OBJ_VAL(fn));
+    }
+    ObjString *moduleName = string_new(&vm->gc, "filez", 5);
+    ObjModule *mod = module_new(&vm->gc, moduleName, OBJ_VAL(members));
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(mod);
+}
