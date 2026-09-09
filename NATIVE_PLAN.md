@@ -980,3 +980,52 @@ gets an entry explaining what changed and why.
   `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1` (byte-diffed against Python, not just a zero exit
   code). Real UTF-8 yapstring and pointers-to-places (`PTR_INDEX`/`PTR_PROP`) remain as N4's last
   two sub-phases.
+- **N4 · sub-phase 4d complete · pointers to places (task 8).** `POINTA_INDEX`/`POINTA_PROP` join
+  N3's `POINTA_CELL`/`POINTA_GLOBAL` -- `ObjPointa` gains `container`/`key` Value fields, shared by
+  both kinds exactly as `funnylang/values.py`'s own `Pointa` shares them (a stash/groupchat key for
+  INDEX, a field name for PROP). `PTR_INDEX`/`PTR_PROP` opcodes; `DEREF`/`SET_DEREF` extended via
+  two new shared helpers (`pointa_deref_value`/`pointa_set_value`) that dispatch to the now-existing
+  `vm_get_index`/`vm_set_index`/`vm_get_prop`/`vm_set_prop` (the latter two factored out of
+  `GET_PROP`/`SET_PROP`'s own opcode bodies specifically so DEREF/SET_DEREF and the two opcodes share
+  one implementation); pointer arithmetic in `vm_add`/`vm_sub`/`vm_compare` (only a "index"-kind
+  pointa into a *Stash*, with a plain fixnum key, supports it -- `require_stash_pointa`, ported);
+  place-identity equality in `vm_value_equal` (same box, or same container+key -- never the pointed-
+  to value); and the pointa's own 4 instance methods (`.deref()` `.set()` `.valid()` `.where()`) via
+  the same `NativeMethodFn`/`ObjBoundNative` machinery stash/groupchat's methods already use.
+  `.valid()` is the one deliberate exception to "every native method leaves an error pending for the
+  dispatch loop to unwind" -- it catches and clears `vm->hadError` itself, mirroring
+  `funnylang/vm.py`'s own `try: deref(); return True except FunnyError: return False`.
+  **Deliberate, narrow deviation from Python: a pointer's arithmetic requires its `key` to be a
+  plain fixnum, not just "the container is a Stash."** `funnylang/vm.py`'s own
+  `_require_stash_pointa` doesn't check this (a float-keyed stash pointer's arithmetic there just
+  silently produces a float-keyed result -- a Python quirk nothing relies on, since forming a
+  float-keyed pointer into a Stash isn't something any real program does), but `AS_INT` on a
+  non-int `Value` in C reads the wrong tagged-union member -- undefined behavior, not merely wrong
+  output. A clean, explicit `TypeVibeMismatch` instead is the safer call, and matches this
+  milestone's own "never a segfault/UB" mandate better than reproducing the Python quirk exactly
+  would.
+  **GC-safety fix, found by tracing the code rather than by a failing test (unlike the earlier
+  sub-phases' fixes, `FUNNY_GC_STRESS=1` didn't happen to catch this one -- none of the differential
+  programs' pointer *keys* were containers holding a `to_yap`-able Instance, so the unsafe path was
+  never actually exercised):** `PTR_INDEX`'s label (`vm_index_label`, used for both the opcode and
+  pointer arithmetic) reprs the container/key to build e.g. `"stash[3]"` or `"groupchat[\"k\"]"` --
+  which, for an arbitrary user-supplied key, can call back into FunnyLang (an Instance `key`, or one
+  nested inside a Stash/GroupChat `key`, via `to_yap`) exactly like `value_to_display` already does.
+  `OP_PTR_INDEX` pops both `container` and `key` off `vm->stack` *before* building the label, so
+  neither was reachable from any root during that nested call -- fixed by rooting both for the
+  call's duration, same fix and same reason as call_bound_native's own. Pointer *arithmetic*'s own
+  calls to the same label function needed no such fix: the key they label is always a freshly
+  computed `INT_VAL`, never anything that can carry a `to_yap`.
+  Verified: 9 differential programs (8 ported from the Python-verified `tests/lang/` ptr suite --
+  one, `ptr_methods.funny`, adapted to drop two calls to N5's `what_is_it`/`to_yap` builtins, neither
+  of which exists yet; one, the 5 runtime-error `err_ptr_*.funny` files, merged into a single
+  `ptr_errors.funny` wrapping each in `sketchy`/`my_bad` since the differential harness requires a
+  clean exit -- `err_ptr_address_of_const.funny` was *not* ported: `ImmutableVibes` is a compile-time
+  check in `resolver.py`, unreachable from any `.funnyc` the native VM ever loads, so there is
+  nothing for this milestone to port; plus one new file covering groupchat/instance-field pointers,
+  an Instance reached through a pointer's own key, and pointer arithmetic/comparison across two
+  different stashes), byte-identical against the Python VM, gcc and clang, `-Werror`, ASan/UBSan,
+  and `FUNNY_GC_STRESS=1` (byte-diffed against Python, not just a zero exit code) -- this is the
+  milestone NATIVE_PLAN.md itself calls out as "safe pointers are either true or aren't," and this
+  is that verification.
+  Real UTF-8 yapstring (task 1) is now N4's only remaining task.

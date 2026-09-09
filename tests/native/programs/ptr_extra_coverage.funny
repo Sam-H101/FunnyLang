@@ -1,0 +1,52 @@
+yo g = {"a": 1, "b": 2}
+yo pg = &g["a"]
+yap pg
+yap *pg
+*pg = 100
+yap g
+
+squad Tag {
+    spawn(name) { me.name = name }
+    bet to_yap() { bounce me.name }
+}
+yo tagged = {"key": Tag("labeled")}
+yo pk = &tagged["key"]
+yap pk
+
+bet catch_it(fn) {
+    sketchy {
+        fn()
+    } my_bad (e) {
+        yap "caught:", e.flavor
+    }
+}
+
+catch_it(lowkey () => {
+    yo a1 = [1, 2, 3]
+    yo a2 = [4, 5, 6]
+    yo pa = &a1[0]
+    yo pb = &a2[0]
+    bounce pa - pb
+})
+
+catch_it(lowkey () => {
+    yo a1 = [1, 2, 3]
+    yo a2 = [4, 5, 6]
+    yo pa = &a1[0]
+    yo pb = &a2[0]
+    bounce pa < pb
+})
+
+catch_it(lowkey () => {
+    yo m = {"a": 1}
+    yo pm = &m["a"]
+    bounce pm + 1
+})
+
+squad Box { spawn(v) { me.v = v } }
+yo b = Box(1)
+yo pf = &b.v
+yap pf
+yap *pf
+*pf = 42
+yap b.v

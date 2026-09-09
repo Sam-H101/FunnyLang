@@ -377,6 +377,32 @@ static bool vm_value_equal_rec(VM *vm, Value a, Value b) {
         if (vm->hadError) return false; /* discarded; the dispatch loop unwinds */
         return value_is_truthy(result);
     }
+    if (IS_OBJ(a) && IS_OBJ(b) && AS_OBJ(a)->type == OBJ_POINTA && AS_OBJ(b)->type == OBJ_POINTA) {
+        /* Place identity (PLAN.md §3.10): the same box, or the same
+           container and key -- never the pointed-to value (that's what
+           `*p == *q` is for). Matches funnylang/values.py's own funny_eq
+           exactly. */
+        ObjPointa *pa = (ObjPointa *)AS_OBJ(a), *pb = (ObjPointa *)AS_OBJ(b);
+        if (pa->kind != pb->kind) return false;
+        if (pa->kind == POINTA_CELL) return pa->cell == pb->cell;
+        /* Only one globals table exists in the whole VM at this milestone's
+           scope (no per-module namespaces yet -- that's N5's), so "same
+           globals_dict" (funnylang/vm.py's own check) is always true here;
+           the name alone decides. */
+        if (pa->kind == POINTA_GLOBAL) return string_equal(pa->globalName, pb->globalName);
+        /* "index"/"prop": container is whatever PTR_INDEX/PTR_PROP was
+           applied to, unchecked at construction time -- it need not be an
+           Obj at all (`&(5).whatever` is legal to *form*). Two non-Obj
+           containers have no real identity to compare, so content
+           equality is the closest analogue (matching CPython's `is` on
+           interned small ints/ghost/bools in practice, which is what
+           funnylang/vm.py's own `a.container is b.container` actually
+           observes for those cases). */
+        bool containerSame = IS_OBJ(pa->container) && IS_OBJ(pb->container)
+                                  ? AS_OBJ(pa->container) == AS_OBJ(pb->container)
+                                  : value_equal_narrow(pa->container, pb->container);
+        return containerSame && vm_value_equal_rec(vm, pa->key, pb->key);
+    }
     return value_equal_narrow(a, b);
 }
 
@@ -704,9 +730,97 @@ static double float_floor_mod(double a, double b) {
     return r;
 }
 
+/* -- pointer arithmetic (PLAN.md §3.10) -------------------------------- */
+
+/* `key`'s repr can call back into FunnyLang (an Instance `key`, or one
+   nested inside a Stash/GroupChat `key`, with a `to_yap`), which can
+   trigger a collection -- the caller must keep `container`/`key` rooted
+   (e.g. gc_push_temp) for the whole call if they aren't already reachable
+   some other way (still on vm->stack, or transitively via an already-
+   rooted value). Pointer arithmetic's own callers are safe without this:
+   the key they pass here is always a freshly computed INT_VAL, never
+   anything that can carry a `to_yap`. */
+static ObjString *vm_index_label(VM *vm, Value container, Value key) {
+    bool isGroupchat = IS_OBJ(container) && AS_OBJ(container)->type == OBJ_GROUPCHAT;
+    SeenStack seen = {0};
+    char *keyRepr = repr_value_rec(vm, key, &seen);
+    free(seen.items);
+    size_t need = strlen(keyRepr) + 16;
+    char *buf = (char *)malloc(need);
+    snprintf(buf, need, "%s[%s]", isGroupchat ? "groupchat" : "stash", keyRepr);
+    free(keyRepr);
+    ObjString *r = string_new(&vm->gc, buf, (uint32_t)strlen(buf));
+    free(buf);
+    return r;
+}
+
+/* Only a pointer into a Stash, at "index" kind, supports arithmetic --
+   PLAN.md §3.10: a groupchat key has no ordinal, and a "prop"/cell/global
+   pointa isn't addressing a sequence at all. Also requires a plain fixnum
+   key: funnylang/vm.py's own _require_stash_pointa doesn't check this (a
+   float-keyed stash pointer's arithmetic just silently produces a float-
+   keyed result there, a Python quirk nothing relies on), but AS_INT on a
+   non-int Value here would read the wrong union member -- a clean,
+   explicit TypeVibeMismatch is the safer call, matching this whole
+   milestone's "never a segfault/UB" mandate. */
+static bool require_stash_pointa(VM *vm, ObjPointa *p, const char *verb) {
+    if (p->kind != POINTA_INDEX || !(IS_OBJ(p->container) && AS_OBJ(p->container)->type == OBJ_STASH) || !IS_INT(p->key)) {
+        vm_throw_fmt(vm, "TypeVibeMismatch", "can't %s a pointa that isn't into a stash.", verb);
+        return false;
+    }
+    return true;
+}
+
+static Value vm_pointer_add(VM *vm, Value a, Value b) {
+    bool aIsPtr = IS_OBJ(a) && AS_OBJ(a)->type == OBJ_POINTA;
+    bool bIsPtr = IS_OBJ(b) && AS_OBJ(b)->type == OBJ_POINTA;
+    if (aIsPtr && bIsPtr) {
+        vm_throw(vm, "TypeVibeMismatch", "can't add two pointas together.");
+        return GHOST_VAL;
+    }
+    Value ptrVal = aIsPtr ? a : b;
+    Value nVal = aIsPtr ? b : a;
+    if (!IS_INT_LIKE(nVal)) {
+        vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
+        return GHOST_VAL;
+    }
+    ObjPointa *ptr = (ObjPointa *)AS_OBJ(ptrVal);
+    if (!require_stash_pointa(vm, ptr, "add to")) return GHOST_VAL;
+    Value newKeyVal = INT_VAL(AS_INT(ptr->key) + as_int64_like(nVal));
+    ObjString *label = vm_index_label(vm, ptr->container, newKeyVal);
+    return OBJ_VAL(pointa_new_place(&vm->gc, POINTA_INDEX, ptr->container, newKeyVal, label));
+}
+
+static Value vm_pointer_sub(VM *vm, Value a, Value b) {
+    bool aIsPtr = IS_OBJ(a) && AS_OBJ(a)->type == OBJ_POINTA;
+    bool bIsPtr = IS_OBJ(b) && AS_OBJ(b)->type == OBJ_POINTA;
+    if (aIsPtr && bIsPtr) {
+        ObjPointa *pa = (ObjPointa *)AS_OBJ(a), *pb = (ObjPointa *)AS_OBJ(b);
+        if (!require_stash_pointa(vm, pa, "subtract")) return GHOST_VAL;
+        if (!require_stash_pointa(vm, pb, "subtract")) return GHOST_VAL;
+        if (AS_OBJ(pa->container) != AS_OBJ(pb->container)) {
+            vm_throw(vm, "TypeVibeMismatch", "can't subtract pointas into different stashes.");
+            return GHOST_VAL;
+        }
+        return INT_VAL(AS_INT(pa->key) - AS_INT(pb->key));
+    }
+    if (aIsPtr && IS_INT_LIKE(b)) {
+        ObjPointa *pa = (ObjPointa *)AS_OBJ(a);
+        if (!require_stash_pointa(vm, pa, "subtract from")) return GHOST_VAL;
+        Value newKeyVal = INT_VAL(AS_INT(pa->key) - as_int64_like(b));
+        ObjString *label = vm_index_label(vm, pa->container, newKeyVal);
+        return OBJ_VAL(pointa_new_place(&vm->gc, POINTA_INDEX, pa->container, newKeyVal, label));
+    }
+    vm_throw_fmt(vm, "TypeVibeMismatch", "can't subtract a %s from a %s.", type_name_of(b), type_name_of(a));
+    return GHOST_VAL;
+}
+
 /* -- binary arithmetic (ADD..MOD, POW) --------------------------------------- */
 
 static Value vm_add(VM *vm, Value a, Value b) {
+    if ((IS_OBJ(a) && AS_OBJ(a)->type == OBJ_POINTA) || (IS_OBJ(b) && AS_OBJ(b)->type == OBJ_POINTA)) {
+        return vm_pointer_add(vm, a, b);
+    }
     if (IS_INT(a) && IS_INT(b)) {
         int64_t r;
         if (!add_overflows_i64(AS_INT(a), AS_INT(b), &r)) return INT_VAL(r);
@@ -744,6 +858,9 @@ static Value vm_add(VM *vm, Value a, Value b) {
 }
 
 static Value vm_sub(VM *vm, Value a, Value b) {
+    if ((IS_OBJ(a) && AS_OBJ(a)->type == OBJ_POINTA) || (IS_OBJ(b) && AS_OBJ(b)->type == OBJ_POINTA)) {
+        return vm_pointer_sub(vm, a, b);
+    }
     if (!(IS_NUM(a) && IS_NUM(b))) {
         vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
         return GHOST_VAL;
@@ -1015,7 +1132,22 @@ typedef enum { CMP_LT, CMP_LE, CMP_GT, CMP_GE } CmpOp;
 
 static Value vm_compare(VM *vm, CmpOp op, Value a, Value b) {
     int cmp;
-    if (IS_NUM(a) && IS_NUM(b)) {
+    bool aIsPtr = IS_OBJ(a) && AS_OBJ(a)->type == OBJ_POINTA;
+    bool bIsPtr = IS_OBJ(b) && AS_OBJ(b)->type == OBJ_POINTA;
+    if (aIsPtr || bIsPtr) {
+        if (!(aIsPtr && bIsPtr)) {
+            vm_throw_fmt(vm, "TypeVibeMismatch", "can't compare a %s and a %s.", type_name_of(a), type_name_of(b));
+            return GHOST_VAL;
+        }
+        ObjPointa *pa = (ObjPointa *)AS_OBJ(a), *pb = (ObjPointa *)AS_OBJ(b);
+        if (!require_stash_pointa(vm, pa, "compare")) return GHOST_VAL;
+        if (!require_stash_pointa(vm, pb, "compare")) return GHOST_VAL;
+        if (AS_OBJ(pa->container) != AS_OBJ(pb->container)) {
+            vm_throw(vm, "TypeVibeMismatch", "can't compare pointas into different stashes.");
+            return GHOST_VAL;
+        }
+        cmp = AS_INT(pa->key) < AS_INT(pb->key) ? -1 : (AS_INT(pa->key) > AS_INT(pb->key) ? 1 : 0);
+    } else if (IS_NUM(a) && IS_NUM(b)) {
         cmp = compare_numeric(a, b);
     } else if (IS_STRING(a) && IS_STRING(b)) {
         ObjString *sa = AS_STRING(a), *sb = AS_STRING(b);
@@ -1140,6 +1272,17 @@ static void do_construct(VM *vm, ObjSquad *squad, int argc, int argStart) {
     push(vm, result);
 }
 
+/* Forward declarations: do_invoke/vm_get_prop (just below) need to bind a
+   pointa's own instance methods (.deref()/.set()/.valid()/.where()), whose
+   bodies (further down) need vm_get_index/vm_set_index/vm_get_prop/
+   vm_set_prop -- themselves defined after do_invoke/vm_get_prop in this
+   file. Breaking the cycle here rather than reordering the whole file. */
+static NativeMethodFn pointa_find_method(const char *name, int *outMinArity, int *outMaxArity);
+static Value vm_get_prop(VM *vm, Value obj, ObjString *name);
+static void vm_set_prop(VM *vm, Value obj, ObjString *name, Value value);
+static Value vm_get_index(VM *vm, Value obj, Value key);
+static void vm_set_index(VM *vm, Value obj, Value key, Value value);
+
 static void do_call(VM *vm, int argc) {
     int argStart = vm->stackCount - argc;
     Value callee = vm->stack[argStart - 1];
@@ -1248,6 +1391,8 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
         fn = stash_find_method(name->chars, &minArity, &maxArity);
     } else if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_GROUPCHAT) {
         fn = groupchat_find_method(name->chars, &minArity, &maxArity);
+    } else if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_POINTA) {
+        fn = pointa_find_method(name->chars, &minArity, &maxArity);
     }
     if (fn == NULL) {
         if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_SQUAD) {
@@ -1325,66 +1470,76 @@ static void do_invoke_og(VM *vm, ObjString *name, int argc) {
 /* -- properties / indexing / slicing (funnylang/vm.py's _get_prop,
    _get_index, _set_index, _get_slice, ported) ---------------------------- */
 
-static void get_prop(VM *vm, Value obj, ObjString *name) {
+static Value vm_get_prop(VM *vm, Value obj, ObjString *name) {
     if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_ERROR) {
         Value fieldVal;
         if (error_get_field(&vm->gc, (ObjError *)AS_OBJ(obj), name->chars, &fieldVal)) {
-            push(vm, fieldVal);
-        } else {
-            vm_throw_fmt(vm, "WhoDis", "error objects don't have '%s'.", name->chars);
+            return fieldVal;
         }
-        return;
+        vm_throw_fmt(vm, "WhoDis", "error objects don't have '%s'.", name->chars);
+        return GHOST_VAL;
     }
-    if (IS_OBJ(obj) && (AS_OBJ(obj)->type == OBJ_STASH || AS_OBJ(obj)->type == OBJ_GROUPCHAT)) {
+    if (IS_OBJ(obj) && (AS_OBJ(obj)->type == OBJ_STASH || AS_OBJ(obj)->type == OBJ_GROUPCHAT || AS_OBJ(obj)->type == OBJ_POINTA)) {
         int minArity, maxArity;
-        NativeMethodFn fn = AS_OBJ(obj)->type == OBJ_STASH
-                                 ? stash_find_method(name->chars, &minArity, &maxArity)
-                                 : groupchat_find_method(name->chars, &minArity, &maxArity);
+        NativeMethodFn fn;
+        if (AS_OBJ(obj)->type == OBJ_STASH) fn = stash_find_method(name->chars, &minArity, &maxArity);
+        else if (AS_OBJ(obj)->type == OBJ_GROUPCHAT) fn = groupchat_find_method(name->chars, &minArity, &maxArity);
+        else fn = pointa_find_method(name->chars, &minArity, &maxArity);
         if (fn == NULL) {
             vm_throw_fmt(vm, "WhoDis", "a %s doesn't have '%s'.", type_name_of(obj), name->chars);
-            return;
+            return GHOST_VAL;
         }
         /* name->chars is safe to store long-term (not just for this call):
            it's part of the unit's constant pool, which mark_vm_roots keeps
            reachable for the whole run regardless of what else the GC
            collects -- see that function's own comment on exactly this
            point. */
-        push(vm, OBJ_VAL(bound_native_new(&vm->gc, obj, fn, name->chars, minArity, maxArity)));
-        return;
+        return OBJ_VAL(bound_native_new(&vm->gc, obj, fn, name->chars, minArity, maxArity));
     }
     if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_INSTANCE) {
         ObjInstance *inst = (ObjInstance *)AS_OBJ(obj);
         Value fieldVal;
         if (instance_get_field(inst, name->chars, &fieldVal)) {
-            push(vm, fieldVal);
-            return;
+            return fieldVal;
         }
         ObjClosure *method = squad_find_method(inst->squad, name->chars);
         if (method != NULL) {
-            push(vm, OBJ_VAL(bound_method_new(&vm->gc, obj, method)));
-            return;
+            return OBJ_VAL(bound_method_new(&vm->gc, obj, method));
         }
         /* An unset field/unknown name on an Instance is ghost, not WhoDis
            -- deliberately different from every other type's GET_PROP,
            matching funnylang/vm.py's own _get_prop (`return GHOST`). */
-        push(vm, GHOST_VAL);
-        return;
+        return GHOST_VAL;
     }
     if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_SQUAD) {
         ObjSquad *squad = (ObjSquad *)AS_OBJ(obj);
         ObjClosure *method = squad_find_method(squad, name->chars);
         if (method == NULL) {
             vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do '%s'.", squad->name->chars, name->chars);
-            return;
+            return GHOST_VAL;
         }
-        push(vm, OBJ_VAL(method));
-        return;
+        return OBJ_VAL(method);
     }
     if (IS_GHOST(obj)) {
         vm_throw_fmt(vm, "GhostError", "can't read '%s' off ghost.", name->chars);
-        return;
+        return GHOST_VAL;
     }
     vm_throw_fmt(vm, "WhoDis", "a %s doesn't have '%s' (yet).", type_name_of(obj), name->chars);
+    return GHOST_VAL;
+}
+
+static void vm_set_prop(VM *vm, Value obj, ObjString *name, Value value) {
+    /* Instance fields (`me.x = ...`) are the only settable property in
+       the whole language -- matches funnylang/vm.py's own _set_prop
+       exactly (no method-dispatch magic here: field assignment is always
+       a plain write, unlike GET_INDEX/SET_INDEX's get_it/set_it). */
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_INSTANCE) {
+        instance_set_field(&vm->gc, (ObjInstance *)AS_OBJ(obj), name, value);
+    } else if (IS_GHOST(obj)) {
+        vm_throw_fmt(vm, "GhostError", "can't set '%s' on ghost.", name->chars);
+    } else {
+        vm_throw_fmt(vm, "TypeVibeMismatch", "can't set properties on a %s.", type_name_of(obj));
+    }
 }
 
 static Value vm_get_index(VM *vm, Value obj, Value key) {
@@ -1590,6 +1745,99 @@ static Value vm_get_slice(VM *vm, Value obj, Value startV, Value stopV, Value st
     ObjString *r = string_new(&vm->gc, buf, (uint32_t)count);
     free(buf);
     return OBJ_VAL(r);
+}
+
+/* -- pointa deref/set + its own instance methods (PLAN.md §3.10) -------- */
+
+/* Shared by DEREF and the `.deref()` method -- funnylang/vm.py's own
+   _pointa_deref. */
+static Value pointa_deref_value(VM *vm, ObjPointa *ptr) {
+    if (ptr->kind == POINTA_CELL) return upvalue_get(ptr->cell);
+    if (ptr->kind == POINTA_GLOBAL) {
+        GlobalEntry *g = globals_find(vm, ptr->globalName);
+        if (g == NULL) {
+            vm_throw_fmt(vm, "WhoDis", "'%s' isn't defined.", ptr->globalName->chars);
+            return GHOST_VAL;
+        }
+        return g->value;
+    }
+    if (ptr->kind == POINTA_INDEX) return vm_get_index(vm, ptr->container, ptr->key);
+    return vm_get_prop(vm, ptr->container, AS_STRING(ptr->key)); /* POINTA_PROP */
+}
+
+/* Shared by SET_DEREF and the `.set()` method -- funnylang/vm.py's own
+   _pointa_set (which also returns `value`; callers that want that do it
+   themselves, matching DEREF/SET_DEREF's existing push(vm, value)). */
+static void pointa_set_value(VM *vm, ObjPointa *ptr, Value value) {
+    if (ptr->kind == POINTA_CELL) {
+        upvalue_set(ptr->cell, value);
+    } else if (ptr->kind == POINTA_GLOBAL) {
+        globals_set(vm, ptr->globalName, value);
+    } else if (ptr->kind == POINTA_INDEX) {
+        vm_set_index(vm, ptr->container, ptr->key, value);
+    } else {
+        vm_set_prop(vm, ptr->container, AS_STRING(ptr->key), value); /* POINTA_PROP */
+    }
+}
+
+static Value m_pointa_deref(VM *vm, Value *a, int argc) {
+    (void)argc;
+    return pointa_deref_value(vm, (ObjPointa *)AS_OBJ(a[0]));
+}
+
+static Value m_pointa_set(VM *vm, Value *a, int argc) {
+    (void)argc;
+    pointa_set_value(vm, (ObjPointa *)AS_OBJ(a[0]), a[1]);
+    return a[1];
+}
+
+static Value m_pointa_valid(VM *vm, Value *a, int argc) {
+    (void)argc;
+    pointa_deref_value(vm, (ObjPointa *)AS_OBJ(a[0]));
+    if (vm->hadError) {
+        /* funnylang/vm.py's own _pointa_valid: `try: deref(); return True
+           except FunnyError: return False` -- the one place in the whole
+           VM where an error is deliberately caught and swallowed rather
+           than left pending for the dispatch loop to unwind. */
+        vm->hadError = false;
+        vm->pendingError = GHOST_VAL;
+        return BOOL_VAL(false);
+    }
+    return BOOL_VAL(true);
+}
+
+static Value m_pointa_where(VM *vm, Value *a, int argc) {
+    (void)vm;
+    (void)argc;
+    ObjPointa *p = (ObjPointa *)AS_OBJ(a[0]);
+    if (p->kind == POINTA_CELL || p->kind == POINTA_GLOBAL) return OBJ_VAL(p->label);
+    return p->key; /* "index"/"prop": the raw key/field name, not the label */
+}
+
+typedef struct {
+    const char *name;
+    NativeMethodFn fn;
+    int minArity;
+    int maxArity;
+} PointaMethodEntry;
+
+static const PointaMethodEntry POINTA_METHOD_TABLE[] = {
+    {"deref", m_pointa_deref, 0, 0},
+    {"set", m_pointa_set, 1, 1},
+    {"valid", m_pointa_valid, 0, 0},
+    {"where", m_pointa_where, 0, 0},
+};
+#define POINTA_METHOD_TABLE_COUNT (int)(sizeof(POINTA_METHOD_TABLE) / sizeof(POINTA_METHOD_TABLE[0]))
+
+static NativeMethodFn pointa_find_method(const char *name, int *outMinArity, int *outMaxArity) {
+    for (int i = 0; i < POINTA_METHOD_TABLE_COUNT; i++) {
+        if (strcmp(POINTA_METHOD_TABLE[i].name, name) == 0) {
+            *outMinArity = POINTA_METHOD_TABLE[i].minArity;
+            *outMaxArity = POINTA_METHOD_TABLE[i].maxArity;
+            return POINTA_METHOD_TABLE[i].fn;
+        }
+    }
+    return NULL;
 }
 
 /* -- iteration (NATIVE_PLAN.md N3 task 5's ITER_NEW/ITER_NEXT, ported
@@ -2109,6 +2357,38 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 push(vm, OBJ_VAL(pointa_new_global(&vm->gc, vm, name)));
                 break;
             }
+            case OP_PTR_INDEX: {
+                /* No bounds/liveness check here, deliberately -- forming a
+                   one-past-the-end (or entirely bogus) pointer is legal;
+                   only DEREF/SET_DEREF (and pointer arithmetic) ever look
+                   at what it addresses. Matches funnylang/vm.py's own
+                   PTR_INDEX exactly. */
+                Value key = pop(vm);
+                Value obj = pop(vm);
+                /* Both already off vm->stack, and vm_index_label's repr of
+                   `key` can call back into FunnyLang (an Instance `key`,
+                   or one nested inside a Stash/GroupChat `key`, with a
+                   `to_yap`) -- root both for the call, same hazard
+                   call_bound_native's own comment describes. */
+                gc_push_temp(&vm->gc, obj);
+                gc_push_temp(&vm->gc, key);
+                ObjString *label = vm_index_label(vm, obj, key);
+                gc_pop_temp(&vm->gc);
+                gc_pop_temp(&vm->gc);
+                push(vm, OBJ_VAL(pointa_new_place(&vm->gc, POINTA_INDEX, obj, key, label)));
+                break;
+            }
+            case OP_PTR_PROP: {
+                uint16_t nameIdx = read_u16(code, frame->ip);
+                frame->ip += 2;
+                ObjString *name = AS_STRING(consts[nameIdx].value);
+                Value obj = pop(vm);
+                char buf[192];
+                snprintf(buf, sizeof buf, "%s.%s", type_name_of(obj), name->chars);
+                ObjString *label = string_new(&vm->gc, buf, (uint32_t)strlen(buf));
+                push(vm, OBJ_VAL(pointa_new_place(&vm->gc, POINTA_PROP, obj, OBJ_VAL(name), label)));
+                break;
+            }
             case OP_DEREF: {
                 Value p = peek(vm, 0);
                 if (!(IS_OBJ(p) && AS_OBJ(p)->type == OBJ_POINTA)) {
@@ -2119,17 +2399,7 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                     }
                     break;
                 }
-                ObjPointa *ptr = (ObjPointa *)AS_OBJ(p);
-                if (ptr->kind == POINTA_CELL) {
-                    vm->stack[vm->stackCount - 1] = upvalue_get(ptr->cell);
-                } else {
-                    GlobalEntry *g = globals_find(vm, ptr->globalName);
-                    if (g == NULL) {
-                        vm_throw_fmt(vm, "WhoDis", "'%s' isn't defined.", ptr->globalName->chars);
-                        break;
-                    }
-                    vm->stack[vm->stackCount - 1] = g->value;
-                }
+                vm->stack[vm->stackCount - 1] = pointa_deref_value(vm, (ObjPointa *)AS_OBJ(p));
                 break;
             }
             case OP_SET_DEREF: {
@@ -2143,27 +2413,16 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                     }
                     break;
                 }
-                ObjPointa *ptr = (ObjPointa *)AS_OBJ(p);
-                if (ptr->kind == POINTA_CELL) {
-                    upvalue_set(ptr->cell, value);
-                } else {
-                    globals_set(vm, ptr->globalName, value);
-                }
+                pointa_set_value(vm, (ObjPointa *)AS_OBJ(p), value);
                 push(vm, value);
                 break;
             }
             case OP_GET_PROP: {
-                /* ObjError has real fields (PLAN.md §3.9's error field
-                   set, N3); Stash/GroupChat bind an instance method as an
-                   ObjBoundNative (N4) -- Instance/Squad field access and
-                   numba/yapstring/pointa's own method forms are still
-                   later work (squad.c hasn't landed yet; see vm.h's own
-                   note on that). */
                 uint16_t nameIdx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[nameIdx].value);
                 Value obj = pop(vm);
-                get_prop(vm, obj, name);
+                push(vm, vm_get_prop(vm, obj, name));
                 break;
             }
             case OP_GET_PROP_SAFE: {
@@ -2171,29 +2430,16 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[nameIdx].value);
                 Value obj = pop(vm);
-                if (IS_GHOST(obj)) {
-                    push(vm, GHOST_VAL);
-                } else {
-                    get_prop(vm, obj, name);
-                }
+                push(vm, IS_GHOST(obj) ? GHOST_VAL : vm_get_prop(vm, obj, name));
                 break;
             }
             case OP_SET_PROP: {
-                /* Instance fields (`me.x = ...`) are the only settable
-                   property in the whole language -- matches
-                   funnylang/vm.py's own _set_prop exactly. */
                 uint16_t nameIdx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[nameIdx].value);
                 Value value = pop(vm);
                 Value obj = pop(vm);
-                if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_INSTANCE) {
-                    instance_set_field(&vm->gc, (ObjInstance *)AS_OBJ(obj), name, value);
-                } else if (IS_GHOST(obj)) {
-                    vm_throw_fmt(vm, "GhostError", "can't set '%s' on ghost.", name->chars);
-                } else {
-                    vm_throw_fmt(vm, "TypeVibeMismatch", "can't set properties on a %s.", type_name_of(obj));
-                }
+                vm_set_prop(vm, obj, name, value);
                 push(vm, value);
                 break;
             }

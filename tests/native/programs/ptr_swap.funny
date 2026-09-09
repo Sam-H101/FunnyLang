@@ -1,0 +1,9 @@
+bet swap(a, b) {
+    yo t = *a
+    *a = *b
+    *b = t
+}
+yo x = 1
+yo y = 2
+swap(&x, &y)
+yap x, y

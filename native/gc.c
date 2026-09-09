@@ -212,6 +212,10 @@ static void blacken_object(GC *gc, Obj *obj) {
             gc_mark_object(gc, (Obj *)p->label);
             if (p->kind == POINTA_CELL) gc_mark_object(gc, (Obj *)p->cell);
             if (p->kind == POINTA_GLOBAL) gc_mark_object(gc, (Obj *)p->globalName);
+            if (p->kind == POINTA_INDEX || p->kind == POINTA_PROP) {
+                gc_mark_value(gc, p->container);
+                gc_mark_value(gc, p->key);
+            }
             return;
         }
         case OBJ_BOUND_NATIVE: {
