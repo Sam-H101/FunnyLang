@@ -21,10 +21,17 @@ if "%SRCS%"=="" (
     exit /b 1
 )
 
+rem /D_CRT_SECURE_NO_WARNINGS: MSVC's CRT flags plain-C11 getenv()/fopen()
+rem (gc.c, main.c) as C4996 "deprecated, use _dupenv_s/fopen_s instead" --
+rem real under /W4 /WX, since both calls are used correctly here (getenv
+rem once at startup, fopen with an explicit "rb" mode, no attacker-controlled
+rem format string). This is the standard, portable way to keep those calls
+rem plain C11 rather than forking them onto MSVC-only _s variants -- it only
+rem suppresses that one warning category, nothing else /W4 would still catch.
 if "%1"=="debug" (
-    set FLAGS=/std:c11 /Zi /Od /W4 /WX /fsanitize=address /DFUNNY_DEBUG
+    set FLAGS=/std:c11 /Zi /Od /W4 /WX /D_CRT_SECURE_NO_WARNINGS /fsanitize=address /DFUNNY_DEBUG
 ) else (
-    set FLAGS=/std:c11 /O2 /W4 /WX
+    set FLAGS=/std:c11 /O2 /W4 /WX /D_CRT_SECURE_NO_WARNINGS
 )
 
 echo + cl %FLAGS% /Fe:funny.exe %SRCS%
