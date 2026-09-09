@@ -1,0 +1,3 @@
+squad Tag { spawn(name) { me.name = name } bet to_yap() { bounce me.name } }
+yo tags = [Tag("a"), Tag("b"), Tag("c")]
+grind t in tags { yap t }

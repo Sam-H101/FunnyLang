@@ -86,7 +86,7 @@ class Closure:
     their enclosing one at CLOSURE-creation time), giving each module its
     own isolated global namespace per §3.8 ("non-flexed names are private")."""
 
-    __slots__ = ("proto", "upvalues", "const_pool", "protos", "module_globals", "module_exports")
+    __slots__ = ("proto", "upvalues", "const_pool", "protos", "module_globals", "module_exports", "home_squad")
 
     def __init__(self, proto, upvalues: list, const_pool=None, protos=None, module_globals=None, module_exports=None):
         self.proto = proto
@@ -95,6 +95,12 @@ class Closure:
         self.protos = protos
         self.module_globals = module_globals if module_globals is not None else {}
         self.module_exports = module_exports if module_exports is not None else {}
+        # Set by the VM's METHOD opcode: which Squad this closure was defined
+        # in (not the instance's runtime class!) — `og` must resolve relative
+        # to *this*, or a super-call two levels deep from a subclass would
+        # infinitely re-invoke the middle class's own method instead of
+        # reaching the top one.
+        self.home_squad = None
 
     def __repr__(self) -> str:  # pragma: no cover - debug convenience
         return f"<bet {self.proto.name}/{self.proto.arity}>"
@@ -292,7 +298,7 @@ def to_display(v, vm=None, _seen: frozenset = frozenset()) -> str:
     if isinstance(v, Instance):
         method = v.squad.find_method("to_yap")
         if method is not None and vm is not None:
-            return to_display(vm.call_value(method, []), vm, _seen)
+            return to_display(vm.call_value(method, [v]), vm, _seen)
         return f"<{v.squad.name} instance>"
     if isinstance(v, Module):
         return f"<module {v.name}>"

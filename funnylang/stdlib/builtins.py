@@ -1,8 +1,8 @@
 """Always-in-scope globals (PLAN.md §M6 task 3)."""
 from __future__ import annotations
 
-from ..errors import SkillIssue, TypeVibeMismatch
-from ..values import GHOST, GroupChat, NativeFn, Stash, is_truthy, to_display, to_repr, type_name
+from ..errors import SkillIssue, TypeVibeMismatch, WhoDis
+from ..values import GHOST, GroupChat, Instance, NativeFn, Stash, is_truthy, to_display, to_repr, type_name
 
 
 def _nf(name, fn, lo, hi=None):
@@ -17,6 +17,11 @@ def _how_thicc(vm, args):
         return len(x.items)
     if isinstance(x, str):
         return len(x)
+    if isinstance(x, Instance):
+        method = x.squad.find_method("how_thicc")
+        if method is not None:
+            return vm.call_value(method, [x])
+        raise WhoDis(f"'{x.squad.name}' doesn't do 'how_thicc'.", roast=f"`{x.squad.name}` doesn't do `how_thicc`. that's not its thing.")
     raise TypeVibeMismatch(f"a {type_name(x)} doesn't have a length.", roast=f"a {type_name(x)} doesn't have a length. it just is.")
 
 

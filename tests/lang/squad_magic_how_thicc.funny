@@ -1,0 +1,10 @@
+squad Bag {
+    spawn() { me.items = [] }
+    bet how_thicc() { bounce me.items.how_thicc() }
+    bet add(x) { me.items.yeet_in(x) }
+}
+yo b = Bag()
+b.add(1)
+b.add(2)
+b.add(3)
+yap how_thicc(b)

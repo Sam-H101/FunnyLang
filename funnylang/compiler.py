@@ -144,6 +144,33 @@ class Compiler:
         self._compile_closure(node, node.params, node.variadic, node.body.statements, node.name, node.span)
         self._finish_declaration(node, node.name, node.span)
 
+    def _stmt_SquadDecl(self, node: A.SquadDecl) -> None:
+        if node.superclass is not None:
+            # INHERIT's stack effect is "super class -> super class" (both
+            # kept, unchanged) — it wants the superclass pushed *first*.
+            res = self.result.identifier_resolutions[id(node)]
+            self._emit_get_resolution(res, node.span)
+            self._push()
+        self._emit(Op.SQUAD, self._const_str(node.name), span=node.span)
+        self._push()
+        if node.superclass is not None:
+            self._emit(Op.INHERIT, span=node.span)
+            self._emit(Op.SWAP, span=node.span)
+            self._emit(Op.POP, span=node.span)  # drop the now-unneeded superclass ref
+            self._pop()
+        if node.spawn is not None:
+            self._compile_closure(
+                node.spawn, node.spawn.params, node.spawn.variadic,
+                node.spawn.body.statements, "spawn", node.spawn.span, is_method=True,
+            )
+            self._emit(Op.METHOD, self._const_str("spawn"), span=node.span)
+            self._pop()
+        for m in node.methods:
+            self._compile_closure(m, m.params, m.variadic, m.body.statements, m.name, m.span, is_method=True)
+            self._emit(Op.METHOD, self._const_str(m.name), span=node.span)
+            self._pop()
+        self._finish_declaration(node, node.name, node.span)
+
     def _stmt_Block(self, node: A.Block) -> None:
         self._compile_scoped_block(node.statements)
 
@@ -774,18 +801,28 @@ class Compiler:
 
     # -- closures -----------------------------------------------------------
 
-    def _compile_closure(self, node, params, variadic, body_statements, name, span) -> None:
+    def _compile_closure(self, node, params, variadic, body_statements, name, span, is_method: bool = False) -> None:
         func_info = self.result.func_info[id(node)]
         default_count = sum(1 for p in params if p.default is not None)
-        chunk = Chunk(name, len(params), default_count, variadic is not None, self.const_pool)
+        # A method's real arity (for the VM's argc check) counts the implicit
+        # receiver too: every calling convention that reaches a method
+        # (BoundMethod, INVOKE, INVOKE_OG) always prepends it, so the VM
+        # should validate argc against "params + receiver", uniformly, with
+        # no special-casing needed on the calling side.
+        arity = len(params) + (1 if is_method else 0)
+        chunk = Chunk(name, arity, default_count, variadic is not None, self.const_pool)
         chunk.local_count = func_info.local_count
         chunk.upvalue_count = len(func_info.upvalues)
         self.stack.append(_FuncCtx(chunk, func_info))
+        slot_offset = 0
+        if is_method:
+            self._push()  # slot 0 reserved for `me` (matches resolver's "$me")
+            slot_offset = 1
         for _ in params:
             self._push()  # each parameter occupies the next slot, in order
         if variadic is not None:
             self._push()
-        self._emit_param_defaults(params, span)
+        self._emit_param_defaults(params, span, slot_offset)
         for stmt in body_statements:
             self._compile_stmt(stmt)
         self._emit(Op.GHOST, span=span)
@@ -799,11 +836,12 @@ class Compiler:
         self.chunk.emit_closure(const_idx, func_info.upvalues, span=span)
         self._push()
 
-    def _emit_param_defaults(self, params, span) -> None:
+    def _emit_param_defaults(self, params, span, slot_offset: int = 0) -> None:
         for i, p in enumerate(params):
             if p.default is None:
                 continue
-            self._emit(Op.GET_LOCAL, i, span=p.span)
+            slot = i + slot_offset
+            self._emit(Op.GET_LOCAL, slot, span=p.span)
             self._push()
             self._emit(Op.GHOST, span=p.span)
             self._push()
@@ -813,7 +851,7 @@ class Compiler:
             skip_site = self.chunk.emit_jump(Op.JUMP_IF_FALSE, span=p.span)
             self._pop()
             self._compile_expr(p.default)
-            self._emit(Op.SET_LOCAL, i, span=p.span)
+            self._emit(Op.SET_LOCAL, slot, span=p.span)
             self._emit(Op.POP, span=p.span)
             self._pop()
             self.chunk.patch_jump(skip_site)

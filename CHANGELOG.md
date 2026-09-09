@@ -36,6 +36,11 @@ All notable changes to FunnyLang are documented here.
   architectural change (constant pools and globals moved from the VM onto each Closure) documented
   in PLAN.md §16.
 
+### M9 — Classes (`squad`)
+- Full `squad`/`inherits`/`spawn`/`me`/`og` support with the 4 magic methods (`to_yap`, `how_thicc`,
+  `get_it`/`set_it`, `same_energy`). Fixed a real infinite-recursion bug in 3+ level `og` super-calls
+  and a missing-inherited-`spawn` construction bug — both documented in PLAN.md §16.
+
 ### M8 — The CLI
 - `funny run/build/xray/fmt/test/vibe` all fully implemented, plus global flags (`--version
   --serious --no-color --time --vibes`) usable before or after the subcommand. `build` links a

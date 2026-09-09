@@ -300,9 +300,28 @@ class Resolver:
             self._declare_binding(node.name, False, node.span, node)
         self._resolve_function(node.params, node.variadic, node.body.statements, node, is_method)
 
+    def _stmt_SquadDecl(self, node: A.SquadDecl) -> None:
+        self._declare_binding(node.name, False, node.span, node)
+        if node.superclass is not None:
+            # SquadDecl has no Identifier node for its superclass name (it's
+            # a bare str field), so the SquadDecl node itself stands in as
+            # the "reference site" key — safe, since nothing else ever keys
+            # identifier_resolutions by a SquadDecl's identity.
+            self.result.identifier_resolutions[id(node)] = self._resolve_name(node.superclass, node.span)
+        if node.spawn is not None:
+            self._stmt_FuncDecl(node.spawn, is_method=True)
+        for method in node.methods:
+            self._stmt_FuncDecl(method, is_method=True)
+
     def _resolve_function(self, params, variadic, body_statements, node, is_method: bool) -> None:
         scope = _FunctionScope(enclosing=self.current, is_script=False, is_method=is_method)
         self.current = scope
+        if is_method:
+            # Reserves slot 0 for the implicit receiver — the VM always
+            # prepends the instance to a method call's real args (see
+            # vm.py's _do_invoke), and the compiler's _emit_me always reads
+            # GET_LOCAL 0, so params must start at slot 1.
+            self._declare_local("$me", False, node.span)
         for p in params:
             if p.default is not None:
                 self._resolve_expr(p.default)

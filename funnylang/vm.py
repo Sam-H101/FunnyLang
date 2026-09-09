@@ -180,8 +180,12 @@ class VM:
 
     def _construct(self, squad: Squad, args: list):
         instance = Instance(squad)
-        if squad.spawn is not None:
-            self.call_value(BoundMethod(instance, squad.spawn), args)
+        # A subclass with no spawn of its own inherits the nearest
+        # ancestor's — find_method walks the superclass chain, unlike the
+        # dedicated `.spawn` field (which only ever holds *this* squad's own).
+        spawn = squad.find_method("spawn")
+        if spawn is not None:
+            self.call_value(BoundMethod(instance, spawn), args)
         return instance
 
     # -- constants ----------------------------------------------------------
@@ -434,7 +438,7 @@ class VM:
                     argc = code[ip + 2]
                     name = self._const_str(frame, idx)
                     frame.ip = ip + 3
-                    self._do_invoke_og(name, argc)
+                    self._do_invoke_og(frame, name, argc)
                 elif op == Op.CLOSURE:
                     const_idx = (code[ip] << 8) | code[ip + 1]
                     pos = ip + 2
@@ -541,10 +545,13 @@ class VM:
                     name = self._const_str(frame, idx)
                     method = stack.pop()
                     squad = stack[-1]
+                    method.home_squad = squad
+                    # Always in `methods` too (not just the dedicated `.spawn`
+                    # field `_construct` uses) so `find_method("spawn")` finds
+                    # it — needed for `og.spawn(...)` and direct calls alike.
+                    squad.methods[name] = method
                     if name == "spawn":
                         squad.spawn = method
-                    else:
-                        squad.methods[name] = method
                     frame.ip = ip + 2
                 elif op == Op.INHERIT:
                     sup = stack[-2]; sub = stack[-1]
@@ -714,6 +721,11 @@ class VM:
             if key not in obj.items:
                 raise KeyGhosted(f"key '{key}' not found.", roast=f"key `{key}` left the group chat.")
             return obj.items[key]
+        if isinstance(obj, Instance):
+            method = obj.squad.find_method("get_it")
+            if method is not None:
+                return self.call_value(method, [obj, key])
+            raise WhoDis(f"'{obj.squad.name}' doesn't do 'get_it'.", roast=f"`{obj.squad.name}` doesn't do `get_it`. that's not its thing.")
         if obj is GHOST:
             raise GhostError("can't index ghost.", roast="you're talking to a ghost, king.")
         raise TypeVibeMismatch(f"can't index a {type_name(obj)}.")
@@ -736,6 +748,12 @@ class VM:
             return
         if isinstance(obj, str):
             raise TypeVibeMismatch("yapstring is immutable. make a new one.")
+        if isinstance(obj, Instance):
+            method = obj.squad.find_method("set_it")
+            if method is not None:
+                self.call_value(method, [obj, key, value])
+                return
+            raise WhoDis(f"'{obj.squad.name}' doesn't do 'set_it'.", roast=f"`{obj.squad.name}` doesn't do `set_it`. that's not its thing.")
         if obj is GHOST:
             raise GhostError("can't index-assign ghost.", roast="you're talking to a ghost, king.")
         raise TypeVibeMismatch(f"can't index-assign a {type_name(obj)}.")
@@ -889,15 +907,22 @@ class VM:
         else:
             raise NotACallableRizz(f"'{type_name(callee)}' is not callable.", roast="that thing has no call rizz whatsoever.")
 
-    def _do_invoke_og(self, name: str, argc: int) -> None:
+    def _do_invoke_og(self, frame: Frame, name: str, argc: int) -> None:
         stack = self.stack
         arg_start = len(stack) - argc
         me = stack[arg_start - 1]
-        if not isinstance(me, Instance) or me.squad.superclass is None:
+        # `og` resolves relative to the *defining* class of the currently
+        # executing method (frame.closure.home_squad), never the instance's
+        # own runtime class — otherwise a super-call from a middle class in
+        # a 3+ level hierarchy would re-invoke its own method forever
+        # instead of reaching the next class up.
+        home_squad = frame.closure.home_squad
+        if not isinstance(me, Instance) or home_squad is None or home_squad.superclass is None:
             raise NotACallableRizz("'og' has no superclass here.", roast="'og' who? you're not in a squad.")
-        method = me.squad.superclass.find_method(name)
+        superclass = home_squad.superclass
+        method = superclass.find_method(name)
         if method is None:
-            raise WhoDis(f"'{me.squad.superclass.name}' doesn't do '{name}'.", roast=f"`{me.squad.superclass.name}` doesn't do `{name}`. that's not its thing.")
+            raise WhoDis(f"'{superclass.name}' doesn't do '{name}'.", roast=f"`{superclass.name}` doesn't do `{name}`. that's not its thing.")
         args = stack[arg_start:]
         del stack[arg_start - 1:]
         self._push_closure_frame(method, [me, *args])

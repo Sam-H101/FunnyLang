@@ -6,13 +6,15 @@ from .ast_nodes import (
     Assign, Binary, Block, Break, Call, Chuck, Coalesce, Continue, Export,
     ExprStmt, ForEach, ForRange, FuncDecl, Get, GroupChatLit, Identifier, If,
     Import, Index, Lambda, Literal, Logical, Me, Og, Param, Pipe, Program,
-    Return, SafeGet, Set, SetIndex, Slice, StashLit, TemplateString, Ternary,
-    Try, Unary, VarDecl, ConstDecl, VibeStmt, While, Yap,
+    Return, SafeGet, Set, SetIndex, Slice, SquadDecl, StashLit, TemplateString,
+    Ternary, Try, Unary, VarDecl, ConstDecl, VibeStmt, While, Yap,
 )
 from .errors import ParseErrorBundle, ParserHadAStroke
 from .lexer import Lexer
 from .source import SourceFile, Span
-from .tokens import RESERVED_FUTURE, Token, TokenKind as TK
+from .tokens import KEYWORDS, RESERVED_FUTURE, Token, TokenKind as TK
+
+_KEYWORD_KINDS: frozenset = frozenset(KEYWORDS.values())
 
 # Precedence levels (higher binds tighter). `**` and unary are handled outside
 # this table by parse_power()/parse_unary() since unary binds *tighter* than
@@ -133,6 +135,19 @@ class Parser:
             return self.advance()
         raise self._error(self.peek().span, message)
 
+    def _expect_name(self, message: str) -> Token:
+        """Like `expect(TK.IDENT, ...)`, but also accepts any keyword token
+        used as a name — property/method names specifically (`og.spawn(...)`,
+        `bet same_energy(other) {}`), where the frozen keyword list (§3.3)
+        collides with a magic method name (§3.7) or a squad's own
+        constructor name. Keywords stay reserved everywhere else; this only
+        widens "this position is unambiguously a name" grammar slots."""
+        tok = self.peek()
+        if tok.kind == TK.IDENT or tok.kind in _KEYWORD_KINDS:
+            self.advance()
+            return tok
+        raise self._error(tok.span, message)
+
     def skip_newlines(self) -> None:
         while self.check(TK.NEWLINE):
             self.advance()
@@ -215,6 +230,7 @@ class Parser:
             TK.YO: self._parse_var_decl,
             TK.DEADASS: self._parse_const_decl,
             TK.BET: self._parse_func_decl,
+            TK.SQUAD: self._parse_squad_decl,
             TK.SUS: self._parse_if,
             TK.BRUH: self._parse_while,
             TK.GRIND: self._parse_for,
@@ -304,9 +320,16 @@ class Parser:
         self.skip_newlines()
         return params, variadic
 
-    def _parse_func_decl(self) -> FuncDecl:
+    def _parse_func_decl(self, allow_keyword_name: bool = False) -> FuncDecl:
         start = self.advance()  # bet
-        name_tok = self.expect(TK.IDENT, "expected a function name after 'bet'.")
+        # allow_keyword_name: squad methods only (§16) — a magic method name
+        # like `same_energy` collides with a keyword; top-level/nested `bet`
+        # keeps strict IDENT so `yo yap = ...`-style shadowing stays illegal.
+        name_tok = (
+            self._expect_name("expected a method name after 'bet'.")
+            if allow_keyword_name
+            else self.expect(TK.IDENT, "expected a function name after 'bet'.")
+        )
         self.expect(TK.LPAREN, "expected '(' to start this function's parameter list.")
         params, variadic = self._parse_param_list()
         self.expect(TK.RPAREN, "this parameter list never closes. it's missing a ')'.")
@@ -491,12 +514,48 @@ class Parser:
             decl = self._parse_const_decl()
         elif self.check(TK.YO):
             decl = self._parse_var_decl()
+        elif self.check(TK.SQUAD):
+            decl = self._parse_squad_decl()
         else:
             raise self._error(
                 self.peek().span,
-                "'flex' needs something to flex: flex bet ..., flex deadass ..., or flex yo ....",
+                "'flex' needs something to flex: flex bet ..., flex deadass ..., flex yo ..., or flex squad ....",
             )
         return Export(decl, self._span(start.span, decl.span))
+
+    def _parse_squad_decl(self) -> SquadDecl:
+        start = self.advance()  # squad
+        name_tok = self.expect(TK.IDENT, "expected a squad name after 'squad'.")
+        superclass = None
+        if self.match(TK.INHERITS):
+            super_tok = self.expect(TK.IDENT, "expected a superclass name after 'inherits'.")
+            superclass = super_tok.text
+        self.skip_newlines()
+        self.expect(TK.LBRACE, "expected '{' to start this squad's body.")
+        self._skip_stmt_seps()
+        spawn = None
+        methods = []
+        while not self.check(TK.RBRACE) and not self.check(TK.EOF):
+            if self.check(TK.SPAWN):
+                spawn_tok = self.advance()
+                if spawn is not None:
+                    raise self._error(spawn_tok.span, "a squad can only have one spawn. pick one.")
+                self.expect(TK.LPAREN, "expected '(' after 'spawn'.")
+                params, variadic = self._parse_param_list()
+                self.expect(TK.RPAREN, "this parameter list never closes. it's missing a ')'.")
+                self.skip_newlines()
+                body = self._parse_block()
+                spawn = FuncDecl("spawn", tuple(params), variadic, body, self._span(spawn_tok.span, body.span))
+            elif self.check(TK.BET):
+                methods.append(self._parse_func_decl(allow_keyword_name=True))
+            else:
+                raise self._error(
+                    self.peek().span,
+                    "a squad body only has 'spawn' and 'bet' methods in it.",
+                )
+            self._skip_stmt_seps()
+        close_tok = self.expect(TK.RBRACE, "this squad never closes. it's missing a '}'.")
+        return SquadDecl(name_tok.text, superclass, spawn, tuple(methods), self._span(start.span, close_tok.span))
 
     def _parse_yap(self, newline: bool) -> Yap:
         start = self.advance()  # yap / yeet / mumble
@@ -599,11 +658,11 @@ class Parser:
                 expr = self._finish_index(expr)
             elif self.check(TK.DOT):
                 self.advance()
-                name_tok = self.expect(TK.IDENT, "expected a property name after '.'.")
+                name_tok = self._expect_name("expected a property name after '.'.")
                 expr = Get(expr, name_tok.text, self._span(expr.span, name_tok.span))
             elif self.check(TK.QUESTION_DOT):
                 self.advance()
-                name_tok = self.expect(TK.IDENT, "expected a property name after '?.'.")
+                name_tok = self._expect_name("expected a property name after '?.'.")
                 expr = SafeGet(expr, name_tok.text, self._span(expr.span, name_tok.span))
             else:
                 break

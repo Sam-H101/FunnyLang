@@ -1,0 +1,3 @@
+squad A { spawn() { } }
+yo a = A()
+a.does_not_exist()

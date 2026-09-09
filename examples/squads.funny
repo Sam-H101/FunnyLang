@@ -1,0 +1,26 @@
+squad Animal {
+    spawn(name) {
+        me.name = name
+    }
+    bet speak() {
+        yap me.name, "makes a noise"
+    }
+    bet to_yap() {
+        bounce `Animal({me.name})`
+    }
+}
+squad Dog inherits Animal {
+    spawn(name, breed) {
+        og.spawn(name)
+        me.breed = breed
+    }
+    bet speak() {
+        og.speak()
+        yap me.name, "says bark. skrrrt."
+    }
+}
+yo d = Dog("rex", "corgi")
+d.speak()
+yap d
+yap d.name
+yap d.breed

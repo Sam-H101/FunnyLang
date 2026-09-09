@@ -1,0 +1,14 @@
+squad Animal {
+    spawn(name) { me.name = name }
+    bet speak() { yap me.name, "makes a noise" }
+}
+squad Dog inherits Animal {
+    spawn(name, breed) {
+        og.spawn(name)
+        me.breed = breed
+    }
+}
+yo d = Dog("rex", "corgi")
+yap d.name
+yap d.breed
+d.speak()

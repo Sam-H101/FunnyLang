@@ -1553,6 +1553,48 @@ Format: `- [Mn] <what changed> — <why>`.
   ever begins — an unterminated string in either command let a raw Python traceback straight
   through to the user, a direct violation of the M11 rule that arrives later in the plan. Fixed by
   adding the missing `except FunnyError` alongside `except ParseErrorBundle` at both sites.
+- [M9] A third keyword/name collision (after `//` in M1 and `sus` in M6): `spawn` (the constructor
+  keyword, §3.3) and `same_energy` (the `==` alias, §3.3) both need to work as ordinary
+  property/method names too — `og.spawn(...)` and defining `bet same_energy(other) {}` are both
+  required by §3.7's own magic-method list. Generalized the fix this time instead of patching each
+  spelling individually: a new `Parser._expect_name()` accepts `TK.IDENT` *or* any keyword-kind
+  token, used only in the two grammar positions that are unambiguously "a name slot" — postfix
+  `.name`/`?.name` access, and a squad's own `bet <name>` (via a new `allow_keyword_name` flag,
+  left `False` everywhere else so `yo yap = ...`-style shadowing of a real keyword stays illegal
+  outside a squad body).
+- [M9] `me`/`og` need slot 0 of a method's frame reserved for the implicit receiver (every calling
+  convention that reaches a method — `BoundMethod`, `INVOKE`, `INVOKE_OG`, `_construct` — always
+  prepends the instance), and the compiler's `_emit_me` always reads `GET_LOCAL 0`. This means a
+  method's *real* arity, from the VM's arg-count-checking perspective, is `len(params) + 1`, not
+  `len(params)` — a real bug found by testing `Dog("rex", "corgi")` end to end (arity mismatch: 2
+  vs. 3). Fixed by threading `is_method` through both `Resolver._resolve_function` (reserves a
+  hidden `"$me"` local before the real params, same trick as the `$counter`/`$iter` loop
+  bookkeeping slots) and `Compiler._compile_closure` (reserves the matching stack slot, and reports
+  `arity = len(params) + 1` to the proto so the VM's existing argc check needs no special-casing
+  for the receiver at all).
+- [M9] `og.spawn(...)` needs `spawn` to be findable via `Squad.find_method`, which only walked
+  `.methods` — but `spawn` was stored *only* in a separate dedicated `.spawn` field. Fixed by having
+  the `METHOD` opcode register every method (including `spawn`) in `.methods` unconditionally, in
+  addition to `.spawn` for `_construct`'s direct use.
+- [M9] A related, more subtle bug: `og` must resolve relative to the *defining* class of the
+  currently-executing method, never the receiver instance's own runtime class. Using
+  `me.squad.superclass` (the instance's concrete class) breaks the moment there are 3+ levels of
+  inheritance — a middle class's `og.foo()` would re-resolve against *its own* superclass correctly
+  only by coincidence when called directly, but from two levels down it recomputes the same
+  `me.squad` (the bottom class) every time, so the "superclass" is always one fixed step up from
+  the bottom, not one step up from whichever class's method is actually running — an infinite
+  self-recursion for exactly the 3-level case this was tested against (`C.spawn` calling `og.spawn`
+  should reach `B`, whose own `og.spawn` should then reach `A`; with the buggy lookup, `B`'s
+  `og.spawn` also resolved to `B.superclass` = `A`... actually the *observed* failure was direct
+  infinite recursion, since the naive lookup re-dispatches to the same method repeatedly once the
+  chain is 3 deep). Fixed by giving `Closure` a `home_squad` field (set by the `METHOD` opcode when
+  the closure is attached to a class) and resolving `og` via `frame.closure.home_squad.superclass`
+  instead of the receiver's own `.squad`.
+- [M9] Constructing a subclass with no `spawn` of its own must use the nearest ancestor's, the same
+  way method lookup already does — `_construct` checked the dedicated `.spawn` field directly
+  (which is `None` unless *that exact* squad defined one) instead of `find_method("spawn")` (which
+  walks the chain). `squad B inherits A {}` (no spawn) followed by `B(5)` silently constructed a
+  `B` with no fields set at all before this fix.
 - [M8] `funny vibe`'s multi-line continuation heuristic (lex the buffer, check bracket depth) can't
   distinguish "genuinely more input needed" from "this specific input can never become valid no
   matter how much more is typed" (an unterminated `"..."` string is the clearest example — only a

@@ -1,0 +1,11 @@
+squad Point {
+    spawn(x, y) {
+        me.x = x
+        me.y = y
+    }
+    bet sum() { bounce me.x + me.y }
+}
+yo p = Point(3, 4)
+yap p.x
+yap p.y
+yap p.sum()

@@ -1,0 +1,9 @@
+squad Registry {
+    spawn() { me.data = {} }
+    bet get_it(key) { bounce me.data.get(key, "missing") }
+    bet set_it(key, val) { me.data.set(key, val) }
+}
+yo r = Registry()
+r["a"] = 1
+yap r["a"]
+yap r["z"]
