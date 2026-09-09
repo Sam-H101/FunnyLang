@@ -89,8 +89,12 @@ jobs:
   native:
     # NATIVE_PLAN.md N0: proves the C toolchain builds native/*.c clean, with
     # -Werror, on all three OSes -- MSVC on Windows, gcc/clang (whichever
-    # `cc` resolves to) on Linux/macOS. native/main.c is only a toolchain
-    # smoke test right now (N0 task 2); the real CLI lands in N7.
+    # `cc` resolves to) on Linux/macOS. Since N2, also runs the differential
+    # test suite (tests/native/) against the Python VM on Linux/macOS --
+    # not Windows yet, since that suite invokes `cc` directly (with gcc/
+    # clang-style flags) rather than going through build.bat's MSVC-specific
+    # invocation, so it just skips itself there for now (see test_n2_
+    # differential.py's own FileNotFoundError handling).
     name: native (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -104,6 +108,16 @@ jobs:
       - name: Set up MSVC
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up Python
+        if: runner.os != 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        if: runner.os != 'Windows'
+        run: python -m pip install --upgrade pip pytest
 
       - name: Build (release)
         if: runner.os != 'Windows'
@@ -122,6 +136,23 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: funny.exe
+
+      # Builds its own native binary from native/*.c directly (not the
+      # ./funny from the step above) and diffs its output against the real
+      # Python VM -- NATIVE_PLAN.md N2's actual acceptance gate, not just
+      # "did it compile."
+      - name: Differential test against the Python VM
+        if: runner.os != 'Windows'
+        env:
+          FUNNY_NO_NET: "1"
+        run: python -m pytest tests/native/ -v
+
+      - name: Differential test against the Python VM (under FUNNY_GC_STRESS)
+        if: runner.os != 'Windows'
+        env:
+          FUNNY_NO_NET: "1"
+          FUNNY_GC_STRESS: "1"
+        run: python -m pytest tests/native/ -v
 
       # ASan/UBSan (MSVC only has ASan -- see build.bat's own comment).
       # Nothing in main.c can trip either yet; this exists so the debug

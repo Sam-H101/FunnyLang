@@ -18,6 +18,7 @@
  * in the C runtime yet. */
 typedef enum {
     OBJ_BIGNUM,
+    OBJ_STRING,
 } ObjType;
 
 /* The common header. Every concrete object type (e.g. ObjBignum) is a

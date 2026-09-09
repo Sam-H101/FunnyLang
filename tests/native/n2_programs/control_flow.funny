@@ -1,0 +1,41 @@
+yo x = 5
+sus (x > 3) {
+    yap "big"
+} nah {
+    yap "small"
+}
+
+yo y = 1
+sus (y == 1) {
+    yap "one"
+} kinda_sus (y == 2) {
+    yap "two"
+} nah {
+    yap "other"
+}
+
+yo i = 0
+bruh (i < 5) {
+    yap i
+    i = i + 1
+}
+
+grind n from 0 to 5 {
+    yap n
+}
+
+grind n from 10 to 0 step -2 {
+    yap n
+}
+
+yo total = 0
+grind n from 1 to 6 {
+    sus (n == 3) {
+        nvm
+    }
+    sus (n == 5) {
+        bail
+    }
+    total = total + n
+}
+yap total

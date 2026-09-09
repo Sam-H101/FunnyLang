@@ -1,6 +1,7 @@
 #include "value.h"
 
 #include "bignum.h"
+#include "string.h"
 
 bool value_equal_narrow(Value a, Value b) {
     if (IS_GHOST(a) || IS_GHOST(b)) return IS_GHOST(a) && IS_GHOST(b);
@@ -35,6 +36,7 @@ bool value_equal_narrow(Value a, Value b) {
         return eq;
     }
 
+    if (IS_STRING(a) && IS_STRING(b)) return string_equal(AS_STRING(a), AS_STRING(b));
     if (IS_OBJ(a) && IS_OBJ(b)) return AS_OBJ(a) == AS_OBJ(b);
     return false;
 }
@@ -45,5 +47,6 @@ bool value_is_truthy(Value v) {
     if (IS_INT(v)) return AS_INT(v) != 0;
     if (IS_FLOAT(v)) return AS_FLOAT(v) != 0.0;
     if (IS_BIGNUM(v)) return !bignum_is_zero(AS_BIGNUM(v));
+    if (IS_STRING(v)) return AS_STRING(v)->byteLen > 0;
     return true; /* every other Obj kind (N4+) is truthy unless empty -- N4's job */
 }

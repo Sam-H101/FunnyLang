@@ -206,19 +206,23 @@ Mitigations, mandatory from N1 onward and non-negotiable:
 
 ```
 native/
-  main.c            CLI entry, argument parsing
+  main.c            N0's toolchain smoke test / N2's minimal test driver -- NOT the real CLI (N7)
+  opcodes.h         Op enum, PLAN.md §5.1 mirrored 1:1 (FROZEN, never renumber)
   value.h/.c        tagged-union Value, type predicates, equality, truthiness
   object.h          Obj header (struct + ObjType enum) -- no object.c; see §9's N1 entry
   gc.h/.c           mark-sweep, gray stack, temp roots, stress mode
   bignum.h/.c       arbitrary-precision integers + fixnum promotion
   numfmt.h/.c       shortest-round-trip float formatting (bignum-based, not literally Ryū — §9)
-  string.c          UTF-8 yapstring, interning, codepoint indexing
+  string.h/.c       an ObjString byte buffer as of N2 (built early -- §9); full UTF-8
+                    codepoint indexing/interning/Unicode methods are still N4's to add
   unicode_tbl.c     GENERATED — do not hand-edit (see tools/gen_unicode.py)
   toolchain_blob.c  GENERATED — the linked toolchain .funnypak as a byte array (N10)
-  table.c           insertion-ordered hash table (groupchat + globals + interning)
+  table.c           insertion-ordered hash table (groupchat + globals + interning) -- globals
+                    are a plain linear-scan array as of N2 (§9); table.c itself is still N4's
   stash.c           dynamic array
-  chunk.c           .funnyc / .funnypak loaders (PLAN.md §5.2/§5.3)
-  vm.c              the interpreter loop, all 80 opcodes (0-79, PLAN.md §5.1)
+  chunk.h/.c        .funnyc loader as of N2 (§5.2); .funnypak (§5.3) is N5's, once IMPORT exists
+  vm.h/.c           the interpreter loop; N2 has ~35 of the 80 opcodes (0-79, PLAN.md §5.1) --
+                    no call frames yet (CALL/CLOSURE/RETURN-to-a-caller land in N3)
   frames.c          call frames, closures, upvalues, try/catch/finally unwinding
   squad.c           classes, instances, methods, inheritance, the 4 magic methods
   diag.c            the PLAN.md §4.2 diagnostic renderer
@@ -250,10 +254,14 @@ generated sources when their inputs change. A user with only a C compiler never 
 The existing Python suite (1,065 tests as of M15) stays green throughout — this plan adds to it,
 never subtracts.
 
-1. **Differential golden testing (the backbone).** A new `tests/test_native_differential.py` runs
-   every file in `tests/lang/` and `examples/` through both VMs and asserts identical stdout, stderr,
-   and exit code. This is the acceptance gate for N2 through N6, with the passing subset growing each
-   milestone.
+1. **Differential golden testing (the backbone).** Eventually a `tests/test_native_differential.py`
+   running every file in `tests/lang/` and `examples/` through both VMs, asserting identical stdout,
+   stderr, and exit code — but none of those existing goldens fit inside N2's narrow opcode subset
+   (every one declares at least one function), so N2 started instead with dedicated programs under
+   `tests/native/n2_programs/` and `tests/native/test_n2_differential.py` (§9's N2 entry). The real
+   `tests/lang/`-driven suite becomes possible once enough of the language exists natively —
+   expected around N4 — and that file should supersede the milestone-scoped one once it does. This
+   is the acceptance gate for N2 through N6, with the passing subset growing each milestone.
 2. **C unit tests** for the components with no Python counterpart worth diffing: bignum arithmetic,
    the hash table, UTF-8 decoding, Ryū. Plain assertion-based `test_*.c`, run by the build script.
 3. **Differential fuzzing.** Reuse `tests/test_fuzz.py`'s generators; additionally fuzz bignum ops
@@ -798,6 +806,40 @@ gets an entry explaining what changed and why.
      debug harness that printed progress per test case and watching where it stalled. Fixed by
      estimating the initial guess from bit lengths instead of ever converting either bignum to a
      `double`.
+- **N2 · complete for its stated opcode subset.** `opcodes.h` (the full 0-79 `Op` enum, mirroring
+  `funnylang/opcodes.py` 1:1), `chunk.c` (a byte-for-byte `.funnyc` loader matching
+  `funnylang/serializer.py`'s `load_funnyc`), and `vm.c` (a `switch`-dispatched interpreter for
+  NOP/CONST/GHOST/FAX/CAP/POP/DUP/SWAP, GET/SET_LOCAL, GET/SET/DEF_GLOBAL, all of ADD..SHR, all of
+  EQ..IN, every jump form including `JUMP_LONG`/`LOOP_LONG`, YAP, HALT, and RETURN — present in
+  every compiled script's bytecode even though N2's own task list doesn't name it, so it has to be
+  handled here too, as "stop and hand back the value" since there's no caller yet). Verified with a
+  dedicated differential suite (`tests/native/test_n2_differential.py` + `tests/native/
+  n2_programs/*.funny`, since none of the existing `tests/lang/` goldens stay inside N2's narrow
+  subset — every one of them declares at least one function, which needs `CLOSURE` just to bind the
+  name) against the real Python VM, on gcc and clang, clean under ASan/UBSan, clean under
+  `FUNNY_GC_STRESS=1`.
+  **Bug found by the differential suite, not by re-reading the code: `BAND`/`BOR`/`BXOR` didn't
+  preserve `boolski`-ness.** Python's `bool` overrides `&`/`|`/`^` to stay `bool` when *both*
+  operands are `bool` (`True & False` is `False`, not `0`) but reverts to plain `int` the moment
+  either side isn't (`True & 5` is `1`) — `funnylang/vm.py`'s `_bitwise` inherits this for free from
+  Python's own operators, since it just does `a & b` on whatever Python values it's holding. The C
+  VM has no such inheritance and has to check for it explicitly; the first implementation didn't,
+  so `fax & cap` printed `0` instead of `cap`. Caught immediately by `bitwise.funny`'s own last two
+  lines.
+  Three scope calls worth recording:
+  1. **No call-frame concept yet.** N2's opcode subset excludes CALL/CLOSURE/RETURN-to-a-caller, so
+     the VM only ever runs exactly one `FunctionProto` (the entry proto) straight through, with
+     internal jumps; `GET_LOCAL`/`SET_LOCAL` index the value stack directly at slot 0 base. A real
+     `Frame`/call-stack concept arrives with N3.
+  2. **Globals are a linear-scan array, not `table.c`'s real hash table.** Correctness first, and
+     N2's own test programs have a handful of globals at most; `table.c` (insertion-ordered, needed
+     for real once `groupchat` and interning exist) is still N4's to write.
+  3. **Both shift directions always route through `bignum_shl`/`bignum_shr`, never a native `<<`/
+     `>>` on `int64_t`.** `SHL` can outgrow 64 bits from a shift as small as ~64 regardless of the
+     base, so it needs the bignum path unconditionally; sharing that path for `SHR` too (which
+     would be safe as a native shift) avoids relying on C's implementation-defined behavior for
+     shifting a negative value or shifting by ≥ the type's width, at a cost (an extra allocation per
+     shift) that doesn't matter yet.
 - **N10 · ADDITION · prebuilt binary distribution.** Not in the original plan; added at the user's
   request so that using FunnyLang never requires building it. GitHub Releases on
   `github.com/Sam-H101/FunnyLang`, five platform artifacts per tag plus a rolling `nightly`, checksums,

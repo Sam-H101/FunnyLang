@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "bignum.h"
+#include "string.h"
 
 #define INITIAL_NEXT_GC (1024 * 1024) /* 1 MiB before the first collection */
 #define GC_HEAP_GROW_FACTOR 2
@@ -32,6 +33,12 @@ static void free_object(Obj *obj) {
         case OBJ_BIGNUM:
             bignum_free((ObjBignum *)obj);
             return;
+        case OBJ_STRING: {
+            ObjString *s = (ObjString *)obj;
+            free(s->chars);
+            free(s);
+            return;
+        }
     }
 }
 
@@ -109,6 +116,7 @@ static void blacken_object(GC *gc, Obj *obj) {
     (void)gc;
     switch (obj->type) {
         case OBJ_BIGNUM:
+        case OBJ_STRING:
             return;
     }
 }
