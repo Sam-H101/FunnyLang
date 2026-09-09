@@ -23,6 +23,10 @@ typedef enum {
     OBJ_CLOSURE,
     OBJ_ERROR,
     OBJ_POINTA,
+    OBJ_STASH,
+    OBJ_GROUPCHAT,
+    OBJ_BOUND_NATIVE,
+    OBJ_ITERATOR,
 } ObjType;
 
 /* The common header. Every concrete object type (e.g. ObjBignum) is a

@@ -5,8 +5,12 @@
 #include "bignum.h"
 #include "error.h"
 #include "frames.h"
+#include "groupchat.h"
+#include "iterator.h"
 #include "pointa.h"
+#include "stash.h"
 #include "string.h"
+#include "vm.h"
 
 #define INITIAL_NEXT_GC (1024 * 1024) /* 1 MiB before the first collection */
 #define GC_HEAP_GROW_FACTOR 2
@@ -61,6 +65,27 @@ static void free_object(Obj *obj) {
         case OBJ_POINTA:
             free(obj); /* label/cell/globalName are separate GC objects; vm is borrowed */
             return;
+        case OBJ_BOUND_NATIVE:
+            free(obj); /* receiver is a Value field, name is a static string literal */
+            return;
+        case OBJ_STASH: {
+            ObjStash *s = (ObjStash *)obj;
+            free(s->items);
+            free(s);
+            return;
+        }
+        case OBJ_GROUPCHAT: {
+            ObjGroupChat *g = (ObjGroupChat *)obj;
+            free(g->entries);
+            free(g);
+            return;
+        }
+        case OBJ_ITERATOR: {
+            ObjIterator *it = (ObjIterator *)obj;
+            free(it->items);
+            free(it);
+            return;
+        }
     }
 }
 
@@ -170,6 +195,29 @@ static void blacken_object(GC *gc, Obj *obj) {
             gc_mark_object(gc, (Obj *)p->label);
             if (p->kind == POINTA_CELL) gc_mark_object(gc, (Obj *)p->cell);
             if (p->kind == POINTA_GLOBAL) gc_mark_object(gc, (Obj *)p->globalName);
+            return;
+        }
+        case OBJ_BOUND_NATIVE: {
+            ObjBoundNative *bn = (ObjBoundNative *)obj;
+            gc_mark_value(gc, bn->receiver);
+            return;
+        }
+        case OBJ_STASH: {
+            ObjStash *s = (ObjStash *)obj;
+            for (int i = 0; i < s->count; i++) gc_mark_value(gc, s->items[i]);
+            return;
+        }
+        case OBJ_GROUPCHAT: {
+            ObjGroupChat *g = (ObjGroupChat *)obj;
+            for (int i = 0; i < g->count; i++) {
+                gc_mark_value(gc, g->entries[i].key);
+                gc_mark_value(gc, g->entries[i].value);
+            }
+            return;
+        }
+        case OBJ_ITERATOR: {
+            ObjIterator *it = (ObjIterator *)obj;
+            for (int i = 0; i < it->count; i++) gc_mark_value(gc, it->items[i]);
             return;
         }
     }

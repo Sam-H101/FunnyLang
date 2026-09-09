@@ -890,3 +890,50 @@ gets an entry explaining what changed and why.
 - **N5 · AGENT CHOICE · PRNG.** `rizz` uses xoshiro256\*\* rather than reproducing CPython's Mersenne
   Twister stream. `rizz.seed(n)` is reproducible within the C VM; cross-VM stream equality was never
   specified and no golden file depends on it.
+- **N4 · sub-phase 4a/4b complete · `stash` and `groupchat`.** `stash.h/.c` (`ObjStash`, all 21
+  instance methods from `funnylang/stdlib/stash.py`'s own `METHODS` dict) and `groupchat.h/.c`
+  (`ObjGroupChat`, all 11 from `groupchat.py`'s `METHODS`), plus the VM plumbing both need:
+  `ObjBoundNative`/`bound_native_new`/`vm_call_value` (a receiver-bound native method as a
+  first-class callable `Value`, and a way for one to call back into FunnyLang code), `GET_PROP`
+  binding a Stash/GroupChat method, `SET_PROP`/`GET_PROP_SAFE`, `GET/SET_INDEX`, `GET_SLICE` (full
+  Python `slice.indices()` semantics, ported — start/stop default differently depending on step's
+  sign, and out-of-range explicit bounds clamp rather than error), `BUILD_STASH`/`BUILD_GROUPCHAT`/
+  `BUILD_STRING`, `INVOKE`/`INVOKE_OG` (the latter always raises `NotACallableRizz` for now — `og`
+  is only ever meaningful inside a squad method, and squad.c doesn't exist yet), `Stash`+`Stash`
+  concatenation and `Stash`*`int` repetition in `vm_add`/`vm_mul`, and a real structural
+  `vm_value_equal` (`funny_eq`, ported) so `OP_EQ`/`stash.contains`/`index_of`/`OP_IN` compare
+  Stash/GroupChat contents recursively rather than by pointer identity — `value_equal_narrow`
+  (N1, `value.c`) stays deliberately scalar-only, exactly as its own doc comment always said it
+  would.
+  **AGENT CHOICE · GroupChat is a linear-scan, insertion-ordered array (`GroupChatEntry*`), not
+  `table.c`'s real hash table** — same reasoning as N2's globals table: `keys()`/`values()`/`pairs()`
+  all depend on Python dict's insertion-order guarantee, so correctness and order-preservation come
+  first; raw lookup performance is a later milestone's problem if one ever needs it.
+  **Found & fixed in passing: N3 task 5 (`ITER_NEW`/`ITER_NEXT`) was deliberately deferred to N4 (see
+  N3's own entry above) but nothing had circled back to actually write it.** Implemented now —
+  `iterator.h/.c` (`ObjIterator`, a snapshot array materialized once at `ITER_NEW` time, exactly
+  matching `funnylang/vm.py`'s own `iter(list(...))`/`iter(str)`: a stash mutated mid-loop is
+  iterated as it was at loop-start, not live) — since `grind x in <stash-or-groupchat>` needed it to
+  write any realistic test program at all.
+  **GC-safety fix, caught by `FUNNY_GC_STRESS=1` before it ever shipped:** a bound native method's
+  receiver and arguments are popped off `vm->stack` before the call (so a raw pointer into them
+  can't dangle if the call reallocs `vm->stack`, the same hazard `ObjUpvalue`/`ObjPointa` already
+  guard against) — but that also means `mark_vm_roots` can no longer see them mid-call, and a
+  callback-taking method (`sort`/`glow_up`/`vibe_check`/`squish`/`any`/`all`) can trigger arbitrarily
+  many collections via nested `vm_call_value` calls while it's still running. Fixed by
+  `gc_push_temp`-rooting the receiver and every argument for the duration of the call
+  (`call_bound_native`/`do_invoke`) — exactly the "#1 correctness hazard" `gc.h`'s own header comment
+  already named. Verified by diffing native output against the Python VM's byte-for-byte, with
+  `FUNNY_GC_STRESS=1`, on both gcc and clang, ASan/UBSan clean — this is the fix that discipline
+  exists to catch, and it did.
+  **Scope carried forward to later N4 sub-phases, not done here:** `squad.c` (methods/inheritance/
+  `me`/`og`/`spawn`), real UTF-8 `yapstring` (indexing/slicing above is still byte-indexed, correct
+  for ASCII only — `GET_INDEX`/`GET_SLICE`/`ITER_NEW`'s string cases all carry the same noted gap),
+  self-referential-print's `[...]`/`{...}` guard is done for Stash/GroupChat but not yet exercised
+  against Instance once Squad exists, and `PTR_INDEX`/`PTR_PROP` (pointers into stash/groupchat
+  places). **`unicode_tbl.c`/`tools/gen_unicode.py` deferred to N5**, confirmed still correct: the
+  only consumers (`yapper.is_letter`/`is_alnum`) are stdlib module functions, not wired up until N5.
+  Verified: 2 new differential programs (`stash_methods.funny`, `groupchat_methods.funny`) plus all
+  12 pre-existing ones, byte-identical against the Python VM on gcc and clang, `-Wall -Wextra
+  -Werror` clean, ASan/UBSan clean, `FUNNY_GC_STRESS=1` clean (both normal and byte-diffed against
+  the Python VM's own output, not just checked for a zero exit code).

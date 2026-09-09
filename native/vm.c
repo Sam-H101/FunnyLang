@@ -23,12 +23,22 @@
 
 #include "bignum.h"
 #include "error.h"
+#include "groupchat.h"
+#include "iterator.h"
 #include "numfmt.h"
 #include "opcodes.h"
 #include "pointa.h"
+#include "stash.h"
 #include "string.h"
 
 #define IS_INT_LIKE(v) (IS_INT(v) || IS_BOOL(v))
+
+/* Forward declaration: vm_throw itself is defined much further down (it
+   needs current_frame/build_trace, defined in the "-- errors --" section
+   below), but the display/repr helpers and the public vm_throw_native
+   wrapper -- both placed early, right after dup_str, since every other
+   helper in this file wants them -- need to call it. */
+static void vm_throw(VM *vm, const char *flavor, const char *message);
 
 static char *dup_str(const char *s) {
     size_t n = strlen(s) + 1;
@@ -39,6 +49,21 @@ static char *dup_str(const char *s) {
 
 static int64_t as_int64_like(Value v) {
     return IS_BOOL(v) ? (AS_BOOL(v) ? 1 : 0) : AS_INT(v);
+}
+
+/* Naive O(n*m) substring search -- `memmem` is a GNU extension, not
+   portable to every C compiler this project targets (MSVC in particular;
+   see bignum.h's own note on the same tradeoff for __builtin_*_overflow),
+   and needle/haystack lengths here are yapstring-sized, not a hot path
+   worth a smarter algorithm yet. An empty needle is contained in anything,
+   matching Python's `"" in s`. */
+static bool bytes_contains(const char *haystack, uint32_t hLen, const char *needle, uint32_t nLen) {
+    if (nLen == 0) return true;
+    if (nLen > hLen) return false;
+    for (uint32_t i = 0; i + nLen <= hLen; i++) {
+        if (memcmp(haystack + i, needle, nLen) == 0) return true;
+    }
+    return false;
 }
 
 static double value_to_double(Value v) {
@@ -75,16 +100,105 @@ static const char *type_name_of(Value v) {
     if (IS_STRING(v)) return "yapstring";
     if (IS_OBJ(v)) {
         switch (AS_OBJ(v)->type) {
-            case OBJ_CLOSURE: return "bet";
+            case OBJ_CLOSURE:
+            case OBJ_BOUND_NATIVE: return "bet";
             case OBJ_ERROR: return "error";
             case OBJ_POINTA: return "pointa";
+            case OBJ_STASH: return "stash";
+            case OBJ_GROUPCHAT: return "groupchat";
+            case OBJ_ITERATOR: return "iterator";
             default: return "object";
         }
     }
     return "object";
 }
 
-static char *value_to_display(Value v) {
+/* -- display/repr, with self-reference guarding (PLAN.md M11's own fix,
+   ported here: a stash/groupchat that (directly or transitively) contains
+   itself prints "[...]"/"{...}" for the cyclic occurrence instead of
+   recursing forever) -- mirrors funnylang/values.py's to_display/to_repr,
+   whose `_seen` parameter is a frozenset of Python object ids; `seen`
+   here is the equivalent small pointer stack. */
+typedef struct {
+    Obj **items;
+    int count;
+    int capacity;
+} SeenStack;
+
+static bool seen_contains(const SeenStack *s, Obj *o) {
+    for (int i = 0; i < s->count; i++) {
+        if (s->items[i] == o) return true;
+    }
+    return false;
+}
+
+static void seen_push(SeenStack *s, Obj *o) {
+    if (s->count == s->capacity) {
+        s->capacity = s->capacity < 8 ? 8 : s->capacity * 2;
+        s->items = (Obj **)realloc(s->items, (size_t)s->capacity * sizeof(Obj *));
+    }
+    s->items[s->count++] = o;
+}
+
+static char *json_quote_string(const char *chars, uint32_t len) {
+    /* A reasonable approximation of Python's json.dumps(..., ensure_ascii=True)
+       for the common ASCII case that PLAN.md's own examples and this
+       milestone's differential tests exercise -- bytes >= 0x80 are copied
+       through unescaped rather than \uXXXX-encoded, a known, deliberate gap
+       left for the yapstring-UTF8 sub-phase (this file is still working
+       with the plain byte-buffer ObjString from N2/N3, not real codepoints
+       yet -- see string.h's own note on that). */
+    char *buf = (char *)malloc(len * 6 + 3);
+    size_t o = 0;
+    buf[o++] = '"';
+    for (uint32_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)chars[i];
+        switch (c) {
+            case '"': buf[o++] = '\\'; buf[o++] = '"'; break;
+            case '\\': buf[o++] = '\\'; buf[o++] = '\\'; break;
+            case '\n': buf[o++] = '\\'; buf[o++] = 'n'; break;
+            case '\r': buf[o++] = '\\'; buf[o++] = 'r'; break;
+            case '\t': buf[o++] = '\\'; buf[o++] = 't'; break;
+            default:
+                if (c < 0x20) {
+                    o += (size_t)snprintf(buf + o, 7, "\\u%04x", c);
+                } else {
+                    buf[o++] = (char)c;
+                }
+        }
+    }
+    buf[o++] = '"';
+    buf[o] = '\0';
+    return buf;
+}
+
+static char *display_value_rec(Value v, SeenStack *seen);
+
+static char *repr_value_rec(Value v, SeenStack *seen) {
+    if (IS_STRING(v)) return json_quote_string(AS_STRING(v)->chars, AS_STRING(v)->byteLen);
+    return display_value_rec(v, seen);
+}
+
+static char *join_with_commas(char **parts, int n) {
+    size_t len = 0;
+    for (int i = 0; i < n; i++) len += strlen(parts[i]) + (i > 0 ? 2 : 0);
+    char *buf = (char *)malloc(len + 1);
+    size_t o = 0;
+    for (int i = 0; i < n; i++) {
+        if (i > 0) {
+            buf[o++] = ',';
+            buf[o++] = ' ';
+        }
+        size_t pl = strlen(parts[i]);
+        memcpy(buf + o, parts[i], pl);
+        o += pl;
+        free(parts[i]);
+    }
+    buf[o] = '\0';
+    return buf;
+}
+
+static char *display_value_rec(Value v, SeenStack *seen) {
     if (IS_GHOST(v)) return dup_str("ghost");
     if (IS_BOOL(v)) return dup_str(AS_BOOL(v) ? "fax" : "cap");
     if (IS_INT(v)) {
@@ -107,7 +221,126 @@ static char *value_to_display(Value v) {
         snprintf(buf, sizeof buf, "<bet %s/%d>", c->proto->name, c->proto->arity);
         return dup_str(buf);
     }
-    return dup_str("<obj>"); /* unreachable for N3's value set */
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_BOUND_NATIVE) {
+        ObjBoundNative *bn = (ObjBoundNative *)AS_OBJ(v);
+        char buf[128];
+        snprintf(buf, sizeof buf, "<bet %s/native>", bn->name);
+        return dup_str(buf);
+    }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STASH) {
+        ObjStash *s = (ObjStash *)AS_OBJ(v);
+        if (seen_contains(seen, (Obj *)s)) return dup_str("[...]");
+        seen_push(seen, (Obj *)s);
+        char **parts = (char **)malloc((size_t)(s->count == 0 ? 1 : s->count) * sizeof(char *));
+        for (int i = 0; i < s->count; i++) parts[i] = repr_value_rec(s->items[i], seen);
+        seen->count--; /* pop -- this stash's own frame is done */
+        char *inner = join_with_commas(parts, s->count);
+        free(parts);
+        size_t n = strlen(inner);
+        char *buf = (char *)malloc(n + 3);
+        buf[0] = '[';
+        memcpy(buf + 1, inner, n);
+        buf[n + 1] = ']';
+        buf[n + 2] = '\0';
+        free(inner);
+        return buf;
+    }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_GROUPCHAT) {
+        ObjGroupChat *g = (ObjGroupChat *)AS_OBJ(v);
+        if (seen_contains(seen, (Obj *)g)) return dup_str("{...}");
+        seen_push(seen, (Obj *)g);
+        char **parts = (char **)malloc((size_t)(g->count == 0 ? 1 : g->count) * sizeof(char *));
+        for (int i = 0; i < g->count; i++) {
+            char *k = repr_value_rec(g->entries[i].key, seen);
+            char *val = repr_value_rec(g->entries[i].value, seen);
+            size_t kn = strlen(k), vn = strlen(val);
+            char *pair = (char *)malloc(kn + vn + 3);
+            memcpy(pair, k, kn);
+            pair[kn] = ':';
+            pair[kn + 1] = ' ';
+            memcpy(pair + kn + 2, val, vn);
+            pair[kn + 2 + vn] = '\0';
+            free(k);
+            free(val);
+            parts[i] = pair;
+        }
+        seen->count--;
+        char *inner = join_with_commas(parts, g->count);
+        free(parts);
+        size_t n = strlen(inner);
+        char *buf = (char *)malloc(n + 3);
+        buf[0] = '{';
+        memcpy(buf + 1, inner, n);
+        buf[n + 1] = '}';
+        buf[n + 2] = '\0';
+        free(inner);
+        return buf;
+    }
+    return dup_str("<obj>"); /* unreachable for N4's value set so far */
+}
+
+static char *value_to_display(Value v) {
+    SeenStack seen = {0};
+    char *r = display_value_rec(v, &seen);
+    free(seen.items);
+    return r;
+}
+
+void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...) {
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof buf, fmt, args);
+    va_end(args);
+    vm_throw(vm, flavor, buf);
+}
+
+const char *vm_type_name(Value v) { return type_name_of(v); }
+char *vm_value_to_display(Value v) { return value_to_display(v); }
+
+/* Structural equality (funnylang/values.py's funny_eq, ported): unlike
+   value_equal_narrow (value.c -- deliberately the "narrow" scalar-only
+   piece), Stash/GroupChat compare by contents here, recursively. No cycle
+   guard -- funny_eq doesn't have one either; a self-referential stash
+   compared against itself (or another self-referential stash) recursing
+   forever is a pre-existing property of the reference semantics this
+   ports, not a new gap. */
+static bool vm_value_equal_rec(Value a, Value b) {
+    if (IS_OBJ(a) && IS_OBJ(b) && AS_OBJ(a)->type == OBJ_STASH && AS_OBJ(b)->type == OBJ_STASH) {
+        ObjStash *sa = (ObjStash *)AS_OBJ(a), *sb = (ObjStash *)AS_OBJ(b);
+        if (sa->count != sb->count) return false;
+        for (int i = 0; i < sa->count; i++) {
+            if (!vm_value_equal_rec(sa->items[i], sb->items[i])) return false;
+        }
+        return true;
+    }
+    if (IS_OBJ(a) && IS_OBJ(b) && AS_OBJ(a)->type == OBJ_GROUPCHAT && AS_OBJ(b)->type == OBJ_GROUPCHAT) {
+        ObjGroupChat *ga = (ObjGroupChat *)AS_OBJ(a), *gb = (ObjGroupChat *)AS_OBJ(b);
+        if (ga->count != gb->count) return false;
+        for (int i = 0; i < ga->count; i++) {
+            GroupChatEntry *e = groupchat_find(gb, ga->entries[i].key);
+            if (e == NULL || !vm_value_equal_rec(ga->entries[i].value, e->value)) return false;
+        }
+        return true;
+    }
+    return value_equal_narrow(a, b);
+}
+
+bool vm_value_equal(Value a, Value b) { return vm_value_equal_rec(a, b); }
+
+ObjBoundNative *bound_native_new(GC *gc, Value receiver, NativeMethodFn fn, const char *name, int minArity, int maxArity) {
+    ObjBoundNative *bn = (ObjBoundNative *)malloc(sizeof(ObjBoundNative));
+    bn->obj.type = OBJ_BOUND_NATIVE;
+    bn->obj.marked = false;
+    bn->obj.size = 0;
+    bn->obj.next = NULL;
+    bn->receiver = receiver;
+    bn->fn = fn;
+    bn->name = name;
+    bn->minArity = minArity;
+    bn->maxArity = maxArity;
+    gc_track(gc, (Obj *)bn, sizeof(ObjBoundNative));
+    return bn;
 }
 
 /* -- setup / teardown ------------------------------------------------- */
@@ -320,13 +553,20 @@ static void vm_throw_fmt(VM *vm, const char *flavor, const char *fmt, ...) {
 }
 
 /* Searches from the current (innermost) frame outward for a handler,
-   exactly matching funnylang/vm.py's _unwind: pop frames with no handlers
-   of their own, unwinding upvalues/stack as each one is discarded; the
-   first frame with a pending handler gets the error value pushed and its
-   ip redirected. Returns false if nothing in the whole call stack catches
-   it (the program is done, uncaught). */
-static bool vm_unwind_to_handler(VM *vm, Value errValue) {
-    while (vm->frameCount > 0) {
+   exactly matching funnylang/vm.py's _unwind(err, base_frame_count): pop
+   frames with no handlers of their own, unwinding upvalues/stack as each
+   one is discarded; the first frame with a pending handler gets the error
+   value pushed and its ip redirected. Never pops below `baseFrameCount`
+   -- a nested vm_execute (a native method's callback calling back into
+   FunnyLang, via vm_call_value) must not catch/unwind past the frame it
+   started at, even if nothing in *its own* frames handles the error: the
+   error stays pending (hadError/pendingError, set by the caller after this
+   returns false) for the *outer* execution to retry unwinding at its own,
+   lower base, exactly as the outer loop already does for any other
+   uncaught error. Returns false if nothing between the current frame and
+   baseFrameCount catches it. */
+static bool vm_unwind_to_handler(VM *vm, Value errValue, int baseFrameCount) {
+    while (vm->frameCount > baseFrameCount) {
         Frame *frame = current_frame(vm);
         if (frame->handlerCount > 0) {
             Handler h = frame_pop_handler(frame);
@@ -426,6 +666,14 @@ static Value vm_add(VM *vm, Value a, Value b) {
         free(buf);
         return OBJ_VAL(r);
     }
+    if (IS_OBJ(a) && IS_OBJ(b) && AS_OBJ(a)->type == OBJ_STASH && AS_OBJ(b)->type == OBJ_STASH) {
+        ObjStash *sa = (ObjStash *)AS_OBJ(a), *sb = (ObjStash *)AS_OBJ(b);
+        ObjStash *r = stash_new(&vm->gc, sa->items, sa->count);
+        gc_push_temp(&vm->gc, OBJ_VAL(r));
+        for (int i = 0; i < sb->count; i++) stash_push(&vm->gc, r, sb->items[i]);
+        gc_pop_temp(&vm->gc);
+        return OBJ_VAL(r);
+    }
     vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
     return GHOST_VAL;
 }
@@ -449,7 +697,28 @@ static Value vm_sub(VM *vm, Value a, Value b) {
     return bignum_result(vm, r);
 }
 
+/* Stash*int / int*Stash repetition (funnylang/vm.py's own `_mul`): the
+   count is required to be an int-like (fixnum or bool, per _is_int_like)
+   -- a bignum-sized repeat count would never fit in memory anyway, so
+   unlike arithmetic's fixnum->bignum promotion, this stays int64-only. */
+static Value stash_repeat(VM *vm, ObjStash *s, int64_t n) {
+    if (n <= 0) return OBJ_VAL(stash_new(&vm->gc, NULL, 0));
+    ObjStash *r = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(r));
+    for (int64_t i = 0; i < n; i++) {
+        for (int j = 0; j < s->count; j++) stash_push(&vm->gc, r, s->items[j]);
+    }
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(r);
+}
+
 static Value vm_mul(VM *vm, Value a, Value b) {
+    if (IS_OBJ(a) && AS_OBJ(a)->type == OBJ_STASH && IS_INT_LIKE(b)) {
+        return stash_repeat(vm, (ObjStash *)AS_OBJ(a), as_int64_like(b));
+    }
+    if (IS_INT_LIKE(a) && IS_OBJ(b) && AS_OBJ(b)->type == OBJ_STASH) {
+        return stash_repeat(vm, (ObjStash *)AS_OBJ(b), as_int64_like(a));
+    }
     if (!(IS_NUM(a) && IS_NUM(b))) {
         vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
         return GHOST_VAL;
@@ -703,27 +972,18 @@ static Value vm_compare(VM *vm, CmpOp op, Value a, Value b) {
 
 /* -- calls -------------------------------------------------------------- */
 
-static void do_call(VM *vm, int argc) {
-    int argStart = vm->stackCount - argc;
-    Value callee = vm->stack[argStart - 1];
-    if (!(IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_CLOSURE)) {
-        vm_throw_fmt(vm, "NotACallableRizz", "'%s' is not callable.", type_name_of(callee));
-        return;
-    }
-    if (vm->frameCount >= VM_MAX_FRAMES) {
-        vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
-        return;
-    }
-    ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
-    FunctionProto *proto = closure->proto;
+/* Shared by do_call and vm_call_value's closure path, so the two never
+   drift out of sync on what counts as a valid call. */
+static bool closure_arity_ok(VM *vm, FunctionProto *proto, int argc) {
     int arity = proto->arity;
     int minRequired = arity - proto->defaultCount;
     if (proto->isVariadic) {
-        /* The "...rest" parameter needs a real Stash to bind, which
-           doesn't exist until N4 -- see NATIVE_PLAN.md §9's N3 entry.
-           Reject cleanly rather than silently mishandling it. */
-        vm_throw(vm, "SkillIssue", "variadic functions aren't supported natively until N4.");
-        return;
+        /* The "...rest" parameter needs a real Stash to bind -- Stash
+           exists as of this milestone, but wiring variadic binding
+           through is separate follow-up work, not yet done. Reject
+           cleanly rather than silently mishandling it. */
+        vm_throw(vm, "SkillIssue", "variadic functions aren't supported natively yet.");
+        return false;
     }
     if (argc > arity || argc < minRequired) {
         const char *wantStr;
@@ -737,8 +997,64 @@ static void do_call(VM *vm, int argc) {
             wantStr = wantBuf;
         }
         vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", proto->name, wantStr, argc);
+        return false;
+    }
+    return true;
+}
+
+/* Calls an ObjBoundNative's underlying C function. `argStart` is where its
+   (non-receiver) arguments begin on the VM stack; the receiver itself
+   isn't there (GET_PROP already popped it when it bound this
+   ObjBoundNative -- see the OP_GET_PROP case). Copies args onto the C
+   stack, rather than passing a pointer into vm->stack, before calling:
+   `fn` may call vm_call_value (stash's sort/glow_up/vibe_check/squish/
+   any/all all do), which pushes onto vm->stack and can trigger a
+   realloc -- a raw pointer into vm->stack would dangle the instant that
+   happens, the same "container can realloc" hazard ARCHITECTURE.md
+   already calls out for ObjUpvalue/ObjPointa. */
+static void call_bound_native(VM *vm, ObjBoundNative *bn, int argc, int argStart) {
+    if (argc < bn->minArity || argc > bn->maxArity) {
+        char wantBuf[32];
+        if (bn->minArity == bn->maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", bn->minArity);
+        else snprintf(wantBuf, sizeof wantBuf, "%d-%d", bn->minArity, bn->maxArity);
+        vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", bn->name, wantBuf, argc);
         return;
     }
+    Value args[257]; /* argc is a uint8_t at the opcode level (max 255), +1 for the receiver */
+    args[0] = bn->receiver;
+    for (int i = 0; i < argc; i++) args[i + 1] = vm->stack[argStart + i];
+    vm->stackCount = argStart - 1; /* drop the callee + args now, before calling */
+    /* Root the receiver and every arg as GC temps for the whole call: once
+       they're off vm->stack, mark_vm_roots can no longer see them, but a
+       callback-taking method (sort/glow_up/vibe_check/squish/any/all) can
+       trigger arbitrarily many collections via nested vm_call_value calls
+       while it's still running -- without this, the receiver (e.g. the
+       stash glow_up is iterating) could be swept out from under it. */
+    for (int i = 0; i <= argc; i++) gc_push_temp(&vm->gc, args[i]);
+    Value result = bn->fn(vm, args, argc + 1);
+    for (int i = 0; i <= argc; i++) gc_pop_temp(&vm->gc);
+    if (vm->hadError) return; /* the dispatch loop's top-of-loop check unwinds */
+    push(vm, result);
+}
+
+static void do_call(VM *vm, int argc) {
+    int argStart = vm->stackCount - argc;
+    Value callee = vm->stack[argStart - 1];
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_BOUND_NATIVE) {
+        call_bound_native(vm, (ObjBoundNative *)AS_OBJ(callee), argc, argStart);
+        return;
+    }
+    if (!(IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_CLOSURE)) {
+        vm_throw_fmt(vm, "NotACallableRizz", "'%s' is not callable.", type_name_of(callee));
+        return;
+    }
+    if (vm->frameCount >= VM_MAX_FRAMES) {
+        vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+        return;
+    }
+    ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
+    if (!closure_arity_ok(vm, closure->proto, argc)) return;
+    int arity = closure->proto->arity;
     /* Pad missing (defaulted) args with ghost, matching funnylang/vm.py --
        the closure's own bytecode fills in the actual default expressions
        (compiler.py's _emit_param_defaults: "if this slot is still ghost,
@@ -753,6 +1069,303 @@ static void do_call(VM *vm, int argc) {
     push_frame(vm, closure, argStart - 1);
 }
 
+/* INVOKE (name+argc known at the call site, e.g. `mystash.yeet_in(5)`):
+   binds and calls a Stash/GroupChat instance method directly, without
+   materializing an intermediate ObjBoundNative -- mirrors funnylang/vm.py's
+   own _do_invoke fast path for exactly the same reason (its non-Instance
+   fallback bottoms out at _get_prop + a direct native-fn call, which for a
+   Stash/GroupChat receiver *is* this same bind-and-call). Module/Instance/
+   Squad property access isn't reachable yet at this milestone's scope
+   (N5/squad's job), so unlike vm.py's _do_invoke this doesn't need an
+   Instance-fields-shadow-a-method branch. */
+static void do_invoke(VM *vm, ObjString *name, int argc) {
+    int argStart = vm->stackCount - argc;
+    Value obj = vm->stack[argStart - 1];
+    NativeMethodFn fn = NULL;
+    int minArity = 0, maxArity = 0;
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_STASH) {
+        fn = stash_find_method(name->chars, &minArity, &maxArity);
+    } else if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_GROUPCHAT) {
+        fn = groupchat_find_method(name->chars, &minArity, &maxArity);
+    }
+    if (fn == NULL) {
+        if (IS_GHOST(obj)) {
+            vm_throw_fmt(vm, "GhostError", "can't read '%s' off ghost.", name->chars);
+        } else {
+            vm_throw_fmt(vm, "WhoDis", "a %s doesn't have '%s' (yet).", type_name_of(obj), name->chars);
+        }
+        return;
+    }
+    if (argc < minArity || argc > maxArity) {
+        char wantBuf[32];
+        if (minArity == maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", minArity);
+        else snprintf(wantBuf, sizeof wantBuf, "%d-%d", minArity, maxArity);
+        vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", name->chars, wantBuf, argc);
+        return;
+    }
+    Value args[257];
+    args[0] = obj;
+    for (int i = 0; i < argc; i++) args[i + 1] = vm->stack[argStart + i];
+    vm->stackCount = argStart - 1;
+    /* See call_bound_native's own comment: the receiver/args must stay
+       GC-rooted for the whole call now that they're off vm->stack. */
+    for (int i = 0; i <= argc; i++) gc_push_temp(&vm->gc, args[i]);
+    Value result = fn(vm, args, argc + 1);
+    for (int i = 0; i <= argc; i++) gc_pop_temp(&vm->gc);
+    if (vm->hadError) return;
+    push(vm, result);
+}
+
+/* `og`: only meaningful from inside a squad method, calling its
+   superclass's override of the same name -- squad.c doesn't exist yet
+   (a later N4 sub-phase), so there is never a home squad with a
+   superclass to resolve here, exactly matching what funnylang/vm.py's own
+   _do_invoke_og raises when `me` isn't an Instance. */
+static void do_invoke_og(VM *vm, ObjString *name, int argc) {
+    (void)name;
+    (void)argc;
+    vm_throw(vm, "NotACallableRizz", "'og' has no superclass here.");
+}
+
+/* -- properties / indexing / slicing (funnylang/vm.py's _get_prop,
+   _get_index, _set_index, _get_slice, ported) ---------------------------- */
+
+static void get_prop(VM *vm, Value obj, ObjString *name) {
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_ERROR) {
+        Value fieldVal;
+        if (error_get_field(&vm->gc, (ObjError *)AS_OBJ(obj), name->chars, &fieldVal)) {
+            push(vm, fieldVal);
+        } else {
+            vm_throw_fmt(vm, "WhoDis", "error objects don't have '%s'.", name->chars);
+        }
+        return;
+    }
+    if (IS_OBJ(obj) && (AS_OBJ(obj)->type == OBJ_STASH || AS_OBJ(obj)->type == OBJ_GROUPCHAT)) {
+        int minArity, maxArity;
+        NativeMethodFn fn = AS_OBJ(obj)->type == OBJ_STASH
+                                 ? stash_find_method(name->chars, &minArity, &maxArity)
+                                 : groupchat_find_method(name->chars, &minArity, &maxArity);
+        if (fn == NULL) {
+            vm_throw_fmt(vm, "WhoDis", "a %s doesn't have '%s'.", type_name_of(obj), name->chars);
+            return;
+        }
+        /* name->chars is safe to store long-term (not just for this call):
+           it's part of the unit's constant pool, which mark_vm_roots keeps
+           reachable for the whole run regardless of what else the GC
+           collects -- see that function's own comment on exactly this
+           point. */
+        push(vm, OBJ_VAL(bound_native_new(&vm->gc, obj, fn, name->chars, minArity, maxArity)));
+        return;
+    }
+    if (IS_GHOST(obj)) {
+        vm_throw_fmt(vm, "GhostError", "can't read '%s' off ghost.", name->chars);
+        return;
+    }
+    vm_throw_fmt(vm, "WhoDis", "a %s doesn't have '%s' (yet).", type_name_of(obj), name->chars);
+}
+
+static Value vm_get_index(VM *vm, Value obj, Value key) {
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_STASH) {
+        ObjStash *s = (ObjStash *)AS_OBJ(obj);
+        if (!IS_INT_LIKE(key)) {
+            vm_throw_fmt(vm, "TypeVibeMismatch", "can't index a stash with a %s.", type_name_of(key));
+            return GHOST_VAL;
+        }
+        int64_t k = as_int64_like(key);
+        int64_t idx = k < 0 ? k + s->count : k;
+        if (idx < 0 || idx >= s->count) {
+            vm_throw_fmt(vm, "OutOfPocket", "index %lld on a stash of %d.", (long long)k, s->count);
+            return GHOST_VAL;
+        }
+        return s->items[idx];
+    }
+    if (IS_STRING(obj)) {
+        /* Byte indexing, not codepoint indexing -- string.h is still the
+           plain byte-buffer ObjString from N2/N3; real UTF-8 codepoint
+           indexing is the yapstring-UTF8 sub-phase's job (see string.h's
+           own note). Correct for ASCII, a known gap otherwise. */
+        ObjString *str = AS_STRING(obj);
+        if (!IS_INT_LIKE(key)) {
+            vm_throw_fmt(vm, "TypeVibeMismatch", "can't index a yapstring with a %s.", type_name_of(key));
+            return GHOST_VAL;
+        }
+        int64_t k = as_int64_like(key);
+        int64_t n = str->byteLen;
+        int64_t idx = k < 0 ? k + n : k;
+        if (idx < 0 || idx >= n) {
+            vm_throw_fmt(vm, "OutOfPocket", "index %lld on a yapstring of length %lld.", (long long)k, (long long)n);
+            return GHOST_VAL;
+        }
+        return OBJ_VAL(string_new(&vm->gc, str->chars + idx, 1));
+    }
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_GROUPCHAT) {
+        ObjGroupChat *g = (ObjGroupChat *)AS_OBJ(obj);
+        GroupChatEntry *e = groupchat_find(g, key);
+        if (e == NULL) {
+            char *disp = value_to_display(key);
+            vm_throw_fmt(vm, "KeyGhosted", "key '%s' not found.", disp);
+            free(disp);
+            return GHOST_VAL;
+        }
+        return e->value;
+    }
+    if (IS_GHOST(obj)) {
+        vm_throw(vm, "GhostError", "can't index ghost.");
+        return GHOST_VAL;
+    }
+    vm_throw_fmt(vm, "TypeVibeMismatch", "can't index a %s.", type_name_of(obj));
+    return GHOST_VAL;
+}
+
+static void vm_set_index(VM *vm, Value obj, Value key, Value value) {
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_STASH) {
+        ObjStash *s = (ObjStash *)AS_OBJ(obj);
+        if (!IS_INT_LIKE(key)) {
+            vm_throw_fmt(vm, "TypeVibeMismatch", "can't index a stash with a %s.", type_name_of(key));
+            return;
+        }
+        int64_t k = as_int64_like(key);
+        int64_t idx = k < 0 ? k + s->count : k;
+        if (idx < 0 || idx >= s->count) {
+            vm_throw_fmt(vm, "OutOfPocket", "index %lld on a stash of %d.", (long long)k, s->count);
+            return;
+        }
+        s->items[idx] = value;
+        return;
+    }
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_GROUPCHAT) {
+        groupchat_set(&vm->gc, (ObjGroupChat *)AS_OBJ(obj), key, value);
+        return;
+    }
+    if (IS_STRING(obj)) {
+        vm_throw(vm, "TypeVibeMismatch", "yapstring is immutable. make a new one.");
+        return;
+    }
+    if (IS_GHOST(obj)) {
+        vm_throw(vm, "GhostError", "can't index-assign ghost.");
+        return;
+    }
+    vm_throw_fmt(vm, "TypeVibeMismatch", "can't index-assign a %s.", type_name_of(obj));
+}
+
+/* Python's slice.indices(length) semantics, ported (CPython's own
+   PySlice_AdjustIndices): a ghost start/stop defaults to "the end nearest
+   what `step`'s direction would naturally start/stop at", and an
+   out-of-range explicit bound clamps rather than errors. Must be resolved
+   *after* step is known, since the defaults themselves depend on step's
+   sign. */
+static int64_t resolve_slice_bound(Value v, int64_t length, int64_t step, bool isStart) {
+    if (IS_GHOST(v)) {
+        if (step > 0) return isStart ? 0 : length;
+        return isStart ? length - 1 : -1;
+    }
+    int64_t x = as_int64_like(v);
+    if (x < 0) x += length;
+    if (step > 0) {
+        if (x < 0) x = 0;
+        if (x > length) x = length;
+    } else {
+        if (x < -1) x = -1;
+        if (x > length - 1) x = length - 1;
+    }
+    return x;
+}
+
+static bool slice_bounds_ok(Value startV, Value stopV, Value stepV) {
+    return (IS_GHOST(startV) || IS_INT_LIKE(startV)) && (IS_GHOST(stopV) || IS_INT_LIKE(stopV)) &&
+           (IS_GHOST(stepV) || IS_INT_LIKE(stepV));
+}
+
+static Value vm_get_slice(VM *vm, Value obj, Value startV, Value stopV, Value stepV) {
+    if (!slice_bounds_ok(startV, stopV, stepV)) {
+        vm_throw(vm, "TypeVibeMismatch", "slice bounds have to be numbas (or left out).");
+        return GHOST_VAL;
+    }
+    bool isStash = IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_STASH;
+    bool isString = IS_STRING(obj);
+    if (!isStash && !isString) {
+        if (IS_GHOST(obj)) {
+            vm_throw(vm, "GhostError", "can't slice ghost.");
+        } else {
+            vm_throw_fmt(vm, "TypeVibeMismatch", "can't slice a %s.", type_name_of(obj));
+        }
+        return GHOST_VAL;
+    }
+    int64_t length = isStash ? ((ObjStash *)AS_OBJ(obj))->count : (int64_t)AS_STRING(obj)->byteLen;
+    int64_t step = IS_GHOST(stepV) ? 1 : as_int64_like(stepV);
+    if (step == 0) {
+        vm_throw(vm, "MathAintMathin", "slice step can't be zero.");
+        return GHOST_VAL;
+    }
+    int64_t start = resolve_slice_bound(startV, length, step, true);
+    int64_t stop = resolve_slice_bound(stopV, length, step, false);
+    int64_t count = 0;
+    if (step > 0) {
+        for (int64_t i = start; i < stop; i += step) count++;
+    } else {
+        for (int64_t i = start; i > stop; i += step) count++;
+    }
+    if (isStash) {
+        ObjStash *s = (ObjStash *)AS_OBJ(obj);
+        Value *buf = count > 0 ? (Value *)malloc((size_t)count * sizeof(Value)) : NULL;
+        int64_t n = 0;
+        if (step > 0) {
+            for (int64_t i = start; i < stop; i += step) buf[n++] = s->items[i];
+        } else {
+            for (int64_t i = start; i > stop; i += step) buf[n++] = s->items[i];
+        }
+        ObjStash *r = stash_new(&vm->gc, buf, (int)count);
+        free(buf);
+        return OBJ_VAL(r);
+    }
+    ObjString *str = AS_STRING(obj);
+    char *buf = count > 0 ? (char *)malloc((size_t)count) : NULL;
+    int64_t n = 0;
+    if (step > 0) {
+        for (int64_t i = start; i < stop; i += step) buf[n++] = str->chars[i];
+    } else {
+        for (int64_t i = start; i > stop; i += step) buf[n++] = str->chars[i];
+    }
+    ObjString *r = string_new(&vm->gc, buf, (uint32_t)count);
+    free(buf);
+    return OBJ_VAL(r);
+}
+
+/* -- iteration (NATIVE_PLAN.md N3 task 5's ITER_NEW/ITER_NEXT, ported
+   here since N3 never actually implemented it -- see iterator.h's own
+   note) -- mirrors funnylang/vm.py's _make_iter_gen. */
+static ObjIterator *make_iterator(VM *vm, Value iterable) {
+    if (IS_OBJ(iterable) && AS_OBJ(iterable)->type == OBJ_STASH) {
+        ObjStash *s = (ObjStash *)AS_OBJ(iterable);
+        return iterator_new(&vm->gc, s->items, s->count);
+    }
+    if (IS_STRING(iterable)) {
+        /* Byte-at-a-time, not codepoint-at-a-time -- string.h is still the
+           plain byte-buffer ObjString; correct for ASCII, a known gap
+           otherwise, same as GET_INDEX's (see string.h's own note). */
+        ObjString *str = AS_STRING(iterable);
+        Value *chars = str->byteLen > 0 ? (Value *)malloc((size_t)str->byteLen * sizeof(Value)) : NULL;
+        for (uint32_t i = 0; i < str->byteLen; i++) chars[i] = OBJ_VAL(string_new(&vm->gc, str->chars + i, 1));
+        ObjIterator *it = iterator_new(&vm->gc, chars, (int)str->byteLen);
+        free(chars);
+        return it;
+    }
+    if (IS_OBJ(iterable) && AS_OBJ(iterable)->type == OBJ_GROUPCHAT) {
+        ObjGroupChat *g = (ObjGroupChat *)AS_OBJ(iterable);
+        Value *keys = g->count > 0 ? (Value *)malloc((size_t)g->count * sizeof(Value)) : NULL;
+        for (int i = 0; i < g->count; i++) keys[i] = g->entries[i].key;
+        ObjIterator *it = iterator_new(&vm->gc, keys, g->count);
+        free(keys);
+        return it;
+    }
+    if (IS_GHOST(iterable)) {
+        vm_throw(vm, "GhostError", "can't iterate over ghost.");
+        return NULL;
+    }
+    vm_throw_fmt(vm, "TypeVibeMismatch", "can't iterate over a %s.", type_name_of(iterable));
+    return NULL;
+}
+
 /* -- the dispatch loop ---------------------------------------------------- */
 
 static uint16_t read_u16(const uint8_t *code, uint32_t ip) {
@@ -763,33 +1376,41 @@ static uint32_t read_u32(const uint8_t *code, uint32_t ip) {
     return ((uint32_t)code[ip] << 24) | ((uint32_t)code[ip + 1] << 16) | ((uint32_t)code[ip + 2] << 8) | code[ip + 3];
 }
 
-VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
-    vm->unit = unit;
-    vm->out = out;
-    vm->gc.markExternalRoots = mark_vm_roots;
-    vm->gc.externalRootsUserdata = vm;
-
-    FunctionProto *entryProto = &unit->protos[unit->entryProto];
-    ObjClosure *entryClosure = closure_new(&vm->gc, entryProto, NULL, 0);
-    push_frame(vm, entryClosure, 0);
-
+/* Runs frames until vm->frameCount drops back to `baseFrameCount` (a
+   RETURN did it) or an error escapes past it (vm_unwind_to_handler found
+   nothing to catch it within this execution's own frames) -- mirrors
+   funnylang/vm.py's own `_run(base_frame_count)` exactly, including that
+   it's reentrant: a native method's callback (stash's sort/glow_up/
+   vibe_check/squish/any/all, via vm_call_value) calls this again with a
+   freshly-raised base while the outer vm_execute call is still live
+   further down the C stack, one real C stack frame per nesting level
+   (ordinary FunnyLang recursion never does this -- see vm.h's own note on
+   why CALL/RETURN alone never need a new C stack frame). On error escaping
+   past `baseFrameCount`, returns VM_ERROR *without* clearing
+   vm->hadError/pendingError -- the caller (an outer vm_execute, or vm_run
+   at the true top level) notices hadError still set on its own next
+   iteration and retries unwinding at its own, lower base, rather than
+   this nested call silently swallowing or misattributing the error. */
+static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
+    if (resultOut != NULL) *resultOut = GHOST_VAL;
     for (;;) {
         if (vm->hadError) {
             Value errValue = vm->pendingError;
             vm->hadError = false;
             vm->pendingError = GHOST_VAL;
-            if (vm_unwind_to_handler(vm, errValue)) continue;
-            vm->uncaughtError = errValue;
+            if (vm_unwind_to_handler(vm, errValue, baseFrameCount)) continue;
+            vm->hadError = true; /* left pending for an outer vm_execute/vm_run to retry */
+            vm->pendingError = errValue;
             return VM_ERROR;
         }
-        if (vm->frameCount == 0) return VM_OK;
+        if (vm->frameCount == baseFrameCount) return VM_OK; /* only possible on entry: 0 args to run */
 
         gc_maybe_collect(&vm->gc);
 
         vm->currentFrameIndex = vm->frameCount - 1;
         Frame *frame = current_frame(vm);
         const uint8_t *code = frame->closure->proto->code;
-        ConstEntry *consts = unit->consts;
+        ConstEntry *consts = vm->unit->consts;
         vm->currentInstrStart = frame->ip;
         uint8_t op = code[frame->ip++];
 
@@ -949,13 +1570,45 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
             case OP_EQ: {
                 Value b = pop(vm);
                 Value a = peek(vm, 0);
-                vm->stack[vm->stackCount - 1] = BOOL_VAL(value_equal_narrow(a, b));
+                vm->stack[vm->stackCount - 1] = BOOL_VAL(vm_value_equal(a, b));
                 break;
             }
             case OP_NEQ: {
                 Value b = pop(vm);
                 Value a = peek(vm, 0);
-                vm->stack[vm->stackCount - 1] = BOOL_VAL(!value_equal_narrow(a, b));
+                vm->stack[vm->stackCount - 1] = BOOL_VAL(!vm_value_equal(a, b));
+                break;
+            }
+            case OP_IN: {
+                /* funnylang/vm.py's own _contains: `a in b` -- b is the
+                   container. Stash/GroupChat/yapstring only. */
+                Value b = pop(vm);
+                Value a = peek(vm, 0);
+                bool result;
+                if (IS_OBJ(b) && AS_OBJ(b)->type == OBJ_STASH) {
+                    ObjStash *s = (ObjStash *)AS_OBJ(b);
+                    result = false;
+                    for (int i = 0; i < s->count; i++) {
+                        if (vm_value_equal(a, s->items[i])) { result = true; break; }
+                    }
+                } else if (IS_OBJ(b) && AS_OBJ(b)->type == OBJ_GROUPCHAT) {
+                    ObjGroupChat *g = (ObjGroupChat *)AS_OBJ(b);
+                    result = false;
+                    for (int i = 0; i < g->count; i++) {
+                        if (vm_value_equal(a, g->entries[i].key)) { result = true; break; }
+                    }
+                } else if (IS_STRING(b)) {
+                    if (!IS_STRING(a)) {
+                        vm_throw(vm, "TypeVibeMismatch", "can only check if a yapstring is 'in' another yapstring.");
+                        break;
+                    }
+                    ObjString *sa = AS_STRING(a), *sb = AS_STRING(b);
+                    result = bytes_contains(sb->chars, sb->byteLen, sa->chars, sa->byteLen);
+                } else {
+                    vm_throw_fmt(vm, "TypeVibeMismatch", "can't check 'in' on a %s.", type_name_of(b));
+                    break;
+                }
+                vm->stack[vm->stackCount - 1] = BOOL_VAL(result);
                 break;
             }
             case OP_LT: {
@@ -1039,11 +1692,25 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
                 do_call(vm, argc);
                 break;
             }
+            case OP_INVOKE: {
+                uint16_t idx = read_u16(code, frame->ip);
+                uint8_t argc = code[frame->ip + 2];
+                frame->ip += 3;
+                do_invoke(vm, AS_STRING(consts[idx].value), argc);
+                break;
+            }
+            case OP_INVOKE_OG: {
+                uint16_t idx = read_u16(code, frame->ip);
+                uint8_t argc = code[frame->ip + 2];
+                frame->ip += 3;
+                do_invoke_og(vm, AS_STRING(consts[idx].value), argc);
+                break;
+            }
             case OP_CLOSURE: {
                 uint16_t constIdx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 uint32_t protoIdx = consts[constIdx].protoRef;
-                FunctionProto *proto = &unit->protos[protoIdx];
+                FunctionProto *proto = &vm->unit->protos[protoIdx];
                 ObjUpvalue *upvalues[256];
                 for (int i = 0; i < proto->upvalueCount; i++) {
                     uint8_t isLocal = code[frame->ip];
@@ -1061,7 +1728,11 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
                 vm->stackCount = frame->slotBase;
                 frame_destroy(frame);
                 vm->frameCount--;
-                if (vm->frameCount > 0) push(vm, retVal);
+                if (vm->frameCount == baseFrameCount) {
+                    if (resultOut != NULL) *resultOut = retVal;
+                    return VM_OK;
+                }
+                push(vm, retVal);
                 break;
             }
             case OP_CHUCK: {
@@ -1074,7 +1745,7 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
                     chunk_line_for_offset(frame->closure->proto, vm->currentInstrStart, &line, &col);
                     int traceCount;
                     char **trace = build_trace(vm, &traceCount);
-                    ObjError *e = error_new(&vm->gc, "SkillIssue", display, line, col, unit->sourceName, payload, trace, traceCount);
+                    ObjError *e = error_new(&vm->gc, "SkillIssue", display, line, col, vm->unit->sourceName, payload, trace, traceCount);
                     free_trace(trace, traceCount);
                     free(display);
                     vm->pendingError = OBJ_VAL(e);
@@ -1095,6 +1766,24 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
             case OP_TRY_POP:
                 frame_pop_handler(frame);
                 break;
+            case OP_ITER_NEW: {
+                Value iterable = peek(vm, 0);
+                ObjIterator *it = make_iterator(vm, iterable);
+                if (it == NULL) break; /* error thrown; dispatch loop unwinds next iteration */
+                vm->stack[vm->stackCount - 1] = OBJ_VAL(it);
+                break;
+            }
+            case OP_ITER_NEXT: {
+                uint16_t off = read_u16(code, frame->ip);
+                frame->ip += 2;
+                ObjIterator *it = (ObjIterator *)AS_OBJ(peek(vm, 0));
+                if (it->pos < it->count) {
+                    push(vm, it->items[it->pos++]);
+                } else {
+                    frame->ip += off;
+                }
+                break;
+            }
             case OP_PTR_LOCAL: {
                 uint8_t slot = code[frame->ip];
                 uint16_t nameIdx = read_u16(code, frame->ip + 1);
@@ -1164,26 +1853,116 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
                 break;
             }
             case OP_GET_PROP: {
-                /* Only ObjError has real fields at N3's scope (PLAN.md
-                   §3.9's error field set, N3 task 4) -- Instance/Squad
-                   field access and Stash/GroupChat/yapstring/numba method
-                   binding are N4/N5's, once those types exist. */
+                /* ObjError has real fields (PLAN.md §3.9's error field
+                   set, N3); Stash/GroupChat bind an instance method as an
+                   ObjBoundNative (N4) -- Instance/Squad field access and
+                   numba/yapstring/pointa's own method forms are still
+                   later work (squad.c hasn't landed yet; see vm.h's own
+                   note on that). */
                 uint16_t nameIdx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[nameIdx].value);
                 Value obj = pop(vm);
-                if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_ERROR) {
-                    Value fieldVal;
-                    if (error_get_field(&vm->gc, (ObjError *)AS_OBJ(obj), name->chars, &fieldVal)) {
-                        push(vm, fieldVal);
-                    } else {
-                        vm_throw_fmt(vm, "WhoDis", "error objects don't have '%s'.", name->chars);
-                    }
-                } else if (IS_GHOST(obj)) {
-                    vm_throw_fmt(vm, "GhostError", "can't read '%s' off ghost.", name->chars);
+                get_prop(vm, obj, name);
+                break;
+            }
+            case OP_GET_PROP_SAFE: {
+                uint16_t nameIdx = read_u16(code, frame->ip);
+                frame->ip += 2;
+                ObjString *name = AS_STRING(consts[nameIdx].value);
+                Value obj = pop(vm);
+                if (IS_GHOST(obj)) {
+                    push(vm, GHOST_VAL);
                 } else {
-                    vm_throw_fmt(vm, "WhoDis", "a %s doesn't have '%s' (yet).", type_name_of(obj), name->chars);
+                    get_prop(vm, obj, name);
                 }
+                break;
+            }
+            case OP_SET_PROP: {
+                /* No settable properties exist at this milestone's scope
+                   (Instance fields are squad.c's job) -- matches
+                   funnylang/vm.py's own _set_prop, which only has an
+                   Instance branch beyond the ghost/else cases below. */
+                uint16_t nameIdx = read_u16(code, frame->ip);
+                frame->ip += 2;
+                ObjString *name = AS_STRING(consts[nameIdx].value);
+                Value value = pop(vm);
+                Value obj = pop(vm);
+                if (IS_GHOST(obj)) {
+                    vm_throw_fmt(vm, "GhostError", "can't set '%s' on ghost.", name->chars);
+                } else {
+                    vm_throw_fmt(vm, "TypeVibeMismatch", "can't set properties on a %s.", type_name_of(obj));
+                }
+                push(vm, value);
+                break;
+            }
+            case OP_GET_INDEX: {
+                Value key = pop(vm);
+                Value obj = pop(vm);
+                push(vm, vm_get_index(vm, obj, key));
+                break;
+            }
+            case OP_SET_INDEX: {
+                Value value = pop(vm);
+                Value key = pop(vm);
+                Value obj = pop(vm);
+                vm_set_index(vm, obj, key, value);
+                push(vm, value);
+                break;
+            }
+            case OP_GET_SLICE: {
+                Value step = pop(vm);
+                Value stop = pop(vm);
+                Value start = pop(vm);
+                Value obj = pop(vm);
+                push(vm, vm_get_slice(vm, obj, start, stop, step));
+                break;
+            }
+            case OP_BUILD_STASH: {
+                uint16_t n = read_u16(code, frame->ip);
+                frame->ip += 2;
+                ObjStash *s = stash_new(&vm->gc, n ? &vm->stack[vm->stackCount - n] : NULL, n);
+                vm->stackCount -= n;
+                push(vm, OBJ_VAL(s));
+                break;
+            }
+            case OP_BUILD_GROUPCHAT: {
+                uint16_t n = read_u16(code, frame->ip);
+                frame->ip += 2;
+                ObjGroupChat *g = groupchat_new(&vm->gc, NULL, 0);
+                gc_push_temp(&vm->gc, OBJ_VAL(g));
+                int base = vm->stackCount - 2 * n;
+                for (int i = 0; i < n; i++) {
+                    groupchat_set(&vm->gc, g, vm->stack[base + 2 * i], vm->stack[base + 2 * i + 1]);
+                }
+                gc_pop_temp(&vm->gc);
+                vm->stackCount -= 2 * n;
+                push(vm, OBJ_VAL(g));
+                break;
+            }
+            case OP_BUILD_STRING: {
+                uint16_t n = read_u16(code, frame->ip);
+                frame->ip += 2;
+                int base = vm->stackCount - n;
+                char *parts[256];
+                size_t totalLen = 0;
+                for (int i = 0; i < n; i++) {
+                    parts[i] = value_to_display(vm->stack[base + i]);
+                    totalLen += strlen(parts[i]);
+                }
+                char *buf = (char *)malloc(totalLen + 1);
+                size_t o = 0;
+                for (int i = 0; i < n; i++) {
+                    size_t pl = strlen(parts[i]);
+                    memcpy(buf + o, parts[i], pl);
+                    o += pl;
+                    free(parts[i]);
+                }
+                buf[o] = '\0';
+                vm->stackCount -= n;
+                ObjString *r = string_new(&vm->gc, buf, (uint32_t)o);
+                free(buf);
+                push(vm, OBJ_VAL(r));
                 break;
             }
             case OP_YAP: {
@@ -1200,10 +1979,64 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
                 break;
             }
             case OP_HALT:
+                /* Only the top-level script's own bytecode ever contains a
+                   HALT -- a nested vm_execute (a callback closure, via
+                   vm_call_value) always ends via RETURN instead. */
                 return vm->hadError ? VM_ERROR : VM_OK;
             default:
                 vm_throw_fmt(vm, "SkillIssue", "opcode %d not implemented until a later milestone.", op);
                 break;
         }
     }
+}
+
+VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
+    vm->unit = unit;
+    vm->out = out;
+    vm->gc.markExternalRoots = mark_vm_roots;
+    vm->gc.externalRootsUserdata = vm;
+
+    FunctionProto *entryProto = &unit->protos[unit->entryProto];
+    ObjClosure *entryClosure = closure_new(&vm->gc, entryProto, NULL, 0);
+    push_frame(vm, entryClosure, 0);
+
+    VmResult result = vm_execute(vm, 0, NULL);
+    if (result == VM_ERROR) vm->uncaughtError = vm->pendingError;
+    return result;
+}
+
+Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_BOUND_NATIVE) {
+        ObjBoundNative *bn = (ObjBoundNative *)AS_OBJ(callee);
+        if (argc < bn->minArity || argc > bn->maxArity) {
+            char wantBuf[32];
+            if (bn->minArity == bn->maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", bn->minArity);
+            else snprintf(wantBuf, sizeof wantBuf, "%d-%d", bn->minArity, bn->maxArity);
+            vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", bn->name, wantBuf, argc);
+            return GHOST_VAL;
+        }
+        Value full[257];
+        full[0] = bn->receiver;
+        for (int i = 0; i < argc; i++) full[i + 1] = args[i];
+        return bn->fn(vm, full, argc + 1);
+    }
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_CLOSURE) {
+        ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
+        if (vm->frameCount >= VM_MAX_FRAMES) {
+            vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+            return GHOST_VAL;
+        }
+        if (!closure_arity_ok(vm, closure->proto, argc)) return GHOST_VAL;
+        int arity = closure->proto->arity;
+        int baseFrameCount = vm->frameCount;
+        int slotBase = vm->stackCount;
+        for (int i = 0; i < argc; i++) push(vm, args[i]);
+        for (int i = argc; i < arity; i++) push(vm, GHOST_VAL);
+        push_frame(vm, closure, slotBase);
+        Value result;
+        vm_execute(vm, baseFrameCount, &result); /* VM_ERROR: vm->hadError stays set for the caller to notice */
+        return result;
+    }
+    vm_throw_fmt(vm, "NotACallableRizz", "'%s' is not callable.", type_name_of(callee));
+    return GHOST_VAL;
 }
