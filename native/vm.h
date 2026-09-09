@@ -185,6 +185,13 @@ char *vm_value_to_display(VM *vm, Value v);
    repr. */
 char *vm_value_to_repr(VM *vm, Value v);
 
+/* A stash of "at foo()  path:line" strings for the VM's current call
+   stack, innermost frame first -- funnylang/vm.py's own `_build_trace`,
+   wrapped as a Value for `sus.stack_trace()` (the only stdlib caller;
+   the dispatch loop's own error-unwinding path uses vm.c's private
+   build_trace directly and has no need for a Stash). */
+Value vm_stack_trace_stash(VM *vm);
+
 /* dip()'s "terminate the whole process now, no `my_bad`/`regardless`
    gets a chance to run at any nesting level" -- deliberately not a normal
    FunnyError: matches Python's SystemExit not being a FunnyError

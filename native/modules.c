@@ -10,6 +10,7 @@
 #include "mafs.h"
 #include "rizz.h"
 #include "stash.h"
+#include "sus.h"
 #include "vm.h"
 #include "yapper.h"
 
@@ -27,7 +28,7 @@ ObjModule *module_new(GC *gc, ObjString *name, Value members) {
 
 /* The stdlib registry (funnylang/stdlib/__init__.py's own STDLIB_NAMES/
    _build): one entry per module `gimme modulename` can resolve. Grows as
-   later N5 sub-phases port sus/computer/internet. */
+   later N5 sub-phases port computer/internet. */
 typedef Value (*StdlibBuilderFn)(VM *vm);
 
 typedef struct {
@@ -43,6 +44,7 @@ static const StdlibEntry STDLIB_REGISTRY[] = {
     {"rizz", rizz_build},
     {"filez", filez_build},
     {"clock", clock_build},
+    {"sus", sus_build},
 };
 #define STDLIB_REGISTRY_COUNT (int)(sizeof(STDLIB_REGISTRY) / sizeof(STDLIB_REGISTRY[0]))
 

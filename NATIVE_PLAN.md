@@ -1284,3 +1284,32 @@ gets an entry explaining what changed and why.
   `TypeVibeMismatch` for both instead).
   Verified: 1 new differential program plus the full suite re-run, byte-identical, gcc and clang,
   `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.
+
+- **N5 · sub-phase 5h complete · `sus` (task 2's ninth module).** All 5 reflection/debug functions
+  port from `funnylang/stdlib/sus.py`. `type_of`/`is_a` are thin wrappers over the existing
+  `vm_type_name`; `fields_of` copies an `ObjInstance`'s flat `FieldEntry` array into a fresh
+  groupchat (empty for anything that isn't an Instance, matching Python's own `isinstance` guard);
+  `dump` is a byte-for-byte duplicate of `builtins.c`'s own `sheesh` (funnylang/stdlib/builtins.py's
+  `_sheesh` and sus.py's `_dump` are themselves the same function body copy-pasted across two files,
+  so replicating that duplication is the faithful port, not an oversight to "fix" by sharing code).
+  **`stack_trace()` reuses existing machinery wholesale:** `vm.c` already had a private
+  `build_trace()`/`free_trace()` pair (built for the error-diagnostics path, porting
+  `funnylang/vm.py`'s own `_build_trace` line for line — innermost frame first, `<the big one>` for
+  the top-level script frame, `max(ip-1, 0)` lookahead-correction for every non-topmost frame). Added
+  one new public wrapper, `vm_stack_trace_stash()` (vm.h/vm.c), that calls the existing pair and
+  copies the lines into a `Stash` of yapstrings — no new trace-building logic at all, just a Value
+  wrapper around code that already existed and was already exercised by every existing error test.
+  Unlike `rizz`'s randomness or `clock`'s timing, stack-trace output here is fully deterministic and
+  reproducible byte-for-byte: `path` comes from the compiled unit's own embedded `sourceName`, set
+  once at compile time from the literal `.funny` path string and identical in both the Python and
+  native runs of the same differential test file, so the new test asserts exact trace-line content
+  rather than falling back to a properties-only check.
+  **Found a language-grammar quirk while writing the test, not a bug in either VM:** `sus` is itself
+  a reserved statement-leading keyword (FunnyLang's own conditional, "sus (cond) { }"), so
+  `sus.dump(x)` as a bare statement fails to parse on *both* VMs identically — confirmed by checking
+  that every existing Python-side `sus.*` test already only ever calls it from inside an expression
+  context (`yap sus.dump(5) + 1`, never a bare statement). Adjusted the test file accordingly
+  (`yo _ = sus.dump(x)` instead of a bare `sus.dump(x)`); no runtime-behavior difference, since this
+  is parser-level and identical on both sides.
+  Verified: 1 new differential program plus the full suite re-run, byte-identical, gcc and clang,
+  `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.

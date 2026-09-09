@@ -717,6 +717,20 @@ static void free_trace(char **lines, int count) {
     free(lines);
 }
 
+Value vm_stack_trace_stash(VM *vm) {
+    if (vm->frameCount == 0) return OBJ_VAL(stash_new(&vm->gc, NULL, 0));
+    int count;
+    char **lines = build_trace(vm, &count);
+    ObjStash *s = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(s));
+    for (int i = 0; i < count; i++) {
+        stash_push(&vm->gc, s, OBJ_VAL(string_new(&vm->gc, lines[i], (uint32_t)strlen(lines[i]))));
+    }
+    gc_pop_temp(&vm->gc);
+    free_trace(lines, count);
+    return OBJ_VAL(s);
+}
+
 /* Builds a complete ObjError from the VM's *current* position
    (currentFrameIndex/currentInstrStart, refreshed at the top of every
    dispatch iteration) and sets it pending. Safe to call from deep inside
