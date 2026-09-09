@@ -122,9 +122,11 @@ static Value bignum_to_numba(GC *gc, ObjBignum *n) {
     return OBJ_VAL(n);
 }
 
-static Value m_to_numba(VM *vm, Value *a, int argc) {
-    (void)argc;
-    Value x = a[0];
+/* Exposed (builtins.h) so yapper.c's own `to_numba` instance method --
+   the same underlying Python function in funnylang/stdlib/builtins.py,
+   just re-exported there as `yapper._to_numba` -- can call the identical
+   logic instead of duplicating it. */
+Value to_numba_value(VM *vm, Value x) {
     if (IS_BOOL(x)) return INT_VAL(AS_BOOL(x) ? 1 : 0);
     if (IS_NUM(x)) return x;
     if (IS_STRING(x)) {
@@ -143,6 +145,11 @@ static Value m_to_numba(VM *vm, Value *a, int argc) {
     }
     vm_throw_native(vm, "TypeVibeMismatch", "can't turn a %s into a numba.", vm_type_name(x));
     return GHOST_VAL;
+}
+
+static Value m_to_numba(VM *vm, Value *a, int argc) {
+    (void)argc;
+    return to_numba_value(vm, a[0]);
 }
 
 static Value m_to_int(VM *vm, Value *a, int argc) {

@@ -34,6 +34,7 @@
 #include "squad.h"
 #include "stash.h"
 #include "string.h"
+#include "yapper.h"
 
 #define IS_INT_LIKE(v) (IS_INT(v) || IS_BOOL(v))
 
@@ -1573,6 +1574,8 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
         fn = pointa_find_method(name->chars, &minArity, &maxArity);
     } else if (IS_NUM(obj)) {
         fn = numba_find_method(name->chars, &minArity, &maxArity);
+    } else if (IS_STRING(obj)) {
+        fn = yapstring_find_method(name->chars, &minArity, &maxArity);
     }
     if (fn == NULL) {
         if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_MODULE) {
@@ -1738,6 +1741,16 @@ static Value vm_get_prop(VM *vm, Value obj, ObjString *name) {
         NativeMethodFn fn = numba_find_method(name->chars, &minArity, &maxArity);
         if (fn == NULL) {
             vm_throw_fmt(vm, "WhoDis", "a numba doesn't have '%s'.", name->chars);
+            return GHOST_VAL;
+        }
+        return OBJ_VAL(bound_native_new(&vm->gc, obj, fn, name->chars, minArity, maxArity));
+    }
+    if (IS_STRING(obj)) {
+        /* yapstring's own instance methods (yapper.c's YAPSTRING_METHOD_TABLE). */
+        int minArity, maxArity;
+        NativeMethodFn fn = yapstring_find_method(name->chars, &minArity, &maxArity);
+        if (fn == NULL) {
+            vm_throw_fmt(vm, "WhoDis", "a yapstring doesn't have '%s'.", name->chars);
             return GHOST_VAL;
         }
         return OBJ_VAL(bound_native_new(&vm->gc, obj, fn, name->chars, minArity, maxArity));

@@ -66,5 +66,9 @@ uint32_t utf8_codepoint_count(const char *chars, uint32_t byteLen);
    codepointIdx == the string's own codepoint count (one-past-the-end, for
    slice bounds). Caller ensures 0 <= codepointIdx <= codepoint count. */
 uint32_t utf8_byte_offset_of(const char *chars, uint32_t byteLen, uint32_t codepointIdx);
+/* Encodes one scalar codepoint into `out` (caller-owned, >= 4 bytes) as
+   UTF-8; returns the byte length written (1-4). Caller's responsibility
+   to ensure `cp` is a valid Unicode scalar value (chr_of's own job). */
+uint32_t utf8_encode_cp(uint32_t cp, char *out);
 
 #endif /* FUNNY_STRING_H */

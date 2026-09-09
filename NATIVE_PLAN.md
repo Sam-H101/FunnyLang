@@ -1139,3 +1139,35 @@ gets an entry explaining what changed and why.
   plus the full existing suite re-run end to end (confirming the whole globals-architecture rewrite
   caused zero regressions) -- byte-identical, gcc and clang, `-Werror`, ASan/UBSan, and
   `FUNNY_GC_STRESS=1`.
+- **N5 · sub-phase 5c complete · `yapper` (task 2's third module).** 28 free functions + the 19
+  yapstring instance methods -- ported as a *single* function per operation wherever
+  `funnylang/stdlib/yapper.py` itself shares one Python function between `build()`'s `members` and
+  its separate `YAPSTRING_METHODS` dict (15 of the 28 do; both conventions already treat `a[0]` as
+  "the string" identically, receiver or not, so there was never a reason to write two wrappers).
+  Codepoint-correct throughout (`slice`/`reverse`/`chars`/`ord_of`/`chr_of`/`at`/`code_at`/`pad_left`/
+  `pad_right`/`how_thicc`), reusing N4's own `utf8_*` primitives plus a new `utf8_encode_cp`
+  (`chr_of`'s own job -- encoding a scalar back into UTF-8, the encode-side counterpart N4 never
+  needed). `reverse`'s non-ASCII path builds a codepoint-offset table once, the same O(n)-not-O(n²)
+  approach `GET_SLICE`'s own non-ASCII path already established. `vm_get_prop`/`do_invoke` gained the
+  `IS_STRING` dispatch branch this needed (yapstring method binding was N4's own deferred item,
+  alongside numba's, which the `mafs` sub-phase just did).
+  **Three deliberate, logged scope reductions, all because real Unicode tables (`unicode_tbl.c`,
+  N4 task 2) still don't exist:** `SCREAM`/`whisper`/`title_case`/`sarcasm_case` are ASCII-only case
+  conversion (non-ASCII bytes pass through unchanged); `is_letter`/`is_alnum` are ASCII-only
+  classification; `format` supports only positional `{}`/`{N}` placeholders, not named fields or
+  format specs (`{:.2f}`) -- reimplementing a real chunk of Python's format mini-language for one
+  function would be disproportionate to the rest of this module's own scope.
+  **Found and deliberately did *not* replicate an apparent bug in the Python reference, rather than
+  silently matching or silently diverging:** empirically verified that `yapper.join` uses Python's
+  raw `str(x)` on each item, not `to_display` -- observably different for a boolski ("True"/"False",
+   not "fax"/"cap") and, for a nested Stash/GroupChat, Python's own debug `repr()` (e.g.
+  `"Stash([1, 2])"`, using Python's dict/list syntax, not FunnyLang's). Replicated exactly for
+  ghost/boolski/numba/yapstring (cheap, and the common case); NOT replicated for anything needing
+  Python's own container repr, which uses `to_display` instead -- reproducing Python's `repr()`
+  faithfully for arbitrary nested structures is disproportionate effort for what only manifests when
+  joining a stash *of stashes/groupchats*, and looks like an oversight (`str(x)` where every other
+  display path in the language uses `to_display`) rather than a specified behavior.
+  Verified: 1 new differential program (every free function and instance method, UTF-8 codepoints
+  throughout, the `join` boolean quirk, `format`'s positional placeholders, and two error paths)
+  plus the full suite re-run, byte-identical, gcc and clang, `-Werror`, ASan/UBSan, and
+  `FUNNY_GC_STRESS=1`.

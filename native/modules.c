@@ -6,6 +6,7 @@
 #include "gc.h"
 #include "mafs.h"
 #include "vm.h"
+#include "yapper.h"
 
 ObjModule *module_new(GC *gc, ObjString *name, Value members) {
     ObjModule *m = (ObjModule *)malloc(sizeof(ObjModule));
@@ -32,6 +33,7 @@ typedef struct {
 
 static const StdlibEntry STDLIB_REGISTRY[] = {
     {"mafs", mafs_build},
+    {"yapper", yapper_build},
 };
 #define STDLIB_REGISTRY_COUNT (int)(sizeof(STDLIB_REGISTRY) / sizeof(STDLIB_REGISTRY[0]))
 

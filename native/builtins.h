@@ -35,4 +35,9 @@ Value combo_call(struct VM *vm, ObjCombo *combo, Value arg);
 /* Registers every funnylang/stdlib/builtins.py name into vm->builtins. */
 void builtins_install(struct VM *vm);
 
+/* to_numba(x)'s own logic, exposed so yapper.c's `to_numba` instance
+   method (the exact same underlying Python function, re-exported there)
+   doesn't need to duplicate it. */
+Value to_numba_value(struct VM *vm, Value x);
+
 #endif /* FUNNY_BUILTINS_H */

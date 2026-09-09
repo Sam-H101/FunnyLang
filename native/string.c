@@ -47,6 +47,29 @@ uint32_t utf8_byte_offset_of(const char *chars, uint32_t byteLen, uint32_t codep
     return i;
 }
 
+uint32_t utf8_encode_cp(uint32_t cp, char *out) {
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
 ObjString *string_new(GC *gc, const char *chars, uint32_t len) {
     ObjString *s = (ObjString *)malloc(sizeof(ObjString));
     s->obj.type = OBJ_STRING;
