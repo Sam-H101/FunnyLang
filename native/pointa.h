@@ -32,16 +32,21 @@ typedef enum {
     POINTA_PROP,
 } PointaKind;
 
-typedef struct VM VM;
-
 typedef struct {
     Obj obj;
     PointaKind kind;
     ObjString *label; /* what .where()/to_yap show for CELL/GLOBAL */
     ObjUpvalue *cell;    /* POINTA_CELL */
-    VM *vm;              /* POINTA_GLOBAL: re-look-up by name each access,
-                            same reasoning as ObjUpvalue -- vm->globals can
-                            realloc, so no raw GlobalEntry* is stored */
+    Value moduleGlobals; /* POINTA_GLOBAL: the OBJ_VAL(ObjGroupChat*) of
+                            whichever module's namespace this name was
+                            taken from -- looked up by name each access
+                            (groupchat_find), never a cached GroupChatEntry*,
+                            since a GroupChat's own backing array can
+                            realloc on a later `set`. Deliberately the
+                            *module's* namespace, not "the VM's", now that
+                            each module has its own -- a pointer to a
+                            global must keep resolving against the one it
+                            was actually taken from. */
     ObjString *globalName; /* POINTA_GLOBAL */
     Value container;        /* POINTA_INDEX/POINTA_PROP: the stash/groupchat/instance */
     Value key;               /* POINTA_INDEX: the stash/groupchat key.
@@ -54,7 +59,7 @@ typedef struct {
 
 struct GC;
 ObjPointa *pointa_new_cell(struct GC *gc, ObjUpvalue *cell, ObjString *label);
-ObjPointa *pointa_new_global(struct GC *gc, VM *vm, ObjString *globalName);
+ObjPointa *pointa_new_global(struct GC *gc, Value moduleGlobals, ObjString *globalName);
 /* `kind` must be POINTA_INDEX or POINTA_PROP. */
 ObjPointa *pointa_new_place(struct GC *gc, PointaKind kind, Value container, Value key, ObjString *label);
 

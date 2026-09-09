@@ -13,7 +13,7 @@ ObjPointa *pointa_new_cell(GC *gc, ObjUpvalue *cell, ObjString *label) {
     p->kind = POINTA_CELL;
     p->label = label;
     p->cell = cell;
-    p->vm = NULL;
+    p->moduleGlobals = GHOST_VAL;
     p->globalName = NULL;
     p->container = GHOST_VAL;
     p->key = GHOST_VAL;
@@ -21,7 +21,7 @@ ObjPointa *pointa_new_cell(GC *gc, ObjUpvalue *cell, ObjString *label) {
     return p;
 }
 
-ObjPointa *pointa_new_global(GC *gc, VM *vm, ObjString *globalName) {
+ObjPointa *pointa_new_global(GC *gc, Value moduleGlobals, ObjString *globalName) {
     ObjPointa *p = (ObjPointa *)malloc(sizeof(ObjPointa));
     p->obj.type = OBJ_POINTA;
     p->obj.marked = false;
@@ -30,7 +30,7 @@ ObjPointa *pointa_new_global(GC *gc, VM *vm, ObjString *globalName) {
     p->kind = POINTA_GLOBAL;
     p->label = globalName;
     p->cell = NULL;
-    p->vm = vm;
+    p->moduleGlobals = moduleGlobals;
     p->globalName = globalName;
     p->container = GHOST_VAL;
     p->key = GHOST_VAL;
@@ -47,7 +47,7 @@ ObjPointa *pointa_new_place(GC *gc, PointaKind kind, Value container, Value key,
     p->kind = kind;
     p->label = label;
     p->cell = NULL;
-    p->vm = NULL;
+    p->moduleGlobals = GHOST_VAL;
     p->globalName = NULL;
     p->container = container;
     p->key = key;

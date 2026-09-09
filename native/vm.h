@@ -92,11 +92,11 @@ struct VM {
     int openUpvalueCount;
     int openUpvalueCapacity;
 
-    /* A plain linear-scan table, not table.c's real hash table (N4) --
-       see NATIVE_PLAN.md §9's N2 entry. */
-    GlobalEntry *globals;
-    int globalCount;
-    int globalCapacity;
+    /* Module globals no longer live directly on the VM (N5 task 3): each
+       closure has its own `moduleGlobals` GroupChat (frames.h), and
+       GET/SET/DEF_GLOBAL and PTR_GLOBAL all read/write the *current
+       frame's* one -- see vm.c's own note where globals_find/globals_set
+       used to be. */
 
     /* The always-in-scope builtins (native/builtins.c), a *separate*
        namespace from `globals` -- GET_GLOBAL checks `globals` first, then
@@ -212,5 +212,10 @@ void vm_define_builtin(VM *vm, ObjString *name, Value value);
    `vm` for the same reason as vm_value_to_display: comparing two Instances
    calls their squad's `same_energy` magic method, if it has one. */
 bool vm_value_equal(VM *vm, Value a, Value b);
+
+/* mafs.pow needs int**int arbitrary-precision behavior identical to the
+   `^`/POW opcode's own -- exposes vm_pow (otherwise private to vm.c)
+   rather than reimplementing bignum exponentiation a second time. */
+Value vm_numeric_pow(VM *vm, Value a, Value b);
 
 #endif /* FUNNY_VM_H */

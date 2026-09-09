@@ -1,0 +1,75 @@
+gimme mafs
+
+yap mafs.sqrt(16)
+yap mafs.sqrt(2)
+yap mafs.abs(-5)
+yap mafs.abs(5)
+yap mafs.abs(-5.5)
+yap mafs.is_float(5)
+yap mafs.is_float(5.0)
+yap mafs.float_to_bits(1.0)
+yap mafs.float_to_bits(0.0)
+yap mafs.floor(5.7)
+yap mafs.ceil(5.2)
+yap mafs.floor(5)
+yap mafs.round(5.5)
+yap mafs.round(4.5)
+yap mafs.round(5.678, 2)
+yap mafs.round(5)
+yap mafs.min(3, 1, 4, 1, 5)
+yap mafs.max(3, 1, 4, 1, 5)
+yap mafs.min(3.5, 2)
+yap mafs.pow(2, 10)
+yap mafs.pow(2, 100)
+yap mafs.pow(2.0, 0.5)
+yap mafs.log(mafs.e)
+yap mafs.log(8, 2)
+yap mafs.log2(8)
+yap mafs.log10(1000)
+yap mafs.exp(0)
+yap mafs.sin(0)
+yap mafs.cos(0)
+yap mafs.atan2(1, 1)
+yap mafs.hypot(3, 4)
+yap mafs.clamp(5, 0, 10)
+yap mafs.clamp(-5, 0, 10)
+yap mafs.clamp(15, 0, 10)
+yap mafs.sign(5)
+yap mafs.sign(-5)
+yap mafs.sign(0)
+yap mafs.gcd(12, 18)
+yap mafs.lcm(4, 6)
+yap mafs.is_prime(17)
+yap mafs.is_prime(18)
+yap mafs.factorial(5)
+yap mafs.factorial(20)
+yap mafs.factorial(30)
+yap mafs.skibidi_pi
+yap mafs.infinity
+yap mafs.nan
+
+yap (5.7).floor()
+yap (5.2).ceil()
+yap (-5).abs()
+yap (5).abs()
+yap (5.5).round()
+yap (5.678).round(2)
+yap (5.0).is_whole()
+yap (5.5).is_whole()
+yap (5).is_whole()
+yap (5).to_yap()
+yap (5.5).to_yap()
+
+bet apply_mafs(fn, x) {
+    bounce fn(x)
+}
+yap apply_mafs(mafs.sqrt, 25)
+
+flex bet exported_thing() { bounce "exported!" }
+yap exported_thing()
+
+sketchy {
+    gimme not_a_real_module
+} my_bad (e) {
+    yap "caught:", e.flavor
+}

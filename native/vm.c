@@ -26,6 +26,8 @@
 #include "error.h"
 #include "groupchat.h"
 #include "iterator.h"
+#include "mafs.h"
+#include "modules.h"
 #include "numfmt.h"
 #include "opcodes.h"
 #include "pointa.h"
@@ -114,6 +116,7 @@ static const char *type_name_of(Value v) {
             case OBJ_ITERATOR: return "iterator";
             case OBJ_SQUAD: return "squad";
             case OBJ_INSTANCE: return ((ObjInstance *)AS_OBJ(v))->squad->name->chars;
+            case OBJ_MODULE: return "module";
             default: return "object";
         }
     }
@@ -270,6 +273,12 @@ static char *display_value_rec(VM *vm, Value v, SeenStack *seen) {
     }
     if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_COMBO) {
         return dup_str("<bet combo/native>");
+    }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_MODULE) {
+        ObjModule *m = (ObjModule *)AS_OBJ(v);
+        char buf[160];
+        snprintf(buf, sizeof buf, "<module %s>", m->name->chars);
+        return dup_str(buf);
     }
     if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_SQUAD) {
         ObjSquad *s = (ObjSquad *)AS_OBJ(v);
@@ -538,10 +547,6 @@ void vm_init(VM *vm) {
     vm->openUpvalues = (ObjUpvalue **)malloc((size_t)vm->openUpvalueCapacity * sizeof(ObjUpvalue *));
     vm->openUpvalueCount = 0;
 
-    vm->globalCapacity = INITIAL_GLOBALS_CAPACITY;
-    vm->globals = (GlobalEntry *)malloc((size_t)vm->globalCapacity * sizeof(GlobalEntry));
-    vm->globalCount = 0;
-
     vm->builtinCapacity = INITIAL_GLOBALS_CAPACITY;
     vm->builtins = (GlobalEntry *)malloc((size_t)vm->builtinCapacity * sizeof(GlobalEntry));
     vm->builtinCount = 0;
@@ -561,7 +566,6 @@ void vm_destroy(VM *vm) {
     for (int i = 0; i < vm->frameCount; i++) frame_destroy(&vm->frames[i]);
     free(vm->frames);
     free(vm->openUpvalues);
-    free(vm->globals);
     free(vm->builtins);
     gc_destroy(&vm->gc);
 }
@@ -573,10 +577,9 @@ static void mark_vm_roots(GC *gc, void *userdata) {
     for (int i = 0; i < vm->stackCount; i++) gc_mark_value(gc, vm->stack[i]);
     for (int i = 0; i < vm->frameCount; i++) gc_mark_object(gc, (Obj *)vm->frames[i].closure);
     for (int i = 0; i < vm->openUpvalueCount; i++) gc_mark_object(gc, (Obj *)vm->openUpvalues[i]);
-    for (int i = 0; i < vm->globalCount; i++) {
-        gc_mark_object(gc, (Obj *)vm->globals[i].name);
-        gc_mark_value(gc, vm->globals[i].value);
-    }
+    /* No separate loop for module globals: each live frame's closure is
+       already marked above, and blacken_object's own OBJ_CLOSURE case
+       marks moduleGlobals/moduleExports transitively from there. */
     for (int i = 0; i < vm->builtinCount; i++) {
         gc_mark_object(gc, (Obj *)vm->builtins[i].name);
         gc_mark_value(gc, vm->builtins[i].value);
@@ -615,12 +618,12 @@ static Value peek(VM *vm, int distance) {
 
 /* -- globals -------------------------------------------------------------- */
 
-static GlobalEntry *globals_find(VM *vm, ObjString *name) {
-    for (int i = 0; i < vm->globalCount; i++) {
-        if (string_equal(vm->globals[i].name, name)) return &vm->globals[i];
-    }
-    return NULL;
-}
+/* Module globals (GET/SET/DEF_GLOBAL, PTR_GLOBAL) are *not* handled here
+   any more -- they live on each closure's own `moduleGlobals` GroupChat
+   (PLAN.md §3.8's per-module isolation, N5 task 3), read/written directly
+   via groupchat_find/groupchat_set at each opcode's own dispatch site.
+   Only the builtins table (a single, genuinely VM-wide namespace) is
+   still this plain linear-scan GlobalEntry array. */
 
 static GlobalEntry *builtins_find(VM *vm, ObjString *name) {
     for (int i = 0; i < vm->builtinCount; i++) {
@@ -637,21 +640,6 @@ void vm_define_builtin(VM *vm, ObjString *name, Value value) {
     vm->builtins[vm->builtinCount].name = name;
     vm->builtins[vm->builtinCount].value = value;
     vm->builtinCount++;
-}
-
-static void globals_set(VM *vm, ObjString *name, Value value) {
-    GlobalEntry *existing = globals_find(vm, name);
-    if (existing != NULL) {
-        existing->value = value;
-        return;
-    }
-    if (vm->globalCount == vm->globalCapacity) {
-        vm->globalCapacity *= 2;
-        vm->globals = (GlobalEntry *)realloc(vm->globals, (size_t)vm->globalCapacity * sizeof(GlobalEntry));
-    }
-    vm->globals[vm->globalCount].name = name;
-    vm->globals[vm->globalCount].value = value;
-    vm->globalCount++;
 }
 
 /* -- frames ----------------------------------------------------------------- */
@@ -1158,6 +1146,8 @@ static Value vm_pow(VM *vm, Value a, Value b) {
     return bignum_result(vm, r);
 }
 
+Value vm_numeric_pow(VM *vm, Value a, Value b) { return vm_pow(vm, a, b); }
+
 /* -- unary -------------------------------------------------------------- */
 
 static Value vm_neg(VM *vm, Value a) {
@@ -1581,8 +1571,28 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
         fn = groupchat_find_method(name->chars, &minArity, &maxArity);
     } else if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_POINTA) {
         fn = pointa_find_method(name->chars, &minArity, &maxArity);
+    } else if (IS_NUM(obj)) {
+        fn = numba_find_method(name->chars, &minArity, &maxArity);
     }
     if (fn == NULL) {
+        if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_MODULE) {
+            /* A module member, called directly (`mafs.sqrt(4)`) -- no
+               receiver to prepend, matching vm.py's generic
+               _get_prop-then-call fallback for a bare NativeFn/Closure
+               result off any non-Instance receiver. Replace the
+               receiver's own stack slot with the member's value first,
+               so do_call reads the right callee (same trick as
+               INVOKE's Instance-field-shadow path above). */
+            ObjModule *mod = (ObjModule *)AS_OBJ(obj);
+            GroupChatEntry *e = groupchat_find((ObjGroupChat *)AS_OBJ(mod->members), OBJ_VAL(name));
+            if (e == NULL) {
+                vm_throw_fmt(vm, "WhoDis", "'%s' isn't exported by module '%s'.", name->chars, mod->name->chars);
+                return;
+            }
+            vm->stack[argStart - 1] = e->value;
+            do_call(vm, argc);
+            return;
+        }
         if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_SQUAD) {
             /* A Squad's own method, called directly off the class itself
                (not an instance) -- no receiver to prepend, matching
@@ -1707,6 +1717,30 @@ static Value vm_get_prop(VM *vm, Value obj, ObjString *name) {
             return GHOST_VAL;
         }
         return OBJ_VAL(method);
+    }
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_MODULE) {
+        ObjModule *mod = (ObjModule *)AS_OBJ(obj);
+        GroupChatEntry *e = groupchat_find((ObjGroupChat *)AS_OBJ(mod->members), OBJ_VAL(name));
+        if (e == NULL) {
+            vm_throw_fmt(vm, "WhoDis", "'%s' isn't exported by module '%s'.", name->chars, mod->name->chars);
+            return GHOST_VAL;
+        }
+        return e->value;
+    }
+    if (IS_NUM(obj)) {
+        /* numba's own instance methods (mafs.c's NUMBA_METHODS,
+           e.g. `(5.5).floor()`) -- boolski is never a numba (PLAN.md
+           §16), and IS_NUM already excludes it (a separate Value tag),
+           so this needs no extra !IS_BOOL check the way Python's own
+           `isinstance(obj, (int,float)) and not isinstance(obj, bool)`
+           does (Python's bool being an int subclass). */
+        int minArity, maxArity;
+        NativeMethodFn fn = numba_find_method(name->chars, &minArity, &maxArity);
+        if (fn == NULL) {
+            vm_throw_fmt(vm, "WhoDis", "a numba doesn't have '%s'.", name->chars);
+            return GHOST_VAL;
+        }
+        return OBJ_VAL(bound_native_new(&vm->gc, obj, fn, name->chars, minArity, maxArity));
     }
     if (IS_GHOST(obj)) {
         vm_throw_fmt(vm, "GhostError", "can't read '%s' off ghost.", name->chars);
@@ -1982,8 +2016,10 @@ static Value vm_get_slice(VM *vm, Value obj, Value startV, Value stopV, Value st
 static Value pointa_deref_value(VM *vm, ObjPointa *ptr) {
     if (ptr->kind == POINTA_CELL) return upvalue_get(ptr->cell);
     if (ptr->kind == POINTA_GLOBAL) {
-        GlobalEntry *g = globals_find(vm, ptr->globalName);
-        if (g == NULL) g = builtins_find(vm, ptr->globalName);
+        ObjGroupChat *mg = (ObjGroupChat *)AS_OBJ(ptr->moduleGlobals);
+        GroupChatEntry *e = groupchat_find(mg, OBJ_VAL(ptr->globalName));
+        if (e != NULL) return e->value;
+        GlobalEntry *g = builtins_find(vm, ptr->globalName);
         if (g == NULL) {
             vm_throw_fmt(vm, "WhoDis", "'%s' isn't defined.", ptr->globalName->chars);
             return GHOST_VAL;
@@ -2001,7 +2037,7 @@ static void pointa_set_value(VM *vm, ObjPointa *ptr, Value value) {
     if (ptr->kind == POINTA_CELL) {
         upvalue_set(ptr->cell, value);
     } else if (ptr->kind == POINTA_GLOBAL) {
-        globals_set(vm, ptr->globalName, value);
+        groupchat_set(&vm->gc, (ObjGroupChat *)AS_OBJ(ptr->moduleGlobals), OBJ_VAL(ptr->globalName), value);
     } else if (ptr->kind == POINTA_INDEX) {
         vm_set_index(vm, ptr->container, ptr->key, value);
     } else {
@@ -2192,13 +2228,19 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 vm->stack[frame->slotBase + code[frame->ip++]] = peek(vm, 0);
                 break;
             case OP_GET_GLOBAL: {
-                /* Module globals first, then the always-in-scope builtins
-                   -- matches funnylang/vm.py's own _read_global exactly. */
+                /* This module's own globals first, then the always-in-
+                   scope builtins -- matches funnylang/vm.py's own
+                   _read_global exactly. */
                 uint16_t idx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[idx].value);
-                GlobalEntry *g = globals_find(vm, name);
-                if (g == NULL) g = builtins_find(vm, name);
+                ObjGroupChat *mg = (ObjGroupChat *)AS_OBJ(frame->closure->moduleGlobals);
+                GroupChatEntry *e = groupchat_find(mg, OBJ_VAL(name));
+                if (e != NULL) {
+                    push(vm, e->value);
+                    break;
+                }
+                GlobalEntry *g = builtins_find(vm, name);
                 if (g == NULL) {
                     vm_throw_fmt(vm, "WhoDis", "'%s' isn't defined.", name->chars);
                     break;
@@ -2210,14 +2252,14 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 uint16_t idx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[idx].value);
-                globals_set(vm, name, peek(vm, 0));
+                groupchat_set(&vm->gc, (ObjGroupChat *)AS_OBJ(frame->closure->moduleGlobals), OBJ_VAL(name), peek(vm, 0));
                 break;
             }
             case OP_DEF_GLOBAL: {
                 uint16_t idx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[idx].value);
-                globals_set(vm, name, pop(vm));
+                groupchat_set(&vm->gc, (ObjGroupChat *)AS_OBJ(frame->closure->moduleGlobals), OBJ_VAL(name), pop(vm));
                 break;
             }
             case OP_GET_UPVAL:
@@ -2471,7 +2513,8 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                     frame->ip += 2;
                     upvalues[i] = isLocal ? capture_upvalue(vm, frame->slotBase + uvIdx) : frame->closure->upvalues[uvIdx];
                 }
-                ObjClosure *c = closure_new(&vm->gc, proto, upvalues, proto->upvalueCount);
+                ObjClosure *c = closure_new(&vm->gc, proto, upvalues, proto->upvalueCount,
+                                            frame->closure->moduleGlobals, frame->closure->moduleExports);
                 push(vm, OBJ_VAL(c));
                 break;
             }
@@ -2519,6 +2562,21 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
             case OP_TRY_POP:
                 frame_pop_handler(frame);
                 break;
+            case OP_IMPORT: {
+                uint16_t idx = read_u16(code, frame->ip);
+                uint8_t mode = code[frame->ip + 2];
+                frame->ip += 3;
+                ObjString *path = AS_STRING(consts[idx].value);
+                push(vm, do_import(vm, path->chars, mode));
+                break;
+            }
+            case OP_EXPORT: {
+                uint16_t idx = read_u16(code, frame->ip);
+                frame->ip += 2;
+                ObjString *name = AS_STRING(consts[idx].value);
+                groupchat_set(&vm->gc, (ObjGroupChat *)AS_OBJ(frame->closure->moduleExports), OBJ_VAL(name), peek(vm, 0));
+                break;
+            }
             case OP_ITER_NEW: {
                 Value iterable = peek(vm, 0);
                 ObjIterator *it = make_iterator(vm, iterable);
@@ -2589,7 +2647,7 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 uint16_t nameIdx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[nameIdx].value);
-                push(vm, OBJ_VAL(pointa_new_global(&vm->gc, vm, name)));
+                push(vm, OBJ_VAL(pointa_new_global(&vm->gc, frame->closure->moduleGlobals, name)));
                 break;
             }
             case OP_PTR_INDEX: {
@@ -2778,8 +2836,13 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
     vm->gc.markExternalRoots = mark_vm_roots;
     vm->gc.externalRootsUserdata = vm;
 
+    /* A fresh, empty pair of namespaces -- matches funnylang/vm.py's own
+       _make_entry_closure(unit) (module_globals=None, module_exports=None,
+       each defaulting to a fresh empty dict). */
+    Value freshGlobals = OBJ_VAL(groupchat_new(&vm->gc, NULL, 0));
+    Value freshExports = OBJ_VAL(groupchat_new(&vm->gc, NULL, 0));
     FunctionProto *entryProto = &unit->protos[unit->entryProto];
-    ObjClosure *entryClosure = closure_new(&vm->gc, entryProto, NULL, 0);
+    ObjClosure *entryClosure = closure_new(&vm->gc, entryProto, NULL, 0, freshGlobals, freshExports);
     push_frame(vm, entryClosure, 0);
 
     VmResult result = vm_execute(vm, 0, NULL);

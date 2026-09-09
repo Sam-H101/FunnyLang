@@ -50,9 +50,20 @@ typedef struct ObjClosureStruct {
        hierarchy must reach the next class up, not re-invoke its own
        defining class's method forever. */
     ObjSquad *homeSquad;
+    /* Per-module isolated namespaces (PLAN.md §3.8's "non-flexed names are
+       private"), each an OBJ_VAL(ObjGroupChat*) -- both mirror
+       funnylang/vm.py's Closure.module_globals/module_exports exactly,
+       down to how they propagate: the entry closure of a freshly run
+       module gets brand-new (empty) ones, and every closure the OP_CLOSURE
+       opcode creates *inside* that module inherits these same two Values
+       unchanged from its enclosing frame's own closure, so every closure
+       in one module shares one pair of namespaces by reference. */
+    Value moduleGlobals;
+    Value moduleExports;
 } ObjClosure;
 
-ObjClosure *closure_new(GC *gc, FunctionProto *proto, ObjUpvalue **upvalues, int upvalueCount);
+ObjClosure *closure_new(GC *gc, FunctionProto *proto, ObjUpvalue **upvalues, int upvalueCount,
+                         Value moduleGlobals, Value moduleExports);
 
 /* -- call frames ------------------------------------------------------- */
 

@@ -1103,3 +1103,39 @@ gets an entry explaining what changed and why.
   Real stdlib modules (`mafs yapper stash groupchat rizz filez clock sus computer internet`),
   `IMPORT`/`EXPORT`/per-module namespaces (task 3), `computer.explode()`/`blue_screen()` (task 4),
   `internet` (task 5), and `rizz`'s PRNG (task 6) remain as N5's next sub-phases.
+- **N5 · sub-phase 5b complete · per-module namespaces, `IMPORT`/`EXPORT` (task 3, scoped), and
+  `mafs` (task 2's second module).** Real per-module global isolation (PLAN.md §3.8's "non-flexed
+  names are private"): `ObjClosure` gains `moduleGlobals`/`moduleExports` (each an
+  `OBJ_VAL(ObjGroupChat*)`), inherited unchanged by every nested closure `OP_CLOSURE` creates within
+  one module and fresh (empty) for a newly-run module's entry closure -- exactly mirroring
+  `funnylang/vm.py`'s own `Closure.module_globals`/`module_exports` propagation. `GET_GLOBAL`/
+  `SET_GLOBAL`/`DEF_GLOBAL` and `PTR_GLOBAL` all now read/write the *current frame's* own
+  `moduleGlobals` instead of a single VM-wide table -- `vm->globals` is gone entirely, replaced by
+  this; `vm->builtins` (genuinely VM-wide, shared, and effectively read-only from FunnyLang code) is
+  unaffected. `ObjPointa`'s own `POINTA_GLOBAL` kind had to change too, from a borrowed `VM*` to the
+  *owning module's* `moduleGlobals` Value directly -- a global pointer must keep resolving against
+  the namespace it was actually taken from, not "whichever frame happens to be executing when it's
+  dereferenced" (unobservable with the one module that existed before this sub-phase, but a real bug
+  waiting for the next one).
+  **Scoped per an explicit decision this sub-phase, not silently narrowed:** `IMPORT`'s mode 2
+  (`gimme modulename`, a stdlib module by name) is fully wired (`native/modules.c`'s registry);
+  modes 0/1 (`gimme "path.funny"`, a real file) get the identical "modules aren't wired up yet"
+  `WhoDis` `funnylang/vm.py`'s own un-wired `_do_import` fallback raises when no `module_loader` is
+  set -- file-based imports need either a native compiler (N8) or `.funnypak` bundle loading
+  (`chunk.c` doesn't have it yet), neither of which exist. `EXPORT` itself is implemented to spec
+  (writes into the current closure's `moduleExports`) but has no differential-test-visible effect
+  yet, since nothing can *import* a user file back to read those exports until file-based `gimme`
+  exists -- tested only for "doesn't crash, program continues normally."
+  `native/mafs.c` ports all 25 free functions + 5 constants (`gimme mafs`) plus the 6 numba instance
+  methods (`(5.5).floor()`), which needed their own `vm_get_prop`/`do_invoke` dispatch branch (numba
+  method binding was N4's own deferred item: "stash/groupchat now, numba/yapstring/pointa's method
+  forms later" -- pointa's landed in N4's own pointers sub-phase; numba's lands here). `mafs.pow`
+  reuses `vm_pow` (newly exposed as `vm_numeric_pow`) rather than reimplementing bignum
+  exponentiation a second time. `factorial` is a real bignum loop (`20!` already overflows int64).
+  `M_PI`/`M_E` aren't standard C11 (`-std=c11` hides them even on glibc, and MSVC never defines them
+  without `_USE_MATH_DEFINES`) -- defined locally instead of depending on either.
+  Verified: 1 new differential program (every `mafs` function and constant, all 6 numba methods, a
+  module member passed as a first-class callback, `flex`, and the not-a-real-module error case)
+  plus the full existing suite re-run end to end (confirming the whole globals-architecture rewrite
+  caused zero regressions) -- byte-identical, gcc and clang, `-Werror`, ASan/UBSan, and
+  `FUNNY_GC_STRESS=1`.

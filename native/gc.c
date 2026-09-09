@@ -8,6 +8,7 @@
 #include "builtins.h"
 #include "groupchat.h"
 #include "iterator.h"
+#include "modules.h"
 #include "pointa.h"
 #include "squad.h"
 #include "stash.h"
@@ -109,6 +110,9 @@ static void free_object(Obj *obj) {
         case OBJ_COMBO:
             free(obj); /* fns is a Value field (an ObjStash), a separate GC object */
             return;
+        case OBJ_MODULE:
+            free(obj); /* name/members are separate GC objects */
+            return;
     }
 }
 
@@ -199,6 +203,8 @@ static void blacken_object(GC *gc, Obj *obj) {
             ObjClosure *c = (ObjClosure *)obj;
             for (int i = 0; i < c->upvalueCount; i++) gc_mark_object(gc, (Obj *)c->upvalues[i]);
             gc_mark_object(gc, (Obj *)c->homeSquad);
+            gc_mark_value(gc, c->moduleGlobals);
+            gc_mark_value(gc, c->moduleExports);
             return;
         }
         case OBJ_ERROR: {
@@ -218,7 +224,10 @@ static void blacken_object(GC *gc, Obj *obj) {
             ObjPointa *p = (ObjPointa *)obj;
             gc_mark_object(gc, (Obj *)p->label);
             if (p->kind == POINTA_CELL) gc_mark_object(gc, (Obj *)p->cell);
-            if (p->kind == POINTA_GLOBAL) gc_mark_object(gc, (Obj *)p->globalName);
+            if (p->kind == POINTA_GLOBAL) {
+                gc_mark_object(gc, (Obj *)p->globalName);
+                gc_mark_value(gc, p->moduleGlobals);
+            }
             if (p->kind == POINTA_INDEX || p->kind == POINTA_PROP) {
                 gc_mark_value(gc, p->container);
                 gc_mark_value(gc, p->key);
@@ -281,6 +290,12 @@ static void blacken_object(GC *gc, Obj *obj) {
         case OBJ_COMBO: {
             ObjCombo *c = (ObjCombo *)obj;
             gc_mark_value(gc, c->fns);
+            return;
+        }
+        case OBJ_MODULE: {
+            ObjModule *m = (ObjModule *)obj;
+            gc_mark_object(gc, (Obj *)m->name);
+            gc_mark_value(gc, m->members);
             return;
         }
     }
