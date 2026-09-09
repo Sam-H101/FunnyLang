@@ -27,6 +27,7 @@ class FunnyError(Exception):
         roast: str | None = None,
         hint: str | None = None,
         frames: list[str] | None = None,
+        payload: Any = None,
     ):
         super().__init__(message)
         self.message = message
@@ -35,6 +36,9 @@ class FunnyError(Exception):
         self.roast = roast
         self.hint = hint
         self.frames = frames or []
+        # Doubles as PLAN.md §3.9's `error` runtime value once caught by
+        # `my_bad` — `payload` is whatever was `chuck`ed (SkillIssue only).
+        self.payload = payload
 
     def __str__(self) -> str:
         return f"{self.flavor}: {self.message}"
@@ -63,6 +67,42 @@ class ImmutableVibes(FunnyError):
     """Assignment to a `deadass` (const) binding."""
 
     flavor = "ImmutableVibes"
+
+
+class TypeVibeMismatch(FunnyError):
+    flavor = "TypeVibeMismatch"
+
+
+class MathAintMathin(FunnyError):
+    flavor = "MathAintMathin"
+
+
+class OutOfPocket(FunnyError):
+    flavor = "OutOfPocket"
+
+
+class KeyGhosted(FunnyError):
+    flavor = "KeyGhosted"
+
+
+class GhostError(FunnyError):
+    flavor = "GhostError"
+
+
+class NotACallableRizz(FunnyError):
+    flavor = "NotACallableRizz"
+
+
+class WrongNumberOfHomies(FunnyError):
+    flavor = "WrongNumberOfHomies"
+
+
+class TooDeepBro(FunnyError):
+    flavor = "TooDeepBro"
+
+
+class SkillIssue(FunnyError):
+    flavor = "SkillIssue"
 
 
 def levenshtein(a: str, b: str) -> int:

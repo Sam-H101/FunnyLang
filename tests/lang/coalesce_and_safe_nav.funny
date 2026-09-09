@@ -1,0 +1,5 @@
+yo a = ghost
+yo b = 5
+yap a ?? b
+yap b ?? a
+yap a?.name

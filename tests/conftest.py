@@ -1,14 +1,18 @@
 """Shared pytest fixtures/helpers for the FunnyLang test suite."""
 from __future__ import annotations
 
+import io
+
 from funnylang.ast_nodes import Program, dump_ast
 from funnylang.chunk import CompiledUnit
 from funnylang.compiler import Compiler
+from funnylang.errors import FunnyError
 from funnylang.lexer import Lexer
 from funnylang.parser import parse_source
 from funnylang.resolver import resolve_program
 from funnylang.source import SourceFile
 from funnylang.tokens import Token, TokenKind
+from funnylang.vm import VM
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -59,6 +63,24 @@ def compile_prog(src: str, path: str = "<test>", fold_constants: bool = True) ->
     prog = parse_source(source)
     result = resolve_program(prog, source)
     return Compiler(result, source, fold_constants=fold_constants).compile_program(prog, path)
+
+
+def run_funny(src: str, path: str = "<test>", fold_constants: bool = True) -> str:
+    """Compile and run `src` in-process, returning captured stdout."""
+    unit = compile_prog(src, path, fold_constants=fold_constants)
+    vm = VM(stdout=io.StringIO())
+    vm.interpret(unit, make_source(src, path))
+    return vm.stdout.getvalue()
+
+
+def expect_error(src: str, path: str = "<test>") -> FunnyError:
+    """Run `src` and return the FunnyError it raises, failing the test if
+    it doesn't raise one."""
+    try:
+        run_funny(src, path)
+    except FunnyError as exc:
+        return exc
+    raise AssertionError(f"expected a FunnyError, but this ran clean:\n{src}")
 
 
 def entry_proto(unit: CompiledUnit):

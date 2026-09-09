@@ -1,0 +1,6 @@
+yap fax && fax
+yap fax && cap
+yap cap || fax
+yap cap || cap
+yap fax fr cap
+yap cap orr fax

@@ -1,0 +1,16 @@
+// errors.funny
+bet divide(a, b) {
+    bounce a / b
+}
+
+sketchy {
+    yap divide(10, 2)
+    yap divide(10, 0)
+} my_bad (e) {
+    yap "caught:", e.flavor, "of type", e.flavor
+    yap "message:", e.message
+} regardless {
+    yap "cleanup always runs"
+}
+
+yap "still running"

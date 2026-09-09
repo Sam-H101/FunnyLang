@@ -1,0 +1,6 @@
+yo a = [1, 2, 3]
+yap a
+yap a[0]
+yap a[-1]
+a[1] = 99
+yap a

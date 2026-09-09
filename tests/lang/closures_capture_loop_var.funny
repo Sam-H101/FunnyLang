@@ -1,0 +1,9 @@
+yo fns = [ghost, ghost, ghost]
+yo idx = 0
+grind i from 0 to 3 {
+    fns[idx] = lowkey () => i
+    idx += 1
+}
+yap fns[0]()
+yap fns[1]()
+yap fns[2]()

@@ -330,9 +330,17 @@ class Resolver:
 
     def _stmt_ForRange(self, node: A.ForRange) -> None:
         self._resolve_expr(node.start)
-        self._resolve_expr(node.stop)
         if node.step is not None:
             self._resolve_expr(node.step)
+        self._resolve_expr(node.stop)
+        self._begin_scope()
+        # Hidden bookkeeping locals the compiler always pushes, in this exact
+        # order (start, step-or-default, stop), before the user-visible loop
+        # variable — `$`-prefixed names can never collide with real
+        # identifiers, so these slots are otherwise invisible to user code.
+        self._declare_local("$counter", False, node.span)
+        self._declare_local("$step", False, node.span)
+        self._declare_local("$stop", False, node.span)
         self._begin_scope()
         self._declare_local(node.var, False, node.span)
         self.current.loop_depth += 1
@@ -340,15 +348,19 @@ class Resolver:
             self._resolve_stmt(stmt)
         self.current.loop_depth -= 1
         self._end_scope()
+        self._end_scope()
 
     def _stmt_ForEach(self, node: A.ForEach) -> None:
         self._resolve_expr(node.iterable)
+        self._begin_scope()
+        self._declare_local("$iter", False, node.span)
         self._begin_scope()
         self._declare_local(node.var, False, node.span)
         self.current.loop_depth += 1
         for stmt in node.body.statements:
             self._resolve_stmt(stmt)
         self.current.loop_depth -= 1
+        self._end_scope()
         self._end_scope()
 
     def _stmt_Return(self, node: A.Return) -> None:

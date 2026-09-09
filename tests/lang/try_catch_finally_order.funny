@@ -1,0 +1,10 @@
+sketchy {
+    yap "try"
+    chuck "boom"
+    yap "never"
+} my_bad (e) {
+    yap "caught:", e.message
+} regardless {
+    yap "cleanup"
+}
+yap "after"

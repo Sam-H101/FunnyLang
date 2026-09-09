@@ -1,0 +1,6 @@
+yo a = [0, 1, 2, 3, 4, 5]
+yap a[1:3]
+yap a[:2]
+yap a[2:]
+yap a[::-1]
+yap "hello"[::-1]

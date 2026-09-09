@@ -1,0 +1,6 @@
+grind v in [0, 0.0, "", cap, ghost, [], {}] {
+    sus (v) { yap "truthy" } nah { yap "falsy" }
+}
+grind v in [1, 1.5, "x", fax, [1], {"a": 1}] {
+    sus (v) { yap "truthy" } nah { yap "falsy" }
+}

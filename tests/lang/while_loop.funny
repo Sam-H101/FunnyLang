@@ -1,0 +1,5 @@
+yo x = 0
+bruh (x < 5) {
+    yap x
+    x += 1
+}

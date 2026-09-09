@@ -1475,3 +1475,21 @@ Format: `- [Mn] <what changed> — <why>`.
   the outer handler must not re-catch its own exception; the catch body is compiled inside a
   second, handler-less `TRY_PUSH` whose `finallyOff` points at the same exceptional copy, so
   `regardless` still runs before the new exception keeps propagating.
+- [M5] Fixed a real resolver/compiler slot mismatch found while testing the VM: the resolver
+  declared a `grind`'s loop variable as if it were the *only* local the loop introduces, but the
+  compiler actually pushes hidden bookkeeping locals first — three for `grind ... from ... to ...`
+  (the counter, the step, and the stop bound) and one for `grind ... in ...` (the iterator) — before
+  the user-visible loop variable. The two disagreed on which slot the loop variable actually lived
+  in. For `ForRange` this was silently "correct-looking" by coincidence (the counter slot holds the
+  same value as the intended per-iteration copy within a given iteration, until a closure captures
+  it, at which point every closure would alias the same mutating counter instead of getting its own
+  value); for `ForEach` it was visibly wrong (the loop variable evaluated to the iterator object
+  itself, not the current item). Fixed by having the resolver reserve matching hidden locals —
+  named `$counter`/`$step`/`$stop`/`$iter`, using `$` so they can never collide with a real
+  identifier — in the same order the compiler pushes them, before declaring the loop variable.
+- [M5] Fixed a related bug: popping a loop's per-iteration variable at the end of each iteration
+  (in both `ForRange` and `ForEach`) always emitted a plain `POP`, never `CLOSE_UPVAL`, so a closure
+  created inside the loop that captured the loop variable held an upvalue pointing at a stack slot
+  that was never closed — reading it after the loop moved on (or the frame returned) crashed with
+  an out-of-range access into the VM's value stack. Every scope-exit site (block, loop iteration,
+  `bail`/`nvm` unwinding) now goes through one shared check against the resolver's `captured_slots`.

@@ -1,0 +1,9 @@
+sketchy {
+    sketchy {
+        chuck "inner"
+    } regardless {
+        yap "inner-cleanup"
+    }
+} my_bad (e) {
+    yap "outer caught:", e.message
+}

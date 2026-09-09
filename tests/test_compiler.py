@@ -93,8 +93,13 @@ def test_coalesce_uses_jump_if_ghost_keep():
     assert "JUMP_IF_GHOST_KEEP" in op_sequence(unit)
 
 
-def test_safe_get_uses_jump_if_ghost_keep():
+def test_safe_get_uses_get_prop_safe():
     unit = compile_prog("yo a = ghost\nyap a?.x\n")
+    assert "GET_PROP_SAFE" in op_sequence(unit)
+
+
+def test_safe_get_call_uses_jump_if_ghost_keep():
+    unit = compile_prog("yo a = ghost\nyap a?.x()\n")
     assert "JUMP_IF_GHOST_KEEP" in op_sequence(unit)
 
 

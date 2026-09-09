@@ -1,0 +1,4 @@
+try
+caught: boom
+cleanup
+after

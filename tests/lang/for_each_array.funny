@@ -1,0 +1,3 @@
+grind item in ["a", "b", "c"] {
+    yap item
+}

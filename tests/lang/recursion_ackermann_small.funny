@@ -1,0 +1,6 @@
+bet ackermann(m, n) {
+    sus (m == 0) { bounce n + 1 }
+    sus (n == 0) { bounce ackermann(m - 1, 1) }
+    bounce ackermann(m - 1, ackermann(m, n - 1))
+}
+yap ackermann(2, 3)

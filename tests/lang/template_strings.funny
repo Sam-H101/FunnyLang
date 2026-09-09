@@ -1,0 +1,3 @@
+yo name = "sam"
+yo age = 5
+yap `hi {name}, you are {age} and next year you'll be {age + 1}`

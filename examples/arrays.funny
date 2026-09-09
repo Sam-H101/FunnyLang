@@ -1,0 +1,13 @@
+// arrays.funny
+yo nums = [1, 2, 3, 4, 5]
+yap nums
+yap nums[0]
+yap nums[-1]
+yap nums[1:3]
+yap nums[::-1]
+
+nums[0] = 99
+yap nums
+
+yo matrix = [[1, 2], [3, 4]]
+yap matrix[1][0]

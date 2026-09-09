@@ -1,0 +1,5 @@
+bet fib(n) {
+    sus (n < 2) { bounce n }
+    bounce fib(n - 1) + fib(n - 2)
+}
+yap fib(15)

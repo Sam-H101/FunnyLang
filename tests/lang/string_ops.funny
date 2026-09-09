@@ -1,0 +1,3 @@
+yap "hello" + " " + "world"
+yap "ha" * 3
+yap 3 * "ha"

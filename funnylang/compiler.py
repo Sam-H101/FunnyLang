@@ -150,14 +150,19 @@ class Compiler:
         self._close_locals_above(base_depth)
 
     def _close_locals_above(self, base_depth: int) -> None:
-        captured = self.ctx.func_info.captured_slots
         while self.chunk.stack_depth > base_depth:
-            slot = self.chunk.stack_depth - 1
-            if slot in captured:
-                self._emit(Op.CLOSE_UPVAL)
-            else:
-                self._emit(Op.POP)
-            self._pop()
+            self._close_or_pop_top()
+
+    def _close_or_pop_top(self, span=None) -> None:
+        """POP the top-of-stack slot, or CLOSE_UPVAL if some closure captured
+        it — used for every kind of scope exit (blocks, loop iterations,
+        unwinding), so a captured local *anywhere* reliably gets closed."""
+        slot = self.chunk.stack_depth - 1
+        if slot in self.ctx.func_info.captured_slots:
+            self._emit(Op.CLOSE_UPVAL, span=span)
+        else:
+            self._emit(Op.POP, span=span)
+        self._pop()
 
     def _stmt_If(self, node: A.If) -> None:
         end_jumps = []
@@ -259,9 +264,8 @@ class Compiler:
         loop_ctx = self.ctx.loops.pop()
         for site in loop_ctx.continue_sites:
             self.chunk.patch_jump(site)
-        # pop the per-iteration loop-variable copy
-        self._emit(Op.POP, span=node.span)
-        self._pop()
+        # pop the per-iteration loop-variable copy (CLOSE_UPVAL if captured)
+        self._close_or_pop_top(node.span)
         # counter += step
         self._emit(Op.GET_LOCAL, counter_slot, span=node.span)
         self._push()
@@ -310,8 +314,7 @@ class Compiler:
         loop_ctx = self.ctx.loops.pop()
         for site in loop_ctx.continue_sites:
             self.chunk.patch_jump(site)
-        self._emit(Op.POP, span=node.span)  # pop loop var
-        self._pop()
+        self._close_or_pop_top(node.span)  # pop loop var (CLOSE_UPVAL if captured)
         self.chunk.emit_loop(loop_start, span=node.span)
         self.chunk.patch_jump(done_jump)
         for site in loop_ctx.break_sites:
@@ -408,17 +411,21 @@ class Compiler:
             # Copy 2: exceptional-path finally. This is what `finallyOff`
             # actually points to — TRY_PUSH's finally field is only ever
             # consulted during exception unwinding. Reached after the VM
-            # truncates the stack to try_base_depth and pushes the pending
-            # error there; re-CHUCKs it when done so unwinding continues,
-            # using only opcodes that already exist.
+            # truncates the stack to whichever TRY_PUSH's own recorded depth
+            # (outer or inner — they differ, e.g. when the *catch* body is
+            # what threw, since the outer's caught-error binding is still
+            # live underneath) and pushes the pending error there, so it's
+            # always exactly the top of stack when this copy starts. Nothing
+            # here references an absolute slot for it — the finally body's
+            # own statements are self-balancing (_compile_scoped_block), so
+            # the error is still the sole top-of-stack value at the end,
+            # ready for a plain CHUCK to re-throw it, unwinding continues.
             finally_abs = self.chunk.next_offset
             if inner_site is not None:
                 self._patch_try_push(inner_site, inner_site + 5, None, finally_abs)
             saved_depth = self.chunk.stack_depth
             self.chunk.stack_depth = try_base_depth + 1
             self._compile_scoped_block(node.finally_body.statements)
-            self._emit(Op.GET_LOCAL, try_base_depth, span=node.span)
-            self._push()
             self._emit(Op.CHUCK, span=node.span)
             self._pop()
             self.chunk.stack_depth = saved_depth
@@ -722,10 +729,12 @@ class Compiler:
         self._emit(Op.GET_PROP, self._const_str(node.name), span=node.span)
 
     def _expr_SafeGet(self, node: A.SafeGet) -> None:
+        # A plain `?.` read is exactly what GET_PROP_SAFE is for (op 18):
+        # one opcode, no jump. The jump-based JUMP_IF_GHOST_KEEP dance is
+        # still needed for `obj?.method(args)` (see _expr_Call), since that
+        # also has to skip the call itself, not just the property read.
         self._compile_expr(node.obj)
-        ghost_site = self.chunk.emit_jump(Op.JUMP_IF_GHOST_KEEP, span=node.span)
-        self._emit(Op.GET_PROP, self._const_str(node.name), span=node.span)
-        self.chunk.patch_jump(ghost_site)
+        self._emit(Op.GET_PROP_SAFE, self._const_str(node.name), span=node.span)
 
     def _expr_StashLit(self, node: A.StashLit) -> None:
         for el in node.elements:

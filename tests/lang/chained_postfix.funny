@@ -1,0 +1,2 @@
+bet make() { bounce {"value": 42} }
+yap make()["value"]

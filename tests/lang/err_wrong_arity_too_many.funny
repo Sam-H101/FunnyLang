@@ -1,0 +1,2 @@
+bet f(a) { bounce a }
+yap f(1, 2, 3)

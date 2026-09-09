@@ -1,0 +1,5 @@
+yo m = {"a": 1, "b": 2}
+yap m
+yap m["a"]
+m["c"] = 3
+yap m["c"]

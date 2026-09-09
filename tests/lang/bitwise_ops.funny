@@ -1,0 +1,6 @@
+yap 6 & 3
+yap 6 | 1
+yap 5 ^ 1
+yap 1 << 4
+yap 16 >> 2
+yap ~0

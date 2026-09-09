@@ -1,0 +1,2 @@
+bet f() { bounce f() }
+f()

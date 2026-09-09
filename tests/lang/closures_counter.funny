@@ -1,0 +1,9 @@
+bet counter() {
+    yo n = 0
+    bounce lowkey () => { n += 1
+      bounce n }
+}
+yo c = counter()
+yap c()
+yap c()
+yap c()

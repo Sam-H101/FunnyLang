@@ -1,0 +1,11 @@
+grind n in [3, 15, 45, 100] {
+    sus (n % 15 == 0) {
+        yap "fizzbuzz"
+    } kinda_sus (n % 3 == 0) {
+        yap "fizz"
+    } kinda_sus (n % 5 == 0) {
+        yap "buzz"
+    } nah {
+        yap n
+    }
+}

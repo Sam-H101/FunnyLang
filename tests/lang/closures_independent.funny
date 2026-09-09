@@ -1,0 +1,5 @@
+bet make(n) { bounce lowkey () => n }
+yo fns = [make(0), make(1), make(2)]
+yap fns[0]()
+yap fns[1]()
+yap fns[2]()

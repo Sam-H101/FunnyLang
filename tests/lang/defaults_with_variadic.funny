@@ -1,0 +1,8 @@
+bet f(a, b = 10, ...rest) {
+    yo total = a + b
+    grind n in rest { total += n }
+    bounce total
+}
+yap f(1)
+yap f(1, 2)
+yap f(1, 2, 3, 4)

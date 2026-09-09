@@ -1,0 +1,3 @@
+inner caught: first
+inner-cleanup
+outer caught: second

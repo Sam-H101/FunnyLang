@@ -1,0 +1,12 @@
+// fizzbuzz.funny
+grind n from 1 to 101 {
+    sus (n % 15 == 0) {
+        yap "FizzBuzz"
+    } kinda_sus (n % 3 == 0) {
+        yap "Fizz"
+    } kinda_sus (n % 5 == 0) {
+        yap "Buzz"
+    } nah {
+        yap n
+    }
+}

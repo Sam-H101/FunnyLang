@@ -270,6 +270,7 @@ class Parser:
     def _parse_param_list(self) -> tuple[list[Param], str | None]:
         params: list[Param] = []
         variadic: str | None = None
+        seen_default = False
         self.skip_newlines()
         while not self.check(TK.RPAREN):
             if self.match(TK.ELLIPSIS):
@@ -288,6 +289,13 @@ class Parser:
             if self.match(TK.EQ):
                 self.skip_newlines()
                 default = self.parse_assignment()
+                seen_default = True
+            elif seen_default:
+                raise self._error(
+                    name_tok.span,
+                    "default parameters must come after all required ones.",
+                    "default parameters have to go at the end. no take-backs.",
+                )
             params.append(Param(name_tok.text, default, name_tok.span))
             self.skip_newlines()
             if not self.match(TK.COMMA):
