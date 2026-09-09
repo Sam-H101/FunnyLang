@@ -1,0 +1,14 @@
+// Test driver (not part of the toolchain): compiles the file named by the
+// first CLI arg with the self-hosted toolchain and writes real .funnyc
+// bytes to the second CLI arg, for cross-checking against
+// funnylang.serializer.dump_funnyc byte-for-byte (PLAN.md §M12 task 3).
+gimme filez
+gimme { compile_source } from "../compiler.funny"
+gimme { emit_funnyc } from "../emitter.funny"
+
+yo in_path = the_args()[0]
+yo out_path = the_args()[1]
+yo src = filez.slurp(in_path)
+yo unit = compile_source(src, fax)
+yo buf = emit_funnyc(unit, in_path)
+filez.write_bytes(out_path, buf)

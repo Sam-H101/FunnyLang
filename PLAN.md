@@ -1677,3 +1677,10 @@ Format: `- [Mn] <what changed> — <why>`.
   hit this combination; found only by reading `_apply_numeric`/`_bitwise` closely enough while
   writing the self-hosted equivalent to notice the mismatched exception type. Regression test in
   `tests/test_vm.py::test_negative_shift_raises_math_error_not_python_valueerror`.
+- [M12] Added `mafs.float_to_bits(x)`, returning the IEEE-754 binary64 bit pattern of `x` as an
+  unsigned integer (`int.from_bytes(struct.pack(">d", x), "big")`). `selfhost/emitter.funny` must
+  write a float constant's raw 8 bytes per §5.2 exactly as `struct.pack(">d", ...)` would, and
+  hand-rolling IEEE-754 encoding from scratch using only the arithmetic the self-hosting subset
+  allows (no bit-level float access exists anywhere in the language) would be fragile and pointless
+  given Python already does this exactly right. Reduced to a plain integer, the emitter writes it
+  with the same big-endian byte-writer already used for everything else, no new machinery needed.

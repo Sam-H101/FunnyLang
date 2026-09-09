@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import struct
 
 from ..errors import MathAintMathin, TypeVibeMismatch
 from ..values import Module, NativeFn, type_name
@@ -30,6 +31,10 @@ def _abs(vm, a):
 
 def _is_float(vm, a):
     return isinstance(_num(a[0], "is_float"), float)
+
+
+def _float_to_bits(vm, a):
+    return int.from_bytes(struct.pack(">d", float(_num(a[0], "float_to_bits"))), "big")
 
 
 def _floor(vm, a):
@@ -154,6 +159,7 @@ def build() -> Module:
         "sqrt": _nf("sqrt", lambda vm, a: _sqrt(vm, a), 1),
         "abs": _nf("abs", lambda vm, a: _abs(vm, a), 1),
         "is_float": _nf("is_float", lambda vm, a: _is_float(vm, a), 1),
+        "float_to_bits": _nf("float_to_bits", lambda vm, a: _float_to_bits(vm, a), 1),
         "floor": _nf("floor", lambda vm, a: _floor(vm, a), 1),
         "ceil": _nf("ceil", lambda vm, a: _ceil(vm, a), 1),
         "round": _nf("round", lambda vm, a: _round(vm, a), 1, 2),

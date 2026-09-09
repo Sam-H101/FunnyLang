@@ -69,6 +69,13 @@ All notable changes to FunnyLang are documented here.
   addition, `mafs.is_float`, and along the way found and fixed a real pre-existing bug: `<<`/`>>`
   with a negative shift amount raised a raw Python `ValueError` instead of a `FunnyError`, both at
   runtime and when constant-folded — see PLAN.md §16.
+- `selfhost/emitter.funny`: writes the compiled-unit structure out as real `.funnyc` bytes per
+  §5.2, via `prelude.funny`'s byte-buffer writers. Needed one more stdlib addition,
+  `mafs.float_to_bits`, for bit-exact IEEE-754 float encoding. Verified two ways across the whole
+  `tests/lang/` + `examples/` corpus: the emitted bytes are byte-for-byte identical to
+  `funnylang.serializer.dump_funnyc()`'s output, and — separately — every emitted `.funnyc` file
+  actually loads and runs correctly through the real Python VM, producing identical stdout to
+  running the original source directly.
 
 ### M11 — Hardening pass
 - No Python traceback ever escapes the CLI (a clean "COMPILER SKILL ISSUE" message + exit 70

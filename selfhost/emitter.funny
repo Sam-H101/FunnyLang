@@ -1,0 +1,75 @@
+// selfhost/emitter.funny — PLAN.md §M12 task 2, fifth file: writes the
+// compiled-unit structure produced by compiler.funny out as .funnyc bytes
+// per PLAN.md §5.2, via prelude.funny's byte-buffer writers.
+
+gimme { new_buf, write_u8, write_u16, write_u32, write_u64, write_str, write_int_magnitude } from "prelude.funny"
+gimme mafs
+
+flex deadass BYTECODE_VERSION = 1
+flex deadass FLAG_HAS_DEBUG_INFO = 1
+
+// const-pool tags (§5.2)
+flex deadass TAG_GHOST = 0
+flex deadass TAG_BOOL = 1
+flex deadass TAG_INT = 2
+flex deadass TAG_FLOAT = 3
+flex deadass TAG_STRING = 4
+flex deadass TAG_PROTO_REF = 5
+
+flex bet write_const_entry(buf, entry) {
+    yo tag = entry["tag"]
+    write_u8(buf, tag)
+    sus (tag == TAG_GHOST) {
+        // no payload
+    } kinda_sus (tag == TAG_BOOL) {
+        write_u8(buf, entry["value"] ? 1 : 0)
+    } kinda_sus (tag == TAG_INT) {
+        write_int_magnitude(buf, entry["value"])
+    } kinda_sus (tag == TAG_FLOAT) {
+        write_u64(buf, mafs.float_to_bits(entry["value"]))
+    } kinda_sus (tag == TAG_STRING) {
+        write_str(buf, entry["value"])
+    } nah {
+        write_u32(buf, entry["value"])
+    }
+}
+
+flex bet write_proto_bytes(buf, proto) {
+    write_str(buf, proto["name"])
+    write_u8(buf, proto["arity"])
+    write_u8(buf, proto["default_count"])
+    write_u8(buf, proto["is_variadic"] ? 1 : 0)
+    write_u8(buf, proto["upvalue_count"])
+    write_u16(buf, proto["max_stack"])
+    write_u8(buf, proto["local_count"])
+    write_u32(buf, proto["code"].how_thicc())
+    buf.extend(proto["code"])
+    write_u32(buf, proto["lines"].how_thicc())
+    grind le in proto["lines"] {
+        write_u32(buf, le["offset"])
+        write_u32(buf, le["line"])
+        write_u32(buf, le["col"])
+    }
+}
+
+// unit: {"const_pool": {"entries": [...]}, "protos": [...], "entry_proto": idx}
+// -- the same shape compiler.funny's compile_program() returns.
+flex bet emit_funnyc(unit, source_name) {
+    yo buf = new_buf()
+    grind b in [0x46, 0x55, 0x4E, 0x4E, 0x59, 0x00] { // "FUNNY\x00"
+        buf.yeet_in(b)
+    }
+    write_u16(buf, BYTECODE_VERSION)
+    write_u16(buf, FLAG_HAS_DEBUG_INFO)
+    write_str(buf, source_name)
+    write_u32(buf, unit["const_pool"]["entries"].how_thicc())
+    grind entry in unit["const_pool"]["entries"] {
+        write_const_entry(buf, entry)
+    }
+    write_u32(buf, unit["protos"].how_thicc())
+    grind proto in unit["protos"] {
+        write_proto_bytes(buf, proto)
+    }
+    write_u32(buf, unit["entry_proto"])
+    bounce buf
+}

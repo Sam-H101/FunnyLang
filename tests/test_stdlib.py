@@ -129,6 +129,17 @@ def test_mafs_is_float():
     assert _r(src) == "cap\nfax\nfax\ncap\n"
 
 
+def test_mafs_float_to_bits():
+    src = (
+        "gimme mafs\n"
+        "yap mafs.float_to_bits(1.0)\n"
+        "yap mafs.float_to_bits(-1.0)\n"
+        "yap mafs.float_to_bits(0.0)\n"
+        "yap mafs.float_to_bits(3.14)\n"
+    )
+    assert _r(src) == "4607182418800017408\n13830554455654793216\n0\n4614253070214989087\n"
+
+
 def test_mafs_min_max():
     assert _r("gimme mafs\nyap mafs.min(3, 1, 2)\nyap mafs.max(3, 1, 2)\n") == "1\n3\n"
 
