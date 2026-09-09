@@ -221,9 +221,14 @@ native/
                     are a plain linear-scan array as of N2 (§9); table.c itself is still N4's
   stash.c           dynamic array
   chunk.h/.c        .funnyc loader as of N2 (§5.2); .funnypak (§5.3) is N5's, once IMPORT exists
-  vm.h/.c           the interpreter loop; N2 has ~35 of the 80 opcodes (0-79, PLAN.md §5.1) --
-                    no call frames yet (CALL/CLOSURE/RETURN-to-a-caller land in N3)
-  frames.c          call frames, closures, upvalues, try/catch/finally unwinding
+  vm.h/.c           the interpreter loop; a real call stack as of N3 (§5.1's opcodes 0-55, 59,
+                    60-62, 70-79 -- INVOKE/squad/collection opcodes are N4/N5)
+  frames.h/.c       call frames, ObjClosure, the open-upvalue mechanism (N3) -- try/catch/finally
+                    unwinding itself lives directly in vm.c's dispatch loop, next to CHUCK/TRY_*
+  error.h/.c        ObjError, PLAN.md §3.9's error field set -- built early for N3 (§9), not in
+                    the plan's original sketch; `.trace` is a placeholder string until N4's Stash
+  pointa.h/.c       ObjPointa (PLAN.md §3.10) -- POINTA_CELL/POINTA_GLOBAL as of N3; POINTA_INDEX/
+                    POINTA_PROP need Stash/GroupChat/Instance and land with PTR_INDEX/PTR_PROP in N4
   squad.c           classes, instances, methods, inheritance, the 4 magic methods
   diag.c            the PLAN.md §4.2 diagnostic renderer
   platform.c        the ONLY file with #ifdef _WIN32 — fs, time, tty, sockets, dlopen
@@ -254,14 +259,16 @@ generated sources when their inputs change. A user with only a C compiler never 
 The existing Python suite (1,065 tests as of M15) stays green throughout — this plan adds to it,
 never subtracts.
 
-1. **Differential golden testing (the backbone).** Eventually a `tests/test_native_differential.py`
-   running every file in `tests/lang/` and `examples/` through both VMs, asserting identical stdout,
-   stderr, and exit code — but none of those existing goldens fit inside N2's narrow opcode subset
-   (every one declares at least one function), so N2 started instead with dedicated programs under
-   `tests/native/n2_programs/` and `tests/native/test_n2_differential.py` (§9's N2 entry). The real
-   `tests/lang/`-driven suite becomes possible once enough of the language exists natively —
-   expected around N4 — and that file should supersede the milestone-scoped one once it does. This
-   is the acceptance gate for N2 through N6, with the passing subset growing each milestone.
+1. **Differential golden testing (the backbone).** Eventually running every file in `tests/lang/`
+   and `examples/` through both VMs, asserting identical stdout, stderr, and exit code — but none of
+   those existing goldens fit inside N2's narrow opcode subset (every one declares at least one
+   function), so N2 started instead with dedicated programs under `tests/native/n2_programs/` and
+   `tests/native/test_n2_differential.py` (§9's N2 entry); both were renamed to `tests/native/
+   programs/` and `tests/native/test_native_differential.py` in N3 once "N2-only" stopped being an
+   honest description. The real `tests/lang/`-driven suite becomes possible once enough of the
+   language exists natively — expected around N4 — and should grow directly out of this file rather
+   than replacing it. This is the acceptance gate for N2 through N6, with the passing subset growing
+   each milestone.
 2. **C unit tests** for the components with no Python counterpart worth diffing: bignum arithmetic,
    the hash table, UTF-8 decoding, Ryū. Plain assertion-based `test_*.c`, run by the build script.
 3. **Differential fuzzing.** Reuse `tests/test_fuzz.py`'s generators; additionally fuzz bignum ops
@@ -814,7 +821,8 @@ gets an entry explaining what changed and why.
   every compiled script's bytecode even though N2's own task list doesn't name it, so it has to be
   handled here too, as "stop and hand back the value" since there's no caller yet). Verified with a
   dedicated differential suite (`tests/native/test_n2_differential.py` + `tests/native/
-  n2_programs/*.funny`, since none of the existing `tests/lang/` goldens stay inside N2's narrow
+  n2_programs/*.funny` — renamed to `test_native_differential.py`/`programs/` in N3, see that
+  entry, since none of the existing `tests/lang/` goldens stay inside N2's narrow
   subset — every one of them declares at least one function, which needs `CLOSURE` just to bind the
   name) against the real Python VM, on gcc and clang, clean under ASan/UBSan, clean under
   `FUNNY_GC_STRESS=1`.
@@ -840,6 +848,39 @@ gets an entry explaining what changed and why.
      would be safe as a native shift) avoids relying on C's implementation-defined behavior for
      shifting a negative value or shifting by ≥ the type's width, at a cost (an extra allocation per
      shift) that doesn't matter yet.
+- **N3 · complete for its stated tasks, two deliberately deferred.** `frames.h/.c` (`ObjClosure`,
+  `ObjUpvalue`, `Frame`, ported *structurally* from `funnylang/vm.py`'s own Frame/Closure/Upvalue —
+  same Lua/clox model), `error.h/.c` (`ObjError` with PLAN.md §3.9's field set), `pointa.h/.c`
+  (`ObjPointa`, the `POINTA_CELL`/`POINTA_GLOBAL` kinds N3 needs), and a substantially rewritten
+  `vm.c`: CALL/RETURN with arity checking and default parameters, CLOSURE/GET_UPVAL/SET_UPVAL/
+  CLOSE_UPVAL, TRY_PUSH/TRY_POP/CHUCK with full unwinding (including the awkward cases — `bounce`
+  inside a `sketchy` with a `regardless`, and a `chuck` from inside the `regardless` block itself),
+  PTR_LOCAL/PTR_GLOBAL/PTR_UPVAL/DEREF/SET_DEREF, and the 10,000-frame recursion cap. Also added
+  `GET_PROP` (opcode 16), not in N3's own task list but required the moment a caught error's
+  `.flavor`/`.message` needs reading — restricted for now to `ObjError` (Instance/Squad field access
+  and Stash/GroupChat/yapstring/numba method binding stay N4/N5's).
+  Verified against 12 new differential programs under `tests/native/programs/` (functions, closures
+  with the aliasing case, try/catch/finally including nested rethrow-from-finally, pointers,
+  10,000-deep recursion caught cleanly) — all match the Python VM exactly, on gcc and clang, under
+  `FUNNY_GC_STRESS=1`, clean under ASan/UBSan. Genuinely no bugs found in this pass (unlike N1/N2,
+  where the same testing discipline caught real ones) — worth recording plainly rather than only
+  ever reporting the catches, so this log stays a fair record and not a highlight reel.
+  **Architecture note, not a deviation:** the dispatch loop is fully iterative — `CALL` pushes onto
+  `vm->frames` (a heap array) and the *same* `for(;;)` loop keeps running, it never recurses at the
+  C level. So does `funnylang/vm.py`'s own `_run` (`_do_call` → `_push_closure_frame` just appends
+  to `self.frames`; `_run`'s `while True: frame = self.frames[-1]` loop continues). Ported
+  structurally, this means FunnyLang recursion depth was never actually bounded by the C stack in
+  the first place — the 10,000-frame cap is `TooDeepBro`'s existing safety net (unbounded-memory /
+  runaway-recursion protection), not stack-smashing prevention, on both VMs alike.
+  **Two tasks deliberately deferred to N4, both for the same reason — the type they need doesn't
+  exist yet:**
+  - **Variadic functions (`...rest`).** Binding the "rest" args needs a real `Stash`. `do_call`
+    rejects a variadic call with a clean `SkillIssue` rather than mishandling it silently.
+  - **`ITER_NEW`/`ITER_NEXT`** (task 5). For-each iterates a stash, groupchat, or yapstring, and
+    `BUILD_STASH` (needed just to construct one to iterate) is N4's opcode too — there was nothing
+    real to test this against yet. `pointa`'s own `.deref()`/`.set()`/`.valid()`/`.where()` method
+    forms are similarly deferred: they need `INVOKE`, which N4 adds alongside squad/instance
+    methods; the core `&`/`*` mechanics N3 task 7 actually asks for don't depend on it.
 - **N10 · ADDITION · prebuilt binary distribution.** Not in the original plan; added at the user's
   request so that using FunnyLang never requires building it. GitHub Releases on
   `github.com/Sam-H101/FunnyLang`, five platform artifacts per tag plus a rolling `nightly`, checksums,

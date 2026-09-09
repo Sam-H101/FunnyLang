@@ -3,6 +3,9 @@
 #include <stdlib.h>
 
 #include "bignum.h"
+#include "error.h"
+#include "frames.h"
+#include "pointa.h"
 #include "string.h"
 
 #define INITIAL_NEXT_GC (1024 * 1024) /* 1 MiB before the first collection */
@@ -39,6 +42,25 @@ static void free_object(Obj *obj) {
             free(s);
             return;
         }
+        case OBJ_UPVALUE:
+            free(obj);
+            return;
+        case OBJ_CLOSURE: {
+            ObjClosure *c = (ObjClosure *)obj;
+            free(c->upvalues); /* the upvalues themselves are separate GC objects */
+            free(c);
+            return;
+        }
+        case OBJ_ERROR: {
+            ObjError *e = (ObjError *)obj;
+            for (int i = 0; i < e->rawTraceCount; i++) free(e->rawTrace[i]);
+            free(e->rawTrace);
+            free(e); /* flavor/message/file are separate GC objects */
+            return;
+        }
+        case OBJ_POINTA:
+            free(obj); /* label/cell/globalName are separate GC objects; vm is borrowed */
+            return;
     }
 }
 
@@ -113,11 +135,43 @@ void gc_mark_value(GC *gc, Value v) {
    (native/ARCHITECTURE.md's own note) is exactly the kind of edge that
    belongs here once it exists. */
 static void blacken_object(GC *gc, Obj *obj) {
-    (void)gc;
     switch (obj->type) {
         case OBJ_BIGNUM:
         case OBJ_STRING:
             return;
+        case OBJ_UPVALUE: {
+            /* Marked unconditionally, open or closed: harmless when open
+               (the value is also reachable through the live stack, and
+               marking is idempotent) and the only path to it when closed. */
+            ObjUpvalue *uv = (ObjUpvalue *)obj;
+            gc_mark_value(gc, upvalue_get(uv));
+            return;
+        }
+        case OBJ_CLOSURE: {
+            ObjClosure *c = (ObjClosure *)obj;
+            for (int i = 0; i < c->upvalueCount; i++) gc_mark_object(gc, (Obj *)c->upvalues[i]);
+            return;
+        }
+        case OBJ_ERROR: {
+            ObjError *e = (ObjError *)obj;
+            gc_mark_object(gc, (Obj *)e->flavor);
+            gc_mark_object(gc, (Obj *)e->message);
+            gc_mark_object(gc, (Obj *)e->file);
+            gc_mark_value(gc, e->payload);
+            return;
+        }
+        case OBJ_POINTA: {
+            /* A pointa holds a *strong* reference to whatever it addresses
+               (native/ARCHITECTURE.md's own note on this exact point): a
+               place reference that let its target get collected out from
+               under it would be the dangling pointer this whole design
+               exists to prevent. */
+            ObjPointa *p = (ObjPointa *)obj;
+            gc_mark_object(gc, (Obj *)p->label);
+            if (p->kind == POINTA_CELL) gc_mark_object(gc, (Obj *)p->cell);
+            if (p->kind == POINTA_GLOBAL) gc_mark_object(gc, (Obj *)p->globalName);
+            return;
+        }
     }
 }
 

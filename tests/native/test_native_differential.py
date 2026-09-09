@@ -1,26 +1,28 @@
-"""NATIVE_PLAN.md N2 acceptance: "every file in tests/lang/ that uses only
-the [N2 opcode subset] produces byte-identical stdout under both VMs."
-None of the existing tests/lang/ golden files actually stay within that
-subset (all of them use functions, at minimum, since every compiled
-top-level `bet` declaration needs CLOSURE just to bind the name) -- so
-this is exactly the "enumerate that subset explicitly" case the plan's own
-acceptance text anticipates, done with dedicated programs under
-tests/native/n2_programs/ instead. It grows every milestone as more of the
-opcode set becomes available.
+"""NATIVE_PLAN.md §5's differential golden testing, the acceptance gate for
+N2 through N6: run a program through both the Python VM and the native one
+and diff stdout byte for byte. No hand-written .expected files (unlike
+tests/lang/) -- the Python VM's own output *is* the oracle here, by
+construction.
 
-Builds the native `funny` binary once (session-scoped fixture) and, per
-program: compiles it with the Python toolchain, runs the result through
-both VMs, and diffs stdout byte for byte. No hand-written .expected files
-(unlike tests/lang/) -- the Python VM's own output *is* the oracle here,
-by construction (that's what "differential" means for N2 onward, per
-NATIVE_PLAN.md §5).
+Started life as N2-only (`test_n2_differential.py`, `n2_programs/`), since
+none of the existing tests/lang/ golden files stay inside N2's narrow
+opcode subset (every one declares a function, which needs CLOSURE just to
+bind the name). Renamed once N3 outgrew that framing -- this is now the
+one differential suite, and tests/native/programs/ grows with whatever
+each new milestone unlocks. It's expected to keep absorbing real
+tests/lang/ files directly once enough of the language exists natively
+(NATIVE_PLAN.md §5 guesses around N4).
+
+Builds the native `funny` binary once per session (globs native/*.c, the
+same way build.sh does, so this file never needs editing when a new
+native/ source is added) and, per program: compiles it with the Python
+toolchain, runs the result through both VMs, and diffs stdout.
 """
 from __future__ import annotations
 
 import io
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -35,18 +37,14 @@ from funnylang.stdlib import install_stdlib
 from funnylang.vm import VM
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-PROGRAMS_DIR = Path(__file__).resolve().parent / "n2_programs"
+PROGRAMS_DIR = Path(__file__).resolve().parent / "programs"
 PROGRAMS = sorted(PROGRAMS_DIR.glob("*.funny"))
-
-NATIVE_SRCS = [
-    "bignum.c", "chunk.c", "gc.c", "main.c", "numfmt.c", "string.c", "value.c", "vm.c",
-]
 
 
 @pytest.fixture(scope="session")
 def native_binary(tmp_path_factory):
-    out = tmp_path_factory.mktemp("native_build") / "funny_n2_test"
-    srcs = [str(ROOT / "native" / f) for f in NATIVE_SRCS]
+    out = tmp_path_factory.mktemp("native_build") / "funny_native_test"
+    srcs = sorted(str(p) for p in (ROOT / "native").glob("*.c"))
     cc = os.environ.get("CC", "cc")  # e.g. `CC=clang python3 -m pytest ...`
     cmd = [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(out), *srcs, "-lm"]
     try:
@@ -91,7 +89,7 @@ def _native_run(binary: Path, funnyc_path: Path) -> str:
 
 
 @pytest.mark.parametrize("path", PROGRAMS, ids=lambda p: p.name)
-def test_n2_program_matches_python(path, native_binary, tmp_path):
+def test_native_program_matches_python(path, native_binary, tmp_path):
     try:
         expected = _python_run(path)
     except FunnyError as exc:

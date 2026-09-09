@@ -19,6 +19,10 @@
 typedef enum {
     OBJ_BIGNUM,
     OBJ_STRING,
+    OBJ_UPVALUE,
+    OBJ_CLOSURE,
+    OBJ_ERROR,
+    OBJ_POINTA,
 } ObjType;
 
 /* The common header. Every concrete object type (e.g. ObjBignum) is a

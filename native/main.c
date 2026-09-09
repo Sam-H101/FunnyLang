@@ -13,7 +13,9 @@
 #include <stdlib.h>
 
 #include "chunk.h"
+#include "error.h"
 #include "gc.h"
+#include "value.h"
 #include "vm.h"
 
 static uint8_t *read_file(const char *path, size_t *outLen) {
@@ -69,8 +71,10 @@ int main(int argc, char **argv) {
     VmResult result = vm_run(&vm, unit, stdout);
     int exitCode = 0;
     if (result == VM_ERROR) {
-        fprintf(stderr, "%s: %s\n", vm.errorFlavor ? vm.errorFlavor : "Error",
-                vm.errorMessage ? vm.errorMessage : "");
+        /* Not the real diagnostic renderer (N6's diag.c) -- just enough to
+           report what went wrong until that exists. */
+        ObjError *e = (ObjError *)AS_OBJ(vm.uncaughtError);
+        fprintf(stderr, "%s: %s\n", e->flavor->chars, e->message->chars);
         exitCode = 1;
     }
 
