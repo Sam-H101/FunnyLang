@@ -77,6 +77,65 @@ jobs:
           path: hello-exe/
           retention-days: 7
 
+  native:
+    # NATIVE_PLAN.md N0: proves the C toolchain builds native/*.c clean, with
+    # -Werror, on all three OSes -- MSVC on Windows, gcc/clang (whichever
+    # `cc` resolves to) on Linux/macOS. native/main.c is only a toolchain
+    # smoke test right now (N0 task 2); the real CLI lands in N7.
+    name: native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build (release)
+        if: runner.os != 'Windows'
+        run: ./build.sh
+
+      - name: Build (release)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: build.bat
+
+      - name: Run it (release)
+        if: runner.os != 'Windows'
+        run: ./funny
+
+      - name: Run it (release)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: funny.exe
+
+      # ASan/UBSan (MSVC only has ASan -- see build.bat's own comment).
+      # Nothing in main.c can trip either yet; this exists so the debug
+      # build path itself is proven working before there's anything real
+      # for it to catch.
+      - name: Build (debug, sanitizers)
+        if: runner.os != 'Windows'
+        run: ./build.sh debug
+
+      - name: Run it (debug)
+        if: runner.os != 'Windows'
+        run: ./funny
+
+      - name: Build (debug, ASan)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: build.bat debug
+
+      - name: Run it (debug)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: funny.exe
+
   package:
     name: package (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

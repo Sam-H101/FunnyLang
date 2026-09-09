@@ -218,7 +218,7 @@ native/
   table.c           insertion-ordered hash table (groupchat + globals + interning)
   stash.c           dynamic array
   chunk.c           .funnyc / .funnypak loaders (PLAN.md §5.2/§5.3)
-  vm.c              the interpreter loop, all 73 opcodes
+  vm.c              the interpreter loop, all 80 opcodes (0-79, PLAN.md §5.1)
   frames.c          call frames, closures, upvalues, try/catch/finally unwinding
   squad.c           classes, instances, methods, inheritance, the 4 magic methods
   diag.c            the PLAN.md §4.2 diagnostic renderer
@@ -247,7 +247,8 @@ generated sources when their inputs change. A user with only a C compiler never 
 
 ## 5. Testing strategy
 
-The existing 967-test Python suite stays green throughout — this plan adds to it, never subtracts.
+The existing Python suite (1,065 tests as of M15) stays green throughout — this plan adds to it,
+never subtracts.
 
 1. **Differential golden testing (the backbone).** A new `tests/test_native_differential.py` runs
    every file in `tests/lang/` and `examples/` through both VMs and asserts identical stdout, stderr,
@@ -686,7 +687,8 @@ one rather than at the end, and N10 replaces it once the native toolchain exists
 - [ ] Pointers (`PLAN.md` §3.10) behave identically on both VMs, including every error row — and no
       pointer operation, on any input, can crash the C VM or corrupt its heap.
 - [ ] `PLAN.md` §10's performance targets still met — and `fib(25)` should now be *much* faster.
-- [ ] The Python implementation still passes its own 967 tests, unchanged, as the reference oracle.
+- [ ] The Python implementation still passes its own tests (1,065 as of M15), unchanged, as the
+      reference oracle.
 
 ---
 
@@ -724,6 +726,20 @@ gets an entry explaining what changed and why.
   **after** M15's Python implementation, never before it — see §7 for why a feature must exist in the
   oracle before it exists in the C VM. The safety argument for the whole design rests on N4's
   read-time bounds checking, so that is where it gets tested hardest.
+- **N0 · complete (tasks 1-5 · task 6 pending confirmation).** `build.sh`/`build.bat`, `native/
+  main.c` (a plain-ASCII toolchain smoke test — the real Unicode banner needs `platform.c`'s
+  UTF-8 console setup, which doesn't exist yet), `native/ARCHITECTURE.md`, and a `native` CI job
+  (Windows/Linux/macOS, release + debug/sanitizer builds) are all in place; YAML and shell syntax
+  checked locally, full verification pending CI's actual compilers, since this environment has none
+  installed. Task 6 (cutting a real `v1.0.1` tag and publishing GitHub Releases under the project's
+  real name) was deliberately **not** done without the user's explicit go-ahead first — publishing a
+  release is a public, hard-to-reverse action, unlike everything else in N0.
+  **AGENT CHOICE · Windows C compiler for CI.** MSVC via `ilammy/msvc-dev-cmd@v1` (provisions
+  `cl.exe`'s environment on `windows-latest`), not MinGW — matches N10's own release-matrix choice
+  (`NATIVE_PLAN.md` §6.N10) and needs no extra toolchain install on the runner. `build.bat` targets
+  `cl.exe` accordingly; `PLAN.md`'s "MSVC + MinGW" requirement (§2.4) means MinGW must also keep
+  working, but CI only needs to prove *one* Windows path continuously — MinGW gets exercised by
+  `zig cc` compatibility testing later, not by a second parallel CI job now.
 - **N10 · ADDITION · prebuilt binary distribution.** Not in the original plan; added at the user's
   request so that using FunnyLang never requires building it. GitHub Releases on
   `github.com/Sam-H101/FunnyLang`, five platform artifacts per tag plus a rolling `nightly`, checksums,

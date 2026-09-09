@@ -10,3 +10,10 @@ dist/
 *.exe
 .coverage
 htmlcov/
+
+# native/ build output (build.sh / build.bat -- NATIVE_PLAN.md N0)
+/funny
+*.obj
+*.pdb
+*.ilk
+*.o
