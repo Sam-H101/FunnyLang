@@ -204,7 +204,9 @@ Encoding: UTF-8. Emoji are legal in strings, comments, and — yes — identifie
 String escapes: `\n \t \r \\ \" \' \0 \u{1F480}` and `\{` to escape a `{` in an interpolated string.
 
 Integers are arbitrary precision (Python `int`). Floats are IEEE-754 doubles.
-Mixed int/float arithmetic promotes to float. `/` always produces a float; `//` is floor division.
+Mixed int/float arithmetic promotes to float. `/` always produces a float; `\` is floor division
+(see §16 — `//` collides with the line-comment marker and is genuinely ambiguous, e.g. `10 // 3` is
+indistinguishable from `10` followed by a trailing comment; `\` is the VB/Pascal-style fix).
 
 ### 3.3 Keywords (FROZEN — this is the whole list)
 
@@ -275,7 +277,7 @@ Lowest to highest binding. All binary operators are left-associative except wher
 | 11 | `<` `<=` `>` `>=` `in` | `in` works on stash, groupchat, yapstring |
 | 12 | `<<` `>>` | bit shifts |
 | 13 | `+` `-` | `+` also concatenates yapstrings and stashes |
-| 14 | `*` `/` `//` `%` | `*` also repeats yapstring/stash: `"ha" * 3` |
+| 14 | `*` `/` `\` `%` | `*` also repeats yapstring/stash: `"ha" * 3`. `\` is floor division (see §16). |
 | 15 | `**` | **right-assoc** |
 | 16 | unary `-` `!` `aint` `~` | |
 | 17 | postfix `(...)` `[...]` `.name` `?.name` | call, index, member, safe-member |
@@ -1414,4 +1416,18 @@ main()
 Record every deviation from this spec, every `AGENT CHOICE` you resolved, and every opcode you added.
 Format: `- [Mn] <what changed> — <why>`.
 
-- (empty)
+- [M1] Floor-division operator lexeme changed from `//` to `\` (§3.2, §3.4) — `//` is also the
+  line-comment marker (§3.1) and every provided example uses `//` for comments, including the
+  frozen `hello.funny` in §13. `10 // 3` is lexically indistinguishable from `10` followed by a
+  trailing comment; no lookahead heuristic resolves it because floor-division, like a trailing
+  comment, only ever appears in "expect operator" position after a complete expression. Comments
+  keep `//` (used everywhere already); floor division moves to `\`, following the VB/Pascal
+  precedent for a distinct integer-division operator. The `IDIV` opcode (#26) and its semantics
+  are unchanged — only the source-level spelling moved.
+- [M1] `errors.py` (nominally an M6 file) was started in M1 with just `FunnyError` and
+  `LexerSaidNah`, since the lexer must raise a real error type. Each milestone adds the exception
+  classes it needs; M6 finishes the module with `render_diagnostic`, roasts/hints for every flavor,
+  and `FUNNY_SERIOUS` support, per its own task list.
+- [M1] AGENT CHOICE: templates additionally support `` \` `` as an escape for a literal backtick
+  inside a `` `...` `` template string. The frozen escape table (§3.2) doesn't list one, but
+  without it a template could never contain a literal backtick at all.
