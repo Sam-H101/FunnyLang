@@ -533,6 +533,40 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """The public entry point — never lets a Python traceback reach the
+    user (PLAN.md §M11 rule 1). `SystemExit` (argparse's --help/usage-error
+    exits) and `KeyboardInterrupt` pass straight through unmolested; anything
+    else genuinely unexpected gets the "compiler skill issue" treatment with
+    a real traceback attached, since at that point it's on us, not the user."""
+    try:
+        return _main_inner(argv)
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except RecursionError:
+        # Deep source nesting (or a truly pathological program) can exhaust
+        # Python's own recursion limit during parsing/resolving/compiling —
+        # a real limit, not a compiler bug, and the traceback for a
+        # RecursionError is thousands of frames long, useless to print in
+        # full. Give it the funny-taxonomy treatment instead of the raw dump.
+        print("💀💀💀 FUNNYLANG MOMENT 💀💀💀", file=sys.stderr)
+        print(file=sys.stderr)
+        print("  TooDeepBro", file=sys.stderr)
+        print(file=sys.stderr)
+        print("  this nests so deep even the compiler touched grass.", file=sys.stderr)
+        print("  break it up into smaller pieces.", file=sys.stderr)
+        return 1
+    except BaseException:
+        import traceback
+
+        print("☠️  COMPILER SKILL ISSUE  ☠️", file=sys.stderr)
+        print("the compiler itself broke. that's on us, not you.", file=sys.stderr)
+        print("please open an issue with this file and the goofy details below.", file=sys.stderr)
+        print(file=sys.stderr)
+        traceback.print_exc()
+        return 70
+
+
+def _main_inner(argv: list[str] | None = None) -> int:
     _ensure_utf8_stdio()
     if argv is None:
         argv = sys.argv[1:]

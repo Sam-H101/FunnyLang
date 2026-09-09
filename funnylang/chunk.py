@@ -4,10 +4,19 @@ compiled file; each function gets its own Chunk (bytecode-in-progress) which
 `finish()`es into a FunctionProto."""
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, field
 
 from .opcodes import OPERANDS, Op
 from .source import Span
+
+# Conditional jump opcodes (PLAN.md §5.1) — all forward-only, all exactly 3
+# bytes short-form (1 opcode + u16 offset), all compare-and-branch with
+# distinct pop/keep semantics that a relaxation pass must never disturb.
+_COND_JUMP_OPS = frozenset({
+    Op.JUMP_IF_FALSE, Op.JUMP_IF_TRUE, Op.JUMP_IF_FALSE_KEEP,
+    Op.JUMP_IF_TRUE_KEEP, Op.JUMP_IF_GHOST_KEEP,
+})
 
 # Constant-pool tags (PLAN.md §5.2).
 TAG_GHOST = 0
@@ -90,6 +99,17 @@ class FunctionProto:
 
 
 @dataclass
+class _JumpSite:
+    """One JUMP/LOOP/conditional-jump instruction, tracked so `Chunk.finish()`
+    can retroactively widen it to a *_LONG form if its u16 offset overflowed
+    (PLAN.md §16 — M11's 50k-line stress test found this)."""
+    opcode_pos: int
+    op: Op
+    is_loop: bool
+    target: int | None = None  # absolute offset in the *original* buffer
+
+
+@dataclass
 class CompiledUnit:
     source_name: str
     const_pool: ConstPool
@@ -113,6 +133,8 @@ class Chunk:
         self.local_count = 0
         self.stack_depth = 0
         self.max_stack = 0
+        self._jump_sites: dict[int, _JumpSite] = {}  # keyed by opcode_pos
+        self._needs_relax = False
 
     # -- stack bookkeeping (used for FunctionProto.max_stack) -------------
 
@@ -179,22 +201,35 @@ class Chunk:
     # -- jump patching ------------------------------------------------------
 
     def emit_jump(self, op: Op, span: Span | None = None) -> int:
+        opcode_pos = len(self.code)
         self.emit(op, 0, span=span)
+        self._jump_sites[opcode_pos] = _JumpSite(opcode_pos=opcode_pos, op=op, is_loop=False)
         return len(self.code) - 2
 
     def patch_jump(self, site: int) -> None:
-        offset = len(self.code) - (site + 2)
-        if not (0 <= offset <= 0xFFFF):
-            raise OverflowError("your function is too long. seek help.")
-        self.code[site:site + 2] = offset.to_bytes(2, "big")
+        target = len(self.code)
+        self._jump_sites[site - 1].target = target
+        offset = target - (site + 2)
+        if 0 <= offset <= 0xFFFF:
+            self.code[site:site + 2] = offset.to_bytes(2, "big")
+        else:
+            # Too far for a u16 offset — leave a placeholder; finish()'s
+            # relaxation pass rewrites this whole instruction as a JUMP_LONG
+            # (or a short-jump-over-JUMP_LONG trampoline, for conditionals).
+            self.code[site:site + 2] = (0xFFFF).to_bytes(2, "big")
+            self._needs_relax = True
 
     def emit_loop(self, loop_start: int, span: Span | None = None) -> None:
         self._mark_line(span)
+        opcode_pos = len(self.code)
         self.code.append(int(Op.LOOP))
         offset = len(self.code) + 2 - loop_start
-        if not (0 <= offset <= 0xFFFF):
-            raise OverflowError("your function is too long. seek help.")
-        self.code += offset.to_bytes(2, "big")
+        if 0 <= offset <= 0xFFFF:
+            self.code += offset.to_bytes(2, "big")
+        else:
+            self.code += (0xFFFF).to_bytes(2, "big")
+            self._needs_relax = True
+        self._jump_sites[opcode_pos] = _JumpSite(opcode_pos=opcode_pos, op=Op.LOOP, is_loop=True, target=loop_start)
 
     @property
     def next_offset(self) -> int:
@@ -203,6 +238,10 @@ class Chunk:
     # -- finalize -----------------------------------------------------------
 
     def finish(self) -> FunctionProto:
+        if self._needs_relax:
+            code, lines = self._relax()
+        else:
+            code, lines = bytes(self.code), tuple(self.lines)
         return FunctionProto(
             name=self.name,
             arity=self.arity,
@@ -211,6 +250,97 @@ class Chunk:
             upvalue_count=self.upvalue_count,
             max_stack=self.max_stack,
             local_count=self.local_count,
-            code=bytes(self.code),
-            lines=tuple(self.lines),
+            code=code,
+            lines=lines,
         )
+
+    def _relax(self) -> tuple[bytes, tuple]:
+        """Rewrites every JUMP/LOOP/conditional-jump whose u16 offset
+        overflowed into a wide form, via a standard assembler-style
+        fixed-point relaxation (PLAN.md §16, M11).
+
+        Unconditional JUMP/LOOP simply become JUMP_LONG/LOOP_LONG (u32
+        offset). A conditional (JUMP_IF_FALSE and friends) can't itself grow
+        a wider offset without becoming a different opcode with different
+        pop/keep semantics, so instead it keeps its original opcode and a
+        *tiny* fixed offset that jumps over a 3-byte unconditional JUMP,
+        landing on a JUMP_LONG that carries the real (now-far) target:
+
+            COND_OP  +3   ; taken -> lands right on JUMP_LONG below
+            JUMP     +5   ; not taken -> skips JUMP_LONG, into the body
+            JUMP_LONG <target>
+        """
+        sites = sorted(self._jump_sites.values(), key=lambda s: s.opcode_pos)
+        starts = [s.opcode_pos for s in sites]
+        n = len(sites)
+        is_long = [False] * n
+
+        def size_of(i: int) -> int:
+            if not is_long[i]:
+                return 3
+            return 11 if sites[i].op in _COND_JUMP_OPS else 5
+
+        def build_prefix() -> list[int]:
+            cum = []
+            total = 0
+            for i in range(n):
+                total += size_of(i) - 3
+                cum.append(total)
+            return cum
+
+        def shift(p: int, cum: list[int]) -> int:
+            idx = bisect.bisect_right(starts, p - 3)
+            return p + (cum[idx - 1] if idx > 0 else 0)
+
+        while True:
+            cum = build_prefix()
+            changed = False
+            for i, s in enumerate(sites):
+                if is_long[i]:
+                    continue
+                new_opcode_pos = shift(s.opcode_pos, cum)
+                new_target = shift(s.target, cum)
+                instr_end = new_opcode_pos + 3
+                offset = (instr_end - new_target) if s.is_loop else (new_target - instr_end)
+                if not (0 <= offset <= 0xFFFF):
+                    is_long[i] = True
+                    changed = True
+            if not changed:
+                break
+
+        cum = build_prefix()
+        new_code = bytearray()
+        pos = 0
+        for i, s in enumerate(sites):
+            new_code += self.code[pos:s.opcode_pos]
+            new_opcode_pos = len(new_code)
+            new_target = shift(s.target, cum)
+            if not is_long[i]:
+                instr_end = new_opcode_pos + 3
+                offset = (instr_end - new_target) if s.is_loop else (new_target - instr_end)
+                new_code.append(int(s.op))
+                new_code += offset.to_bytes(2, "big")
+            elif s.is_loop:
+                offset = (new_opcode_pos + 5) - new_target
+                new_code.append(int(Op.LOOP_LONG))
+                new_code += offset.to_bytes(4, "big")
+            elif s.op == Op.JUMP:
+                offset = new_target - (new_opcode_pos + 5)
+                new_code.append(int(Op.JUMP_LONG))
+                new_code += offset.to_bytes(4, "big")
+            else:
+                new_code.append(int(s.op))
+                new_code += (3).to_bytes(2, "big")
+                new_code.append(int(Op.JUMP))
+                new_code += (5).to_bytes(2, "big")
+                offset = new_target - (new_opcode_pos + 11)
+                new_code.append(int(Op.JUMP_LONG))
+                new_code += offset.to_bytes(4, "big")
+            pos = s.opcode_pos + 3
+        new_code += self.code[pos:]
+
+        new_lines = tuple(
+            LineEntry(shift(entry.code_offset, cum), entry.line, entry.col)
+            for entry in self.lines
+        )
+        return bytes(new_code), new_lines

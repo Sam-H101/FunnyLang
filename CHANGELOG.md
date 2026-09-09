@@ -42,6 +42,16 @@ All notable changes to FunnyLang are documented here.
   appended plus a 17-byte trailer. Verified end to end: hello world, a multi-module bundle, an
   uncaught-error exit code, a naked stub, and running after being moved to a different directory.
 
+### M11 — Hardening pass
+- No Python traceback ever escapes the CLI (a clean "COMPILER SKILL ISSUE" message + exit 70
+  instead), recursion is bounded (`sys.setrecursionlimit(20_000)`, 10,000-frame VM cap), a 2000-
+  random-token-soup + 500-random-AST fuzz suite (`tests/test_fuzz.py`) never lets anything but a
+  `FunnyError` escape, self-referential `stash`/`groupchat` values print `[...]`/`{...}` instead of
+  recursing forever, and unicode identifiers/strings/file paths work end to end. Added `JUMP_LONG`/
+  `LOOP_LONG` (opcodes 71/72) and a `Chunk.finish()`-time relaxation pass so functions whose
+  bytecode exceeds a 16-bit jump offset (the M11 acceptance test: a single 50,000-statement `sus`
+  body) compile correctly instead of raising `OverflowError` — documented in detail in PLAN.md §16.
+
 ### M9 — Classes (`squad`)
 - Full `squad`/`inherits`/`spawn`/`me`/`og` support with the 4 magic methods (`to_yap`, `how_thicc`,
   `get_it`/`set_it`, `same_energy`). Fixed a real infinite-recursion bug in 3+ level `og` super-calls

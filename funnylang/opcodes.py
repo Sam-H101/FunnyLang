@@ -76,6 +76,11 @@ class Op(IntEnum):
     ITER_NEW = 68
     ITER_NEXT = 69
     HALT = 70
+    # Added in M11 (PLAN.md §16): wide-offset (u32) counterparts of JUMP/LOOP,
+    # emitted only when a function body is so large a plain u16 offset can't
+    # reach. Never emitted by ordinary programs.
+    JUMP_LONG = 71
+    LOOP_LONG = 72
 
 
 # Fixed operand byte-widths, in order. This is the single source of truth for
@@ -156,4 +161,6 @@ OPERANDS: dict[Op, tuple[int, ...]] = {
     Op.ITER_NEW: (),
     Op.ITER_NEXT: (2,),
     Op.HALT: (),
+    Op.JUMP_LONG: (4,),
+    Op.LOOP_LONG: (4,),
 }

@@ -1615,3 +1615,31 @@ Format: `- [Mn] <what changed> — <why>`.
   pragmatic escape hatch: a blank line while already continuing forces an attempt instead of
   waiting forever, surfacing the real diagnostic — the same UX Python's own REPL uses to end a
   multi-line block.
+- [M11] Added `JUMP_LONG` (op 71) and `LOOP_LONG` (op 72), exactly as task 6 anticipated: a single
+  `sus` body of 50,000 statements makes `JUMP_IF_FALSE`'s u16 offset exceed `0xFFFF`, which used to
+  raise `OverflowError("your function is too long. seek help.")` at compile time instead of
+  compiling. Both new opcodes take a u32 offset in place of `JUMP`/`LOOP`'s u16, added the same way
+  to `OPERANDS` and the VM's dispatch loop, and are only ever emitted by `Chunk.finish()`'s new
+  relaxation pass — ordinary programs never produce them, so every existing `.funnyc` byte-exactness
+  test is unaffected. `JUMP` and `LOOP` (both already unconditional) upgrade to their `_LONG` form
+  directly. The five conditional jumps (`JUMP_IF_FALSE(_KEEP)`, `JUMP_IF_TRUE(_KEEP)`,
+  `JUMP_IF_GHOST_KEEP`) can't themselves take a wider operand without becoming different opcodes
+  with different pop/keep stack semantics, and the plan calls for exactly two new opcodes, not
+  seven — so an overflowing conditional keeps its original opcode and a fixed tiny offset that
+  jumps over a 3-byte unconditional `JUMP`, landing on a `JUMP_LONG` carrying the real far target:
+  `COND_OP +3` (taken → lands on `JUMP_LONG`), `JUMP +5` (not taken → skips `JUMP_LONG`, into the
+  body), `JUMP_LONG <target>`. Widening an instruction changes its size, which shifts every later
+  byte position in the function — including other jumps' own targets — so `Chunk.finish()` runs a
+  standard assembler-style fixed-point relaxation (as used by real assemblers for short/near branch
+  selection) over every recorded jump site before emitting final bytes, converging in 1-2 passes in
+  practice. `TRY_PUSH`'s `handlerOff`/`finallyOff` (op 61) are a separate, still-open gap: they're
+  also relative u16 offsets and could in principle overflow too, but only if a single `try`/`catch`/
+  `finally` body alone exceeds ~65 KB, a narrower case the plan's own M11 task 6 test doesn't reach
+  and which this fix deliberately leaves unaddressed. Verified end to end (not just "doesn't raise"):
+  a 50k-statement `sus` body compiles in <2s and produces exactly the expected 50,000 lines of
+  output; the false branch of the same construct correctly skips the entire widened body; a
+  15,000-line `bruh` (while) body correctly forces `LOOP_LONG` and computes the right total; and
+  `bail` from inside a huge loop body correctly widens its forward jump to the loop's exit. Fixed-
+  size regression tests for all of these live in `tests/test_hardening.py` alongside M11's other
+  hardening checks (self-referential `stash`/`groupchat` display, unicode identifiers/strings/file
+  paths end to end).

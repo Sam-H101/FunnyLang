@@ -332,6 +332,12 @@ class VM:
                 elif op == Op.JUMP_IF_GHOST_KEEP:
                     off = (code[ip] << 8) | code[ip + 1]
                     frame.ip = (ip + 2 + off) if stack[-1] is GHOST else ip + 2
+                elif op == Op.JUMP_LONG:
+                    off = int.from_bytes(code[ip:ip + 4], "big")
+                    frame.ip = ip + 4 + off
+                elif op == Op.LOOP_LONG:
+                    off = int.from_bytes(code[ip:ip + 4], "big")
+                    frame.ip = ip + 4 - off
                 elif op == Op.POP:
                     stack.pop()
                     frame.ip = ip
