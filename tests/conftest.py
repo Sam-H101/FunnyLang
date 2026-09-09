@@ -4,6 +4,7 @@ from __future__ import annotations
 from funnylang.ast_nodes import Program, dump_ast
 from funnylang.lexer import Lexer
 from funnylang.parser import parse_source
+from funnylang.resolver import resolve_program
 from funnylang.source import SourceFile
 from funnylang.tokens import Token, TokenKind
 
@@ -42,3 +43,10 @@ def parse_one(src: str):
     prog = parse_prog(src)
     assert len(prog.statements) == 1, f"expected exactly 1 statement, got {len(prog.statements)}"
     return prog.statements[0]
+
+
+def resolve_prog(src: str, path: str = "<test>"):
+    source = make_source(src, path)
+    prog = parse_source(source)
+    result = resolve_program(prog, source)
+    return prog, result

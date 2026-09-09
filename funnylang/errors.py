@@ -52,6 +52,49 @@ class ParserHadAStroke(FunnyError):
     flavor = "ParserHadAStroke"
 
 
+class WhoDis(FunnyError):
+    """Reference to an identifier that resolves to nothing: not a local, not
+    an upvalue, not a known global/builtin/stdlib/import binding."""
+
+    flavor = "WhoDis"
+
+
+class ImmutableVibes(FunnyError):
+    """Assignment to a `deadass` (const) binding."""
+
+    flavor = "ImmutableVibes"
+
+
+def levenshtein(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+        prev = cur
+    return prev[-1]
+
+
+def suggest_name(name: str, candidates, max_distance: int = 2) -> str | None:
+    """The closest candidate to `name` within `max_distance` edits, or None."""
+    best = None
+    best_dist = max_distance + 1
+    for cand in candidates:
+        if cand == name:
+            continue
+        d = levenshtein(name, cand)
+        if d < best_dist:
+            best, best_dist = cand, d
+    return best
+
+
 class ParseErrorBundle(Exception):
     """Raised once parsing finishes with one or more ParserHadAStroke errors
     collected via error recovery. `errors` holds every one that was found;
