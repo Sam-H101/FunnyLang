@@ -36,6 +36,12 @@ jobs:
       - name: Install dev dependencies
         run: python -m pip install --upgrade pip pytest pytest-cov pyinstaller
 
+      # Editable install, not just the dev deps: tests/test_bootstrap.py runs
+      # `python -m funnylang` from a tmp_path cwd, so the repo root is not on
+      # sys.path and an uninstalled package is invisible there.
+      - name: Install the package
+        run: python -m pip install -e .
+
       # `python -m pytest` (not bare `pytest`) so the repo root lands on
       # sys.path -- tests/test_cli.py and friends shell out to
       # `python -m funnylang`. FUNNY_NO_NET keeps the `internet` stdlib
