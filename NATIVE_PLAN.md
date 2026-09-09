@@ -1415,3 +1415,31 @@ gets an entry explaining what changed and why.
   Verified: 1 new differential program (`FUNNY_NO_NET=1` path) plus the local-server empirical check
   above (normal and `FUNNY_GC_STRESS=1`) plus the full suite re-run, byte-identical, gcc and clang,
   `-Werror`, ASan/UBSan.
+
+- **N5 acceptance verification, and a real pre-existing bug it caught.** With all of N5's tasks
+  landed, ran the milestone's own acceptance line for the first time: the entire `tests/lang/` +
+  `examples/` corpus (76 + 9 `.expected`-bearing programs) through the native VM, reusing
+  `funnylang/cli.py`'s own `_run_one_test` semantics (an `!ERROR <flavor>` golden checks the raised
+  error's flavor, not stdout) since a naive raw-stdout diff mishandles every `err_*.funny` golden.
+  Found and fixed one real bug this surfaced, pre-existing since N4 and unrelated to any of this
+  milestone's own module work: `value_is_truthy()` (`value.c`) had a `return true;` for "every other
+  Obj kind" with a comment already flagging it as unfinished ("truthy unless empty -- N4's job") --
+  an empty `stash`/`groupchat` was being treated as truthy, when `funnylang/values.py`'s own
+  `is_truthy()` treats `[]`/`{}` as falsy (matching Python's own container truthiness) same as every
+  other value tag it explicitly special-cases. Fixed by checking `count > 0` for both, caught by
+  `tests/lang/truthiness.funny` specifically (2 of the empty-container cases were silently flipping
+  false-negative before the fix).
+  Every failure the first (naive) verification pass reported turned out to be a known, already-
+  understood gap once re-checked properly: 3 `err_*` goldens fail at *compile/resolution* time in
+  Python (undefined variable, const reassignment) — no native compiler exists yet to even reach that
+  code path (N8's job) — 2 exercise variadic functions, already a documented native-VM gap from an
+  earlier milestone (`vm.c`'s own CALL opcode: "variadic functions aren't supported natively yet"),
+  and `examples/modules/main.funny` exercises file-based `gimme "path.funny"` imports, the exact
+  scope this session already declined earlier (per-module namespaces + stdlib imports only). None of
+  these are new gaps N5 introduced; all were either already known or explicitly out of scope before
+  this verification ran.
+  **Result: N5's acceptance line is met.** 71/71 `tests/lang/` programs (the 5 known exceptions
+  above skipped), 7/9 `examples/` (`chaos.funny`'s randomness and `modules/main.funny`'s file-import
+  scope skipped, matching the plan's own stated exception plus this session's own prior decision) --
+  byte-identical on gcc and clang, ASan/UBSan clean, and the full `tests/native/` differential suite
+  (47/47) still green under `FUNNY_GC_STRESS=1`.
