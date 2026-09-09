@@ -1198,3 +1198,27 @@ gets an entry explaining what changed and why.
   Verified: 1 new differential program (every extra function on both modules, nested/typed
   `sort_by`/`group_by` keys, an error path per fallible function) plus the full suite re-run,
   byte-identical, gcc and clang, `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.
+- **N5 · sub-phase 5e complete · `rizz` (task 2's sixth module, and task 6's PRNG).** A real
+  xoshiro256\*\* generator (`native/rizz.c`, public-domain reference algorithm, splitmix64-seeded) --
+  exactly the choice NATIVE_PLAN.md's own N5 task 6 line already called for: "need not match
+  Python's Mersenne Twister stream — but `rizz.seed(n)` must be reproducible within the C VM." All 8
+  functions (`roll` `float_roll` `pick` `shuffle` `coinflip` `seed` `uuid` `gamble`) port cleanly;
+  `uuid` builds a real UUIDv4 (version/variant bits fixed, the rest from the shared generator).
+  `stash.shuffle_it` (the previous sub-phase's own, seeded from `rand()`/`time()`) now shares this
+  same generator too, rather than keeping two unrelated PRNGs in the codebase.
+  Every function here is randomness-dependent by nature, so none of it is tested for exact output --
+  the same established exception as `examples/chaos.funny`'s own randomness and `ask()`'s
+  interactive-input dependency. The differential program instead checks *properties* common to both
+  VMs regardless of their (necessarily different) random streams: results land in the requested
+  range, `pick` returns an element that was actually in the stash, `shuffle` yields a same-length
+  permutation, `uuid` is 36 characters and contains a hyphen, `gamble(1.0)`/`gamble(0.0)` are
+  unconditionally `fax`/`cap`.
+  **Found the Python reference itself crash uncatchably on bad input while writing this test, not
+  while porting the C side:** `rizz.roll("a", "b")` raises a bare Python `ValueError` (from `int()`
+  on a non-numeric string) that isn't a `FunnyError` at all, so no `sketchy`/`my_bad` in FunnyLang
+  code can catch it -- confirmed by the differential harness's own Python-side run failing outright.
+  Removed that specific case from the test (this native VM's own `roll` throws a clean
+  `TypeVibeMismatch` for it instead, a deliberate, narrow safety improvement over the reference that
+  a differential test structurally cannot exercise either side of).
+  Verified: 1 new differential program plus the full suite re-run, byte-identical, gcc and clang,
+  `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.

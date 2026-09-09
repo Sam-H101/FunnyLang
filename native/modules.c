@@ -6,6 +6,7 @@
 #include "gc.h"
 #include "groupchat.h"
 #include "mafs.h"
+#include "rizz.h"
 #include "stash.h"
 #include "vm.h"
 #include "yapper.h"
@@ -38,6 +39,7 @@ static const StdlibEntry STDLIB_REGISTRY[] = {
     {"yapper", yapper_build},
     {"stash", stash_build},
     {"groupchat", groupchat_build},
+    {"rizz", rizz_build},
 };
 #define STDLIB_REGISTRY_COUNT (int)(sizeof(STDLIB_REGISTRY) / sizeof(STDLIB_REGISTRY[0]))
 

@@ -2,13 +2,13 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "bignum.h"
 #include "error.h"
 #include "gc.h"
 #include "groupchat.h"
 #include "modules.h"
+#include "rizz.h"
 #include "string.h"
 
 #define INITIAL_STASH_CAPACITY 4
@@ -605,25 +605,21 @@ static Value m_sum_up(VM *vm, Value *a, int argc) {
 }
 
 /* funnylang/stdlib/stash.py's own `_shuffle_it` uses Python's global
-   `random` module -- a separate stream from anything this VM's own
-   `rizz` module will ever produce, so there was never a way to match it
+   `random` module -- a separate stream from this VM's own `rizz` module
+   (native/rizz.c's xoshiro256**, shared here rather than keeping a
+   second generator), so there was never a way to match Python
    byte-for-byte. Deliberately not tested for exact output, the same
    established exception as examples/chaos.funny's own randomness and
    ask()'s interactive-input dependency -- only that it produces a valid
-   permutation. Seeded once, lazily, from the current time. */
+   permutation. */
 static Value m_shuffle_it(VM *vm, Value *a, int argc) {
     (void)argc;
     bool ok;
     ObjStash *s = as_stash(vm, a[0], "shuffle_it", &ok);
     if (!ok) return GHOST_VAL;
-    static bool seeded = false;
-    if (!seeded) {
-        srand((unsigned)time(NULL));
-        seeded = true;
-    }
     ObjStash *out = stash_new(&vm->gc, s->items, s->count);
     for (int i = out->count - 1; i > 0; i--) {
-        int j = rand() % (i + 1);
+        int j = (int)(rizz_next_u64() % (uint64_t)(i + 1));
         Value tmp = out->items[i];
         out->items[i] = out->items[j];
         out->items[j] = tmp;
