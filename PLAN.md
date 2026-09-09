@@ -488,10 +488,15 @@ there has been no way to write a function that updates a caller's scalar. Now th
 | `&g` | a global |
 | `&captured` | a captured upvalue |
 | `&arr[i]` | element `i` of a stash (or a groupchat key: `&m["k"]`) |
-| `&obj.field` | a property of a groupchat or a squad instance |
+| `&obj.field` | a field of a squad instance |
 
 `&` applied to anything that is not one of those five is a **compile-time** `ParserHadAStroke` —
 `&42`, `&f()`, and `&(a + b)` designate no place and are rejected before the program runs.
+
+`.field` dot-syntax on a `groupchat` already means "call a method" (`m.keys()`, `m.has(k)` — §3.9),
+not key lookup, and that's true with or without a pointer involved — so `&obj.field` only ever
+addresses a real, settable field on a squad instance. A groupchat entry is addressed with bracket
+indexing instead: `&m["k"]`, same as a stash element.
 
 ```funny
 bet level_up(hp) {
@@ -713,9 +718,9 @@ Constant-pool indices are **unsigned 16-bit big-endian** unless noted. Local/upv
 
 | 71 | `JUMP_LONG` | u32 off | — (ip += off) · added in M11, see §16 |
 | 72 | `LOOP_LONG` | u32 back | — (ip -= back) · added in M11, see §16 |
-| 73 | `PTR_LOCAL` | u8 slot | → pointa (forces the local to be boxed) |
+| 73 | `PTR_LOCAL` | u8 slot, u16 nameIdx | → pointa (forces the local to be boxed) |
 | 74 | `PTR_GLOBAL` | u16 nameIdx | → pointa |
-| 75 | `PTR_UPVAL` | u8 idx | → pointa |
+| 75 | `PTR_UPVAL` | u8 idx, u16 nameIdx | → pointa |
 | 76 | `PTR_INDEX` | — | obj key → pointa |
 | 77 | `PTR_PROP` | u16 nameIdx | obj → pointa |
 | 78 | `DEREF` | — | pointa → value |
@@ -726,6 +731,11 @@ Reserve 80–99 for future opcodes. **Never renumber.** Bump `BYTECODE_VERSION` 
 71–72 land in M11 and 73–79 in M15; both were appended rather than renumbered, per the rule above.
 `BYTECODE_VERSION` goes to **2** in M15 — a `.funnyc` using 73–79 is genuinely unreadable by a v1
 runtime, and failing on the version field with a clear message beats failing on an unknown opcode.
+PTR_LOCAL/PTR_UPVAL carry a redundant `nameIdx` alongside their slot/index (an AGENT CHOICE made
+during implementation, see §16): §3.10 promises `p.where()` and `to_yap(p)` show the source variable
+name, but locals and upvalues are otherwise purely positional in compiled bytecode — nothing else
+records a name for slot N. Baking the name in as a second operand was cheaper than adding a whole
+debug name table to `FunctionProto` for one feature.
 
 ### 5.2 `.funnyc` file format
 
@@ -1923,3 +1933,32 @@ Format: `- [Mn] <what changed> — <why>`.
   shipped them — they existed only in this change log. The table now documents 71–79, and the
   reserved range moves to 80–99. `BYTECODE_VERSION` goes to 2, because a `.funnyc` using 73–79 is
   genuinely unreadable by a v1 runtime and a clear version diagnostic beats an unknown-opcode crash.
+  (`docs/BYTECODE.md`, checked while writing its own M15 entry, turned out to already have 71/72
+  correctly — the M13 docs pass postdates M11's fix — so only PLAN.md's own frozen table had the
+  gap. Fixed there too, along with the doc's worked `yap "hi"` hex dump, re-verified byte-for-byte
+  against a real compile: bumping the version field is the *only* byte that changes for a
+  pointer-free program.)
+- [M15, implementation] Two things the design above got wrong or left underspecified, caught while
+  actually writing the code:
+  - **`&obj.field` only ever addresses a squad instance's field, never a groupchat's.** A
+    groupchat's `.name` dot-syntax already means "call a method" (`m.keys()`, `m.has(k)`, §3.9), not
+    key lookup — true with or without a pointer involved, and true before M15 too (`_set_prop`
+    already rejected writes to anything but an `Instance`). §3.10's "five kinds of place" table said
+    "a property of a groupchat or a squad instance"; fixed to say squad instance only, with a note
+    that a groupchat entry is addressed with `&m["k"]` (PTR_INDEX) instead, same as a stash element.
+  - **`PTR_LOCAL`/`PTR_UPVAL` needed a name operand after all.** §3.10 promises `p.where()` and
+    `to_yap(p)` show the source variable's name for a local/global/upvalue pointa, but locals and
+    upvalues are otherwise purely positional in compiled bytecode — nothing else records a name for
+    slot N, and adding a whole debug-name table to `FunctionProto` for one feature was overkill.
+    AGENT CHOICE: both opcodes grew a second, redundant `u16 nameIdx` operand purely for display.
+    `PTR_GLOBAL` needed no such change — its existing `nameIdx` already *is* the name.
+  Verified beyond the acceptance criteria: aliasing (`&x` sharing a box with a closure that
+  captures `x`, in both directions of write), `**pp` pointer-to-pointer composition (including that
+  it correctly composes through the lexer's greedy `**` token — see the parser note above),
+  `deref()`/`set()`/`valid()`/`where()`, `what_is_it`/`to_yap` rendering, place-identity equality,
+  and every row of §3.10's error table, each exercised directly at the VM level and cross-checked
+  byte-for-byte through `selfhost/`'s emitter against the Python compiler's own output. `funny test
+  tests/lang examples` and `funny bootstrap --verify` both stayed green throughout — the
+  pre-existing 62-file `tests/lang/` + 9-file `examples/` corpus produced byte-identical output
+  before and after, exactly as promised; 14 new `tests/lang/ptr_*`/`err_ptr_*` files were added
+  alongside it.

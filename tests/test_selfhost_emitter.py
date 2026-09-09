@@ -25,7 +25,10 @@ CORPUS = sorted((ROOT / "tests" / "lang").glob("*.funny")) + sorted((ROOT / "exa
 
 # The two golden files that are supposed to fail resolution (see
 # test_selfhost_compiler.py) have nothing to emit.
-RESOLVE_TIME_FAILURES = {"err_immutable_reassign.funny", "err_undefined_variable.funny"}
+RESOLVE_TIME_FAILURES = {
+    "err_immutable_reassign.funny", "err_undefined_variable.funny",
+    "err_ptr_address_of_const.funny",
+}
 
 # Files that `gimme "relative/path.funny"` other local files: a standalone
 # .funnyc can't resolve those on its own once moved to a different

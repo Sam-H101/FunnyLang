@@ -76,6 +76,47 @@ class Upvalue:
         self.stack = None
 
 
+class Pointa:
+    """A safe reference to a place (PLAN.md §3.10) — never a raw machine
+    address. `kind` is one of:
+
+      "cell"   — a local or a captured upvalue, boxed via the identical
+                 Upvalue object the closure machinery already uses (`cell`
+                 *is* that Upvalue) — so a pointer to a local and a closure
+                 that captures it alias each other for free, and neither can
+                 ever dangle: closing an Upvalue just moves the value onto
+                 the box itself, exactly as it does for a real capture.
+      "global" — `globals_dict[name]` (falling back to the VM's builtins on
+                 read, matching GET_GLOBAL); globals are never removed, so
+                 this kind never dangles either.
+      "index"  — `container[key]`, a Stash or GroupChat. Only a Stash
+                 container supports pointer arithmetic (PLAN.md §3.10) —
+                 an index into a GroupChat has no ordinal.
+      "prop"   — a property `container[key]` where `key` is the property
+                 *name* — in practice a squad instance's field, since a
+                 groupchat's `.name` syntax already means "call a method",
+                 not key lookup (§3.10). Shares the container/key fields
+                 with "index" since both just delegate to the VM's ordinary
+                 GET_INDEX/GET_PROP-family helpers with `key` as the arg.
+
+    `label` is what `.where()` and `to_yap(p)` render (a variable name, or
+    `stash[i]`/`groupchat["k"]`/`obj.field`)."""
+
+    __slots__ = ("kind", "label", "cell", "globals_dict", "name", "container", "key")
+
+    def __init__(self, kind: str, label: str, *, cell=None, globals_dict=None, name=None, container=None, key=None):
+        self.kind = kind
+        self.label = label
+        self.cell = cell
+        self.globals_dict = globals_dict
+        self.name = name  # "global" kind only
+        self.container = container
+        self.key = key  # "index" kind (stash/groupchat key) and "prop" kind (field name)
+
+    def __repr__(self) -> str:  # pragma: no cover - debug convenience
+        return f"<pointa -> {self.label}>"
+
+
 class Closure:
     """A callable function value. `const_pool`/`protos` are the owning
     CompiledUnit's — every closure needs its own, since once modules (M7)
@@ -210,6 +251,8 @@ def type_name(v) -> str:
         return "module"
     if isinstance(v, Iterator):
         return "iterator"
+    if isinstance(v, Pointa):
+        return "pointa"
     raise TypeError(f"funnylang: no type name for {v!r}")  # pragma: no cover
 
 
@@ -251,6 +294,16 @@ def funny_eq(a, b, vm=None) -> bool:
         if method is not None and vm is not None:
             return is_truthy(vm.call_value(method, [a, b]))
         return a is b
+    if isinstance(a, Pointa) and isinstance(b, Pointa):
+        # Place identity (PLAN.md §3.10): the same box, or the same
+        # container and key — never the pointed-to value (use *p == *q).
+        if a.kind != b.kind:
+            return False
+        if a.kind == "cell":
+            return a.cell is b.cell
+        if a.kind == "global":
+            return a.globals_dict is b.globals_dict and a.name == b.name
+        return a.container is b.container and a.key == b.key  # "index" / "prop"
     return a is b
 
 
@@ -304,6 +357,8 @@ def to_display(v, vm=None, _seen: frozenset = frozenset()) -> str:
         return f"<module {v.name}>"
     if isinstance(v, Iterator):
         return "<iterator>"
+    if isinstance(v, Pointa):
+        return f"pointa -> {v.label}"
     raise TypeError(f"funnylang: no display for {v!r}")  # pragma: no cover
 
 

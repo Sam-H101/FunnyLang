@@ -29,6 +29,19 @@ No `gimme` needed — these are available everywhere.
 | `enumerate_em(a)` | A `stash` of `[index, value]` pairs for `a`. |
 | `deep_clone(x)` | A recursive copy of a `stash`/`groupchat` (nested ones included); other values pass through unchanged. |
 
+## `pointa` — pointers
+
+Not a `gimme`-able module — a `pointa` (produced by unary `&`, see
+[LANGUAGE.md](LANGUAGE.md#pointers-pointa)) is a runtime type with only these instance methods, no
+free-function form.
+
+| Method | Description |
+|---|---|
+| `p.deref()` | The method form of `*p` — reads through the pointer. |
+| `p.set(v)` | The method form of `*p = v` — writes through the pointer, returns `v`. |
+| `p.valid()` | `boolski`: would a read through `p` succeed right now? |
+| `p.where()` | The stash index / groupchat key / property name `p` addresses, or the variable name for a local, global, or upvalue pointer. |
+
 ## `mafs` — math
 
 | Function | Description |

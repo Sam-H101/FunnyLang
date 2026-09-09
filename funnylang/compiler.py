@@ -587,6 +587,54 @@ class Compiler:
         self._compile_expr(node.operand)
         self._emit(_UNOP_OPCODE[node.op], span=node.span)
 
+    def _expr_AddressOf(self, node: A.AddressOf) -> None:
+        place = node.place
+        if isinstance(place, A.Identifier):
+            res = self.result.identifier_resolutions[id(place)]
+            name_idx = self._const_str(place.name)
+            if res.kind == "local":
+                self._emit(Op.PTR_LOCAL, res.index, name_idx, span=node.span)
+            elif res.kind == "upvalue":
+                self._emit(Op.PTR_UPVAL, res.index, name_idx, span=node.span)
+            else:
+                self._emit(Op.PTR_GLOBAL, self._const_str(res.name), span=node.span)
+            self._push()
+        elif isinstance(place, A.Index):
+            self._compile_expr(place.obj)
+            self._compile_expr(place.index)
+            self._emit(Op.PTR_INDEX, span=node.span)
+            self._pop()  # obj, index (2) -> pointa (1)
+        elif isinstance(place, A.Get):
+            self._compile_expr(place.obj)
+            self._emit(Op.PTR_PROP, self._const_str(place.name), span=node.span)
+            # obj (1) -> pointa (1): net zero, matches _expr_Get
+        else:  # pragma: no cover - parser guarantees this can't happen
+            raise TypeError(f"compiler: bad address-of place {type(place).__name__}")
+
+    def _expr_Deref(self, node: A.Deref) -> None:
+        self._compile_expr(node.ptr)
+        self._emit(Op.DEREF, span=node.span)
+        # pointa (1) -> value (1): net zero, matches _expr_Get
+
+    def _expr_SetDeref(self, node: A.SetDeref) -> None:
+        self._compile_expr(node.ptr)  # [ptr]
+        if node.op == "=":
+            self._compile_expr(node.value)  # [ptr, value]
+            self._emit(Op.SET_DEREF, span=node.span)
+            self._pop()  # ptr, value (2) -> value (1)
+        else:
+            # `*p += 1` must evaluate `p` exactly once (PLAN.md §3.10) — DUP
+            # the single pointer value, same shape as _expr_Set's compound
+            # branch does for a single `obj`.
+            self._emit(Op.DUP, span=node.span)
+            self._push()  # [ptr, ptr]
+            self._emit(Op.DEREF, span=node.span)  # [ptr, curval]
+            self._compile_expr(node.value)  # [ptr, curval, value]
+            self._emit(_BINOP_OPCODE[node.op[:-1]], span=node.span)
+            self._pop()  # curval, value (2) -> result (1): [ptr, result]
+            self._emit(Op.SET_DEREF, span=node.span)
+            self._pop()  # ptr, result (2) -> result (1)
+
     def _expr_Binary(self, node: A.Binary) -> None:
         self._compile_expr(node.left)
         self._compile_expr(node.right)

@@ -107,6 +107,15 @@ flex bet dump(node) {
     sus (kind == "SetIndex") {
         bounce "(" + node["op"] + " (index " + dump(node["obj"]) + " " + dump(node["index"]) + ") " + dump(node["value"]) + ")"
     }
+    sus (kind == "AddressOf") {
+        bounce "(& " + dump(node["place"]) + ")"
+    }
+    sus (kind == "Deref") {
+        bounce "(* " + dump(node["ptr"]) + ")"
+    }
+    sus (kind == "SetDeref") {
+        bounce "(" + node["op"] + " (* " + dump(node["ptr"]) + ") " + dump(node["value"]) + ")"
+    }
     sus (kind == "Call") {
         yo args = dump_seq(node["args"])
         bounce "(call " + dump(node["callee"]) + (args.how_thicc() > 0 ? " " + args : "") + ")"

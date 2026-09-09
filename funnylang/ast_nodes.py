@@ -122,6 +122,28 @@ class SetIndex(Expr):
 
 
 @dataclass(frozen=True)
+class AddressOf(Expr):
+    # `place` is always an Identifier, Index, or Get — the parser rejects
+    # anything else at parse time (PLAN.md §3.10).
+    place: Expr
+    span: Span
+
+
+@dataclass(frozen=True)
+class Deref(Expr):
+    ptr: Expr
+    span: Span
+
+
+@dataclass(frozen=True)
+class SetDeref(Expr):
+    ptr: Expr
+    op: str
+    value: Expr
+    span: Span
+
+
+@dataclass(frozen=True)
 class Call(Expr):
     callee: Expr
     args: tuple
@@ -385,6 +407,12 @@ def dump_ast(node) -> str:  # noqa: C901 - one big dispatch, that's the point
         return f"({node.op} (get {dump_ast(node.obj)} {node.name}) {dump_ast(node.value)})"
     if isinstance(node, SetIndex):
         return f"({node.op} (index {dump_ast(node.obj)} {dump_ast(node.index)}) {dump_ast(node.value)})"
+    if isinstance(node, AddressOf):
+        return f"(& {dump_ast(node.place)})"
+    if isinstance(node, Deref):
+        return f"(* {dump_ast(node.ptr)})"
+    if isinstance(node, SetDeref):
+        return f"({node.op} (* {dump_ast(node.ptr)}) {dump_ast(node.value)})"
     if isinstance(node, Call):
         args = " ".join(dump_ast(a) for a in node.args)
         return f"(call {dump_ast(node.callee)}{' ' + args if args else ''})"

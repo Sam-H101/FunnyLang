@@ -190,6 +190,38 @@ yo c = counter()
 yap c(), c(), c()   // 1 2 3
 ```
 
+## Pointers (`pointa`)
+
+A `pointa` is a safe reference to a *place*, never a raw machine address — FunnyLang is
+garbage-collected, so handing out real addresses isn't an option. It keeps its target alive and
+always knows what it points *at*. Unary `&` takes one, produced from exactly five forms: a local
+(`&x`), a global (`&g`), a captured upvalue, a stash element or groupchat key (`&arr[i]`,
+`&m["k"]`), or a squad instance's field (`&obj.field`). `&` on anything else (`&42`, `&f()`,
+`&(a + b)`) is a syntax error — none of those name a place.
+
+```funny
+bet swap(a, b) {
+    yo t = *a
+    *a = *b
+    *b = t
+}
+yo x = 1
+yo y = 2
+swap(&x, &y)
+yap x, y   // 2 1
+```
+
+`*p` reads, `*p = v` writes, and compound assignment (`*p += 1`) works, evaluating `p` exactly
+once. Taking `&x` boxes `x` using the identical mechanism closures already use for captured
+locals, so a closure capturing `x` and an `&x` taken in the same scope alias each other correctly,
+automatically. A stash pointer supports the C idioms — `p + n`, `p - n`, `p - q` (distance), and
+`< <= > >=` — since a stash index is a genuine ordinal; arithmetic on any other kind of pointer is
+a type error. `ghost` still means "nothing" (`*ghost` raises `GhostError`); there's no separate
+null pointer. Bounds and liveness are checked on every *read*, not on construction, so forming
+`&arr[99]` is fine and only errors if you actually dereference it. `p == q` compares place
+identity (the same box, or the same container and key) — use `*p == *q` to compare values. A
+pointer to a pointer needs no special support: `&p` and `**pp` just work by composition.
+
 ## Classes (`squad`)
 
 ```funny
@@ -276,6 +308,10 @@ reference: [STDLIB.md](STDLIB.md).
 `clone()`, `clear()`. Keys may be a `yapstring`, `numba`, or `boolski`.
 
 **`numba`** — `to_yap()`, `abs()`, `floor()`, `ceil()`, `round(digits?)`, `is_whole()`.
+
+**`pointa`** (a safe reference to a place — see [Pointers](#pointers-pointa) below) —
+`deref()`/`set(v)` (method forms of `*p`/`*p = v`), `valid()` (would a read succeed?), `where()`
+(the index/key, or the variable name for a local/global/upvalue pointer).
 
 **`bet`** (function) — `arity()`, `name()`, `call(...args)`.
 

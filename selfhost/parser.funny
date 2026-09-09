@@ -585,6 +585,9 @@ flex bet make_assign(ps, target, op, value) {
     sus (target["node"] == "Index") {
         bounce {"node": "SetIndex", "obj": target["obj"], "index": target["index"], "op": op, "value": value, "line": target["line"], "col": target["col"]}
     }
+    sus (target["node"] == "Deref") {
+        bounce {"node": "SetDeref", "ptr": target["ptr"], "op": op, "value": value, "line": target["line"], "col": target["col"]}
+    }
     chuck "ParserHadAStroke at " + to_yap(target["line"]) + ":" + to_yap(target["col"]) + ": that's not something you can assign to."
 }
 
@@ -647,8 +650,38 @@ flex bet parse_power(ps) {
     bounce base
 }
 
+flex bet p_check_place(ps, place) {
+    // PLAN.md §3.10: `&` only ever addresses a local/global/upvalue name
+    // (Identifier), a stash element or groupchat key (Index), or a squad
+    // instance field (Get). Anything else designates no place.
+    sus (place["node"] == "Identifier" || place["node"] == "Index" || place["node"] == "Get") {
+        bounce ghost
+    }
+    chuck "ParserHadAStroke at " + to_yap(place["line"]) + ":" + to_yap(place["col"]) + ": '&' can't take the address of that -- only a variable, an index, or a property is a place."
+}
+
 flex bet parse_unary(ps) {
     yo tok = p_peek(ps, 0)
+    sus (tok["kind"] == "AMP") {
+        p_advance(ps)
+        yo place = parse_unary(ps)
+        p_check_place(ps, place)
+        bounce {"node": "AddressOf", "place": place, "line": tok["line"], "col": tok["col"]}
+    }
+    sus (tok["kind"] == "STAR_STAR") {
+        // The lexer already maximal-munched '**' (otherwise exponentiation,
+        // see parse_power). In prefix position it can only be two nested
+        // derefs -- '**pp', PLAN.md §3.10's pointer-to-pointer composition.
+        p_advance(ps)
+        yo operand = parse_unary(ps)
+        yo inner = {"node": "Deref", "ptr": operand, "line": tok["line"], "col": tok["col"]}
+        bounce {"node": "Deref", "ptr": inner, "line": tok["line"], "col": tok["col"]}
+    }
+    sus (tok["kind"] == "STAR") {
+        p_advance(ps)
+        yo operand = parse_unary(ps)
+        bounce {"node": "Deref", "ptr": operand, "line": tok["line"], "col": tok["col"]}
+    }
     sus (UNARY_OPS.has(tok["kind"])) {
         p_advance(ps)
         yo operand = parse_unary(ps)

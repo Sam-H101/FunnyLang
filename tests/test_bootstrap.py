@@ -25,7 +25,10 @@ CORPUS = sorted((ROOT / "tests" / "lang").glob("*.funny"))
 # These two goldens deliberately fail *resolution* (undefined variable,
 # const reassignment) -- both stage1 and the self-hosted resolver reject
 # them, which is the correct, matching behavior (see test_selfhost_compiler.py).
-RESOLVE_TIME_FAILURES = {"err_immutable_reassign.funny", "err_undefined_variable.funny"}
+RESOLVE_TIME_FAILURES = {
+    "err_immutable_reassign.funny", "err_undefined_variable.funny",
+    "err_ptr_address_of_const.funny",
+}
 
 
 def test_bootstrap_verify_reaches_fixed_point():

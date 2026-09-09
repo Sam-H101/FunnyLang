@@ -198,6 +198,20 @@ def test_maximal_munch_star_star_eq_not_star_star_then_eq():
     assert lex_kinds("**=") == [TK.STAR_STAR_EQ]
 
 
+def test_maximal_munch_amp_amp_amp_is_amp_amp_then_amp():
+    # PLAN.md §3.10: pointers add no new tokens, but '&&&x' still needs
+    # checking, since '&&' (logical and) always wins maximal munch over two
+    # separate '&' (bitwise-and / address-of) tokens.
+    assert lex_kinds("&&&x") == [TK.AMP_AMP, TK.AMP, TK.IDENT]
+
+
+def test_amp_needs_a_space_to_not_become_amp_amp():
+    # To bitwise-and with an address-of pointer you must write the space
+    # ('a & &b'); 'a&&b' is unavoidably the logical-and operator.
+    assert lex_kinds("a&&b") == [TK.IDENT, TK.AMP_AMP, TK.IDENT]
+    assert lex_kinds("a & &b") == [TK.IDENT, TK.AMP, TK.AMP, TK.IDENT]
+
+
 def test_variadic_ellipsis_before_ident():
     assert lex_kinds("...rest") == [TK.ELLIPSIS, TK.IDENT]
 

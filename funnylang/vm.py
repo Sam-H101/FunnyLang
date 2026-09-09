@@ -12,8 +12,8 @@ from .errors import (
 from .opcodes import Op
 from .values import (
     GHOST, BoundMethod, Closure, GroupChat, Instance, Iterator, Module,
-    NativeFn, Squad, Stash, Upvalue, funny_eq, is_truthy, to_display,
-    type_name,
+    NativeFn, Pointa, Squad, Stash, Upvalue, funny_eq, is_truthy, to_display,
+    to_repr, type_name,
 )
 
 # Instance-method tables for primitive types (PLAN.md §3.9) — plain funcs
@@ -23,6 +23,17 @@ from .stdlib.groupchat import METHODS as _GROUPCHAT_METHODS
 from .stdlib.mafs import NUMBA_METHODS as _NUMBA_METHODS
 from .stdlib.stash import METHODS as _STASH_METHODS
 from .stdlib.yapper import YAPSTRING_METHODS as _YAPSTRING_METHODS
+
+# `pointa` (PLAN.md §3.10) isn't one of the 10 stdlib modules — it has no
+# free-function form, only these instance methods — so unlike the tables
+# above there's no dedicated stdlib/pointa.py; they just call back into the
+# VM methods that also back the DEREF/SET_DEREF opcodes.
+_POINTA_METHODS = {
+    "deref": lambda vm, args: vm._pointa_deref(args[0]),
+    "set": lambda vm, args: vm._pointa_set(args[0], args[1]),
+    "valid": lambda vm, args: vm._pointa_valid(args[0]),
+    "where": lambda vm, args: vm._pointa_where(args[0]),
+}
 
 MAX_FRAMES = 10_000
 ABSENT = 0xFFFF
@@ -242,8 +253,11 @@ class VM:
                     frame.ip = ip
                 elif op == Op.SUB:
                     b = stack.pop(); a = stack[-1]
-                    self._check_num2(a, b, "-")
-                    stack[-1] = a - b
+                    if isinstance(a, Pointa) or isinstance(b, Pointa):
+                        stack[-1] = self._pointer_sub(a, b)
+                    else:
+                        self._check_num2(a, b, "-")
+                        stack[-1] = a - b
                     frame.ip = ip
                 elif op == Op.MUL:
                     b = stack.pop(); a = stack[-1]; stack[-1] = self._mul(a, b)
@@ -563,6 +577,37 @@ class VM:
                     sup = stack[-2]; sub = stack[-1]
                     sub.superclass = sup
                     frame.ip = ip
+                elif op == Op.PTR_LOCAL:
+                    slot = code[ip]
+                    name = self._const_str(frame, (code[ip + 1] << 8) | code[ip + 2])
+                    cell = self._capture_upvalue(frame.slot_base + slot)
+                    stack.append(Pointa("cell", name, cell=cell))
+                    frame.ip = ip + 3
+                elif op == Op.PTR_GLOBAL:
+                    name = self._const_str(frame, (code[ip] << 8) | code[ip + 1])
+                    stack.append(Pointa("global", name, globals_dict=frame.closure.module_globals, name=name))
+                    frame.ip = ip + 2
+                elif op == Op.PTR_UPVAL:
+                    idx = code[ip]
+                    name = self._const_str(frame, (code[ip + 1] << 8) | code[ip + 2])
+                    stack.append(Pointa("cell", name, cell=frame.closure.upvalues[idx]))
+                    frame.ip = ip + 3
+                elif op == Op.PTR_INDEX:
+                    key = stack.pop(); obj = stack.pop()
+                    stack.append(Pointa("index", self._index_label(obj, key), container=obj, key=key))
+                    frame.ip = ip
+                elif op == Op.PTR_PROP:
+                    name = self._const_str(frame, (code[ip] << 8) | code[ip + 1])
+                    obj = stack.pop()
+                    stack.append(Pointa("prop", f"{type_name(obj)}.{name}", container=obj, key=name))
+                    frame.ip = ip + 2
+                elif op == Op.DEREF:
+                    stack[-1] = self._pointa_deref(stack[-1])
+                    frame.ip = ip
+                elif op == Op.SET_DEREF:
+                    value = stack.pop(); ptr = stack.pop()
+                    stack.append(self._pointa_set(ptr, value))
+                    frame.ip = ip
                 elif op == Op.NOP:
                     frame.ip = ip
                 elif op == Op.HALT:
@@ -659,6 +704,8 @@ class VM:
             return self._bind_native_method(obj, name, _YAPSTRING_METHODS, "yapstring")
         if isinstance(obj, (int, float)) and not isinstance(obj, bool):
             return self._bind_native_method(obj, name, _NUMBA_METHODS, "numba")
+        if isinstance(obj, Pointa):
+            return self._bind_native_method(obj, name, _POINTA_METHODS, "pointa")
         if obj is GHOST:
             raise GhostError(f"can't read '{name}' off ghost.", roast="you're talking to a ghost, king.")
         raise WhoDis(
@@ -764,6 +811,102 @@ class VM:
             raise GhostError("can't index-assign ghost.", roast="you're talking to a ghost, king.")
         raise TypeVibeMismatch(f"can't index-assign a {type_name(obj)}.")
 
+    # -- pointers (PLAN.md §3.10) -----------------------------------------
+
+    def _index_label(self, obj, key) -> str:
+        kind = "groupchat" if isinstance(obj, GroupChat) else "stash"
+        return f"{kind}[{to_repr(key, self)}]"
+
+    def _pointa_deref(self, p):
+        if p is GHOST:
+            raise GhostError("you dereferenced a ghost, king.", roast="you're talking to a ghost, king.")
+        if not isinstance(p, Pointa):
+            raise TypeVibeMismatch(f"can't dereference a {type_name(p)}.")
+        if p.kind == "cell":
+            return p.cell.get()
+        if p.kind == "global":
+            return self._read_global(p.globals_dict, p.name)
+        if p.kind == "index":
+            return self._get_index(p.container, p.key)
+        return self._get_prop(p.container, p.key)  # "prop"
+
+    def _pointa_set(self, p, value):
+        if p is GHOST:
+            raise GhostError("you dereferenced a ghost, king.", roast="you're talking to a ghost, king.")
+        if not isinstance(p, Pointa):
+            raise TypeVibeMismatch(f"can't dereference a {type_name(p)}.")
+        if p.kind == "cell":
+            p.cell.set(value)
+        elif p.kind == "global":
+            p.globals_dict[p.name] = value
+        elif p.kind == "index":
+            self._set_index(p.container, p.key, value)
+        else:  # "prop"
+            self._set_prop(p.container, p.key, value)
+        return value
+
+    def _read_global(self, globals_dict: dict, name: str):
+        # Mirrors GET_GLOBAL exactly (PLAN.md §16): a pointa's globals_dict
+        # is captured at PTR_GLOBAL time, so a dangling name only shows up
+        # here if it genuinely was never defined by the time this runs.
+        if name in globals_dict:
+            return globals_dict[name]
+        if name in self.builtins:
+            return self.builtins[name]
+        from .errors import suggest_name
+        hint = suggest_name(name, list(globals_dict.keys()) + list(self.builtins.keys()))
+        roast = f"`{name}` who? never heard of them."
+        if hint:
+            roast += f" did you mean `{hint}`?"
+        raise WhoDis(
+            f"'{name}' isn't defined.",
+            roast=roast,
+            hint=(f"did you mean `{hint}`?" if hint else None),
+        )
+
+    def _pointa_valid(self, p) -> bool:
+        if not isinstance(p, Pointa):
+            return False
+        try:
+            self._pointa_deref(p)
+            return True
+        except FunnyError:
+            return False
+
+    def _pointa_where(self, p):
+        # A name for "cell" (local/upvalue) and "global"; the raw
+        # index/key for "index" and "prop" (PLAN.md §3.10).
+        if p.kind in ("cell", "global"):
+            return p.label
+        return p.key
+
+    def _require_stash_pointa(self, p: Pointa, verb: str = "do arithmetic on") -> None:
+        if p.kind != "index" or not isinstance(p.container, Stash):
+            raise TypeVibeMismatch(f"can't {verb} a pointa that isn't into a stash.")
+
+    def _pointer_add(self, a, b):
+        if isinstance(a, Pointa) and isinstance(b, Pointa):
+            raise TypeVibeMismatch("can't add two pointas together.")
+        ptr, n = (a, b) if isinstance(a, Pointa) else (b, a)
+        if not _is_int_like(n):
+            raise TypeVibeMismatch(f"a {type_name(a)} and a {type_name(b)} do NOT have the same energy.")
+        self._require_stash_pointa(ptr, "add to")
+        new_key = ptr.key + n
+        return Pointa("index", self._index_label(ptr.container, new_key), container=ptr.container, key=new_key)
+
+    def _pointer_sub(self, a, b):
+        if isinstance(a, Pointa) and isinstance(b, Pointa):
+            self._require_stash_pointa(a, "subtract")
+            self._require_stash_pointa(b, "subtract")
+            if a.container is not b.container:
+                raise TypeVibeMismatch("can't subtract pointas into different stashes.")
+            return a.key - b.key
+        if isinstance(a, Pointa) and _is_int_like(b):
+            self._require_stash_pointa(a, "subtract from")
+            new_key = a.key - b
+            return Pointa("index", self._index_label(a.container, new_key), container=a.container, key=new_key)
+        raise TypeVibeMismatch(f"can't subtract a {type_name(b)} from a {type_name(a)}.")
+
     def _get_slice(self, obj, start, stop, step):
         conv = lambda v: None if v is GHOST else v
         try:
@@ -790,6 +933,8 @@ class VM:
             )
 
     def _add(self, a, b):
+        if isinstance(a, Pointa) or isinstance(b, Pointa):
+            return self._pointer_add(a, b)
         if _is_num(a) and _is_num(b):
             return a + b
         if isinstance(a, str) and isinstance(b, str):
@@ -838,7 +983,15 @@ class VM:
         return a >> b  # SHR
 
     def _compare(self, op, a, b):
-        if _is_num(a) and _is_num(b):
+        if isinstance(a, Pointa) or isinstance(b, Pointa):
+            if not (isinstance(a, Pointa) and isinstance(b, Pointa)):
+                raise TypeVibeMismatch(f"can't compare a {type_name(a)} and a {type_name(b)}.")
+            self._require_stash_pointa(a, "compare")
+            self._require_stash_pointa(b, "compare")
+            if a.container is not b.container:
+                raise TypeVibeMismatch("can't compare pointas into different stashes.")
+            a, b = a.key, b.key
+        elif _is_num(a) and _is_num(b):
             pass
         elif isinstance(a, str) and isinstance(b, str):
             pass

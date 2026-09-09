@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from .ast_nodes import (
-    Assign, Binary, Block, Break, Call, Chuck, Coalesce, Continue, Export,
-    ExprStmt, ForEach, ForRange, FuncDecl, Get, GroupChatLit, Identifier, If,
-    Import, Index, Lambda, Literal, Logical, Me, Og, Param, Pipe, Program,
-    Return, SafeGet, Set, SetIndex, Slice, SquadDecl, StashLit, TemplateString,
-    Ternary, Try, Unary, VarDecl, ConstDecl, VibeStmt, While, Yap,
+    AddressOf, Assign, Binary, Block, Break, Call, Chuck, Coalesce, Continue,
+    Deref, Export, ExprStmt, ForEach, ForRange, FuncDecl, Get, GroupChatLit,
+    Identifier, If, Import, Index, Lambda, Literal, Logical, Me, Og, Param,
+    Pipe, Program, Return, SafeGet, Set, SetDeref, SetIndex, Slice, SquadDecl,
+    StashLit, TemplateString, Ternary, Try, Unary, VarDecl, ConstDecl,
+    VibeStmt, While, Yap,
 )
 from .errors import ParseErrorBundle, ParserHadAStroke
 from .lexer import Lexer
@@ -599,10 +600,27 @@ class Parser:
             return Set(target.obj, target.name, op, value, span)
         if isinstance(target, Index):
             return SetIndex(target.obj, target.index, op, value, span)
+        if isinstance(target, Deref):
+            return SetDeref(target.ptr, op, value, span)
         raise self._error(
             target.span,
             "that's not something you can assign to.",
             "you can't assign to that. that's not a place.",
+        )
+
+    def _check_place(self, place) -> None:
+        """`&` (PLAN.md §3.10) only ever addresses one of five forms — a
+        local/global/upvalue name (Identifier), a stash element or groupchat
+        key (Index), or a squad-instance field (Get). Anything else (a
+        literal, a call, an arithmetic expression, ...) designates no place
+        and is a compile-time error, not a runtime one."""
+        if isinstance(place, (Identifier, Index, Get)):
+            return
+        raise self._error(
+            place.span,
+            "'&' can't take the address of that — only a variable, an index (arr[i]), "
+            "or a property (obj.field) is a place.",
+            "`&` needs a place: a variable, arr[i], or obj.field. that's not one.",
         )
 
     def parse_ternary(self):
@@ -643,6 +661,27 @@ class Parser:
 
     def parse_unary(self):
         tok = self.peek()
+        if tok.kind == TK.AMP:
+            self.advance()
+            place = self.parse_unary()
+            self._check_place(place)
+            return AddressOf(place, self._span(tok.span, place.span))
+        if tok.kind == TK.STAR_STAR:
+            # The lexer already maximal-munched '**' into one token (it's
+            # otherwise the exponentiation operator — see parse_power). In
+            # *prefix* position no left operand has been parsed yet, so '**'
+            # can't mean exponentiation here; it can only be two nested
+            # derefs, exactly the composition PLAN.md §3.10 shows for
+            # pointers-to-pointers ('**pp'). parse_power's own STAR_STAR
+            # check only ever fires in infix position, so there's no clash.
+            self.advance()
+            operand = self.parse_unary()
+            inner = Deref(operand, self._span(tok.span, operand.span))
+            return Deref(inner, self._span(tok.span, operand.span))
+        if tok.kind == TK.STAR:
+            self.advance()
+            operand = self.parse_unary()
+            return Deref(operand, self._span(tok.span, operand.span))
         if tok.kind in UNARY_OPS:
             self.advance()
             operand = self.parse_unary()

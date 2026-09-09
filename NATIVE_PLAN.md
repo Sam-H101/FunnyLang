@@ -705,6 +705,12 @@ gets an entry explaining what changed and why.
 - **N0 · SPEC CHANGE · `PLAN.md` §11.** "Threads, async, or a GC (Python's refcounting is the GC)"
   is no longer accurate: the C runtime requires a real garbage collector, specified in N1. `PLAN.md`
   §11 must be amended to remove the GC clause. Threads and async remain non-goals.
+- **Prerequisite complete · `PLAN.md` M15 (pointers).** Per §7's ordering, this had to land in the
+  Python VM and `selfhost/` before N2, so the C VM never becomes the first implementation of a
+  language feature. Done: `pointa` (§3.10) fully implemented across the lexer (no changes needed),
+  parser, resolver, compiler, VM, and serializer (`BYTECODE_VERSION` → 2), plus `selfhost/parser.
+  funny` and `selfhost/compiler.funny` learning to compile pointer syntax, cross-checked
+  byte-for-byte against the Python compiler's output. Full log in `PLAN.md` §16. N0 can now begin.
 - **N5b · DECISION · HTTPS via OS-native TLS.** `internet.*` keeps full HTTPS in the C runtime, using
   the TLS each OS already ships — WinHTTP on Windows, `Security.framework` on macOS, and `dlopen`'d
   OpenSSL on Linux. None of these is a third-party dependency in the sense `PLAN.md` §11 forbids: two

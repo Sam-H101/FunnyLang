@@ -37,6 +37,14 @@ flex deadass OPCODES = {
     "BUILD_GROUPCHAT": 57, "BUILD_STRING": 58, "YAP": 59, "CHUCK": 60,
     "TRY_PUSH": 61, "TRY_POP": 62, "SQUAD": 63, "METHOD": 64, "INHERIT": 65,
     "IMPORT": 66, "EXPORT": 67, "ITER_NEW": 68, "ITER_NEXT": 69, "HALT": 70,
+    // 71/72 (JUMP_LONG/LOOP_LONG) are never emitted by this compiler (M11 --
+    // only a relaxation pass for functions too big to fit a u16 jump offset
+    // needs them, and this compiler has no such pass), so they're absent
+    // here on purpose, same as before M15. 73-79 are pointers (PLAN.md
+    // §3.10, §16) -- selfhost must be able to *compile* them even though
+    // §8 forbids using them in its own source.
+    "PTR_LOCAL": 73, "PTR_GLOBAL": 74, "PTR_UPVAL": 75, "PTR_INDEX": 76,
+    "PTR_PROP": 77, "DEREF": 78, "SET_DEREF": 79,
 }
 
 // Operand byte-widths, in order. CLOSURE is variable-width, special-cased.
@@ -57,6 +65,8 @@ flex deadass OPERAND_WIDTHS = {
     "YAP": [1, 1], "CHUCK": [], "TRY_PUSH": [2, 2], "TRY_POP": [],
     "SQUAD": [2], "METHOD": [2], "INHERIT": [], "IMPORT": [2, 1],
     "EXPORT": [2], "ITER_NEW": [], "ITER_NEXT": [2], "HALT": [],
+    "PTR_LOCAL": [1, 2], "PTR_GLOBAL": [2], "PTR_UPVAL": [1, 2],
+    "PTR_INDEX": [], "PTR_PROP": [2], "DEREF": [], "SET_DEREF": [],
 }
 
 // -- const pool -----------------------------------------------------------
@@ -731,6 +741,41 @@ flex bet rexpr_SetIndex(rs, node) {
     resolve_expr(rs, node["value"])
 }
 
+flex bet rexpr_AddressOf(rs, node) {
+    // Parser already restricted "place" to Identifier/Index/Get.
+    yo place = node["place"]
+    sus (place["node"] == "Identifier") {
+        yo resolution = resolve_name(rs, place["name"], place["line"], place["col"])
+        place["resolution"] = resolution
+        sus (resolution["is_const"]) {
+            resolver_error(rs, node["line"], node["col"], "'" + place["name"] + "' is a deadass constant.")
+        }
+        sus (resolution["kind"] == "local") {
+            // Taking a pointer to a local boxes it via the identical
+            // machinery closures already use for captured locals: widen
+            // "captured" to "captured *or addressed*" (PLAN.md §3.10).
+            yo cs = rs["current"]["captured_slots"]
+            sus (!cs.contains(resolution["index"])) {
+                cs.yeet_in(resolution["index"])
+            }
+        }
+    } kinda_sus (place["node"] == "Index") {
+        resolve_expr(rs, place["obj"])
+        resolve_expr(rs, place["index"])
+    } kinda_sus (place["node"] == "Get") {
+        resolve_expr(rs, place["obj"])
+    }
+}
+
+flex bet rexpr_Deref(rs, node) {
+    resolve_expr(rs, node["ptr"])
+}
+
+flex bet rexpr_SetDeref(rs, node) {
+    resolve_expr(rs, node["ptr"])
+    resolve_expr(rs, node["value"])
+}
+
 flex bet rexpr_Call(rs, node) {
     resolve_expr(rs, node["callee"])
     grind a in node["args"] {
@@ -802,6 +847,7 @@ flex deadass REXPR_TABLE = {
     "Slice": rexpr_Slice, "Get": rexpr_Get, "SafeGet": rexpr_SafeGet,
     "StashLit": rexpr_StashLit, "GroupChatLit": rexpr_GroupChatLit,
     "Lambda": rexpr_Lambda, "Me": rexpr_Me, "Og": rexpr_Og,
+    "AddressOf": rexpr_AddressOf, "Deref": rexpr_Deref, "SetDeref": rexpr_SetDeref,
 }
 
 flex bet resolve_expr(rs, expr) {
@@ -1439,6 +1485,57 @@ flex bet cexpr_Unary(cs, node) {
     c_emit(cs, UNOP_OPCODE.get(node["op"]), [], node["line"], node["col"])
 }
 
+flex bet cexpr_AddressOf(cs, node) {
+    yo place = node["place"]
+    sus (place["node"] == "Identifier") {
+        yo res = place["resolution"]
+        yo name_idx = const_str(cs, place["name"])
+        sus (res["kind"] == "local") {
+            c_emit(cs, "PTR_LOCAL", [res["index"], name_idx], node["line"], node["col"])
+        } kinda_sus (res["kind"] == "upvalue") {
+            c_emit(cs, "PTR_UPVAL", [res["index"], name_idx], node["line"], node["col"])
+        } nah {
+            c_emit(cs, "PTR_GLOBAL", [const_str(cs, res["name"])], node["line"], node["col"])
+        }
+        c_push(cs, 1)
+    } kinda_sus (place["node"] == "Index") {
+        compile_expr(cs, place["obj"])
+        compile_expr(cs, place["index"])
+        c_emit(cs, "PTR_INDEX", [], node["line"], node["col"])
+        c_pop(cs, 1)  // obj, index (2) -> pointa (1)
+    } kinda_sus (place["node"] == "Get") {
+        compile_expr(cs, place["obj"])
+        c_emit(cs, "PTR_PROP", [const_str(cs, place["name"])], node["line"], node["col"])
+        // obj (1) -> pointa (1): net zero, matches cexpr_Get
+    }
+}
+
+flex bet cexpr_Deref(cs, node) {
+    compile_expr(cs, node["ptr"])
+    c_emit(cs, "DEREF", [], node["line"], node["col"])
+    // pointa (1) -> value (1): net zero, matches cexpr_Get
+}
+
+flex bet cexpr_SetDeref(cs, node) {
+    compile_expr(cs, node["ptr"])  // [ptr]
+    sus (node["op"] == "=") {
+        compile_expr(cs, node["value"])  // [ptr, value]
+        c_emit(cs, "SET_DEREF", [], node["line"], node["col"])
+        c_pop(cs, 1)  // ptr, value (2) -> value (1)
+    } nah {
+        // `*p += 1` evaluates `p` exactly once (PLAN.md §3.10) -- DUP the
+        // single pointer value, same shape as cexpr_Set's compound branch.
+        c_emit(cs, "DUP", [], node["line"], node["col"])
+        c_push(cs, 1)  // [ptr, ptr]
+        c_emit(cs, "DEREF", [], node["line"], node["col"])  // [ptr, curval]
+        compile_expr(cs, node["value"])  // [ptr, curval, value]
+        c_emit(cs, BINOP_OPCODE.get(strip_last_char(node["op"])), [], node["line"], node["col"])
+        c_pop(cs, 1)  // curval, value (2) -> result (1): [ptr, result]
+        c_emit(cs, "SET_DEREF", [], node["line"], node["col"])
+        c_pop(cs, 1)  // ptr, result (2) -> result (1)
+    }
+}
+
 flex bet cexpr_Binary(cs, node) {
     compile_expr(cs, node["left"])
     compile_expr(cs, node["right"])
@@ -1680,6 +1777,7 @@ flex deadass CEXPR_TABLE = {
     "Slice": cexpr_Slice, "Get": cexpr_Get, "SafeGet": cexpr_SafeGet,
     "StashLit": cexpr_StashLit, "GroupChatLit": cexpr_GroupChatLit,
     "Lambda": cexpr_Lambda, "Me": cexpr_Me, "Og": cexpr_Og,
+    "AddressOf": cexpr_AddressOf, "Deref": cexpr_Deref, "SetDeref": cexpr_SetDeref,
 }
 
 flex bet compile_expr(cs, expr) {

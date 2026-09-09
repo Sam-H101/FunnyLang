@@ -456,6 +456,46 @@ class Resolver:
     def _expr_Unary(self, node: A.Unary) -> None:
         self._resolve_expr(node.operand)
 
+    def _expr_AddressOf(self, node: A.AddressOf) -> None:
+        # Parser already restricted `place` to Identifier/Index/Get.
+        place = node.place
+        if isinstance(place, A.Identifier):
+            resolution = self._resolve_name(place.name, place.span)
+            self.result.identifier_resolutions[id(place)] = resolution
+            if resolution.is_const:
+                # A pointa's whole point is write-through, and there's no
+                # runtime const-tracking on a Pointa value — rejecting
+                # &deadass here (same flavor as a direct reassignment) is
+                # simpler and safer than either silently allowing a write
+                # that bypasses constness or duplicating declaration-time
+                # const bookkeeping into the runtime (PLAN.md §16).
+                raise ImmutableVibes(
+                    f"'{place.name}' is a deadass constant.",
+                    span=node.span,
+                    source=self.source,
+                    roast=f"`{place.name}` is deadass. it doesn't change. like your ex's opinion of you.",
+                )
+            if resolution.kind == "local":
+                # Taking a pointer to a local boxes it via the identical
+                # machinery closures already use for captured locals
+                # (PLAN.md §3.10) — the resolver's "is this local captured?"
+                # analysis simply widens to "captured *or addressed*".
+                self.current.captured_slots.add(resolution.index)
+        elif isinstance(place, A.Index):
+            self._resolve_expr(place.obj)
+            self._resolve_expr(place.index)
+        elif isinstance(place, A.Get):
+            self._resolve_expr(place.obj)
+        else:  # pragma: no cover - parser guarantees this can't happen
+            raise TypeError(f"resolver: bad address-of place {type(place).__name__}")
+
+    def _expr_Deref(self, node: A.Deref) -> None:
+        self._resolve_expr(node.ptr)
+
+    def _expr_SetDeref(self, node: A.SetDeref) -> None:
+        self._resolve_expr(node.ptr)
+        self._resolve_expr(node.value)
+
     def _expr_Binary(self, node: A.Binary) -> None:
         self._resolve_expr(node.left)
         self._resolve_expr(node.right)

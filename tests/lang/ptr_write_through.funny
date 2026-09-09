@@ -1,0 +1,6 @@
+bet glow_up(stat) {
+    *stat += 100
+}
+yo clout = 0
+glow_up(&clout)
+yap "clout:", clout

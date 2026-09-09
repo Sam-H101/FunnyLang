@@ -4,10 +4,11 @@ import pytest
 
 from conftest import dump_prog, parse_one, parse_prog
 from funnylang.ast_nodes import (
-    Assign, Binary, Break, Call, Chuck, Continue, Export, ForEach, ForRange,
-    FuncDecl, Get, GroupChatLit, Identifier, If, Import, Index, Lambda,
-    Literal, Return, Set, SetIndex, Slice, StashLit, TemplateString, Ternary,
-    Try, VarDecl, ConstDecl, VibeStmt, While, Yap, dump_ast,
+    AddressOf, Assign, Binary, Break, Call, Chuck, Continue, Deref, Export,
+    ForEach, ForRange, FuncDecl, Get, GroupChatLit, Identifier, If, Import,
+    Index, Lambda, Literal, Return, Set, SetDeref, SetIndex, Slice, StashLit,
+    TemplateString, Ternary, Try, VarDecl, ConstDecl, VibeStmt, While, Yap,
+    dump_ast,
 )
 from funnylang.errors import ParseErrorBundle
 from funnylang.parser import parse_expr
@@ -146,6 +147,81 @@ def test_compound_assign_op_preserved():
 def test_invalid_assignment_target_is_syntax_error():
     with pytest.raises(ParseErrorBundle):
         parse_prog("1 + 2 = 3")
+
+
+# -- pointers (PLAN.md §3.10) ----------------------------------------------
+
+
+def test_address_of_local_dumps():
+    expr = parse_expr("&x")
+    assert isinstance(expr, AddressOf)
+    assert isinstance(expr.place, Identifier)
+    assert dump_ast(expr) == "(& x)"
+
+
+def test_deref_dumps():
+    expr = parse_expr("*p")
+    assert isinstance(expr, Deref)
+    assert dump_ast(expr) == "(* p)"
+
+
+def test_double_deref_composes_from_single_star_star_token():
+    # The lexer maximal-munches '**' into one STAR_STAR token (otherwise
+    # exponentiation); in prefix position it must compose into two nested
+    # derefs instead, exactly the '**pp' example in PLAN.md §3.10.
+    assert dump_ast(parse_expr("**pp")) == "(* (* pp))"
+
+
+def test_exponentiation_after_a_base_is_unaffected_by_double_deref():
+    assert dump_ast(parse_expr("2 ** 3")) == "(** 2 3)"
+
+
+def test_address_of_index_place():
+    assert dump_ast(parse_expr("&arr[0]")) == "(& (index arr 0))"
+
+
+def test_address_of_property_place():
+    assert dump_ast(parse_expr("&obj.field")) == "(& (get obj field))"
+
+
+def test_address_of_binds_at_unary_precedence():
+    # '&' sits at level 16 (PLAN.md §3.4), same as unary '-'/'!'/'~': it
+    # grabs only the postfix chain immediately after it, not a whole
+    # binary expression.
+    assert dump_ast(parse_expr("&arr[0] == &arr[1]")) == "(== (& (index arr 0)) (& (index arr 1)))"
+
+
+def test_amp_amp_still_wins_maximal_munch_in_an_expression():
+    # 'a && b' is unambiguously the logical operator; writing an
+    # address-of right after '&&' needs its own space (PLAN.md §3.10).
+    assert dump_ast(parse_expr("a && &b")) == "(&& a (& b))"
+
+
+def test_deref_assign_becomes_setderef():
+    expr = parse_expr("*p = 1")
+    assert isinstance(expr, SetDeref)
+    assert expr.op == "="
+
+
+def test_deref_compound_assign_op_preserved():
+    expr = parse_expr("*p += 1")
+    assert isinstance(expr, SetDeref)
+    assert expr.op == "+="
+
+
+def test_address_of_literal_is_syntax_error():
+    with pytest.raises(ParseErrorBundle):
+        parse_prog("&42")
+
+
+def test_address_of_call_is_syntax_error():
+    with pytest.raises(ParseErrorBundle):
+        parse_prog("&f()")
+
+
+def test_address_of_parenthesized_expr_is_syntax_error():
+    with pytest.raises(ParseErrorBundle):
+        parse_prog("&(a + b)")
 
 
 # -- literals / templates --------------------------------------------------

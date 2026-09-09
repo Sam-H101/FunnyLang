@@ -9,6 +9,15 @@ from .opcodes import OPERANDS, Op
 _NAMED_CONST_OPS = {
     Op.GET_GLOBAL, Op.SET_GLOBAL, Op.DEF_GLOBAL, Op.GET_PROP, Op.SET_PROP,
     Op.GET_PROP_SAFE, Op.INVOKE, Op.INVOKE_OG, Op.EXPORT,
+    Op.PTR_GLOBAL, Op.PTR_PROP, Op.PTR_LOCAL, Op.PTR_UPVAL,
+}
+
+# Which fixed operand of a _NAMED_CONST_OPS opcode is the const-pool index —
+# 0 for everything except PTR_LOCAL/PTR_UPVAL, whose *second* operand is the
+# (redundant, display-only) name const; their first is the slot/upvalue index.
+_NAMED_CONST_OPERAND_INDEX = {
+    Op.PTR_LOCAL: 1,
+    Op.PTR_UPVAL: 1,
 }
 
 
@@ -67,7 +76,8 @@ def disassemble_proto(unit: CompiledUnit, proto: FunctionProto, label: str) -> s
                 parts.append(str(val))
                 pos += w
             if op == Op.CONST or op in _NAMED_CONST_OPS:
-                comment = f"; {_const_repr(unit, int(parts[0]))}"
+                const_pos = _NAMED_CONST_OPERAND_INDEX.get(op, 0)
+                comment = f"; {_const_repr(unit, int(parts[const_pos]))}"
         offset_str = f"{ip:04d}"
         operand_str = " ".join(parts)
         line = f"{offset_str}  {marker:<8}{op.name:<14}{operand_str}"

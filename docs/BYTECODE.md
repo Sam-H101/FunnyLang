@@ -84,13 +84,30 @@ Local and upvalue slots are a single unsigned byte (max 256 locals per function)
 | 70 | `HALT` | — | — |
 | 71 | `JUMP_LONG` | u32 off | — (ip += off) |
 | 72 | `LOOP_LONG` | u32 back | — (ip -= back) |
+| 73 | `PTR_LOCAL` | u8 slot, u16 nameIdx | → pointa |
+| 74 | `PTR_GLOBAL` | u16 nameIdx | → pointa |
+| 75 | `PTR_UPVAL` | u8 idx, u16 nameIdx | → pointa |
+| 76 | `PTR_INDEX` | — | obj key → pointa |
+| 77 | `PTR_PROP` | u16 nameIdx | obj → pointa |
+| 78 | `DEREF` | — | pointa → value |
+| 79 | `SET_DEREF` | — | pointa value → value |
 
-71–99 are reserved for future opcodes; numbering is never reused. `JUMP_LONG`/`LOOP_LONG` (added
+80–99 are reserved for future opcodes; numbering is never reused. `JUMP_LONG`/`LOOP_LONG` (added
 during M11's hardening pass) are wide-offset counterparts of `JUMP`/`LOOP`, emitted only when a
 single function's body is so large a u16 offset can't reach — ordinary programs never produce
 them. See `PLAN.md` §16 for the full design rationale, including how a conditional jump (which
 can't itself grow a wider operand without changing its opcode identity) gets extended reach via a
 short trampoline into a `JUMP_LONG`.
+
+`PTR_LOCAL`/`PTR_GLOBAL`/`PTR_UPVAL`/`PTR_INDEX`/`PTR_PROP` (added in M15) each build a `pointa` —
+a safe reference to a place, never a raw address — over one of the five forms `&` can produce
+(PLAN.md §3.10). `PTR_LOCAL`/`PTR_UPVAL` box the addressed slot via the same `Upvalue` mechanism
+closures use for captures, so an `&x` and a closure capturing `x` alias each other; `PTR_INDEX`/
+`PTR_PROP` just remember the container and the key/name, since a stash/groupchat/instance is
+already a reference type. `DEREF`/`SET_DEREF` read/write through one. `PTR_LOCAL`'s and
+`PTR_UPVAL`'s `nameIdx` operand is otherwise-redundant display data only (for `.where()`/`to_yap`);
+`BYTECODE_VERSION` went to `2` alongside these seven, since a `.funnyc` using them is genuinely
+unreadable by a v1 runtime.
 
 `TRY_PUSH`'s `handlerOff`/`finallyOff` use `0xFFFF` as an explicit "absent" sentinel (no `my_bad` /
 no `regardless`), since a real offset of `0` is reachable. Both are relative to the address right
@@ -154,7 +171,7 @@ UTF-8 bytes.
 
 ```
 magic          6 bytes   b"FUNNY\x00"
-version        u16       BYTECODE_VERSION (currently 1)
+version        u16       BYTECODE_VERSION (currently 2; pointers, added in M15, bumped it from 1)
 flags          u16       bit 0 = has_debug_info
 source_name    str
 const_count    u32
@@ -191,7 +208,7 @@ parse, not hand-counted, since it's easy to get byte offsets subtly wrong by eye
 
 ```
 46 55 4e 4e 59 00              magic "FUNNY\x00"
-00 01                          version = 1
+00 02                          version = 2
 00 01                          flags = 1 (has_debug_info)
 00 00 00 08 "hi.funny"         source_name
 00 00 00 01                    const_count = 1

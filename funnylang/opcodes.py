@@ -81,6 +81,18 @@ class Op(IntEnum):
     # reach. Never emitted by ordinary programs.
     JUMP_LONG = 71
     LOOP_LONG = 72
+    # Added in M15 (PLAN.md §3.10, §16): pointers. PTR_* forms a `pointa`
+    # place-reference (never a raw address); DEREF/SET_DEREF read/write
+    # through one. PTR_LOCAL/PTR_UPVAL's second operand is a redundant name
+    # string (an AGENT CHOICE — see §16) since locals/upvalues are otherwise
+    # purely positional and §3.10 promises `p.where()`/`to_yap(p)` a name.
+    PTR_LOCAL = 73
+    PTR_GLOBAL = 74
+    PTR_UPVAL = 75
+    PTR_INDEX = 76
+    PTR_PROP = 77
+    DEREF = 78
+    SET_DEREF = 79
 
 
 # Fixed operand byte-widths, in order. This is the single source of truth for
@@ -163,4 +175,11 @@ OPERANDS: dict[Op, tuple[int, ...]] = {
     Op.HALT: (),
     Op.JUMP_LONG: (4,),
     Op.LOOP_LONG: (4,),
+    Op.PTR_LOCAL: (1, 2),
+    Op.PTR_GLOBAL: (2,),
+    Op.PTR_UPVAL: (1, 2),
+    Op.PTR_INDEX: (),
+    Op.PTR_PROP: (2,),
+    Op.DEREF: (),
+    Op.SET_DEREF: (),
 }

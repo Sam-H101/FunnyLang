@@ -2,6 +2,30 @@
 
 All notable changes to FunnyLang are documented here.
 
+## [1.1.0] — 2026-09-09
+
+### M15 — Pointers (`pointa`)
+- `&x` (local), `&g` (global), a captured upvalue, `&arr[i]`/`&m["k"]` (a stash element or
+  groupchat key), and `&obj.field` (a squad instance field) all produce a `pointa` — a safe
+  reference to a *place*, never a raw address, since a GC'd VM can't hand out real pointers
+  without breaking every other safety guarantee in the language. `*p` reads, `*p = v` writes
+  (compound assignment included, evaluating `p` exactly once), and taking `&x` boxes the local
+  using the identical `Upvalue` mechanism closures already use for captures — so a closure
+  capturing `x` and an `&x` taken in the same scope alias each other automatically, for free.
+- Pointer arithmetic (`p + n`, `p - n`, `p - q`, `< <= > >=`) works only on a pointer into a
+  `stash`, since that's the only kind with a genuine ordinal. Bounds and liveness are checked on
+  every *read*, never on construction, so `&arr[99]` is legal to form and only errors if
+  dereferenced — no pointer operation anywhere in FunnyLang can crash the VM. Every failure mode
+  reuses an existing §4.1 error flavor (`OutOfPocket`, `KeyGhosted`, `GhostError`,
+  `TypeVibeMismatch`); no new error class was needed. `&` of a `deadass` constant is a resolve-time
+  `ImmutableVibes`, matching direct reassignment.
+- New opcodes 73–79 (`PTR_LOCAL`, `PTR_GLOBAL`, `PTR_UPVAL`, `PTR_INDEX`, `PTR_PROP`, `DEREF`,
+  `SET_DEREF`); `BYTECODE_VERSION` → 2. `selfhost/parser.funny` and `selfhost/compiler.funny` both
+  learn to *compile* pointer syntax while `selfhost/` itself keeps not using any (§8) — verified
+  byte-for-byte identical against the Python compiler's output for the whole new `tests/lang/ptr_*`
+  corpus, and `funny bootstrap --verify` still reaches its fixed point. See `PLAN.md` §16 for the
+  full design log, including why this reverses M13's earlier removal of a dead `pointa` spec row.
+
 ## [1.0.0] — 2026-09-09
 
 ### M0 — Scaffolding

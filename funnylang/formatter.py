@@ -180,6 +180,15 @@ class Formatter:
     def _e_Unary(self, node: A.Unary) -> str:
         return f"{node.op}{self._expr(node.operand)}"
 
+    def _e_AddressOf(self, node: A.AddressOf) -> str:
+        return f"&{self._expr(node.place)}"
+
+    def _e_Deref(self, node: A.Deref) -> str:
+        return f"*{self._expr(node.ptr)}"
+
+    def _e_SetDeref(self, node: A.SetDeref) -> str:
+        return f"*{self._expr(node.ptr)} {node.op} {self._expr(node.value)}"
+
     def _e_Binary(self, node: A.Binary) -> str:
         return f"{self._expr(node.left)} {node.op} {self._expr(node.right)}"
 
