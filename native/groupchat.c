@@ -149,7 +149,7 @@ static Value m_remove(VM *vm, Value *a, int argc) {
     ObjGroupChat *g = as_groupchat(vm, a[0], "remove", &ok);
     if (!ok) return GHOST_VAL;
     if (!groupchat_remove(g, a[1])) {
-        char *disp = vm_value_to_display(a[1]);
+        char *disp = vm_value_to_display(vm, a[1]);
         vm_throw_native(vm, "KeyGhosted", "key '%s' not found.", disp);
         free(disp);
         return GHOST_VAL;

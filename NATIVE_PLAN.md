@@ -937,3 +937,46 @@ gets an entry explaining what changed and why.
   12 pre-existing ones, byte-identical against the Python VM on gcc and clang, `-Wall -Wextra
   -Werror` clean, ASan/UBSan clean, `FUNNY_GC_STRESS=1` clean (both normal and byte-diffed against
   the Python VM's own output, not just checked for a zero exit code).
+- **N4 · sub-phase 4c complete · `squad.c` (task 6).** `ObjSquad` (name, superclass, a linear-scan
+  method table -- same AGENT CHOICE as everywhere else this milestone), `ObjInstance` (a squad
+  pointer plus a linear-scan field table), and `ObjBoundMethod` (a receiver+`ObjClosure` pair, for
+  when a method is read off an instance as a value rather than immediately invoked -- `yo bump =
+  counter.bump` needs this for `bump()` to still work later). `SQUAD`/`METHOD`/`INHERIT` opcodes;
+  `CALL` construction (`_construct`, ported: `spawn` found via `find_method` walking the superclass
+  chain, never a dedicated field, so a subclass with no `spawn` of its own inherits the nearest
+  ancestor's, and a squad with no `spawn` anywhere still constructs fine with args silently
+  discarded); `INVOKE`'s Instance fast path (a field that shadows a method name is called as a
+  plain value, no receiver prepended -- caught and fixed a real bug here, see below); `INVOKE_OG`
+  resolving relative to `frame.closure.homeSquad` (a new `ObjClosure` field, set by `METHOD`), never
+  the receiver's own runtime class -- the actual M9 fix this task was asked to port, verified against
+  a 3-level `og` chain (`squad_multilevel_inheritance.funny`); `GET_PROP`/`SET_PROP`/`GET_INDEX`/
+  `SET_INDEX` all gaining Instance branches (fields, then `find_method` -> `ObjBoundMethod`; an
+  unset field or unknown name reads as ghost, not `WhoDis` -- deliberately different from every other
+  type's `GET_PROP`, matching `funnylang/vm.py` exactly; `get_it`/`set_it` for indexing); and the two
+  magic methods that aren't reachable through ordinary property/index access -- `to_yap` (display)
+  and `same_energy` (equality) -- wired into `value_to_display`/`vm_value_equal`, both of which
+  therefore now take `VM*` (a real call back into FunnyLang, same as the callback-taking stash
+  methods) and both of which root their argument(s) as GC temps for the call's duration, same reason
+  and same fix as call_bound_native's own.
+  **Bug caught before it shipped, by reasoning through the Python source rather than by a failing
+  test:** `INVOKE`'s Instance fast path, when a field shadows a method name, must call the field's
+  *value* (e.g. a stored closure), not the receiver itself -- an early draft called `do_call` without
+  first overwriting the receiver's own stack slot with the field's value, which would have tried to
+  call the *instance* as if it were the callable. Fixed before ever compiling it; the differential
+  suite's own `squad_extra_coverage.funny` (written after the fix, not before) exercises this path
+  specifically (`Shadow.greet` stores a closure under the same name as its own `bet greet()` method)
+  so a regression here would be caught.
+  **Scope note, not a deviation:** the always-in-scope `how_thicc(x)` builtin (a free function that
+  dispatches to `x.squad.find_method("how_thicc")` for an Instance) is `builtins.py`'s, i.e. N5's --
+  `tests/lang/squad_magic_how_thicc.funny` depends on it and was therefore *not* ported into this
+  milestone's differential suite (everything else that file would exercise -- the magic method being
+  found and called correctly -- is already covered by `squad_extra_coverage.funny` and
+  `squad_magic_to_yap.funny`/`squad_magic_same_energy.funny`/`squad_magic_get_it_set_it.funny`
+  going through squad.c's actual machinery directly).
+  Verified: 13 differential programs (12 ported from `tests/lang/`'s own already-Python-verified
+  squad suite, one rewritten to catch its uncaught error via `sketchy`/`my_bad` since the differential
+  harness requires a clean exit, plus one new file covering the shadowing bug, 3-level `og`, and
+  `same_energy` nested inside stash equality) -- byte-identical against the Python VM, gcc and clang,
+  `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1` (byte-diffed against Python, not just a zero exit
+  code). Real UTF-8 yapstring and pointers-to-places (`PTR_INDEX`/`PTR_PROP`) remain as N4's last
+  two sub-phases.

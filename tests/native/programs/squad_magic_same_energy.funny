@@ -1,0 +1,14 @@
+squad Point {
+    spawn(x, y) {
+        me.x = x
+        me.y = y
+    }
+    bet same_energy(other) {
+        bounce me.x same_energy other.x fr me.y same_energy other.y
+    }
+}
+yo a = Point(1, 2)
+yo b = Point(1, 2)
+yo c = Point(3, 4)
+yap a same_energy b
+yap a same_energy c

@@ -28,6 +28,7 @@
 #include "numfmt.h"
 #include "opcodes.h"
 #include "pointa.h"
+#include "squad.h"
 #include "stash.h"
 #include "string.h"
 
@@ -101,12 +102,15 @@ static const char *type_name_of(Value v) {
     if (IS_OBJ(v)) {
         switch (AS_OBJ(v)->type) {
             case OBJ_CLOSURE:
-            case OBJ_BOUND_NATIVE: return "bet";
+            case OBJ_BOUND_NATIVE:
+            case OBJ_BOUND_METHOD: return "bet";
             case OBJ_ERROR: return "error";
             case OBJ_POINTA: return "pointa";
             case OBJ_STASH: return "stash";
             case OBJ_GROUPCHAT: return "groupchat";
             case OBJ_ITERATOR: return "iterator";
+            case OBJ_SQUAD: return "squad";
+            case OBJ_INSTANCE: return ((ObjInstance *)AS_OBJ(v))->squad->name->chars;
             default: return "object";
         }
     }
@@ -172,11 +176,11 @@ static char *json_quote_string(const char *chars, uint32_t len) {
     return buf;
 }
 
-static char *display_value_rec(Value v, SeenStack *seen);
+static char *display_value_rec(VM *vm, Value v, SeenStack *seen);
 
-static char *repr_value_rec(Value v, SeenStack *seen) {
+static char *repr_value_rec(VM *vm, Value v, SeenStack *seen) {
     if (IS_STRING(v)) return json_quote_string(AS_STRING(v)->chars, AS_STRING(v)->byteLen);
-    return display_value_rec(v, seen);
+    return display_value_rec(vm, v, seen);
 }
 
 static char *join_with_commas(char **parts, int n) {
@@ -198,7 +202,7 @@ static char *join_with_commas(char **parts, int n) {
     return buf;
 }
 
-static char *display_value_rec(Value v, SeenStack *seen) {
+static char *display_value_rec(VM *vm, Value v, SeenStack *seen) {
     if (IS_GHOST(v)) return dup_str("ghost");
     if (IS_BOOL(v)) return dup_str(AS_BOOL(v) ? "fax" : "cap");
     if (IS_INT(v)) {
@@ -227,12 +231,42 @@ static char *display_value_rec(Value v, SeenStack *seen) {
         snprintf(buf, sizeof buf, "<bet %s/native>", bn->name);
         return dup_str(buf);
     }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_BOUND_METHOD) {
+        ObjBoundMethod *bm = (ObjBoundMethod *)AS_OBJ(v);
+        char buf[128];
+        snprintf(buf, sizeof buf, "<bet %s/bound>", bm->method->proto->name);
+        return dup_str(buf);
+    }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_SQUAD) {
+        ObjSquad *s = (ObjSquad *)AS_OBJ(v);
+        char buf[160];
+        snprintf(buf, sizeof buf, "<squad %s>", s->name->chars);
+        return dup_str(buf);
+    }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_INSTANCE) {
+        ObjInstance *inst = (ObjInstance *)AS_OBJ(v);
+        ObjClosure *method = squad_find_method(inst->squad, "to_yap");
+        if (method != NULL) {
+            gc_push_temp(&vm->gc, v);
+            Value args[1] = {v};
+            Value result = vm_call_value(vm, OBJ_VAL(method), args, 1);
+            gc_pop_temp(&vm->gc);
+            if (vm->hadError) return dup_str(""); /* dispatch loop unwinds; this string is discarded */
+            return display_value_rec(vm, result, seen);
+        }
+        char buf[160];
+        snprintf(buf, sizeof buf, "<%s instance>", inst->squad->name->chars);
+        return dup_str(buf);
+    }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_ITERATOR) {
+        return dup_str("<iterator>");
+    }
     if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STASH) {
         ObjStash *s = (ObjStash *)AS_OBJ(v);
         if (seen_contains(seen, (Obj *)s)) return dup_str("[...]");
         seen_push(seen, (Obj *)s);
         char **parts = (char **)malloc((size_t)(s->count == 0 ? 1 : s->count) * sizeof(char *));
-        for (int i = 0; i < s->count; i++) parts[i] = repr_value_rec(s->items[i], seen);
+        for (int i = 0; i < s->count; i++) parts[i] = repr_value_rec(vm, s->items[i], seen);
         seen->count--; /* pop -- this stash's own frame is done */
         char *inner = join_with_commas(parts, s->count);
         free(parts);
@@ -251,8 +285,8 @@ static char *display_value_rec(Value v, SeenStack *seen) {
         seen_push(seen, (Obj *)g);
         char **parts = (char **)malloc((size_t)(g->count == 0 ? 1 : g->count) * sizeof(char *));
         for (int i = 0; i < g->count; i++) {
-            char *k = repr_value_rec(g->entries[i].key, seen);
-            char *val = repr_value_rec(g->entries[i].value, seen);
+            char *k = repr_value_rec(vm, g->entries[i].key, seen);
+            char *val = repr_value_rec(vm, g->entries[i].value, seen);
             size_t kn = strlen(k), vn = strlen(val);
             char *pair = (char *)malloc(kn + vn + 3);
             memcpy(pair, k, kn);
@@ -279,10 +313,19 @@ static char *display_value_rec(Value v, SeenStack *seen) {
     return dup_str("<obj>"); /* unreachable for N4's value set so far */
 }
 
-static char *value_to_display(Value v) {
+static char *value_to_display(VM *vm, Value v) {
+    /* Rooted for the whole walk: an Instance found anywhere in this value
+       (directly, or nested inside a Stash/GroupChat) may call back into
+       FunnyLang via its `to_yap` magic method, which can trigger a
+       collection -- exactly the hazard call_bound_native's own comment
+       describes, and the same fix (root the top-level value; blacken_
+       object already transitively protects everything reachable from it
+       once it's marked). */
+    gc_push_temp(&vm->gc, v);
     SeenStack seen = {0};
-    char *r = display_value_rec(v, &seen);
+    char *r = display_value_rec(vm, v, &seen);
     free(seen.items);
+    gc_pop_temp(&vm->gc);
     return r;
 }
 
@@ -296,21 +339,23 @@ void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...) {
 }
 
 const char *vm_type_name(Value v) { return type_name_of(v); }
-char *vm_value_to_display(Value v) { return value_to_display(v); }
+char *vm_value_to_display(VM *vm, Value v) { return value_to_display(vm, v); }
 
 /* Structural equality (funnylang/values.py's funny_eq, ported): unlike
    value_equal_narrow (value.c -- deliberately the "narrow" scalar-only
-   piece), Stash/GroupChat compare by contents here, recursively. No cycle
-   guard -- funny_eq doesn't have one either; a self-referential stash
-   compared against itself (or another self-referential stash) recursing
-   forever is a pre-existing property of the reference semantics this
-   ports, not a new gap. */
-static bool vm_value_equal_rec(Value a, Value b) {
+   piece), Stash/GroupChat compare by contents here, recursively, and two
+   Instances compare via their squad's `same_energy` magic method if it
+   has one (falling back to pointer identity otherwise, matching Python's
+   `return a is b`). No cycle guard -- funny_eq doesn't have one either; a
+   self-referential stash compared against itself (or another
+   self-referential stash) recursing forever is a pre-existing property of
+   the reference semantics this ports, not a new gap. */
+static bool vm_value_equal_rec(VM *vm, Value a, Value b) {
     if (IS_OBJ(a) && IS_OBJ(b) && AS_OBJ(a)->type == OBJ_STASH && AS_OBJ(b)->type == OBJ_STASH) {
         ObjStash *sa = (ObjStash *)AS_OBJ(a), *sb = (ObjStash *)AS_OBJ(b);
         if (sa->count != sb->count) return false;
         for (int i = 0; i < sa->count; i++) {
-            if (!vm_value_equal_rec(sa->items[i], sb->items[i])) return false;
+            if (!vm_value_equal_rec(vm, sa->items[i], sb->items[i])) return false;
         }
         return true;
     }
@@ -319,14 +364,34 @@ static bool vm_value_equal_rec(Value a, Value b) {
         if (ga->count != gb->count) return false;
         for (int i = 0; i < ga->count; i++) {
             GroupChatEntry *e = groupchat_find(gb, ga->entries[i].key);
-            if (e == NULL || !vm_value_equal_rec(ga->entries[i].value, e->value)) return false;
+            if (e == NULL || !vm_value_equal_rec(vm, ga->entries[i].value, e->value)) return false;
         }
         return true;
+    }
+    if (IS_OBJ(a) && IS_OBJ(b) && AS_OBJ(a)->type == OBJ_INSTANCE && AS_OBJ(b)->type == OBJ_INSTANCE) {
+        ObjInstance *ia = (ObjInstance *)AS_OBJ(a);
+        ObjClosure *method = squad_find_method(ia->squad, "same_energy");
+        if (method == NULL) return AS_OBJ(a) == AS_OBJ(b);
+        Value args[2] = {a, b};
+        Value result = vm_call_value(vm, OBJ_VAL(method), args, 2);
+        if (vm->hadError) return false; /* discarded; the dispatch loop unwinds */
+        return value_is_truthy(result);
     }
     return value_equal_narrow(a, b);
 }
 
-bool vm_value_equal(Value a, Value b) { return vm_value_equal_rec(a, b); }
+bool vm_value_equal(VM *vm, Value a, Value b) {
+    /* Rooted for the whole comparison -- same reasoning as
+       value_to_display: a nested same_energy call can trigger a
+       collection, and blacken_object transitively protects everything
+       reachable from a and b once both are marked. */
+    gc_push_temp(&vm->gc, a);
+    gc_push_temp(&vm->gc, b);
+    bool result = vm_value_equal_rec(vm, a, b);
+    gc_pop_temp(&vm->gc);
+    gc_pop_temp(&vm->gc);
+    return result;
+}
 
 ObjBoundNative *bound_native_new(GC *gc, Value receiver, NativeMethodFn fn, const char *name, int minArity, int maxArity) {
     ObjBoundNative *bn = (ObjBoundNative *)malloc(sizeof(ObjBoundNative));
@@ -1037,11 +1102,70 @@ static void call_bound_native(VM *vm, ObjBoundNative *bn, int argc, int argStart
     push(vm, result);
 }
 
+/* Squad(...) construction (funnylang/vm.py's own `_construct`): a bare
+   Instance, then (if the squad or one of its ancestors defines `spawn`)
+   `spawn` is called on it with the given args -- found via find_method,
+   deliberately, not a dedicated `.spawn` field, so a subclass with no
+   `spawn` of its own inherits the nearest ancestor's (needed for
+   `squad_multilevel_inheritance`-style chains, and matching the M9 fix
+   this milestone is explicitly asked to port). A squad with no `spawn`
+   anywhere in its chain still constructs fine -- args are just silently
+   unused, exactly like Python's own version. Shared by do_call (args
+   still sitting on vm->stack) and vm_call_value (args in a plain C
+   array), so both go through the exact same construction logic. */
+static Value construct_instance(VM *vm, ObjSquad *squad, Value *args, int argc) {
+    ObjInstance *inst = instance_new(&vm->gc, squad);
+    ObjClosure *spawnMethod = squad_find_method(squad, "spawn");
+    if (spawnMethod != NULL) {
+        Value full[257]; /* argc is a uint8_t at the opcode level (max 255), +1 for `me` */
+        full[0] = OBJ_VAL(inst);
+        for (int i = 0; i < argc; i++) full[i + 1] = args[i];
+        /* Root the whole call, same hazard call_bound_native's own comment
+           describes: `inst` and its constructor args are off vm->stack
+           now, and spawn's own body can trigger collections. */
+        for (int i = 0; i <= argc; i++) gc_push_temp(&vm->gc, full[i]);
+        vm_call_value(vm, OBJ_VAL(spawnMethod), full, argc + 1); /* return value discarded, matching _construct */
+        for (int i = 0; i <= argc; i++) gc_pop_temp(&vm->gc);
+        if (vm->hadError) return GHOST_VAL;
+    }
+    return OBJ_VAL(inst);
+}
+
+static void do_construct(VM *vm, ObjSquad *squad, int argc, int argStart) {
+    Value args[257];
+    for (int i = 0; i < argc; i++) args[i] = vm->stack[argStart + i];
+    vm->stackCount = argStart - 1; /* drop the callee (the Squad) + raw args */
+    Value result = construct_instance(vm, squad, args, argc);
+    if (vm->hadError) return;
+    push(vm, result);
+}
+
 static void do_call(VM *vm, int argc) {
     int argStart = vm->stackCount - argc;
     Value callee = vm->stack[argStart - 1];
     if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_BOUND_NATIVE) {
         call_bound_native(vm, (ObjBoundNative *)AS_OBJ(callee), argc, argStart);
+        return;
+    }
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_SQUAD) {
+        do_construct(vm, (ObjSquad *)AS_OBJ(callee), argc, argStart);
+        return;
+    }
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_BOUND_METHOD) {
+        ObjBoundMethod *bm = (ObjBoundMethod *)AS_OBJ(callee);
+        /* Same receiver-prepend shift do_call already does for a bare
+           closure, just with the receiver coming from `bm` instead of
+           already sitting in the callee slot -- overwrite that slot with
+           the receiver instead of shifting args down over it. */
+        if (vm->frameCount >= VM_MAX_FRAMES) {
+            vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+            return;
+        }
+        if (!closure_arity_ok(vm, bm->method->proto, argc + 1)) return;
+        int arity = bm->method->proto->arity;
+        vm->stack[argStart - 1] = bm->receiver;
+        for (int i = argc + 1; i < arity; i++) push(vm, GHOST_VAL);
+        push_frame(vm, bm->method, argStart - 1);
         return;
     }
     if (!(IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_CLOSURE)) {
@@ -1069,18 +1193,55 @@ static void do_call(VM *vm, int argc) {
     push_frame(vm, closure, argStart - 1);
 }
 
-/* INVOKE (name+argc known at the call site, e.g. `mystash.yeet_in(5)`):
-   binds and calls a Stash/GroupChat instance method directly, without
-   materializing an intermediate ObjBoundNative -- mirrors funnylang/vm.py's
-   own _do_invoke fast path for exactly the same reason (its non-Instance
-   fallback bottoms out at _get_prop + a direct native-fn call, which for a
-   Stash/GroupChat receiver *is* this same bind-and-call). Module/Instance/
-   Squad property access isn't reachable yet at this milestone's scope
-   (N5/squad's job), so unlike vm.py's _do_invoke this doesn't need an
-   Instance-fields-shadow-a-method branch. */
+/* Pushes a new frame calling `method` with `me` prepended to the argc
+   already-on-the-stack args at [argStart, argStart+argc) -- shared by
+   do_invoke's Instance fast path and do_invoke_og, both of which always
+   know the receiver ahead of time and want the same "shift args down over
+   the now-unneeded name/callee slot" shape do_call's plain-closure path
+   uses. `argStart - 1` is the slot being reused as `me`'s slot 0. */
+static void invoke_bound_closure(VM *vm, Value me, ObjClosure *method, int argc, int argStart) {
+    if (vm->frameCount >= VM_MAX_FRAMES) {
+        vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+        return;
+    }
+    if (!closure_arity_ok(vm, method->proto, argc + 1)) return;
+    int arity = method->proto->arity;
+    vm->stack[argStart - 1] = me;
+    for (int i = argc + 1; i < arity; i++) push(vm, GHOST_VAL);
+    push_frame(vm, method, argStart - 1);
+}
+
+/* INVOKE (name+argc known at the call site, e.g. `mystash.yeet_in(5)` or
+   `instance.method(5)`): binds and calls a method directly, without
+   materializing an intermediate ObjBoundNative/ObjBoundMethod first --
+   mirrors funnylang/vm.py's own _do_invoke. An Instance field that
+   shadows a method name (storing a plain closure under that name) is
+   called with *no* implicit receiver, exactly like Python's version:
+   only find_method's result gets `me` prepended. */
 static void do_invoke(VM *vm, ObjString *name, int argc) {
     int argStart = vm->stackCount - argc;
     Value obj = vm->stack[argStart - 1];
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_INSTANCE) {
+        ObjInstance *inst = (ObjInstance *)AS_OBJ(obj);
+        Value fieldVal;
+        if (!instance_get_field(inst, name->chars, &fieldVal)) {
+            ObjClosure *method = squad_find_method(inst->squad, name->chars);
+            if (method == NULL) {
+                vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do '%s'.", inst->squad->name->chars, name->chars);
+                return;
+            }
+            invoke_bound_closure(vm, obj, method, argc, argStart);
+            return;
+        }
+        /* Shadowed by a field: call whatever's stored there as a plain
+           value, the same as if it had been read via GET_PROP then
+           CALLed -- no receiver-prepend, matching Python exactly. Replace
+           the receiver's own stack slot with the field's value first, so
+           do_call reads the right callee. */
+        vm->stack[argStart - 1] = fieldVal;
+        do_call(vm, argc);
+        return;
+    }
     NativeMethodFn fn = NULL;
     int minArity = 0, maxArity = 0;
     if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_STASH) {
@@ -1089,6 +1250,28 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
         fn = groupchat_find_method(name->chars, &minArity, &maxArity);
     }
     if (fn == NULL) {
+        if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_SQUAD) {
+            /* A Squad's own method, called directly off the class itself
+               (not an instance) -- no receiver to prepend, matching
+               vm.py's generic _get_prop-then-call fallback for a bare
+               Closure result. */
+            ObjClosure *method = squad_find_method((ObjSquad *)AS_OBJ(obj), name->chars);
+            if (method != NULL) {
+                if (vm->frameCount >= VM_MAX_FRAMES) {
+                    vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+                    return;
+                }
+                if (!closure_arity_ok(vm, method->proto, argc)) return;
+                int arity = method->proto->arity;
+                for (int i = argc; i < arity; i++) push(vm, GHOST_VAL);
+                memmove(&vm->stack[argStart - 1], &vm->stack[argStart], (size_t)(vm->stackCount - argStart) * sizeof(Value));
+                vm->stackCount--;
+                push_frame(vm, method, argStart - 1);
+                return;
+            }
+            vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do '%s'.", ((ObjSquad *)AS_OBJ(obj))->name->chars, name->chars);
+            return;
+        }
         if (IS_GHOST(obj)) {
             vm_throw_fmt(vm, "GhostError", "can't read '%s' off ghost.", name->chars);
         } else {
@@ -1116,15 +1299,27 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
     push(vm, result);
 }
 
-/* `og`: only meaningful from inside a squad method, calling its
-   superclass's override of the same name -- squad.c doesn't exist yet
-   (a later N4 sub-phase), so there is never a home squad with a
-   superclass to resolve here, exactly matching what funnylang/vm.py's own
-   _do_invoke_og raises when `me` isn't an Instance. */
+/* `og`: resolves relative to the *defining* class of the currently
+   executing method (frame->closure->homeSquad), never the receiver's own
+   runtime class -- otherwise a super-call from a middle class in a 3+
+   level hierarchy would re-invoke its own method forever instead of
+   reaching the next class up (the M9 fix this milestone is explicitly
+   asked to port; see squad_multilevel_inheritance.funny). */
 static void do_invoke_og(VM *vm, ObjString *name, int argc) {
-    (void)name;
-    (void)argc;
-    vm_throw(vm, "NotACallableRizz", "'og' has no superclass here.");
+    int argStart = vm->stackCount - argc;
+    Value me = vm->stack[argStart - 1];
+    Frame *frame = current_frame(vm);
+    ObjSquad *homeSquad = frame->closure->homeSquad;
+    if (!(IS_OBJ(me) && AS_OBJ(me)->type == OBJ_INSTANCE) || homeSquad == NULL || homeSquad->superclass == NULL) {
+        vm_throw(vm, "NotACallableRizz", "'og' has no superclass here.");
+        return;
+    }
+    ObjClosure *method = squad_find_method(homeSquad->superclass, name->chars);
+    if (method == NULL) {
+        vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do '%s'.", homeSquad->superclass->name->chars, name->chars);
+        return;
+    }
+    invoke_bound_closure(vm, me, method, argc, argStart);
 }
 
 /* -- properties / indexing / slicing (funnylang/vm.py's _get_prop,
@@ -1155,6 +1350,34 @@ static void get_prop(VM *vm, Value obj, ObjString *name) {
            collects -- see that function's own comment on exactly this
            point. */
         push(vm, OBJ_VAL(bound_native_new(&vm->gc, obj, fn, name->chars, minArity, maxArity)));
+        return;
+    }
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_INSTANCE) {
+        ObjInstance *inst = (ObjInstance *)AS_OBJ(obj);
+        Value fieldVal;
+        if (instance_get_field(inst, name->chars, &fieldVal)) {
+            push(vm, fieldVal);
+            return;
+        }
+        ObjClosure *method = squad_find_method(inst->squad, name->chars);
+        if (method != NULL) {
+            push(vm, OBJ_VAL(bound_method_new(&vm->gc, obj, method)));
+            return;
+        }
+        /* An unset field/unknown name on an Instance is ghost, not WhoDis
+           -- deliberately different from every other type's GET_PROP,
+           matching funnylang/vm.py's own _get_prop (`return GHOST`). */
+        push(vm, GHOST_VAL);
+        return;
+    }
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_SQUAD) {
+        ObjSquad *squad = (ObjSquad *)AS_OBJ(obj);
+        ObjClosure *method = squad_find_method(squad, name->chars);
+        if (method == NULL) {
+            vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do '%s'.", squad->name->chars, name->chars);
+            return;
+        }
+        push(vm, OBJ_VAL(method));
         return;
     }
     if (IS_GHOST(obj)) {
@@ -1202,12 +1425,30 @@ static Value vm_get_index(VM *vm, Value obj, Value key) {
         ObjGroupChat *g = (ObjGroupChat *)AS_OBJ(obj);
         GroupChatEntry *e = groupchat_find(g, key);
         if (e == NULL) {
-            char *disp = value_to_display(key);
+            char *disp = value_to_display(vm, key);
             vm_throw_fmt(vm, "KeyGhosted", "key '%s' not found.", disp);
             free(disp);
             return GHOST_VAL;
         }
         return e->value;
+    }
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_INSTANCE) {
+        ObjInstance *inst = (ObjInstance *)AS_OBJ(obj);
+        ObjClosure *method = squad_find_method(inst->squad, "get_it");
+        if (method == NULL) {
+            vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do 'get_it'.", inst->squad->name->chars);
+            return GHOST_VAL;
+        }
+        /* obj/key are already off the FunnyLang stack by the time
+           vm_get_index runs (OP_GET_INDEX pops both first) -- root them
+           for the call, same hazard as call_bound_native's own comment. */
+        gc_push_temp(&vm->gc, obj);
+        gc_push_temp(&vm->gc, key);
+        Value args[2] = {obj, key};
+        Value result = vm_call_value(vm, OBJ_VAL(method), args, 2);
+        gc_pop_temp(&vm->gc);
+        gc_pop_temp(&vm->gc);
+        return result;
     }
     if (IS_GHOST(obj)) {
         vm_throw(vm, "GhostError", "can't index ghost.");
@@ -1235,6 +1476,26 @@ static void vm_set_index(VM *vm, Value obj, Value key, Value value) {
     }
     if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_GROUPCHAT) {
         groupchat_set(&vm->gc, (ObjGroupChat *)AS_OBJ(obj), key, value);
+        return;
+    }
+    if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_INSTANCE) {
+        ObjInstance *inst = (ObjInstance *)AS_OBJ(obj);
+        ObjClosure *method = squad_find_method(inst->squad, "set_it");
+        if (method == NULL) {
+            vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do 'set_it'.", inst->squad->name->chars);
+            return;
+        }
+        /* obj/key/value are already off the FunnyLang stack (OP_SET_INDEX
+           pops all three before calling here) -- root them for the call,
+           same hazard as call_bound_native's own comment. */
+        gc_push_temp(&vm->gc, obj);
+        gc_push_temp(&vm->gc, key);
+        gc_push_temp(&vm->gc, value);
+        Value args[3] = {obj, key, value};
+        vm_call_value(vm, OBJ_VAL(method), args, 3);
+        gc_pop_temp(&vm->gc);
+        gc_pop_temp(&vm->gc);
+        gc_pop_temp(&vm->gc);
         return;
     }
     if (IS_STRING(obj)) {
@@ -1570,44 +1831,53 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
             case OP_EQ: {
                 Value b = pop(vm);
                 Value a = peek(vm, 0);
-                vm->stack[vm->stackCount - 1] = BOOL_VAL(vm_value_equal(a, b));
+                vm->stack[vm->stackCount - 1] = BOOL_VAL(vm_value_equal(vm, a, b));
                 break;
             }
             case OP_NEQ: {
                 Value b = pop(vm);
                 Value a = peek(vm, 0);
-                vm->stack[vm->stackCount - 1] = BOOL_VAL(!vm_value_equal(a, b));
+                vm->stack[vm->stackCount - 1] = BOOL_VAL(!vm_value_equal(vm, a, b));
                 break;
             }
             case OP_IN: {
                 /* funnylang/vm.py's own _contains: `a in b` -- b is the
-                   container. Stash/GroupChat/yapstring only. */
+                   container. Stash/GroupChat/yapstring only. `b` is
+                   rooted for the loop's duration: it's already off the
+                   FunnyLang stack by this point (popped above), and each
+                   vm_value_equal call below can trigger a collection via a
+                   nested same_energy dispatch -- the same hazard
+                   call_bound_native's own comment describes. */
                 Value b = pop(vm);
                 Value a = peek(vm, 0);
+                gc_push_temp(&vm->gc, b);
                 bool result;
                 if (IS_OBJ(b) && AS_OBJ(b)->type == OBJ_STASH) {
                     ObjStash *s = (ObjStash *)AS_OBJ(b);
                     result = false;
                     for (int i = 0; i < s->count; i++) {
-                        if (vm_value_equal(a, s->items[i])) { result = true; break; }
+                        if (vm_value_equal(vm, a, s->items[i])) { result = true; break; }
                     }
                 } else if (IS_OBJ(b) && AS_OBJ(b)->type == OBJ_GROUPCHAT) {
                     ObjGroupChat *g = (ObjGroupChat *)AS_OBJ(b);
                     result = false;
                     for (int i = 0; i < g->count; i++) {
-                        if (vm_value_equal(a, g->entries[i].key)) { result = true; break; }
+                        if (vm_value_equal(vm, a, g->entries[i].key)) { result = true; break; }
                     }
                 } else if (IS_STRING(b)) {
                     if (!IS_STRING(a)) {
                         vm_throw(vm, "TypeVibeMismatch", "can only check if a yapstring is 'in' another yapstring.");
+                        gc_pop_temp(&vm->gc);
                         break;
                     }
                     ObjString *sa = AS_STRING(a), *sb = AS_STRING(b);
                     result = bytes_contains(sb->chars, sb->byteLen, sa->chars, sa->byteLen);
                 } else {
                     vm_throw_fmt(vm, "TypeVibeMismatch", "can't check 'in' on a %s.", type_name_of(b));
+                    gc_pop_temp(&vm->gc);
                     break;
                 }
+                gc_pop_temp(&vm->gc);
                 vm->stack[vm->stackCount - 1] = BOOL_VAL(result);
                 break;
             }
@@ -1740,7 +2010,7 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 if (IS_OBJ(payload) && AS_OBJ(payload)->type == OBJ_ERROR) {
                     vm->pendingError = payload;
                 } else {
-                    char *display = value_to_display(payload);
+                    char *display = value_to_display(vm, payload);
                     uint32_t line, col;
                     chunk_line_for_offset(frame->closure->proto, vm->currentInstrStart, &line, &col);
                     int traceCount;
@@ -1782,6 +2052,36 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 } else {
                     frame->ip += off;
                 }
+                break;
+            }
+            case OP_SQUAD: {
+                uint16_t nameIdx = read_u16(code, frame->ip);
+                frame->ip += 2;
+                ObjString *name = AS_STRING(consts[nameIdx].value);
+                push(vm, OBJ_VAL(squad_new(&vm->gc, name)));
+                break;
+            }
+            case OP_METHOD: {
+                /* compiler.py's own comment on this opcode: stack is
+                   [..., squad, methodClosure] -- pop the closure, peek the
+                   squad (left in place; SQUAD_DECL keeps building on it). */
+                uint16_t nameIdx = read_u16(code, frame->ip);
+                frame->ip += 2;
+                ObjString *name = AS_STRING(consts[nameIdx].value);
+                Value methodVal = pop(vm);
+                ObjClosure *method = (ObjClosure *)AS_OBJ(methodVal);
+                ObjSquad *squad = (ObjSquad *)AS_OBJ(peek(vm, 0));
+                method->homeSquad = squad;
+                squad_add_method(&vm->gc, squad, name, method);
+                break;
+            }
+            case OP_INHERIT: {
+                /* Stack effect is "super class -> super class" (both kept,
+                   unchanged) -- compiler.py's own SWAP+POP right after
+                   this drops the now-unneeded superclass reference. */
+                ObjSquad *sup = (ObjSquad *)AS_OBJ(peek(vm, 1));
+                ObjSquad *sub = (ObjSquad *)AS_OBJ(peek(vm, 0));
+                sub->superclass = sup;
                 break;
             }
             case OP_PTR_LOCAL: {
@@ -1879,16 +2179,17 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 break;
             }
             case OP_SET_PROP: {
-                /* No settable properties exist at this milestone's scope
-                   (Instance fields are squad.c's job) -- matches
-                   funnylang/vm.py's own _set_prop, which only has an
-                   Instance branch beyond the ghost/else cases below. */
+                /* Instance fields (`me.x = ...`) are the only settable
+                   property in the whole language -- matches
+                   funnylang/vm.py's own _set_prop exactly. */
                 uint16_t nameIdx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 ObjString *name = AS_STRING(consts[nameIdx].value);
                 Value value = pop(vm);
                 Value obj = pop(vm);
-                if (IS_GHOST(obj)) {
+                if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_INSTANCE) {
+                    instance_set_field(&vm->gc, (ObjInstance *)AS_OBJ(obj), name, value);
+                } else if (IS_GHOST(obj)) {
                     vm_throw_fmt(vm, "GhostError", "can't set '%s' on ghost.", name->chars);
                 } else {
                     vm_throw_fmt(vm, "TypeVibeMismatch", "can't set properties on a %s.", type_name_of(obj));
@@ -1947,7 +2248,7 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 char *parts[256];
                 size_t totalLen = 0;
                 for (int i = 0; i < n; i++) {
-                    parts[i] = value_to_display(vm->stack[base + i]);
+                    parts[i] = value_to_display(vm, vm->stack[base + i]);
                     totalLen += strlen(parts[i]);
                 }
                 char *buf = (char *)malloc(totalLen + 1);
@@ -1969,7 +2270,7 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 uint8_t argc = code[frame->ip++];
                 uint8_t newline = code[frame->ip++];
                 char *parts[256];
-                for (int i = argc - 1; i >= 0; i--) parts[i] = value_to_display(pop(vm));
+                for (int i = argc - 1; i >= 0; i--) parts[i] = value_to_display(vm, pop(vm));
                 for (int i = 0; i < argc; i++) {
                     if (i > 0) fputc(' ', vm->out);
                     fputs(parts[i], vm->out);
@@ -2036,6 +2337,16 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
         Value result;
         vm_execute(vm, baseFrameCount, &result); /* VM_ERROR: vm->hadError stays set for the caller to notice */
         return result;
+    }
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_BOUND_METHOD) {
+        ObjBoundMethod *bm = (ObjBoundMethod *)AS_OBJ(callee);
+        Value full[257];
+        full[0] = bm->receiver;
+        for (int i = 0; i < argc; i++) full[i + 1] = args[i];
+        return vm_call_value(vm, OBJ_VAL(bm->method), full, argc + 1);
+    }
+    if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_SQUAD) {
+        return construct_instance(vm, (ObjSquad *)AS_OBJ(callee), args, argc);
     }
     vm_throw_fmt(vm, "NotACallableRizz", "'%s' is not callable.", type_name_of(callee));
     return GHOST_VAL;

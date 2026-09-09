@@ -133,7 +133,7 @@ static Value m_contains(VM *vm, Value *a, int argc) {
     ObjStash *s = as_stash(vm, a[0], "contains", &ok);
     if (!ok) return GHOST_VAL;
     for (int i = 0; i < s->count; i++) {
-        if (value_equal_narrow(a[1], s->items[i])) return BOOL_VAL(true);
+        if (vm_value_equal(vm, a[1], s->items[i])) return BOOL_VAL(true);
     }
     return BOOL_VAL(false);
 }
@@ -144,7 +144,7 @@ static Value m_index_of(VM *vm, Value *a, int argc) {
     ObjStash *s = as_stash(vm, a[0], "index_of", &ok);
     if (!ok) return GHOST_VAL;
     for (int i = 0; i < s->count; i++) {
-        if (value_equal_narrow(a[1], s->items[i])) return INT_VAL(i);
+        if (vm_value_equal(vm, a[1], s->items[i])) return INT_VAL(i);
     }
     return INT_VAL(-1);
 }
@@ -256,7 +256,7 @@ static Value m_join(VM *vm, Value *a, int argc) {
     char *buf = NULL;
     size_t len = 0, cap = 0;
     for (int i = 0; i < s->count; i++) {
-        char *piece = vm_value_to_display(s->items[i]);
+        char *piece = vm_value_to_display(vm, s->items[i]);
         size_t pieceLen = strlen(piece);
         size_t addLen = pieceLen + (i > 0 ? sepLen : 0);
         if (len + addLen > cap) {

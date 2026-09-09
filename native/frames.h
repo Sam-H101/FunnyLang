@@ -23,6 +23,7 @@
 #include "value.h"
 
 typedef struct VM VM; /* defined in vm.h; only a pointer is needed here */
+typedef struct ObjSquad ObjSquad; /* defined in squad.h; only a pointer is needed here */
 
 typedef struct ObjUpvalue {
     Obj obj;
@@ -42,6 +43,13 @@ typedef struct ObjClosureStruct {
     FunctionProto *proto; /* borrowed: owned by the CompiledUnit */
     ObjUpvalue **upvalues;
     int upvalueCount;
+    /* Set by the METHOD opcode: which ObjSquad this closure was defined in
+       (NULL for an ordinary function) -- NOT the receiver's runtime class.
+       `og` resolves relative to *this*, matching funnylang/vm.py's own
+       Closure.home_squad: a super-call from a middle class in a 3+ level
+       hierarchy must reach the next class up, not re-invoke its own
+       defining class's method forever. */
+    ObjSquad *homeSquad;
 } ObjClosure;
 
 ObjClosure *closure_new(GC *gc, FunctionProto *proto, ObjUpvalue **upvalues, int upvalueCount);

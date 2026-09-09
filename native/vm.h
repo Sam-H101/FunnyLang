@@ -137,14 +137,19 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc);
    vm->hadError the same way vm_throw_fmt does; callers must still return
    promptly afterward (typically GHOST_VAL) so the dispatch loop notices
    on its next iteration -- it does not unwind or exit on its own.
-   vm_value_to_display's result is malloc'd; the caller frees it. */
+   vm_value_to_display's result is malloc'd; the caller frees it. Both take
+   `vm` (not just `Value`) because an Instance's display routes through its
+   squad's `to_yap` magic method, if it has one -- a real call back into
+   FunnyLang code, exactly like the callback-taking stash methods. */
 void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...);
 const char *vm_type_name(Value v);
-char *vm_value_to_display(Value v);
+char *vm_value_to_display(VM *vm, Value v);
 
 /* Structural equality (funnylang/values.py's `funny_eq`): unlike
    value_equal_narrow (value.h), Stash/GroupChat compare by contents here,
-   recursively, matching OP_EQ/OP_NEQ and stash's contains/index_of. */
-bool vm_value_equal(Value a, Value b);
+   recursively, matching OP_EQ/OP_NEQ and stash's contains/index_of. Takes
+   `vm` for the same reason as vm_value_to_display: comparing two Instances
+   calls their squad's `same_energy` magic method, if it has one. */
+bool vm_value_equal(VM *vm, Value a, Value b);
 
 #endif /* FUNNY_VM_H */

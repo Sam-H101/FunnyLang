@@ -51,6 +51,7 @@ ObjClosure *closure_new(GC *gc, FunctionProto *proto, ObjUpvalue **upvalues, int
     } else {
         c->upvalues = NULL;
     }
+    c->homeSquad = NULL;
     gc_track(gc, (Obj *)c, sizeof(ObjClosure));
     return c;
 }

@@ -27,6 +27,9 @@ typedef enum {
     OBJ_GROUPCHAT,
     OBJ_BOUND_NATIVE,
     OBJ_ITERATOR,
+    OBJ_SQUAD,
+    OBJ_INSTANCE,
+    OBJ_BOUND_METHOD,
 } ObjType;
 
 /* The common header. Every concrete object type (e.g. ObjBignum) is a

@@ -8,6 +8,7 @@
 #include "groupchat.h"
 #include "iterator.h"
 #include "pointa.h"
+#include "squad.h"
 #include "stash.h"
 #include "string.h"
 #include "vm.h"
@@ -86,6 +87,21 @@ static void free_object(Obj *obj) {
             free(it);
             return;
         }
+        case OBJ_SQUAD: {
+            ObjSquad *s = (ObjSquad *)obj;
+            free(s->methods);
+            free(s);
+            return;
+        }
+        case OBJ_INSTANCE: {
+            ObjInstance *inst = (ObjInstance *)obj;
+            free(inst->fields);
+            free(inst);
+            return;
+        }
+        case OBJ_BOUND_METHOD:
+            free(obj); /* receiver is a Value field; method is a separate GC object */
+            return;
     }
 }
 
@@ -175,6 +191,7 @@ static void blacken_object(GC *gc, Obj *obj) {
         case OBJ_CLOSURE: {
             ObjClosure *c = (ObjClosure *)obj;
             for (int i = 0; i < c->upvalueCount; i++) gc_mark_object(gc, (Obj *)c->upvalues[i]);
+            gc_mark_object(gc, (Obj *)c->homeSquad);
             return;
         }
         case OBJ_ERROR: {
@@ -218,6 +235,31 @@ static void blacken_object(GC *gc, Obj *obj) {
         case OBJ_ITERATOR: {
             ObjIterator *it = (ObjIterator *)obj;
             for (int i = 0; i < it->count; i++) gc_mark_value(gc, it->items[i]);
+            return;
+        }
+        case OBJ_SQUAD: {
+            ObjSquad *s = (ObjSquad *)obj;
+            gc_mark_object(gc, (Obj *)s->name);
+            gc_mark_object(gc, (Obj *)s->superclass);
+            for (int i = 0; i < s->methodCount; i++) {
+                gc_mark_object(gc, (Obj *)s->methods[i].name);
+                gc_mark_object(gc, (Obj *)s->methods[i].method);
+            }
+            return;
+        }
+        case OBJ_INSTANCE: {
+            ObjInstance *inst = (ObjInstance *)obj;
+            gc_mark_object(gc, (Obj *)inst->squad);
+            for (int i = 0; i < inst->fieldCount; i++) {
+                gc_mark_object(gc, (Obj *)inst->fields[i].name);
+                gc_mark_value(gc, inst->fields[i].value);
+            }
+            return;
+        }
+        case OBJ_BOUND_METHOD: {
+            ObjBoundMethod *bm = (ObjBoundMethod *)obj;
+            gc_mark_value(gc, bm->receiver);
+            gc_mark_object(gc, (Obj *)bm->method);
             return;
         }
     }
