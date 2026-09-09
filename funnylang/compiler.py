@@ -889,7 +889,10 @@ def _fold(expr):
         ):
             try:
                 value = _apply_numeric(expr.op, left.value, right.value)
-            except ZeroDivisionError:
+            except (ZeroDivisionError, ValueError):
+                # e.g. a negative shift amount (`5 << -1`) — don't let a
+                # Python exception escape the compiler; leave it unfolded so
+                # the VM raises the proper FunnyError at runtime instead.
                 return _rebuild_binary(expr, left, right)
             return A.Literal(value, expr.span)
         return _rebuild_binary(expr, left, right)

@@ -831,6 +831,8 @@ class VM:
             return a | b
         if op == Op.BXOR:
             return a ^ b
+        if b < 0:
+            raise MathAintMathin("negative shift amount.", roast="you shifted by a negative numba. the universe said no.")
         if op == Op.SHL:
             return a << b
         return a >> b  # SHR

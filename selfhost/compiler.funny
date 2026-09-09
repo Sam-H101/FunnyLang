@@ -1,0 +1,1787 @@
+// selfhost/compiler.funny — PLAN.md §M12 task 2, fourth file: resolver +
+// codegen merged (per the plan's own suggestion), a port of resolver.py +
+// compiler.py + chunk.py's ConstPool/Chunk bookkeeping.
+//
+// Unlike the Python implementation, AST nodes here are mutable groupchats,
+// so the resolver doesn't need a side table keyed by node identity (Python
+// keys `identifier_resolutions`/`decl_slots`/`func_info` by `id(node)`,
+// since its AST is frozen dataclasses) -- it just writes the answer
+// directly onto the node: "resolution" on Identifier/Assign-target nodes,
+// "slot" on decl nodes (VarDecl/ConstDecl/FuncDecl/SquadDecl/Param/Import),
+// "func_info" on Program/FuncDecl/Lambda/SquadDecl.spawn/methods nodes, and
+// "superclass_resolution" on SquadDecl. This is a deliberate simplification
+// available only because of that mutability, not a behavior change.
+//
+// Opcodes are emitted by name (a groupchat name -> numeric-value table)
+// rather than needing an enum, which the self-hosting subset has no syntax
+// for anyway.
+
+gimme mafs
+gimme { parse_source } from "parser.funny"
+
+// -- opcode table (PLAN.md §5.1 -- FROZEN) -------------------------------
+
+flex deadass OPCODES = {
+    "NOP": 0, "CONST": 1, "GHOST": 2, "FAX": 3, "CAP": 4, "POP": 5, "DUP": 6,
+    "SWAP": 7, "GET_LOCAL": 8, "SET_LOCAL": 9, "GET_GLOBAL": 10,
+    "SET_GLOBAL": 11, "DEF_GLOBAL": 12, "GET_UPVAL": 13, "SET_UPVAL": 14,
+    "CLOSE_UPVAL": 15, "GET_PROP": 16, "SET_PROP": 17, "GET_PROP_SAFE": 18,
+    "GET_INDEX": 19, "SET_INDEX": 20, "GET_SLICE": 21, "ADD": 22, "SUB": 23,
+    "MUL": 24, "DIV": 25, "IDIV": 26, "MOD": 27, "POW": 28, "NEG": 29,
+    "NOT": 30, "BNOT": 31, "BAND": 32, "BOR": 33, "BXOR": 34, "SHL": 35,
+    "SHR": 36, "EQ": 37, "NEQ": 38, "LT": 39, "LE": 40, "GT": 41, "GE": 42,
+    "IN": 43, "JUMP": 44, "JUMP_IF_FALSE": 45, "JUMP_IF_TRUE": 46,
+    "JUMP_IF_FALSE_KEEP": 47, "JUMP_IF_TRUE_KEEP": 48,
+    "JUMP_IF_GHOST_KEEP": 49, "LOOP": 50, "CALL": 51, "INVOKE": 52,
+    "INVOKE_OG": 53, "CLOSURE": 54, "RETURN": 55, "BUILD_STASH": 56,
+    "BUILD_GROUPCHAT": 57, "BUILD_STRING": 58, "YAP": 59, "CHUCK": 60,
+    "TRY_PUSH": 61, "TRY_POP": 62, "SQUAD": 63, "METHOD": 64, "INHERIT": 65,
+    "IMPORT": 66, "EXPORT": 67, "ITER_NEW": 68, "ITER_NEXT": 69, "HALT": 70,
+}
+
+// Operand byte-widths, in order. CLOSURE is variable-width, special-cased.
+flex deadass OPERAND_WIDTHS = {
+    "NOP": [], "CONST": [2], "GHOST": [], "FAX": [], "CAP": [], "POP": [],
+    "DUP": [], "SWAP": [], "GET_LOCAL": [1], "SET_LOCAL": [1],
+    "GET_GLOBAL": [2], "SET_GLOBAL": [2], "DEF_GLOBAL": [2],
+    "GET_UPVAL": [1], "SET_UPVAL": [1], "CLOSE_UPVAL": [], "GET_PROP": [2],
+    "SET_PROP": [2], "GET_PROP_SAFE": [2], "GET_INDEX": [], "SET_INDEX": [],
+    "GET_SLICE": [], "ADD": [], "SUB": [], "MUL": [], "DIV": [], "IDIV": [],
+    "MOD": [], "POW": [], "NEG": [], "NOT": [], "BNOT": [], "BAND": [],
+    "BOR": [], "BXOR": [], "SHL": [], "SHR": [], "EQ": [], "NEQ": [],
+    "LT": [], "LE": [], "GT": [], "GE": [], "IN": [], "JUMP": [2],
+    "JUMP_IF_FALSE": [2], "JUMP_IF_TRUE": [2], "JUMP_IF_FALSE_KEEP": [2],
+    "JUMP_IF_TRUE_KEEP": [2], "JUMP_IF_GHOST_KEEP": [2], "LOOP": [2],
+    "CALL": [1], "INVOKE": [2, 1], "INVOKE_OG": [2, 1], "RETURN": [],
+    "BUILD_STASH": [2], "BUILD_GROUPCHAT": [2], "BUILD_STRING": [2],
+    "YAP": [1, 1], "CHUCK": [], "TRY_PUSH": [2, 2], "TRY_POP": [],
+    "SQUAD": [2], "METHOD": [2], "INHERIT": [], "IMPORT": [2, 1],
+    "EXPORT": [2], "ITER_NEW": [], "ITER_NEXT": [2], "HALT": [],
+}
+
+// -- const pool -----------------------------------------------------------
+// Tags per PLAN.md §5.2. Deduped by (tag, value) -- an int 1 and a float
+// 1.0 are distinct constants, so the dedup key always starts with the tag.
+
+flex deadass TAG_GHOST = 0
+flex deadass TAG_BOOL = 1
+flex deadass TAG_INT = 2
+flex deadass TAG_FLOAT = 3
+flex deadass TAG_STRING = 4
+flex deadass TAG_PROTO_REF = 5
+
+flex bet new_const_pool() {
+    bounce {"entries": [], "index": {}}
+}
+
+flex bet const_key(tag, value) {
+    sus (tag == TAG_GHOST) {
+        bounce to_yap(tag) + ":"
+    }
+    sus (tag == TAG_BOOL) {
+        bounce to_yap(tag) + ":" + (value ? "T" : "F")
+    }
+    bounce to_yap(tag) + ":" + to_yap(value)
+}
+
+flex bet const_add(pool, tag, value) {
+    yo key = const_key(tag, value)
+    yo existing = pool["index"].get(key)
+    sus (existing != ghost) {
+        bounce existing
+    }
+    yo idx = pool["entries"].how_thicc()
+    pool["entries"].yeet_in({"tag": tag, "value": value})
+    pool["index"].set(key, idx)
+    bounce idx
+}
+
+flex bet const_add_ghost(pool) {
+    bounce const_add(pool, TAG_GHOST, ghost)
+}
+
+flex bet const_add_bool(pool, value) {
+    bounce const_add(pool, TAG_BOOL, value)
+}
+
+flex bet const_add_int(pool, value) {
+    bounce const_add(pool, TAG_INT, value)
+}
+
+flex bet const_add_float(pool, value) {
+    bounce const_add(pool, TAG_FLOAT, value)
+}
+
+flex bet const_add_string(pool, value) {
+    bounce const_add(pool, TAG_STRING, value)
+}
+
+flex bet const_add_proto_ref(pool, proto_idx) {
+    bounce const_add(pool, TAG_PROTO_REF, proto_idx)
+}
+
+// -- chunk (one function's bytecode, in progress) ------------------------
+
+flex bet new_chunk(name, arity, default_count, is_variadic, pool) {
+    bounce {
+        "name": name, "arity": arity, "default_count": default_count,
+        "is_variadic": is_variadic, "pool": pool, "code": [], "lines": [],
+        "upvalue_count": 0, "local_count": 0, "stack_depth": 0, "max_stack": 0,
+    }
+}
+
+flex bet chunk_push(ch, n) {
+    ch["stack_depth"] += n
+    sus (ch["stack_depth"] > ch["max_stack"]) {
+        ch["max_stack"] = ch["stack_depth"]
+    }
+}
+
+flex bet chunk_pop(ch, n) {
+    ch["stack_depth"] -= n
+}
+
+flex bet chunk_mark_line(ch, line, col) {
+    sus (line == ghost) {
+        bounce ghost
+    }
+    yo offset = ch["code"].how_thicc()
+    yo lines = ch["lines"]
+    sus (lines.how_thicc() > 0) {
+        yo last = lines.last()
+        sus (last["line"] == line && last["col"] == col) {
+            bounce ghost
+        }
+    }
+    lines.yeet_in({"offset": offset, "line": line, "col": col})
+}
+
+// Writes `op_name` and its fixed-width operands; returns the offset the
+// instruction started at.
+flex bet chunk_emit(ch, op_name, operands, line, col) {
+    chunk_mark_line(ch, line, col)
+    yo start = ch["code"].how_thicc()
+    ch["code"].yeet_in(OPCODES.get(op_name))
+    yo widths = OPERAND_WIDTHS.get(op_name)
+    yo i = 0
+    grind i in range_stash(widths.how_thicc()) {
+        yo value = operands[i]
+        yo width = widths[i]
+        sus (width == 1) {
+            ch["code"].yeet_in(value & 0xFF)
+        } nah {
+            ch["code"].yeet_in((value >> 8) & 0xFF)
+            ch["code"].yeet_in(value & 0xFF)
+        }
+    }
+    bounce start
+}
+
+flex bet chunk_emit_closure(ch, proto_const_idx, upvalues, line, col) {
+    chunk_mark_line(ch, line, col)
+    yo start = ch["code"].how_thicc()
+    ch["code"].yeet_in(OPCODES.get("CLOSURE"))
+    ch["code"].yeet_in((proto_const_idx >> 8) & 0xFF)
+    ch["code"].yeet_in(proto_const_idx & 0xFF)
+    grind uv in upvalues {
+        ch["code"].yeet_in(uv["is_local"] ? 1 : 0)
+        ch["code"].yeet_in(uv["index"])
+    }
+    bounce start
+}
+
+flex bet chunk_next_offset(ch) {
+    bounce ch["code"].how_thicc()
+}
+
+flex bet chunk_emit_jump(ch, op_name, line, col) {
+    chunk_emit(ch, op_name, [0], line, col)
+    bounce ch["code"].how_thicc() - 2
+}
+
+flex bet chunk_patch_jump(ch, site) {
+    yo offset = ch["code"].how_thicc() - (site + 2)
+    sus (offset < 0 || offset > 0xFFFF) {
+        chuck "your function is too long. seek help."
+    }
+    ch["code"][site] = (offset >> 8) & 0xFF
+    ch["code"][site + 1] = offset & 0xFF
+}
+
+flex bet chunk_emit_loop(ch, loop_start, line, col) {
+    chunk_mark_line(ch, line, col)
+    ch["code"].yeet_in(OPCODES.get("LOOP"))
+    yo offset = ch["code"].how_thicc() + 2 - loop_start
+    sus (offset < 0 || offset > 0xFFFF) {
+        chuck "your function is too long. seek help."
+    }
+    ch["code"].yeet_in((offset >> 8) & 0xFF)
+    ch["code"].yeet_in(offset & 0xFF)
+}
+
+flex bet chunk_finish(ch) {
+    bounce {
+        "name": ch["name"], "arity": ch["arity"],
+        "default_count": ch["default_count"], "is_variadic": ch["is_variadic"],
+        "upvalue_count": ch["upvalue_count"], "max_stack": ch["max_stack"],
+        "local_count": ch["local_count"], "code": ch["code"],
+        "lines": ch["lines"],
+    }
+}
+
+// -- resolver ---------------------------------------------------------
+// Writes results directly onto AST nodes (mutable groupchats): "resolution"
+// on Identifier/Assign-target nodes and SquadDecl ("superclass_resolution"),
+// "slot" on decl nodes (a name -> slot groupchat, "slots", for Import,
+// which can bind several names at once), and "func_info" on Program/
+// FuncDecl/Lambda nodes -- the direct replacement for resolver.py's
+// side tables, which exist there only because Python's AST is frozen.
+
+flex deadass BUILTIN_GLOBAL_NAMES = [
+    "how_thicc", "what_is_it", "to_yap", "to_numba", "to_int", "sheesh",
+    "no_cap", "ask", "dip", "the_args", "combo", "identity",
+    "range_stash", "zip_em", "enumerate_em", "deep_clone",
+]
+
+flex deadass STDLIB_MODULE_NAMES = [
+    "mafs", "yapper", "stash", "groupchat", "rizz", "filez", "clock",
+    "sus", "computer", "internet",
+]
+
+flex deadass MAX_LOCALS = 256
+
+flex bet resolver_error(rs, line, col, message) {
+    chuck "ResolverError at " + to_yap(line) + ":" + to_yap(col) + ": " + message
+}
+
+flex bet discard_str(arr, value) {
+    yo idx = arr.index_of(value)
+    sus (idx >= 0) {
+        arr.yoink_at(idx)
+    }
+}
+
+flex bet new_scope(enclosing, is_script, is_method) {
+    bounce {
+        "enclosing": enclosing, "is_script": is_script, "is_method": is_method,
+        "locals": [], "max_locals": 0, "scope_depth": is_script ? 0 : 1,
+        "loop_depth": 0, "upvalues": [], "captured_slots": [], "declared_here": [],
+    }
+}
+
+flex bet begin_scope(rs) {
+    rs["current"]["scope_depth"] += 1
+}
+
+flex bet end_scope(rs) {
+    yo scope = rs["current"]
+    yo depth = scope["scope_depth"]
+    bruh (scope["locals"].how_thicc() > 0 && scope["locals"].last()["depth"] == depth) {
+        scope["locals"].yoink()
+    }
+    scope["scope_depth"] -= 1
+}
+
+flex bet declare_local(rs, name, is_const, line, col) {
+    yo scope = rs["current"]
+    yo depth = scope["scope_depth"]
+    yo locals_ = scope["locals"]
+    yo i = locals_.how_thicc() - 1
+    bruh (i >= 0) {
+        yo local = locals_[i]
+        sus (local["depth"] < depth) {
+            bail
+        }
+        sus (local["name"] == name) {
+            resolver_error(rs, line, col, "'" + name + "' is already declared in this scope.")
+        }
+        i -= 1
+    }
+    sus (locals_.how_thicc() >= MAX_LOCALS) {
+        resolver_error(rs, line, col, "this function has more than " + to_yap(MAX_LOCALS) + " locals. break it up.")
+    }
+    yo slot = locals_.how_thicc()
+    locals_.yeet_in({"name": name, "depth": depth, "is_const": is_const, "captured": cap})
+    sus (locals_.how_thicc() > scope["max_locals"]) {
+        scope["max_locals"] = locals_.how_thicc()
+    }
+    bounce slot
+}
+
+flex bet set_decl_slot(decl_node, name, slot) {
+    sus (decl_node["node"] == "Import") {
+        decl_node["slots"][name] = slot
+    } nah {
+        decl_node["slot"] = slot
+    }
+}
+
+flex bet binding_slot(decl_node, name) {
+    sus (decl_node["node"] == "Import") {
+        bounce decl_node["slots"].get(name)
+    }
+    bounce decl_node["slot"]
+}
+
+flex bet declare_binding(rs, name, is_const, line, col, decl_node) {
+    yo scope = rs["current"]
+    sus (scope["scope_depth"] == 0) {
+        sus (scope["declared_here"].contains(name)) {
+            resolver_error(rs, line, col, "'" + name + "' is already declared.")
+        }
+        scope["declared_here"].yeet_in(name)
+        rs["known_globals"].yeet_in(name)
+        sus (is_const) {
+            rs["const_globals"].yeet_in(name)
+        } nah {
+            discard_str(rs["const_globals"], name)
+        }
+        set_decl_slot(decl_node, name, ghost)
+        bounce ghost
+    }
+    yo slot = declare_local(rs, name, is_const, line, col)
+    set_decl_slot(decl_node, name, slot)
+}
+
+flex bet resolve_local(scope, name) {
+    yo locals_ = scope["locals"]
+    yo i = locals_.how_thicc() - 1
+    bruh (i >= 0) {
+        sus (locals_[i]["name"] == name) {
+            bounce i
+        }
+        i -= 1
+    }
+    bounce ghost
+}
+
+flex bet add_upvalue(scope, index, is_local, is_const) {
+    yo i = 0
+    grind i in range_stash(scope["upvalues"].how_thicc()) {
+        yo uv = scope["upvalues"][i]
+        sus (uv["index"] == index && uv["is_local"] == is_local) {
+            bounce i
+        }
+    }
+    scope["upvalues"].yeet_in({"is_local": is_local, "index": index, "is_const": is_const})
+    bounce scope["upvalues"].how_thicc() - 1
+}
+
+flex bet resolve_upvalue(scope, name) {
+    sus (scope["enclosing"] == ghost) {
+        bounce ghost
+    }
+    yo local_idx = resolve_local(scope["enclosing"], name)
+    sus (local_idx != ghost) {
+        yo local = scope["enclosing"]["locals"][local_idx]
+        local["captured"] = fax
+        yo cs = scope["enclosing"]["captured_slots"]
+        sus (!cs.contains(local_idx)) {
+            cs.yeet_in(local_idx)
+        }
+        yo idx = add_upvalue(scope, local_idx, fax, local["is_const"])
+        bounce {"index": idx, "is_const": local["is_const"]}
+    }
+    yo outer = resolve_upvalue(scope["enclosing"], name)
+    sus (outer != ghost) {
+        yo idx = add_upvalue(scope, outer["index"], cap, outer["is_const"])
+        bounce {"index": idx, "is_const": outer["is_const"]}
+    }
+    bounce ghost
+}
+
+flex bet resolve_name(rs, name, line, col) {
+    yo local_idx = resolve_local(rs["current"], name)
+    sus (local_idx != ghost) {
+        yo local = rs["current"]["locals"][local_idx]
+        bounce {"kind": "local", "index": local_idx, "name": ghost, "is_const": local["is_const"]}
+    }
+    yo up = resolve_upvalue(rs["current"], name)
+    sus (up != ghost) {
+        bounce {"kind": "upvalue", "index": up["index"], "name": ghost, "is_const": up["is_const"]}
+    }
+    sus (rs["known_globals"].contains(name)) {
+        bounce {"kind": "global", "index": ghost, "name": name, "is_const": rs["const_globals"].contains(name)}
+    }
+    resolver_error(rs, line, col, "'" + name + "' isn't defined anywhere i can see.")
+}
+
+flex bet in_method_context(rs) {
+    yo scope = rs["current"]
+    bruh (scope != ghost) {
+        sus (scope["is_method"]) {
+            bounce fax
+        }
+        scope = scope["enclosing"]
+    }
+    bounce cap
+}
+
+flex bet module_stem(path) {
+    yo parts = []
+    grind ch in path.chars() {
+        sus (ch == "\\") {
+            parts.yeet_in("/")
+        } nah {
+            parts.yeet_in(ch)
+        }
+    }
+    yo normalized = parts.join("")
+    yo segments = normalized.split("/")
+    yo last = segments.last()
+    yo dot_idx = last_index_of_dot(last)
+    sus (dot_idx < 0) {
+        bounce last
+    }
+    bounce last.slice(0, dot_idx)
+}
+
+flex bet last_index_of_dot(s) {
+    yo idx = -1
+    grind i in range_stash(s.how_thicc()) {
+        sus (s.at(i) == ".") {
+            idx = i
+        }
+    }
+    bounce idx
+}
+
+flex bet import_binding_names(node) {
+    sus (node["names"] != ghost) {
+        bounce node["names"]
+    }
+    sus (node["alias"] != ghost) {
+        bounce [node["alias"]]
+    }
+    sus (node["is_stdlib"]) {
+        bounce [node["source"]]
+    }
+    bounce [module_stem(node["source"])]
+}
+
+// -- resolver: statements -----------------------------------------------
+
+flex bet resolve_nested_block(rs, block) {
+    begin_scope(rs)
+    grind s in block["statements"] {
+        resolve_stmt(rs, s)
+    }
+    end_scope(rs)
+}
+
+flex bet rstmt_Block(rs, node) {
+    resolve_nested_block(rs, node)
+}
+
+flex bet rstmt_VibeStmt(rs, node) {
+}
+
+flex bet rstmt_VarDecl(rs, node) {
+    sus (node["initializer"] != ghost) {
+        resolve_expr(rs, node["initializer"])
+    }
+    declare_binding(rs, node["name"], cap, node["line"], node["col"], node)
+}
+
+flex bet rstmt_ConstDecl(rs, node) {
+    resolve_expr(rs, node["initializer"])
+    declare_binding(rs, node["name"], fax, node["line"], node["col"], node)
+}
+
+flex bet resolve_function(rs, params, variadic, body_statements, node, is_method) {
+    yo scope = new_scope(rs["current"], cap, is_method)
+    rs["current"] = scope
+    sus (is_method) {
+        declare_local(rs, "$me", cap, node["line"], node["col"])
+    }
+    grind p in params {
+        sus (p["default"] != ghost) {
+            resolve_expr(rs, p["default"])
+        }
+        p["slot"] = declare_local(rs, p["name"], cap, p["line"], p["col"])
+    }
+    sus (variadic != ghost) {
+        declare_local(rs, variadic, cap, node["line"], node["col"])
+    }
+    grind s in body_statements {
+        resolve_stmt(rs, s)
+    }
+    node["func_info"] = {"local_count": scope["max_locals"], "upvalues": scope["upvalues"], "captured_slots": scope["captured_slots"]}
+    rs["current"] = scope["enclosing"]
+}
+
+flex bet rstmt_FuncDecl(rs, node) {
+    declare_binding(rs, node["name"], cap, node["line"], node["col"], node)
+    resolve_function(rs, node["params"], node["variadic"], node["body"]["statements"], node, cap)
+}
+
+flex bet resolve_method(rs, node) {
+    resolve_function(rs, node["params"], node["variadic"], node["body"]["statements"], node, fax)
+}
+
+flex bet rstmt_SquadDecl(rs, node) {
+    declare_binding(rs, node["name"], cap, node["line"], node["col"], node)
+    sus (node["superclass"] != ghost) {
+        node["superclass_resolution"] = resolve_name(rs, node["superclass"], node["line"], node["col"])
+    }
+    sus (node["spawn"] != ghost) {
+        resolve_method(rs, node["spawn"])
+    }
+    grind m in node["methods"] {
+        resolve_method(rs, m)
+    }
+}
+
+flex bet rstmt_If(rs, node) {
+    resolve_expr(rs, node["cond"])
+    resolve_nested_block(rs, node["then_branch"])
+    grind e in node["elif_branches"] {
+        resolve_expr(rs, e["cond"])
+        resolve_nested_block(rs, e["block"])
+    }
+    sus (node["else_branch"] != ghost) {
+        resolve_nested_block(rs, node["else_branch"])
+    }
+}
+
+flex bet rstmt_While(rs, node) {
+    resolve_expr(rs, node["cond"])
+    rs["current"]["loop_depth"] += 1
+    resolve_nested_block(rs, node["body"])
+    rs["current"]["loop_depth"] -= 1
+}
+
+flex bet rstmt_ForRange(rs, node) {
+    resolve_expr(rs, node["start"])
+    sus (node["step"] != ghost) {
+        resolve_expr(rs, node["step"])
+    }
+    resolve_expr(rs, node["stop"])
+    begin_scope(rs)
+    declare_local(rs, "$counter", cap, node["line"], node["col"])
+    declare_local(rs, "$step", cap, node["line"], node["col"])
+    declare_local(rs, "$stop", cap, node["line"], node["col"])
+    begin_scope(rs)
+    declare_local(rs, node["var"], cap, node["line"], node["col"])
+    rs["current"]["loop_depth"] += 1
+    grind s in node["body"]["statements"] {
+        resolve_stmt(rs, s)
+    }
+    rs["current"]["loop_depth"] -= 1
+    end_scope(rs)
+    end_scope(rs)
+}
+
+flex bet rstmt_ForEach(rs, node) {
+    resolve_expr(rs, node["iterable"])
+    begin_scope(rs)
+    declare_local(rs, "$iter", cap, node["line"], node["col"])
+    begin_scope(rs)
+    declare_local(rs, node["var"], cap, node["line"], node["col"])
+    rs["current"]["loop_depth"] += 1
+    grind s in node["body"]["statements"] {
+        resolve_stmt(rs, s)
+    }
+    rs["current"]["loop_depth"] -= 1
+    end_scope(rs)
+    end_scope(rs)
+}
+
+flex bet rstmt_Return(rs, node) {
+    sus (rs["current"]["is_script"]) {
+        resolver_error(rs, node["line"], node["col"], "'bounce' isn't valid at the top level.")
+    }
+    sus (node["value"] != ghost) {
+        resolve_expr(rs, node["value"])
+    }
+}
+
+flex bet rstmt_Break(rs, node) {
+    sus (rs["current"]["loop_depth"] == 0) {
+        resolver_error(rs, node["line"], node["col"], "'bail' isn't valid outside a loop.")
+    }
+}
+
+flex bet rstmt_Continue(rs, node) {
+    sus (rs["current"]["loop_depth"] == 0) {
+        resolver_error(rs, node["line"], node["col"], "'nvm' isn't valid outside a loop.")
+    }
+}
+
+flex bet rstmt_Try(rs, node) {
+    resolve_nested_block(rs, node["body"])
+    sus (node["catch_body"] != ghost) {
+        begin_scope(rs)
+        declare_local(rs, node["catch_var"], cap, node["line"], node["col"])
+        grind s in node["catch_body"]["statements"] {
+            resolve_stmt(rs, s)
+        }
+        end_scope(rs)
+    }
+    sus (node["finally_body"] != ghost) {
+        resolve_nested_block(rs, node["finally_body"])
+    }
+}
+
+flex bet rstmt_Chuck(rs, node) {
+    resolve_expr(rs, node["value"])
+}
+
+flex bet rstmt_Import(rs, node) {
+    node["slots"] = {}
+    grind name in import_binding_names(node) {
+        declare_binding(rs, name, cap, node["line"], node["col"], node)
+    }
+}
+
+flex bet rstmt_Export(rs, node) {
+    resolve_stmt(rs, node["decl"])
+}
+
+flex bet rstmt_Yap(rs, node) {
+    grind a in node["args"] {
+        resolve_expr(rs, a)
+    }
+}
+
+flex bet rstmt_ExprStmt(rs, node) {
+    resolve_expr(rs, node["expr"])
+}
+
+flex deadass RSTMT_TABLE = {
+    "Block": rstmt_Block, "VibeStmt": rstmt_VibeStmt, "VarDecl": rstmt_VarDecl,
+    "ConstDecl": rstmt_ConstDecl, "FuncDecl": rstmt_FuncDecl,
+    "SquadDecl": rstmt_SquadDecl, "If": rstmt_If, "While": rstmt_While,
+    "ForRange": rstmt_ForRange, "ForEach": rstmt_ForEach, "Return": rstmt_Return,
+    "Break": rstmt_Break, "Continue": rstmt_Continue, "Try": rstmt_Try,
+    "Chuck": rstmt_Chuck, "Import": rstmt_Import, "Export": rstmt_Export,
+    "Yap": rstmt_Yap, "ExprStmt": rstmt_ExprStmt,
+}
+
+flex bet resolve_stmt(rs, stmt) {
+    yo handler = RSTMT_TABLE.get(stmt["node"])
+    handler(rs, stmt)
+}
+
+// -- resolver: expressions ------------------------------------------------
+
+flex bet rexpr_Literal(rs, node) {
+}
+
+flex bet rexpr_TemplateString(rs, node) {
+    grind part in node["parts"] {
+        sus (part["kind"] == "expr") {
+            resolve_expr(rs, part["value"])
+        }
+    }
+}
+
+flex bet rexpr_Identifier(rs, node) {
+    node["resolution"] = resolve_name(rs, node["name"], node["line"], node["col"])
+}
+
+flex bet rexpr_Unary(rs, node) {
+    resolve_expr(rs, node["operand"])
+}
+
+flex bet rexpr_Binary(rs, node) {
+    resolve_expr(rs, node["left"])
+    resolve_expr(rs, node["right"])
+}
+
+flex bet rexpr_Logical(rs, node) {
+    resolve_expr(rs, node["left"])
+    resolve_expr(rs, node["right"])
+}
+
+flex bet rexpr_Coalesce(rs, node) {
+    resolve_expr(rs, node["left"])
+    resolve_expr(rs, node["right"])
+}
+
+flex bet rexpr_Pipe(rs, node) {
+    resolve_expr(rs, node["left"])
+    resolve_expr(rs, node["right"])
+}
+
+flex bet rexpr_Ternary(rs, node) {
+    resolve_expr(rs, node["cond"])
+    resolve_expr(rs, node["then_expr"])
+    resolve_expr(rs, node["else_expr"])
+}
+
+flex bet rexpr_Assign(rs, node) {
+    resolve_expr(rs, node["value"])
+    yo target = node["target"]
+    yo resolution = resolve_name(rs, target["name"], target["line"], target["col"])
+    target["resolution"] = resolution
+    sus (resolution["is_const"]) {
+        resolver_error(rs, node["line"], node["col"], "'" + target["name"] + "' is a deadass constant.")
+    }
+}
+
+flex bet rexpr_Set(rs, node) {
+    resolve_expr(rs, node["obj"])
+    resolve_expr(rs, node["value"])
+}
+
+flex bet rexpr_SetIndex(rs, node) {
+    resolve_expr(rs, node["obj"])
+    resolve_expr(rs, node["index"])
+    resolve_expr(rs, node["value"])
+}
+
+flex bet rexpr_Call(rs, node) {
+    resolve_expr(rs, node["callee"])
+    grind a in node["args"] {
+        resolve_expr(rs, a)
+    }
+}
+
+flex bet rexpr_Index(rs, node) {
+    resolve_expr(rs, node["obj"])
+    resolve_expr(rs, node["index"])
+}
+
+flex bet rexpr_Slice(rs, node) {
+    resolve_expr(rs, node["obj"])
+    sus (node["start"] != ghost) { resolve_expr(rs, node["start"]) }
+    sus (node["stop"] != ghost) { resolve_expr(rs, node["stop"]) }
+    sus (node["step"] != ghost) { resolve_expr(rs, node["step"]) }
+}
+
+flex bet rexpr_Get(rs, node) {
+    resolve_expr(rs, node["obj"])
+}
+
+flex bet rexpr_SafeGet(rs, node) {
+    resolve_expr(rs, node["obj"])
+}
+
+flex bet rexpr_StashLit(rs, node) {
+    grind el in node["elements"] {
+        resolve_expr(rs, el)
+    }
+}
+
+flex bet rexpr_GroupChatLit(rs, node) {
+    grind pr in node["pairs"] {
+        resolve_expr(rs, pr["key"])
+        resolve_expr(rs, pr["value"])
+    }
+}
+
+flex bet rexpr_Lambda(rs, node) {
+    yo body_statements = ghost
+    sus (node["is_expr_body"]) {
+        body_statements = [{"node": "Return", "value": node["body"], "line": node["body"]["line"], "col": node["body"]["col"]}]
+    } nah {
+        body_statements = node["body"]["statements"]
+    }
+    resolve_function(rs, node["params"], node["variadic"], body_statements, node, cap)
+}
+
+flex bet rexpr_Me(rs, node) {
+    sus (!in_method_context(rs)) {
+        resolver_error(rs, node["line"], node["col"], "'me' isn't valid outside a squad.")
+    }
+}
+
+flex bet rexpr_Og(rs, node) {
+    sus (!in_method_context(rs)) {
+        resolver_error(rs, node["line"], node["col"], "'og' isn't valid outside a squad.")
+    }
+}
+
+flex deadass REXPR_TABLE = {
+    "Literal": rexpr_Literal, "TemplateString": rexpr_TemplateString,
+    "Identifier": rexpr_Identifier, "Unary": rexpr_Unary, "Binary": rexpr_Binary,
+    "Logical": rexpr_Logical, "Coalesce": rexpr_Coalesce, "Pipe": rexpr_Pipe,
+    "Ternary": rexpr_Ternary, "Assign": rexpr_Assign, "Set": rexpr_Set,
+    "SetIndex": rexpr_SetIndex, "Call": rexpr_Call, "Index": rexpr_Index,
+    "Slice": rexpr_Slice, "Get": rexpr_Get, "SafeGet": rexpr_SafeGet,
+    "StashLit": rexpr_StashLit, "GroupChatLit": rexpr_GroupChatLit,
+    "Lambda": rexpr_Lambda, "Me": rexpr_Me, "Og": rexpr_Og,
+}
+
+flex bet resolve_expr(rs, expr) {
+    yo handler = REXPR_TABLE.get(expr["node"])
+    handler(rs, expr)
+}
+
+// -- resolver: top level -------------------------------------------------
+
+flex bet prepass_globals(rs, statements) {
+    grind stmt in statements {
+        yo target = stmt["node"] == "Export" ? stmt["decl"] : stmt
+        yo tn = target["node"]
+        sus (tn == "VarDecl" || tn == "ConstDecl" || tn == "FuncDecl") {
+            rs["known_globals"].yeet_in(target["name"])
+        } kinda_sus (tn == "Import") {
+            grind name in import_binding_names(target) {
+                rs["known_globals"].yeet_in(name)
+            }
+        }
+    }
+}
+
+flex bet resolve_program(program) {
+    yo rs = {"known_globals": BUILTIN_GLOBAL_NAMES.clone(), "const_globals": [], "current": ghost}
+    rs["known_globals"].extend(STDLIB_MODULE_NAMES)
+    yo root = new_scope(ghost, fax, cap)
+    rs["current"] = root
+    prepass_globals(rs, program["statements"])
+    grind stmt in program["statements"] {
+        resolve_stmt(rs, stmt)
+    }
+    program["func_info"] = {"local_count": root["max_locals"], "upvalues": [], "captured_slots": root["captured_slots"]}
+}
+
+// -- compiler: helpers ----------------------------------------------------
+
+flex deadass BINOP_OPCODE = {
+    "+": "ADD", "-": "SUB", "*": "MUL", "/": "DIV", "\\": "IDIV", "%": "MOD",
+    "**": "POW", "|": "BOR", "^": "BXOR", "&": "BAND", "==": "EQ", "!=": "NEQ",
+    "<": "LT", "<=": "LE", ">": "GT", ">=": "GE", "in": "IN", "<<": "SHL", ">>": "SHR",
+}
+
+flex deadass UNOP_OPCODE = {"-": "NEG", "!": "NOT", "~": "BNOT"}
+
+flex bet cs_ctx(cs) {
+    bounce cs["stack"].last()
+}
+
+flex bet cs_chunk(cs) {
+    bounce cs_ctx(cs)["chunk"]
+}
+
+flex bet c_emit(cs, op_name, operands, line, col) {
+    bounce chunk_emit(cs_chunk(cs), op_name, operands, line, col)
+}
+
+flex bet c_push(cs, n) {
+    chunk_push(cs_chunk(cs), n)
+}
+
+flex bet c_pop(cs, n) {
+    chunk_pop(cs_chunk(cs), n)
+}
+
+flex bet const_str(cs, s) {
+    bounce const_add_string(cs["pool"], s)
+}
+
+flex bet add_proto(cs, proto) {
+    cs["protos"].yeet_in(proto)
+    bounce cs["protos"].how_thicc() - 1
+}
+
+flex bet emit_get_resolution(cs, res, line, col) {
+    sus (res["kind"] == "local") {
+        c_emit(cs, "GET_LOCAL", [res["index"]], line, col)
+    } kinda_sus (res["kind"] == "upvalue") {
+        c_emit(cs, "GET_UPVAL", [res["index"]], line, col)
+    } nah {
+        c_emit(cs, "GET_GLOBAL", [const_str(cs, res["name"])], line, col)
+    }
+}
+
+flex bet emit_set_resolution(cs, res, line, col) {
+    sus (res["kind"] == "local") {
+        c_emit(cs, "SET_LOCAL", [res["index"]], line, col)
+    } kinda_sus (res["kind"] == "upvalue") {
+        c_emit(cs, "SET_UPVAL", [res["index"]], line, col)
+    } nah {
+        c_emit(cs, "SET_GLOBAL", [const_str(cs, res["name"])], line, col)
+    }
+}
+
+flex bet emit_me(cs, line, col) {
+    c_emit(cs, "GET_LOCAL", [0], line, col)
+    c_push(cs, 1)
+}
+
+flex bet strip_last_char(s) {
+    bounce s.slice(0, s.how_thicc() - 1)
+}
+
+flex bet finish_declaration(cs, decl_node, name, line, col) {
+    yo slot = binding_slot(decl_node, name)
+    sus (slot == ghost) {
+        c_emit(cs, "DEF_GLOBAL", [const_str(cs, name)], line, col)
+        c_pop(cs, 1)
+    }
+}
+
+// -- constant folding (PLAN.md §M4 task 3) -------------------------------
+
+flex deadass FOLDABLE_NUMERIC = ["+", "-", "*", "|", "^", "&", "<<", ">>", "==", "!=", "<", "<=", ">", ">="]
+
+flex bet is_numeric_literal(node) {
+    bounce node["node"] == "Literal" && what_is_it(node["value"]) == "numba"
+}
+
+flex bet apply_numeric(op, a, b) {
+    sus (op == "+") { bounce a + b }
+    sus (op == "-") { bounce a - b }
+    sus (op == "*") { bounce a * b }
+    sus (op == "|") { bounce to_int(a) | to_int(b) }
+    sus (op == "^") { bounce to_int(a) ^ to_int(b) }
+    sus (op == "&") { bounce to_int(a) & to_int(b) }
+    sus (op == "<<") { bounce to_int(a) << to_int(b) }
+    sus (op == ">>") { bounce to_int(a) >> to_int(b) }
+    sus (op == "==") { bounce a == b }
+    sus (op == "!=") { bounce a != b }
+    sus (op == "<") { bounce a < b }
+    sus (op == "<=") { bounce a <= b }
+    sus (op == ">") { bounce a > b }
+    bounce a >= b
+}
+
+flex bet rebuild_binary(expr, left, right) {
+    sus (left == expr["left"] && right == expr["right"]) {
+        bounce expr
+    }
+    bounce {"node": "Binary", "op": expr["op"], "left": left, "right": right, "line": expr["line"], "col": expr["col"]}
+}
+
+flex bet fold(expr) {
+    sus (expr["node"] == "Unary" && (expr["op"] == "-" || expr["op"] == "~")) {
+        yo inner = fold(expr["operand"])
+        sus (is_numeric_literal(inner)) {
+            yo value = expr["op"] == "-" ? -inner["value"] : ~to_int(inner["value"])
+            bounce {"node": "Literal", "value": value, "line": expr["line"], "col": expr["col"]}
+        }
+        sus (inner == expr["operand"]) {
+            bounce expr
+        }
+        bounce {"node": "Unary", "op": expr["op"], "operand": inner, "line": expr["line"], "col": expr["col"]}
+    }
+    sus (expr["node"] == "Binary") {
+        yo left = fold(expr["left"])
+        yo right = fold(expr["right"])
+        sus (is_numeric_literal(left) && is_numeric_literal(right) && FOLDABLE_NUMERIC.contains(expr["op"])) {
+            yo value = ghost
+            yo threw = cap
+            sketchy {
+                value = apply_numeric(expr["op"], left["value"], right["value"])
+            } my_bad (e) {
+                threw = fax
+            }
+            sus (!threw) {
+                bounce {"node": "Literal", "value": value, "line": expr["line"], "col": expr["col"]}
+            }
+        }
+        bounce rebuild_binary(expr, left, right)
+    }
+    bounce expr
+}
+
+// -- compiler: statements -------------------------------------------------
+
+flex bet compile_scoped_block(cs, statements) {
+    yo base_depth = cs_chunk(cs)["stack_depth"]
+    grind s in statements {
+        compile_stmt(cs, s)
+    }
+    close_locals_above(cs, base_depth)
+}
+
+flex bet close_locals_above(cs, base_depth) {
+    bruh (cs_chunk(cs)["stack_depth"] > base_depth) {
+        close_or_pop_top(cs, ghost, ghost)
+    }
+}
+
+flex bet close_or_pop_top(cs, line, col) {
+    yo slot = cs_chunk(cs)["stack_depth"] - 1
+    sus (cs_ctx(cs)["func_info"]["captured_slots"].contains(slot)) {
+        c_emit(cs, "CLOSE_UPVAL", [], line, col)
+    } nah {
+        c_emit(cs, "POP", [], line, col)
+    }
+    c_pop(cs, 1)
+}
+
+flex bet cstmt_VibeStmt(cs, node) {
+}
+
+flex bet cstmt_VarDecl(cs, node) {
+    sus (node["initializer"] != ghost) {
+        compile_expr(cs, node["initializer"])
+    } nah {
+        c_emit(cs, "GHOST", [], node["line"], node["col"])
+        c_push(cs, 1)
+    }
+    finish_declaration(cs, node, node["name"], node["line"], node["col"])
+}
+
+flex bet cstmt_ConstDecl(cs, node) {
+    compile_expr(cs, node["initializer"])
+    finish_declaration(cs, node, node["name"], node["line"], node["col"])
+}
+
+flex bet cstmt_FuncDecl(cs, node) {
+    compile_closure(cs, node, node["params"], node["variadic"], node["body"]["statements"], node["name"], node["line"], node["col"], cap)
+    finish_declaration(cs, node, node["name"], node["line"], node["col"])
+}
+
+flex bet cstmt_SquadDecl(cs, node) {
+    sus (node["superclass"] != ghost) {
+        emit_get_resolution(cs, node["superclass_resolution"], node["line"], node["col"])
+        c_push(cs, 1)
+    }
+    c_emit(cs, "SQUAD", [const_str(cs, node["name"])], node["line"], node["col"])
+    c_push(cs, 1)
+    sus (node["superclass"] != ghost) {
+        c_emit(cs, "INHERIT", [], node["line"], node["col"])
+        c_emit(cs, "SWAP", [], node["line"], node["col"])
+        c_emit(cs, "POP", [], node["line"], node["col"])
+        c_pop(cs, 1)
+    }
+    sus (node["spawn"] != ghost) {
+        yo sp = node["spawn"]
+        compile_closure(cs, sp, sp["params"], sp["variadic"], sp["body"]["statements"], "spawn", sp["line"], sp["col"], fax)
+        c_emit(cs, "METHOD", [const_str(cs, "spawn")], node["line"], node["col"])
+        c_pop(cs, 1)
+    }
+    grind m in node["methods"] {
+        compile_closure(cs, m, m["params"], m["variadic"], m["body"]["statements"], m["name"], m["line"], m["col"], fax)
+        c_emit(cs, "METHOD", [const_str(cs, m["name"])], node["line"], node["col"])
+        c_pop(cs, 1)
+    }
+    finish_declaration(cs, node, node["name"], node["line"], node["col"])
+}
+
+flex bet cstmt_Block(cs, node) {
+    compile_scoped_block(cs, node["statements"])
+}
+
+flex bet cstmt_If(cs, node) {
+    yo end_jumps = []
+    compile_expr(cs, node["cond"])
+    yo else_jump = chunk_emit_jump(cs_chunk(cs), "JUMP_IF_FALSE", node["line"], node["col"])
+    c_pop(cs, 1)
+    compile_scoped_block(cs, node["then_branch"]["statements"])
+    end_jumps.yeet_in(chunk_emit_jump(cs_chunk(cs), "JUMP", node["line"], node["col"]))
+    chunk_patch_jump(cs_chunk(cs), else_jump)
+    grind e in node["elif_branches"] {
+        compile_expr(cs, e["cond"])
+        yo next_jump = chunk_emit_jump(cs_chunk(cs), "JUMP_IF_FALSE", e["cond"]["line"], e["cond"]["col"])
+        c_pop(cs, 1)
+        compile_scoped_block(cs, e["block"]["statements"])
+        end_jumps.yeet_in(chunk_emit_jump(cs_chunk(cs), "JUMP", e["cond"]["line"], e["cond"]["col"]))
+        chunk_patch_jump(cs_chunk(cs), next_jump)
+    }
+    sus (node["else_branch"] != ghost) {
+        compile_scoped_block(cs, node["else_branch"]["statements"])
+    }
+    grind j in end_jumps {
+        chunk_patch_jump(cs_chunk(cs), j)
+    }
+}
+
+flex bet cstmt_While(cs, node) {
+    yo loop_start = chunk_next_offset(cs_chunk(cs))
+    compile_expr(cs, node["cond"])
+    yo exit_jump = chunk_emit_jump(cs_chunk(cs), "JUMP_IF_FALSE", node["line"], node["col"])
+    c_pop(cs, 1)
+    yo base_depth = cs_chunk(cs)["stack_depth"]
+    cs_ctx(cs)["loops"].yeet_in({"loop_start": loop_start, "break_target": base_depth, "continue_target": base_depth, "break_sites": [], "continue_sites": []})
+    compile_scoped_block(cs, node["body"]["statements"])
+    yo loop_ctx = cs_ctx(cs)["loops"].yoink()
+    grind site in loop_ctx["continue_sites"] {
+        chunk_patch_jump(cs_chunk(cs), site)
+    }
+    chunk_emit_loop(cs_chunk(cs), loop_start, node["line"], node["col"])
+    chunk_patch_jump(cs_chunk(cs), exit_jump)
+    grind site in loop_ctx["break_sites"] {
+        chunk_patch_jump(cs_chunk(cs), site)
+    }
+}
+
+flex bet cstmt_ForRange(cs, node) {
+    yo ch = cs_chunk(cs)
+    compile_expr(cs, node["start"])
+    yo counter_slot = ch["stack_depth"] - 1
+    sus (node["step"] != ghost) {
+        compile_expr(cs, node["step"])
+    } nah {
+        c_emit(cs, "CONST", [const_add_int(cs["pool"], 1)], node["line"], node["col"])
+        c_push(cs, 1)
+    }
+    yo step_slot = ch["stack_depth"] - 1
+    compile_expr(cs, node["stop"])
+    yo stop_slot = ch["stack_depth"] - 1
+
+    yo loop_start = chunk_next_offset(ch)
+    c_emit(cs, "GET_LOCAL", [step_slot], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "CONST", [const_add_int(cs["pool"], 0)], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "GE", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    c_emit(cs, "GET_LOCAL", [counter_slot], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "GET_LOCAL", [stop_slot], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "LT", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    c_emit(cs, "BAND", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    c_emit(cs, "GET_LOCAL", [step_slot], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "CONST", [const_add_int(cs["pool"], 0)], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "LT", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    c_emit(cs, "GET_LOCAL", [counter_slot], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "GET_LOCAL", [stop_slot], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "GT", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    c_emit(cs, "BAND", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    c_emit(cs, "BOR", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    yo exit_jump = chunk_emit_jump(ch, "JUMP_IF_FALSE", node["line"], node["col"])
+    c_pop(cs, 1)
+    yo break_target = ch["stack_depth"]
+
+    c_emit(cs, "GET_LOCAL", [counter_slot], node["line"], node["col"])
+    c_push(cs, 1)
+
+    yo base_depth = ch["stack_depth"]
+    cs_ctx(cs)["loops"].yeet_in({"loop_start": loop_start, "break_target": break_target, "continue_target": base_depth, "break_sites": [], "continue_sites": []})
+    grind s in node["body"]["statements"] {
+        compile_stmt(cs, s)
+    }
+    close_locals_above(cs, base_depth)
+    yo loop_ctx = cs_ctx(cs)["loops"].yoink()
+    grind site in loop_ctx["continue_sites"] {
+        chunk_patch_jump(ch, site)
+    }
+    close_or_pop_top(cs, node["line"], node["col"])
+    c_emit(cs, "GET_LOCAL", [counter_slot], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "GET_LOCAL", [step_slot], node["line"], node["col"])
+    c_push(cs, 1)
+    c_emit(cs, "ADD", [], node["line"], node["col"])
+    c_pop(cs, 2)
+    c_push(cs, 1)
+    c_emit(cs, "SET_LOCAL", [counter_slot], node["line"], node["col"])
+    c_emit(cs, "POP", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    chunk_emit_loop(ch, loop_start, node["line"], node["col"])
+    chunk_patch_jump(ch, exit_jump)
+    grind site in loop_ctx["break_sites"] {
+        chunk_patch_jump(ch, site)
+    }
+    c_emit(cs, "POP", [], node["line"], node["col"])
+    c_emit(cs, "POP", [], node["line"], node["col"])
+    c_emit(cs, "POP", [], node["line"], node["col"])
+    c_pop(cs, 3)
+}
+
+flex bet cstmt_ForEach(cs, node) {
+    yo ch = cs_chunk(cs)
+    compile_expr(cs, node["iterable"])
+    c_emit(cs, "ITER_NEW", [], node["line"], node["col"])
+    yo iter_slot = ch["stack_depth"] - 1
+
+    yo loop_start = chunk_next_offset(ch)
+    yo break_target = ch["stack_depth"]
+    yo done_jump = chunk_emit_jump(ch, "ITER_NEXT", node["line"], node["col"])
+    c_push(cs, 1)
+
+    yo base_depth = ch["stack_depth"]
+    cs_ctx(cs)["loops"].yeet_in({"loop_start": loop_start, "break_target": break_target, "continue_target": base_depth, "break_sites": [], "continue_sites": []})
+    grind s in node["body"]["statements"] {
+        compile_stmt(cs, s)
+    }
+    close_locals_above(cs, base_depth)
+    yo loop_ctx = cs_ctx(cs)["loops"].yoink()
+    grind site in loop_ctx["continue_sites"] {
+        chunk_patch_jump(ch, site)
+    }
+    close_or_pop_top(cs, node["line"], node["col"])
+    chunk_emit_loop(ch, loop_start, node["line"], node["col"])
+    chunk_patch_jump(ch, done_jump)
+    grind site in loop_ctx["break_sites"] {
+        chunk_patch_jump(ch, site)
+    }
+    c_emit(cs, "POP", [], node["line"], node["col"])
+    c_pop(cs, 1)
+}
+
+flex bet cstmt_Return(cs, node) {
+    sus (node["value"] != ghost) {
+        compile_expr(cs, node["value"])
+    } nah {
+        c_emit(cs, "GHOST", [], node["line"], node["col"])
+        c_push(cs, 1)
+    }
+    c_emit(cs, "RETURN", [], node["line"], node["col"])
+    c_pop(cs, 1)
+}
+
+flex bet emit_unwind_to(cs, target_depth, line, col) {
+    yo captured = cs_ctx(cs)["func_info"]["captured_slots"]
+    yo slot = cs_chunk(cs)["stack_depth"] - 1
+    bruh (slot >= target_depth) {
+        sus (captured.contains(slot)) {
+            c_emit(cs, "CLOSE_UPVAL", [], line, col)
+        } nah {
+            c_emit(cs, "POP", [], line, col)
+        }
+        slot -= 1
+    }
+}
+
+flex bet cstmt_Break(cs, node) {
+    yo loop = cs_ctx(cs)["loops"].last()
+    emit_unwind_to(cs, loop["break_target"], node["line"], node["col"])
+    loop["break_sites"].yeet_in(chunk_emit_jump(cs_chunk(cs), "JUMP", node["line"], node["col"]))
+}
+
+flex bet cstmt_Continue(cs, node) {
+    yo loop = cs_ctx(cs)["loops"].last()
+    emit_unwind_to(cs, loop["continue_target"], node["line"], node["col"])
+    loop["continue_sites"].yeet_in(chunk_emit_jump(cs_chunk(cs), "JUMP", node["line"], node["col"]))
+}
+
+flex deadass TRY_ABSENT = 0xFFFF
+
+flex bet patch_try_push(cs, site, base_ip, handler_abs, finally_abs) {
+    yo handler_rel = handler_abs == ghost ? TRY_ABSENT : handler_abs - base_ip
+    yo finally_rel = finally_abs == ghost ? TRY_ABSENT : finally_abs - base_ip
+    yo code = cs_chunk(cs)["code"]
+    code[site + 1] = (handler_rel >> 8) & 0xFF
+    code[site + 2] = handler_rel & 0xFF
+    code[site + 3] = (finally_rel >> 8) & 0xFF
+    code[site + 4] = finally_rel & 0xFF
+}
+
+flex bet cstmt_Try(cs, node) {
+    yo ch = cs_chunk(cs)
+    yo try_base_depth = ch["stack_depth"]
+    yo outer_site = chunk_emit(ch, "TRY_PUSH", [0, 0], node["line"], node["col"])
+    yo outer_base_ip = outer_site + 5
+    compile_scoped_block(cs, node["body"]["statements"])
+    c_emit(cs, "TRY_POP", [], node["line"], node["col"])
+    yo after_try_jump = chunk_emit_jump(ch, "JUMP", node["line"], node["col"])
+
+    yo inner_site = ghost
+    yo handler_abs = ghost
+    sus (node["catch_body"] != ghost) {
+        handler_abs = chunk_next_offset(ch)
+        sus (node["finally_body"] != ghost) {
+            inner_site = chunk_emit(ch, "TRY_PUSH", [0, 0], node["line"], node["col"])
+        }
+        c_push(cs, 1)
+        yo base_depth = ch["stack_depth"]
+        grind s in node["catch_body"]["statements"] {
+            compile_stmt(cs, s)
+        }
+        close_locals_above(cs, base_depth)
+        c_emit(cs, "POP", [], node["line"], node["col"])
+        c_pop(cs, 1)
+        sus (inner_site != ghost) {
+            c_emit(cs, "TRY_POP", [], node["line"], node["col"])
+        }
+    }
+    chunk_patch_jump(ch, after_try_jump)
+
+    yo finally_abs = ghost
+    sus (node["finally_body"] != ghost) {
+        compile_scoped_block(cs, node["finally_body"]["statements"])
+        yo skip_exceptional_copy = chunk_emit_jump(ch, "JUMP", node["line"], node["col"])
+        finally_abs = chunk_next_offset(ch)
+        sus (inner_site != ghost) {
+            patch_try_push(cs, inner_site, inner_site + 5, ghost, finally_abs)
+        }
+        yo saved_depth = ch["stack_depth"]
+        ch["stack_depth"] = try_base_depth + 1
+        compile_scoped_block(cs, node["finally_body"]["statements"])
+        c_emit(cs, "CHUCK", [], node["line"], node["col"])
+        c_pop(cs, 1)
+        ch["stack_depth"] = saved_depth
+        chunk_patch_jump(ch, skip_exceptional_copy)
+    }
+
+    patch_try_push(cs, outer_site, outer_base_ip, handler_abs, finally_abs)
+}
+
+flex bet cstmt_Chuck(cs, node) {
+    compile_expr(cs, node["value"])
+    c_emit(cs, "CHUCK", [], node["line"], node["col"])
+    c_pop(cs, 1)
+}
+
+flex bet import_mode(node) {
+    sus (node["names"] != ghost) {
+        bounce 1
+    }
+    sus (node["is_stdlib"]) {
+        bounce 2
+    }
+    bounce 0
+}
+
+flex bet cstmt_Import(cs, node) {
+    yo path_idx = const_str(cs, node["source"])
+    yo mode = import_mode(node)
+    c_emit(cs, "IMPORT", [path_idx, mode], node["line"], node["col"])
+    c_push(cs, 1)
+    sus (node["names"] != ghost) {
+        grind name in node["names"] {
+            c_emit(cs, "DUP", [], node["line"], node["col"])
+            c_push(cs, 1)
+            c_emit(cs, "GET_PROP", [const_str(cs, name)], node["line"], node["col"])
+            finish_declaration(cs, node, name, node["line"], node["col"])
+        }
+        c_emit(cs, "POP", [], node["line"], node["col"])
+        c_pop(cs, 1)
+    } nah {
+        yo binding = node["alias"] != ghost ? node["alias"] : (node["is_stdlib"] ? node["source"] : module_stem(node["source"]))
+        finish_declaration(cs, node, binding, node["line"], node["col"])
+    }
+}
+
+flex bet cstmt_Export(cs, node) {
+    compile_stmt(cs, node["decl"])
+    yo name = node["decl"]["name"]
+    yo slot = binding_slot(node["decl"], name)
+    sus (slot != ghost) {
+        c_emit(cs, "GET_LOCAL", [slot], node["line"], node["col"])
+    } nah {
+        c_emit(cs, "GET_GLOBAL", [const_str(cs, name)], node["line"], node["col"])
+    }
+    c_push(cs, 1)
+    c_emit(cs, "EXPORT", [const_str(cs, name)], node["line"], node["col"])
+    c_emit(cs, "POP", [], node["line"], node["col"])
+    c_pop(cs, 1)
+}
+
+flex bet cstmt_Yap(cs, node) {
+    grind a in node["args"] {
+        compile_expr(cs, a)
+    }
+    c_emit(cs, "YAP", [node["args"].how_thicc(), node["newline"] ? 1 : 0], node["line"], node["col"])
+    c_pop(cs, node["args"].how_thicc())
+}
+
+flex bet cstmt_ExprStmt(cs, node) {
+    compile_expr(cs, node["expr"])
+    c_emit(cs, "POP", [], node["line"], node["col"])
+    c_pop(cs, 1)
+}
+
+flex deadass CSTMT_TABLE = {
+    "VibeStmt": cstmt_VibeStmt, "VarDecl": cstmt_VarDecl, "ConstDecl": cstmt_ConstDecl,
+    "FuncDecl": cstmt_FuncDecl, "SquadDecl": cstmt_SquadDecl, "Block": cstmt_Block,
+    "If": cstmt_If, "While": cstmt_While, "ForRange": cstmt_ForRange,
+    "ForEach": cstmt_ForEach, "Return": cstmt_Return, "Break": cstmt_Break,
+    "Continue": cstmt_Continue, "Try": cstmt_Try, "Chuck": cstmt_Chuck,
+    "Import": cstmt_Import, "Export": cstmt_Export, "Yap": cstmt_Yap,
+    "ExprStmt": cstmt_ExprStmt,
+}
+
+flex bet compile_stmt(cs, stmt) {
+    yo handler = CSTMT_TABLE.get(stmt["node"])
+    handler(cs, stmt)
+}
+
+// -- compiler: expressions ------------------------------------------------
+
+flex bet cexpr_Literal(cs, node) {
+    yo v = node["value"]
+    sus (v == ghost) {
+        c_emit(cs, "GHOST", [], node["line"], node["col"])
+    } kinda_sus (v == fax) {
+        c_emit(cs, "FAX", [], node["line"], node["col"])
+    } kinda_sus (v == cap) {
+        c_emit(cs, "CAP", [], node["line"], node["col"])
+    } kinda_sus (what_is_it(v) == "numba") {
+        sus (mafs.is_float(v)) {
+            c_emit(cs, "CONST", [const_add_float(cs["pool"], v)], node["line"], node["col"])
+        } nah {
+            c_emit(cs, "CONST", [const_add_int(cs["pool"], v)], node["line"], node["col"])
+        }
+    } nah {
+        c_emit(cs, "CONST", [const_add_string(cs["pool"], v)], node["line"], node["col"])
+    }
+    c_push(cs, 1)
+}
+
+flex bet cexpr_TemplateString(cs, node) {
+    grind part in node["parts"] {
+        sus (part["kind"] == "str") {
+            c_emit(cs, "CONST", [const_add_string(cs["pool"], part["value"])], node["line"], node["col"])
+            c_push(cs, 1)
+        } nah {
+            compile_expr(cs, part["value"])
+        }
+    }
+    c_emit(cs, "BUILD_STRING", [node["parts"].how_thicc()], node["line"], node["col"])
+    c_pop(cs, node["parts"].how_thicc())
+    c_push(cs, 1)
+}
+
+flex bet cexpr_Identifier(cs, node) {
+    emit_get_resolution(cs, node["resolution"], node["line"], node["col"])
+    c_push(cs, 1)
+}
+
+flex bet cexpr_Unary(cs, node) {
+    compile_expr(cs, node["operand"])
+    c_emit(cs, UNOP_OPCODE.get(node["op"]), [], node["line"], node["col"])
+}
+
+flex bet cexpr_Binary(cs, node) {
+    compile_expr(cs, node["left"])
+    compile_expr(cs, node["right"])
+    c_emit(cs, BINOP_OPCODE.get(node["op"]), [], node["line"], node["col"])
+    c_pop(cs, 1)
+}
+
+flex bet cexpr_Logical(cs, node) {
+    compile_expr(cs, node["left"])
+    yo op_name = node["op"] == "&&" ? "JUMP_IF_FALSE_KEEP" : "JUMP_IF_TRUE_KEEP"
+    yo site = chunk_emit_jump(cs_chunk(cs), op_name, node["line"], node["col"])
+    c_emit(cs, "POP", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    compile_expr(cs, node["right"])
+    chunk_patch_jump(cs_chunk(cs), site)
+}
+
+flex bet cexpr_Coalesce(cs, node) {
+    compile_expr(cs, node["left"])
+    yo ghost_site = chunk_emit_jump(cs_chunk(cs), "JUMP_IF_GHOST_KEEP", node["line"], node["col"])
+    yo end_site = chunk_emit_jump(cs_chunk(cs), "JUMP", node["line"], node["col"])
+    chunk_patch_jump(cs_chunk(cs), ghost_site)
+    c_emit(cs, "POP", [], node["line"], node["col"])
+    c_pop(cs, 1)
+    compile_expr(cs, node["right"])
+    chunk_patch_jump(cs_chunk(cs), end_site)
+}
+
+flex bet cexpr_Pipe(cs, node) {
+    sus (node["right"]["node"] == "Call") {
+        compile_expr(cs, node["right"]["callee"])
+        compile_expr(cs, node["left"])
+        grind a in node["right"]["args"] {
+            compile_expr(cs, a)
+        }
+        yo argc = node["right"]["args"].how_thicc() + 1
+        c_emit(cs, "CALL", [argc], node["line"], node["col"])
+        c_pop(cs, argc)
+        c_push(cs, 1)
+    } nah {
+        compile_expr(cs, node["right"])
+        compile_expr(cs, node["left"])
+        c_emit(cs, "CALL", [1], node["line"], node["col"])
+        c_pop(cs, 1)
+        c_push(cs, 1)
+    }
+}
+
+flex bet cexpr_Ternary(cs, node) {
+    compile_expr(cs, node["cond"])
+    yo else_jump = chunk_emit_jump(cs_chunk(cs), "JUMP_IF_FALSE", node["line"], node["col"])
+    c_pop(cs, 1)
+    yo baseline = cs_chunk(cs)["stack_depth"]
+    compile_expr(cs, node["then_expr"])
+    yo end_jump = chunk_emit_jump(cs_chunk(cs), "JUMP", node["line"], node["col"])
+    cs_chunk(cs)["stack_depth"] = baseline
+    chunk_patch_jump(cs_chunk(cs), else_jump)
+    compile_expr(cs, node["else_expr"])
+    chunk_patch_jump(cs_chunk(cs), end_jump)
+}
+
+flex bet cexpr_Assign(cs, node) {
+    yo res = node["target"]["resolution"]
+    sus (node["op"] == "=") {
+        compile_expr(cs, node["value"])
+    } kinda_sus (node["op"] == "||=") {
+        emit_get_resolution(cs, res, node["line"], node["col"])
+        c_push(cs, 1)
+        yo keep_site = chunk_emit_jump(cs_chunk(cs), "JUMP_IF_TRUE_KEEP", node["line"], node["col"])
+        c_emit(cs, "POP", [], node["line"], node["col"])
+        c_pop(cs, 1)
+        compile_expr(cs, node["value"])
+        chunk_patch_jump(cs_chunk(cs), keep_site)
+    } nah {
+        emit_get_resolution(cs, res, node["line"], node["col"])
+        c_push(cs, 1)
+        compile_expr(cs, node["value"])
+        c_emit(cs, BINOP_OPCODE.get(strip_last_char(node["op"])), [], node["line"], node["col"])
+        c_pop(cs, 1)
+    }
+    emit_set_resolution(cs, res, node["line"], node["col"])
+}
+
+flex bet cexpr_Set(cs, node) {
+    compile_expr(cs, node["obj"])
+    sus (node["op"] == "=") {
+        compile_expr(cs, node["value"])
+        c_emit(cs, "SET_PROP", [const_str(cs, node["name"])], node["line"], node["col"])
+        c_pop(cs, 1)
+    } nah {
+        c_emit(cs, "DUP", [], node["line"], node["col"])
+        c_push(cs, 1)
+        c_emit(cs, "GET_PROP", [const_str(cs, node["name"])], node["line"], node["col"])
+        compile_expr(cs, node["value"])
+        c_emit(cs, BINOP_OPCODE.get(strip_last_char(node["op"])), [], node["line"], node["col"])
+        c_pop(cs, 1)
+        c_emit(cs, "SET_PROP", [const_str(cs, node["name"])], node["line"], node["col"])
+        c_pop(cs, 1)
+    }
+}
+
+flex bet cexpr_SetIndex(cs, node) {
+    compile_expr(cs, node["obj"])
+    yo obj_slot = cs_chunk(cs)["stack_depth"] - 1
+    compile_expr(cs, node["index"])
+    yo key_slot = cs_chunk(cs)["stack_depth"] - 1
+    sus (node["op"] == "=") {
+        compile_expr(cs, node["value"])
+        c_emit(cs, "SET_INDEX", [], node["line"], node["col"])
+        c_pop(cs, 2)
+    } nah {
+        c_emit(cs, "GET_LOCAL", [obj_slot], node["line"], node["col"])
+        c_push(cs, 1)
+        c_emit(cs, "GET_LOCAL", [key_slot], node["line"], node["col"])
+        c_push(cs, 1)
+        c_emit(cs, "GET_INDEX", [], node["line"], node["col"])
+        c_pop(cs, 1)
+        compile_expr(cs, node["value"])
+        c_emit(cs, BINOP_OPCODE.get(strip_last_char(node["op"])), [], node["line"], node["col"])
+        c_pop(cs, 1)
+        c_emit(cs, "SET_INDEX", [], node["line"], node["col"])
+        c_pop(cs, 2)
+    }
+}
+
+flex bet cexpr_Call(cs, node) {
+    yo callee = node["callee"]
+    sus (callee["node"] == "Get" && callee["obj"]["node"] == "Og") {
+        emit_me(cs, node["line"], node["col"])
+        grind a in node["args"] {
+            compile_expr(cs, a)
+        }
+        c_emit(cs, "INVOKE_OG", [const_str(cs, callee["name"]), node["args"].how_thicc()], node["line"], node["col"])
+        c_pop(cs, node["args"].how_thicc())
+        bounce ghost
+    }
+    sus (callee["node"] == "Get") {
+        compile_expr(cs, callee["obj"])
+        grind a in node["args"] {
+            compile_expr(cs, a)
+        }
+        c_emit(cs, "INVOKE", [const_str(cs, callee["name"]), node["args"].how_thicc()], node["line"], node["col"])
+        c_pop(cs, node["args"].how_thicc())
+        bounce ghost
+    }
+    sus (callee["node"] == "SafeGet") {
+        compile_expr(cs, callee["obj"])
+        yo ghost_site = chunk_emit_jump(cs_chunk(cs), "JUMP_IF_GHOST_KEEP", node["line"], node["col"])
+        grind a in node["args"] {
+            compile_expr(cs, a)
+        }
+        c_emit(cs, "INVOKE", [const_str(cs, callee["name"]), node["args"].how_thicc()], node["line"], node["col"])
+        c_pop(cs, node["args"].how_thicc())
+        chunk_patch_jump(cs_chunk(cs), ghost_site)
+        bounce ghost
+    }
+    compile_expr(cs, callee)
+    grind a in node["args"] {
+        compile_expr(cs, a)
+    }
+    c_emit(cs, "CALL", [node["args"].how_thicc()], node["line"], node["col"])
+    c_pop(cs, node["args"].how_thicc())
+}
+
+flex bet cexpr_Index(cs, node) {
+    compile_expr(cs, node["obj"])
+    compile_expr(cs, node["index"])
+    c_emit(cs, "GET_INDEX", [], node["line"], node["col"])
+    c_pop(cs, 1)
+}
+
+flex bet cexpr_Slice(cs, node) {
+    compile_expr(cs, node["obj"])
+    grind part in [node["start"], node["stop"], node["step"]] {
+        sus (part == ghost) {
+            c_emit(cs, "GHOST", [], node["line"], node["col"])
+            c_push(cs, 1)
+        } nah {
+            compile_expr(cs, part)
+        }
+    }
+    c_emit(cs, "GET_SLICE", [], node["line"], node["col"])
+    c_pop(cs, 3)
+}
+
+flex bet cexpr_Get(cs, node) {
+    compile_expr(cs, node["obj"])
+    c_emit(cs, "GET_PROP", [const_str(cs, node["name"])], node["line"], node["col"])
+}
+
+flex bet cexpr_SafeGet(cs, node) {
+    compile_expr(cs, node["obj"])
+    c_emit(cs, "GET_PROP_SAFE", [const_str(cs, node["name"])], node["line"], node["col"])
+}
+
+flex bet cexpr_StashLit(cs, node) {
+    grind el in node["elements"] {
+        compile_expr(cs, el)
+    }
+    c_emit(cs, "BUILD_STASH", [node["elements"].how_thicc()], node["line"], node["col"])
+    c_pop(cs, node["elements"].how_thicc())
+    c_push(cs, 1)
+}
+
+flex bet cexpr_GroupChatLit(cs, node) {
+    grind pr in node["pairs"] {
+        compile_expr(cs, pr["key"])
+        compile_expr(cs, pr["value"])
+    }
+    c_emit(cs, "BUILD_GROUPCHAT", [node["pairs"].how_thicc()], node["line"], node["col"])
+    c_pop(cs, 2 * node["pairs"].how_thicc())
+    c_push(cs, 1)
+}
+
+flex bet cexpr_Lambda(cs, node) {
+    yo body_statements = ghost
+    sus (node["is_expr_body"]) {
+        body_statements = [{"node": "Return", "value": node["body"], "line": node["body"]["line"], "col": node["body"]["col"]}]
+    } nah {
+        body_statements = node["body"]["statements"]
+    }
+    compile_closure(cs, node, node["params"], node["variadic"], body_statements, "<lowkey>", node["line"], node["col"], cap)
+}
+
+flex bet cexpr_Me(cs, node) {
+    emit_me(cs, node["line"], node["col"])
+}
+
+flex bet cexpr_Og(cs, node) {
+    emit_me(cs, node["line"], node["col"])
+}
+
+flex deadass CEXPR_TABLE = {
+    "Literal": cexpr_Literal, "TemplateString": cexpr_TemplateString,
+    "Identifier": cexpr_Identifier, "Unary": cexpr_Unary, "Binary": cexpr_Binary,
+    "Logical": cexpr_Logical, "Coalesce": cexpr_Coalesce, "Pipe": cexpr_Pipe,
+    "Ternary": cexpr_Ternary, "Assign": cexpr_Assign, "Set": cexpr_Set,
+    "SetIndex": cexpr_SetIndex, "Call": cexpr_Call, "Index": cexpr_Index,
+    "Slice": cexpr_Slice, "Get": cexpr_Get, "SafeGet": cexpr_SafeGet,
+    "StashLit": cexpr_StashLit, "GroupChatLit": cexpr_GroupChatLit,
+    "Lambda": cexpr_Lambda, "Me": cexpr_Me, "Og": cexpr_Og,
+}
+
+flex bet compile_expr(cs, expr) {
+    yo e = expr
+    sus (cs["fold_constants"]) {
+        e = fold(e)
+    }
+    yo handler = CEXPR_TABLE.get(e["node"])
+    handler(cs, e)
+}
+
+// -- compiler: closures ---------------------------------------------------
+
+flex bet emit_param_defaults(cs, params, slot_offset) {
+    grind i in range_stash(params.how_thicc()) {
+        yo p = params[i]
+        sus (p["default"] == ghost) {
+            nvm
+        }
+        yo slot = i + slot_offset
+        c_emit(cs, "GET_LOCAL", [slot], p["line"], p["col"])
+        c_push(cs, 1)
+        c_emit(cs, "GHOST", [], p["line"], p["col"])
+        c_push(cs, 1)
+        c_emit(cs, "EQ", [], p["line"], p["col"])
+        c_pop(cs, 2)
+        c_push(cs, 1)
+        yo skip_site = chunk_emit_jump(cs_chunk(cs), "JUMP_IF_FALSE", p["line"], p["col"])
+        c_pop(cs, 1)
+        compile_expr(cs, p["default"])
+        c_emit(cs, "SET_LOCAL", [slot], p["line"], p["col"])
+        c_emit(cs, "POP", [], p["line"], p["col"])
+        c_pop(cs, 1)
+        chunk_patch_jump(cs_chunk(cs), skip_site)
+    }
+}
+
+flex bet compile_closure(cs, node, params, variadic, body_statements, name, line, col, is_method) {
+    yo func_info = node["func_info"]
+    yo default_count = 0
+    grind p in params {
+        sus (p["default"] != ghost) {
+            default_count += 1
+        }
+    }
+    yo arity = params.how_thicc() + (is_method ? 1 : 0)
+    yo ch = new_chunk(name, arity, default_count, variadic != ghost, cs["pool"])
+    ch["local_count"] = func_info["local_count"]
+    ch["upvalue_count"] = func_info["upvalues"].how_thicc()
+    cs["stack"].yeet_in({"chunk": ch, "func_info": func_info, "loops": []})
+    yo slot_offset = 0
+    sus (is_method) {
+        c_push(cs, 1)
+        slot_offset = 1
+    }
+    grind p in params {
+        c_push(cs, 1)
+    }
+    sus (variadic != ghost) {
+        c_push(cs, 1)
+    }
+    emit_param_defaults(cs, params, slot_offset)
+    grind s in body_statements {
+        compile_stmt(cs, s)
+    }
+    c_emit(cs, "GHOST", [], line, col)
+    c_push(cs, 1)
+    c_emit(cs, "RETURN", [], line, col)
+    c_pop(cs, 1)
+    yo proto = chunk_finish(ch)
+    cs["stack"].yoink()
+    yo proto_idx = add_proto(cs, proto)
+    yo const_idx = const_add_proto_ref(cs["pool"], proto_idx)
+    chunk_emit_closure(cs_chunk(cs), const_idx, func_info["upvalues"], line, col)
+    c_push(cs, 1)
+}
+
+// -- compiler: top level --------------------------------------------------
+
+flex bet compile_program(program, fold_constants) {
+    yo cs = {"pool": new_const_pool(), "protos": [], "stack": [], "fold_constants": fold_constants}
+    yo func_info = program["func_info"]
+    yo ch = new_chunk("<script>", 0, 0, cap, cs["pool"])
+    ch["local_count"] = func_info["local_count"]
+    cs["stack"].yeet_in({"chunk": ch, "func_info": func_info, "loops": []})
+    grind stmt in program["statements"] {
+        compile_stmt(cs, stmt)
+    }
+    c_emit(cs, "GHOST", [], ghost, ghost)
+    c_push(cs, 1)
+    c_emit(cs, "RETURN", [], ghost, ghost)
+    c_pop(cs, 1)
+    yo proto = chunk_finish(ch)
+    cs["stack"].yoink()
+    yo entry_idx = add_proto(cs, proto)
+    bounce {"const_pool": cs["pool"], "protos": cs["protos"], "entry_proto": entry_idx}
+}
+
+// -- public API: source text -> CompiledUnit-equivalent -------------------
+
+flex bet compile_source(src, fold_constants) {
+    yo program = parse_source(src)
+    resolve_program(program)
+    bounce compile_program(program, fold_constants)
+}

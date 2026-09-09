@@ -118,6 +118,17 @@ def test_mafs_round():
     assert _r("gimme mafs\nyap mafs.round(3.456, 2)\n") == "3.46\n"
 
 
+def test_mafs_is_float():
+    src = (
+        "gimme mafs\n"
+        "yap mafs.is_float(5)\n"
+        "yap mafs.is_float(5.0)\n"
+        "yap mafs.is_float(-3.14)\n"
+        "yap mafs.is_float(0)\n"
+    )
+    assert _r(src) == "cap\nfax\nfax\ncap\n"
+
+
 def test_mafs_min_max():
     assert _r("gimme mafs\nyap mafs.min(3, 1, 2)\nyap mafs.max(3, 1, 2)\n") == "1\n3\n"
 

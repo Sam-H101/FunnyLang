@@ -58,6 +58,17 @@ All notable changes to FunnyLang are documented here.
   groupchat records with a `"node"` key. Cross-checked against the Python parser's `dump_ast()`
   S-expression output across the entire `tests/lang/` + `examples/` corpus (72 files) — exact
   match on every one, including every squad/template/closure/module test.
+- `selfhost/compiler.funny`: resolver + codegen merged into one file (per the plan's own
+  suggestion) — a full port of resolver.py + compiler.py + chunk.py's const-pool/bytecode-buffer
+  bookkeeping. AST nodes being mutable groupchats let the resolver write results directly onto the
+  tree instead of needing Python's identity-keyed side tables. Cross-checked against
+  `funnylang.compiler`'s `CompiledUnit` directly (not through the disassembler) across the entire
+  `tests/lang/` + `examples/` corpus — byte-identical bytecode, proto metadata, line tables, and
+  constant pools on every file, plus matching resolve-time rejections for the two golden files that
+  are supposed to fail (undefined variable, const reassignment). Needed one more small stdlib
+  addition, `mafs.is_float`, and along the way found and fixed a real pre-existing bug: `<<`/`>>`
+  with a negative shift amount raised a raw Python `ValueError` instead of a `FunnyError`, both at
+  runtime and when constant-folded — see PLAN.md §16.
 
 ### M11 — Hardening pass
 - No Python traceback ever escapes the CLI (a clean "COMPILER SKILL ISSUE" message + exit 70

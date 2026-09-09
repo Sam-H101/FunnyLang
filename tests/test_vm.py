@@ -117,6 +117,18 @@ def test_bitwise_ops():
     assert run_funny("yap 16 >> 2\n") == "4\n"
 
 
+def test_negative_shift_raises_math_error_not_python_valueerror():
+    # PLAN.md §16: Python's `<<`/`>>` raise a raw ValueError for a negative
+    # shift amount; the VM must translate that into a proper FunnyError both
+    # at runtime and when the shift gets constant-folded at compile time.
+    err = expect_error("yap 5 << -1\n")
+    assert err.flavor == "MathAintMathin"
+    err2 = expect_error("yo a = -1\nyap 5 << a\n")
+    assert err2.flavor == "MathAintMathin"
+    err3 = expect_error("yap 5 >> -1\n")
+    assert err3.flavor == "MathAintMathin"
+
+
 def test_ternary():
     assert run_funny('yap fax ? "yes" : "no"\n') == "yes\n"
 

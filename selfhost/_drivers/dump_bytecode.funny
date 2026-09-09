@@ -1,0 +1,62 @@
+// Test driver (not part of the toolchain): compiles the file named by the
+// first CLI arg with the self-hosted resolver+compiler and prints its
+// entry_proto index, every proto's metadata + raw code bytes, and every
+// const-pool entry -- for cross-checking against funnylang.compiler's
+// CompiledUnit directly (PLAN.md §M12 task 3, byte-exactness discipline).
+gimme filez
+gimme { compile_source } from "../compiler.funny"
+
+flex bet const_repr(entry) {
+    yo tag = entry["tag"]
+    sus (tag == 0) {
+        bounce "ghost"
+    }
+    sus (tag == 1) {
+        bounce entry["value"] ? "fax" : "cap"
+    }
+    sus (tag == 4) {
+        bounce json_quote(entry["value"])
+    }
+    bounce to_yap(entry["value"])
+}
+
+flex bet json_quote(s) {
+    yo out = ["\""]
+    grind ch in s.chars() {
+        sus (ch == "\"") {
+            out.yeet_in("\\\"")
+        } kinda_sus (ch == "\\") {
+            out.yeet_in("\\\\")
+        } kinda_sus (ch == "\n") {
+            out.yeet_in("\\n")
+        } kinda_sus (ch == "\t") {
+            out.yeet_in("\\t")
+        } kinda_sus (ch == "\r") {
+            out.yeet_in("\\r")
+        } nah {
+            out.yeet_in(ch)
+        }
+    }
+    out.yeet_in("\"")
+    bounce out.join("")
+}
+
+yo path = the_args()[0]
+yo src = filez.slurp(path)
+yo unit = compile_source(src, fax)
+
+yap "ENTRY " + to_yap(unit["entry_proto"])
+grind i in range_stash(unit["protos"].how_thicc()) {
+    yo p = unit["protos"][i]
+    yap "PROTO " + to_yap(i) + " name=" + json_quote(p["name"]) + " arity=" + to_yap(p["arity"]) + " default_count=" + to_yap(p["default_count"]) + " is_variadic=" + (p["is_variadic"] ? "1" : "0") + " upvalue_count=" + to_yap(p["upvalue_count"]) + " max_stack=" + to_yap(p["max_stack"]) + " local_count=" + to_yap(p["local_count"])
+    yap "CODE " + p["code"].join(",")
+    yo line_parts = []
+    grind le in p["lines"] {
+        line_parts.yeet_in(to_yap(le["offset"]) + ":" + to_yap(le["line"]) + ":" + to_yap(le["col"]))
+    }
+    yap "LINES " + line_parts.join(",")
+}
+grind i in range_stash(unit["const_pool"]["entries"].how_thicc()) {
+    yo e = unit["const_pool"]["entries"][i]
+    yap "CONST " + to_yap(i) + " tag=" + to_yap(e["tag"]) + " value=" + const_repr(e)
+}

@@ -1659,3 +1659,21 @@ Format: `- [Mn] <what changed> — <why>`.
   matching the existing `yapper.is_numba(s)` precedent (a whole-string classification predicate,
   not a `YAPSTRING_METHODS` instance method) rather than introducing a new stdlib module or
   expanding §8's legal keyword/stdlib list.
+- [M12] Added `mafs.is_float(x)`, a thin wrapper over Python's `isinstance(x, float)`, for the same
+  reason as `is_letter`/`is_alnum`: `selfhost/compiler.funny`'s const-pool writer and constant
+  folder both need to distinguish an int value from a float one (an int `1` and a float `1.0` are
+  *distinct* §5.2 tag-2/tag-3 constants, never deduped across tags), but `what_is_it()` unifies both
+  under `"numba"` by design, and nothing else in the language exposes the distinction. Without it,
+  the self-hosted compiler couldn't tell which const-pool tag to use for a numeric literal.
+- [M12] Found and fixed a real pre-existing bug while porting the constant folder to
+  `selfhost/compiler.funny`: `<<`/`>>` with a negative shift amount raises a raw Python
+  `ValueError` ("negative shift count"), not a `FunnyError`, both at runtime (`vm.py`'s `_bitwise`
+  never checked the sign) and at compile time (constant-folding `5 << -1` crashed the compiler
+  outright, since `_fold`'s `try/except` only caught `ZeroDivisionError` — not what a negative shift
+  actually raises). Fixed by having `_bitwise` raise `MathAintMathin` for a negative shift amount
+  (matching the existing div-by-zero pattern), and widening `_fold`'s except clause to also catch
+  `ValueError` and leave the expression unfolded, so it fails at runtime with the proper error
+  instead of crashing the compiler. Neither the M11 fuzz suite nor any hand-written test happened to
+  hit this combination; found only by reading `_apply_numeric`/`_bitwise` closely enough while
+  writing the self-hosted equivalent to notice the mismatched exception type. Regression test in
+  `tests/test_vm.py::test_negative_shift_raises_math_error_not_python_valueerror`.

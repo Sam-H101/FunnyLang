@@ -28,6 +28,10 @@ def _abs(vm, a):
     return abs(_num(a[0], "abs"))
 
 
+def _is_float(vm, a):
+    return isinstance(_num(a[0], "is_float"), float)
+
+
 def _floor(vm, a):
     return math.floor(_num(a[0], "floor"))
 
@@ -149,6 +153,7 @@ def build() -> Module:
     members = {
         "sqrt": _nf("sqrt", lambda vm, a: _sqrt(vm, a), 1),
         "abs": _nf("abs", lambda vm, a: _abs(vm, a), 1),
+        "is_float": _nf("is_float", lambda vm, a: _is_float(vm, a), 1),
         "floor": _nf("floor", lambda vm, a: _floor(vm, a), 1),
         "ceil": _nf("ceil", lambda vm, a: _ceil(vm, a), 1),
         "round": _nf("round", lambda vm, a: _round(vm, a), 1, 2),
