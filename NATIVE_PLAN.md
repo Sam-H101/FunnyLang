@@ -275,15 +275,17 @@ never subtracts.
 3. CI: add a `native` job to `.github/workflows/ci.yml` building on Windows/Linux/macOS.
 4. Write `native/ARCHITECTURE.md`: value representation, GC contract, the temp-root protocol.
 5. Log the C11 choice and the TLS decision in §9.
-6. **Interim binary release (do this first — it delivers value on day one).** The v1.0.0 PyInstaller
-   toolchain already works; users just have no way to get it without a Python install. Add a
-   `release` job to `.github/workflows/ci.yml` that runs on tags, `funny yeet`s the toolchain on each
-   of the three OSes, and publishes the results to **GitHub Releases**. Cut `v1.0.1` from it. These
+6. **Interim binary release (do this first — it delivers value on day one).** The v1.1.0 PyInstaller
+   toolchain already works; users just have no way to get it without a Python install. Add
+   `release-build`/`release-publish` jobs to `.github/workflows/ci.yml` that run on tags, freeze the
+   real `funny` CLI on each of the three OSes, and publish the results to **GitHub Releases**. Cut
+   `v1.1.0` from it (not `v1.0.1` as originally written here — M15 landed first and bumped
+   `__version__`, so `v1.1.0` is what a frozen binary of this exact commit actually reports). These
    binaries are ~8 MB and carry CPython inside — that is exactly what N1–N9 fixes — but they let
    someone start writing FunnyLang today, which is the point. N10 replaces this job wholesale.
 
 **Acceptance:** `build.sh` and `build.bat` both produce a binary that prints the banner, on all three
-platforms in CI, with `-Werror` clean. A `v1.0.1` GitHub Release exists carrying downloadable
+platforms in CI, with `-Werror` clean. A `v1.1.0` GitHub Release exists carrying downloadable
 Windows, Linux, and macOS binaries, and a freshly downloaded one runs `examples/hello.funny` on a
 machine with no Python installed.
 
@@ -726,20 +728,32 @@ gets an entry explaining what changed and why.
   **after** M15's Python implementation, never before it — see §7 for why a feature must exist in the
   oracle before it exists in the C VM. The safety argument for the whole design rests on N4's
   read-time bounds checking, so that is where it gets tested hardest.
-- **N0 · complete (tasks 1-5 · task 6 pending confirmation).** `build.sh`/`build.bat`, `native/
-  main.c` (a plain-ASCII toolchain smoke test — the real Unicode banner needs `platform.c`'s
-  UTF-8 console setup, which doesn't exist yet), `native/ARCHITECTURE.md`, and a `native` CI job
-  (Windows/Linux/macOS, release + debug/sanitizer builds) are all in place; YAML and shell syntax
-  checked locally, full verification pending CI's actual compilers, since this environment has none
-  installed. Task 6 (cutting a real `v1.0.1` tag and publishing GitHub Releases under the project's
-  real name) was deliberately **not** done without the user's explicit go-ahead first — publishing a
-  release is a public, hard-to-reverse action, unlike everything else in N0.
+- **N0 · complete.** `build.sh`/`build.bat`, `native/main.c` (a plain-ASCII toolchain smoke test —
+  the real Unicode banner needs `platform.c`'s UTF-8 console setup, which doesn't exist yet),
+  `native/ARCHITECTURE.md`, and a `native` CI job (Windows/Linux/macOS, release + debug/sanitizer
+  builds) are all in place; YAML and shell syntax checked locally, full verification pending CI's
+  actual compilers, since this environment has none installed.
   **AGENT CHOICE · Windows C compiler for CI.** MSVC via `ilammy/msvc-dev-cmd@v1` (provisions
   `cl.exe`'s environment on `windows-latest`), not MinGW — matches N10's own release-matrix choice
   (`NATIVE_PLAN.md` §6.N10) and needs no extra toolchain install on the runner. `build.bat` targets
   `cl.exe` accordingly; `PLAN.md`'s "MSVC + MinGW" requirement (§2.4) means MinGW must also keep
   working, but CI only needs to prove *one* Windows path continuously — MinGW gets exercised by
   `zig cc` compatibility testing later, not by a second parallel CI job now.
+  **AGENT CHOICE / SPEC CORRECTION · task 6 freezes the CLI, not `funny yeet`.** Checked
+  `packager.py`/`stub_main.py` before implementing and found that `funny yeet` freezes
+  `stub_main.py`, which by design *only ever runs one already-linked `.funnypak` baked in at build
+  time* (its own docstring: "a shipped .exe never compiles source, only runs already-linked
+  bytecode") — it takes no source-file argument at run time. A `yeet`'d `examples/hello.funny`
+  binary would only ever print "hello", forever; it would not let anyone "start writing FunnyLang,"
+  directly contradicting this task's own stated purpose. Fixed by freezing
+  `funnylang/__main__.py` (the `funny = funnylang.cli:main` console-script entry point) with
+  PyInstaller directly instead — the real compiler/parser/VM/REPL, exactly like an editable
+  `pip install` gives you, just with Python bundled in. This is a different PyInstaller target from
+  `packager.py`'s, reusing only its `--hidden-import funnylang.stdlib.*` pattern (every stdlib
+  module is chosen by name at runtime, so PyInstaller's static import scan needs the nudge either
+  way). `release-build`/`release-publish` jobs added to `ci.yml`, gated on `startsWith(github.ref,
+  'refs/tags/v')`; the CI smoke test runs the frozen binary's `--version`, `run examples/hello.funny`,
+  and `test examples`, not just a version print, so a broken freeze fails CI instead of shipping.
 - **N10 · ADDITION · prebuilt binary distribution.** Not in the original plan; added at the user's
   request so that using FunnyLang never requires building it. GitHub Releases on
   `github.com/Sam-H101/FunnyLang`, five platform artifacts per tag plus a rolling `nightly`, checksums,
