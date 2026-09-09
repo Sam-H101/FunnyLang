@@ -1,0 +1,108 @@
+// selfhost/prelude.funny — PLAN.md §M12 task 2, first file.
+//
+// Shared helpers for the self-hosted FunnyLang toolchain: assert helpers and
+// byte-buffer writers (a buffer is just a plain `stash` of ints 0-255) for
+// the .funnyc format (PLAN.md §5.2). Restricted to the self-hosting subset
+// (PLAN.md §8): no squad/inherits/me/og/spawn/regardless, no template
+// strings, no ?., no |>, no stepped slices.
+
+// -- assertions --------------------------------------------------------
+
+flex bet assert_that(cond, msg) {
+    no_cap(cond, msg)
+}
+
+// -- byte buffers --------------------------------------------------------
+// All multi-byte integers are big-endian (PLAN.md §5.2).
+
+flex bet new_buf() {
+    bounce []
+}
+
+flex bet write_u8(buf, v) {
+    buf.yeet_in(v & 0xFF)
+}
+
+flex bet write_u16(buf, v) {
+    write_u8(buf, (v >> 8) & 0xFF)
+    write_u8(buf, v & 0xFF)
+}
+
+flex bet write_u32(buf, v) {
+    write_u8(buf, (v >> 24) & 0xFF)
+    write_u8(buf, (v >> 16) & 0xFF)
+    write_u8(buf, (v >> 8) & 0xFF)
+    write_u8(buf, v & 0xFF)
+}
+
+flex bet write_u64(buf, v) {
+    write_u32(buf, (v >> 32) & 0xFFFFFFFF)
+    write_u32(buf, v & 0xFFFFFFFF)
+}
+
+// -- UTF-8 -----------------------------------------------------------------
+// The self-hosting subset has no built-in "encode this string as UTF-8
+// bytes" primitive, so this hand-rolls it from code points (`code_at`) --
+// the standard branch-on-range algorithm, one to four bytes per code point.
+
+flex bet utf8_encode(s) {
+    yo out = []
+    grind ch in s.chars() {
+        yo cp = ch.code_at(0)
+        sus (cp < 0x80) {
+            out.yeet_in(cp)
+        } kinda_sus (cp < 0x800) {
+            out.yeet_in(0xC0 | (cp >> 6))
+            out.yeet_in(0x80 | (cp & 0x3F))
+        } kinda_sus (cp < 0x10000) {
+            out.yeet_in(0xE0 | (cp >> 12))
+            out.yeet_in(0x80 | ((cp >> 6) & 0x3F))
+            out.yeet_in(0x80 | (cp & 0x3F))
+        } nah {
+            out.yeet_in(0xF0 | (cp >> 18))
+            out.yeet_in(0x80 | ((cp >> 12) & 0x3F))
+            out.yeet_in(0x80 | ((cp >> 6) & 0x3F))
+            out.yeet_in(0x80 | (cp & 0x3F))
+        }
+    }
+    bounce out
+}
+
+// str = u32 length + UTF-8 bytes (PLAN.md §5.2).
+flex bet write_str(buf, s) {
+    yo encoded = utf8_encode(s)
+    write_u32(buf, encoded.how_thicc())
+    buf.extend(encoded)
+}
+
+// -- arbitrary-precision int encoding (§5.2 const tag 2) --------------------
+// { sign u8, byte_len u32, big-endian magnitude bytes } -- the minimal
+// number of magnitude bytes, matching serializer.py's `bit_length()`-based
+// count exactly: 0 has byte_len 0 (no magnitude bytes at all).
+
+flex bet int_byte_len(mag) {
+    yo n = 0
+    yo x = mag
+    bruh (x > 0) {
+        n += 1
+        x = x >> 8
+    }
+    bounce n
+}
+
+flex bet write_int_magnitude(buf, value) {
+    yo sign = 0
+    yo mag = value
+    sus (value < 0) {
+        sign = 1
+        mag = -value
+    }
+    write_u8(buf, sign)
+    yo n = int_byte_len(mag)
+    write_u32(buf, n)
+    yo shift = (n - 1) * 8
+    grind i from 0 to n {
+        write_u8(buf, (mag >> shift) & 0xFF)
+        shift -= 8
+    }
+}
