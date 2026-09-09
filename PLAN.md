@@ -1493,3 +1493,12 @@ Format: `- [Mn] <what changed> — <why>`.
   that was never closed — reading it after the loop moved on (or the frame returned) crashed with
   an out-of-range access into the VM's value stack. Every scope-exit site (block, loop iteration,
   `bail`/`nvm` unwinding) now goes through one shared check against the resolver's `captured_slots`.
+- [M6] Another genuine name collision: the `sus` stdlib module (§7, reflection) and the `sus`
+  keyword (§3.3, `if`) share a spelling. A bare `gimme <name>` only ever means "stdlib module"
+  (§3.8), so `SUS` is now accepted as a contextual keyword in exactly two places: the `gimme`
+  bare-import production, and `parse_primary` (so `sus.type_of(x)` works anywhere inside an
+  expression) — the same treatment §3.3 already gives `from`/`to`/`step`/`as`/`in`. Statement-start
+  dispatch still always sends a leading `sus` token to `if` first, so a *bare* `sus.foo()` used as
+  its own top-level expression statement is the one remaining edge case that still misparses;
+  wrapping it (`yo _ = sus.foo()`, or using it inside `yap`/an argument list/a condition) sidesteps
+  it, which covers every realistic usage.

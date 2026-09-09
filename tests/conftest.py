@@ -67,17 +67,25 @@ def compile_prog(src: str, path: str = "<test>", fold_constants: bool = True) ->
 
 def run_funny(src: str, path: str = "<test>", fold_constants: bool = True) -> str:
     """Compile and run `src` in-process, returning captured stdout."""
+    from funnylang.stdlib import install_stdlib
+
     unit = compile_prog(src, path, fold_constants=fold_constants)
     vm = VM(stdout=io.StringIO())
+    install_stdlib(vm)
     vm.interpret(unit, make_source(src, path))
     return vm.stdout.getvalue()
 
 
 def expect_error(src: str, path: str = "<test>") -> FunnyError:
     """Run `src` and return the FunnyError it raises, failing the test if
-    it doesn't raise one."""
+    it doesn't raise one. A ParseErrorBundle's first error is unwrapped —
+    most callers just want to check the flavor of the first syntax error."""
+    from funnylang.errors import ParseErrorBundle
+
     try:
         run_funny(src, path)
+    except ParseErrorBundle as bundle:
+        return bundle.errors[0]
     except FunnyError as exc:
         return exc
     raise AssertionError(f"expected a FunnyError, but this ran clean:\n{src}")

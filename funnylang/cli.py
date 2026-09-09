@@ -10,10 +10,11 @@ import sys
 
 from . import __version__
 from .compiler import Compiler
-from .errors import FunnyError, ParseErrorBundle
+from .errors import ComputerExploded, FunnyError, ParseErrorBundle, render_diagnostic, render_parse_error_bundle
 from .parser import parse_source
 from .resolver import resolve_program
 from .source import SourceFile
+from .stdlib import install_stdlib
 from .vm import VM
 
 BANNER = r"""
@@ -56,18 +57,17 @@ def cmd_run(path: str) -> int:
         program = parse_source(source)
         resolved = resolve_program(program, source)
         unit = Compiler(resolved, source).compile_program(program, path)
-        VM().interpret(unit, source)
+        vm = VM()
+        install_stdlib(vm)
+        vm.interpret(unit, source)
     except ParseErrorBundle as bundle:
-        # M6 replaces this with the full §4.2 diagnostic renderer.
-        for err in bundle.errors[:5]:
-            print(f"{err.flavor}: {err.message}", file=sys.stderr)
-        if len(bundle.errors) > 5:
-            print(f"... and {len(bundle.errors) - 5} more. i'll stop.", file=sys.stderr)
+        print(render_parse_error_bundle(bundle), file=sys.stderr, end="")
         return 1
+    except ComputerExploded as err:
+        print(render_diagnostic(err), file=sys.stderr, end="")
+        return 69
     except FunnyError as err:
-        print(f"{err.flavor}: {err.message}", file=sys.stderr)
-        if err.roast:
-            print(err.roast, file=sys.stderr)
+        print(render_diagnostic(err), file=sys.stderr, end="")
         return 1
     return 0
 

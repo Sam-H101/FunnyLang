@@ -465,7 +465,12 @@ class Parser:
                 alias = alias_tok.text
             self._expect_stmt_end()
             return Import(path_tok.value, False, alias, None, self._span(start.span, path_tok.span))
-        if self.check(TK.IDENT):
+        # `sus` is both the reflection stdlib module (§7) and the `if`
+        # keyword (§3.3) — a genuine name collision (PLAN.md §16). Since a
+        # bare `gimme <name>` only ever means "stdlib module" (§3.8), SUS is
+        # accepted here as a contextual keyword too, the same way
+        # from/to/step/as/in already are elsewhere in the grammar.
+        if self.check(TK.IDENT) or self.check(TK.SUS):
             name_tok = self.advance()
             alias = None
             if self.match(TK.AS):
@@ -733,7 +738,11 @@ class Parser:
         if tok.kind == TK.GHOST:
             self.advance()
             return Literal(None, tok.span)
-        if tok.kind == TK.IDENT:
+        if tok.kind == TK.IDENT or tok.kind == TK.SUS:
+            # SUS: see the contextual-keyword note in _parse_import — inside
+            # an expression, `sus` can only mean the reflection module, never
+            # the `if` keyword (that's only ever recognized at statement
+            # start, before expression parsing is reached at all).
             self.advance()
             return Identifier(tok.text, tok.span)
         if tok.kind == TK.ME:

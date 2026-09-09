@@ -23,3 +23,9 @@ All notable changes to FunnyLang are documented here.
 ### M5 — The VM
 - The stack VM: closures, upvalues, control flow, try/catch/finally, iteration, runtime errors.
   `funny run <file.funny>` works end to end.
+
+### M6 — Stdlib + the error system
+- The full §4.2 diagnostic renderer (funny/serious modes, source snippet with caret, hints,
+  stack traces) wired into `funny run`. All 10 stdlib modules (`mafs yapper stash groupchat rizz
+  filez clock sus computer internet`) plus the always-in-scope builtins. Stash/groupchat/yapstring/
+  numba instance methods share their implementation with the matching free-function module.

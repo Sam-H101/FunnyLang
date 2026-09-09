@@ -16,6 +16,14 @@ from .values import (
     type_name,
 )
 
+# Instance-method tables for primitive types (PLAN.md §3.9) — plain funcs
+# living in the stdlib modules so the free-function and method-call forms
+# share one implementation. No cycle: these modules only import errors/values.
+from .stdlib.groupchat import METHODS as _GROUPCHAT_METHODS
+from .stdlib.mafs import NUMBA_METHODS as _NUMBA_METHODS
+from .stdlib.stash import METHODS as _STASH_METHODS
+from .stdlib.yapper import YAPSTRING_METHODS as _YAPSTRING_METHODS
+
 MAX_FRAMES = 10_000
 ABSENT = 0xFFFF
 
@@ -176,6 +184,7 @@ class VM:
         while True:
             frame = self.frames[-1]
             code = frame.closure.proto.code
+            instr_start = frame.ip
             op = code[frame.ip]
             ip = frame.ip + 1
             try:
@@ -311,7 +320,13 @@ class VM:
                         roast = f"`{name}` who? never heard of them."
                         if hint:
                             roast += f" did you mean `{hint}`?"
-                        raise WhoDis(f"'{name}' isn't defined.", roast=roast)
+                        raise WhoDis(
+                            f"'{name}' isn't defined.",
+                            roast=roast,
+                            hint=(f"did you mean `{hint}`?" if hint else None),
+                            span=_FakeSpan(*frame.closure.proto.line_for_offset(frame.ip)),
+                            source=self.source,
+                        )
                     stack.append(self.globals[name])
                     frame.ip = ip + 2
                 elif op == Op.SET_GLOBAL:
@@ -498,11 +513,29 @@ class VM:
                 else:  # pragma: no cover
                     raise AssertionError(f"unimplemented opcode {op!r}")
             except FunnyError as err:
+                if err.span is None:
+                    line, col = frame.closure.proto.line_for_offset(instr_start)
+                    err.span = _FakeSpan(line, col)
+                if err.source is None:
+                    err.source = self.source
+                if not err.frames:
+                    err.frames = self._build_trace(frame, instr_start)
                 if self._unwind(err, base_frame_count):
                     continue
                 raise
 
     # -- error unwinding ----------------------------------------------------
+
+    def _build_trace(self, top_frame: Frame, top_ip: int) -> list[str]:
+        path = getattr(self.source, "path", None) or "<unknown>"
+        lines = []
+        for f in reversed(self.frames):
+            lookup_ip = top_ip if f is top_frame else max(f.ip - 1, 0)
+            line, _col = f.closure.proto.line_for_offset(lookup_ip)
+            name = f.closure.proto.name
+            label = "<the big one>" if name == "<script>" else f"{name}()"
+            lines.append(f"at {label}  {path}:{line}")
+        return lines
 
     def _make_thrown(self, payload, frame, chuck_ip) -> FunnyError:
         if isinstance(payload, FunnyError):
@@ -558,12 +591,29 @@ class VM:
             raise WhoDis(f"'{obj.name}' doesn't do '{name}'.", roast=f"`{obj.name}` doesn't do `{name}`. that's not its thing.")
         if isinstance(obj, FunnyError):
             return self._error_field(obj, name)
+        if isinstance(obj, Stash):
+            return self._bind_native_method(obj, name, _STASH_METHODS, "stash")
+        if isinstance(obj, GroupChat):
+            return self._bind_native_method(obj, name, _GROUPCHAT_METHODS, "groupchat")
+        if isinstance(obj, str):
+            return self._bind_native_method(obj, name, _YAPSTRING_METHODS, "yapstring")
+        if isinstance(obj, (int, float)) and not isinstance(obj, bool):
+            return self._bind_native_method(obj, name, _NUMBA_METHODS, "numba")
         if obj is GHOST:
             raise GhostError(f"can't read '{name}' off ghost.", roast="you're talking to a ghost, king.")
         raise WhoDis(
             f"a {type_name(obj)} doesn't have '{name}' (yet).",
             roast=f"`{name}` who? never heard of them.",
         )
+
+    def _bind_native_method(self, obj, name: str, table: dict, type_label: str) -> NativeFn:
+        fn = table.get(name)
+        if fn is None:
+            raise WhoDis(
+                f"a {type_label} doesn't have '{name}'.",
+                roast=f"`{name}` who? never heard of them.",
+            )
+        return NativeFn(name, lambda vm, args, _fn=fn, _obj=obj: _fn(vm, [_obj, *args]), 0, 255)
 
     def _set_prop(self, obj, name: str, value) -> None:
         if isinstance(obj, Instance):
@@ -677,9 +727,13 @@ class VM:
             return Stash(a.items + b.items)
         if a is GHOST or b is GHOST:
             raise GhostError("can't add with ghost.", roast="you're talking to a ghost, king.")
+        numba_and_string = {type_name(a), type_name(b)} == {"numba", "yapstring"}
+        # PLAN.md §4.2's own top-10-hints example: type mismatch on `+`.
+        hint = "wrap the numba in to_yap(...) first, so both sides are yapstrings" if numba_and_string else None
         raise TypeVibeMismatch(
             f"a {type_name(a)} and a {type_name(b)} do NOT have the same energy.",
-            roast="a numba and a yapstring do NOT have the same energy." if {type_name(a), type_name(b)} == {"numba", "yapstring"} else f"a {type_name(a)} and a {type_name(b)} do NOT have the same energy.",
+            roast="a numba and a yapstring do NOT have the same energy." if numba_and_string else f"a {type_name(a)} and a {type_name(b)} do NOT have the same energy.",
+            hint=hint,
         )
 
     def _mul(self, a, b):
