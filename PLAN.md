@@ -1595,6 +1595,19 @@ Format: `- [Mn] <what changed> — <why>`.
   (which is `None` unless *that exact* squad defined one) instead of `find_method("spawn")` (which
   walks the chain). `squad B inherits A {}` (no spawn) followed by `B(5)` silently constructed a
   `B` with no fields set at all before this fix.
+- [M10] `stub_main.py` must use absolute imports (`from funnylang.errors import ...`), not the
+  relative imports every other module in the package uses. PyInstaller's bootloader runs the frozen
+  entry script as a bare top-level script with no package context, so `from .errors import ...`
+  fails at runtime with "attempted relative import with no known parent package" the moment it's
+  actually frozen — caught by running the built `.exe`, not by any unit test (nothing short of
+  actually freezing and executing it would have caught this). `funnylang` itself is still on
+  `sys.path` inside the frozen bundle, so the absolute form resolves fine.
+- [M10] `--console`/`--no-console`/`--keep-stub` are accepted by the CLI (argparse doesn't reject
+  them) but not yet consulted by `packager.py` — the stub is always built `--console`, and
+  intermediate PyInstaller build artifacts are always kept (cached in `build/`, never cleaned up
+  automatically) regardless of the flag. Revisit if a real need for `--no-console`/discarding the
+  cache surfaces; `--icon` and `--rebuild-stub`, the two flags actually exercised by the acceptance
+  criteria, are fully wired.
 - [M8] `funny vibe`'s multi-line continuation heuristic (lex the buffer, check bracket depth) can't
   distinguish "genuinely more input needed" from "this specific input can never become valid no
   matter how much more is typed" (an unterminated `"..."` string is the clearest example — only a

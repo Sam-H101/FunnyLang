@@ -435,9 +435,31 @@ def cmd_vibe(*, color: bool = True) -> int:
 # ---------------------------------------------------------------------------
 
 
-def cmd_yeet(_args) -> int:
-    print("funny yeet lands in M10 — native executable packaging isn't wired up yet.", file=sys.stderr)
-    return 1
+def cmd_yeet(args) -> int:
+    from . import packager
+
+    out = args.out or (str(Path(args.file).with_suffix(".exe" if sys.platform == "win32" else "")))
+    try:
+        units, entry_canonical = build_bundle(args.file)
+    except ParseErrorBundle as bundle:
+        print(render_parse_error_bundle(bundle), file=sys.stderr, end="")
+        return 1
+    except FunnyError as err:
+        print(render_diagnostic(err), file=sys.stderr, end="")
+        return 1
+    pak_bytes = dump_funnypak(units, entry_canonical)
+    try:
+        size = packager.yeet(
+            pak_bytes, out,
+            icon=args.icon,
+            rebuild_stub=args.rebuild_stub,
+        )
+    except packager.StubBuildError as exc:
+        print(f"couldn't build the stub: {exc}", file=sys.stderr)
+        return 1
+    mb = size / (1024 * 1024)
+    print(f"yeeted {mb:.1f} MB of pure comedy into {out}. it runs anywhere. no python. no cap.")
+    return 0
 
 
 def cmd_bootstrap(_args) -> int:

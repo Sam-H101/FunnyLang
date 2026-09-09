@@ -36,6 +36,12 @@ All notable changes to FunnyLang are documented here.
   architectural change (constant pools and globals moved from the VM onto each Closure) documented
   in PLAN.md §16.
 
+### M10 — Native executable packaging
+- `funny yeet` produces a genuinely standalone `.exe`/binary (~8 MB): a PyInstaller-frozen runtime
+  stub, built once and cached by a hash of the whole `funnylang` package, with a linked `.funnypak`
+  appended plus a 17-byte trailer. Verified end to end: hello world, a multi-module bundle, an
+  uncaught-error exit code, a naked stub, and running after being moved to a different directory.
+
 ### M9 — Classes (`squad`)
 - Full `squad`/`inherits`/`spawn`/`me`/`og` support with the 4 magic methods (`to_yap`, `how_thicc`,
   `get_it`/`set_it`, `same_energy`). Fixed a real infinite-recursion bug in 3+ level `og` super-calls

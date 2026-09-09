@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _run_cli(*args: str, input: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -245,10 +247,22 @@ def test_vibe_error_keeps_session_alive():
 # -- stubs for later milestones ------------------------------------------
 
 
-def test_yeet_reports_not_yet_implemented():
-    result = _run_cli("yeet", "examples/hello.funny")
-    assert result.returncode == 1
-    assert "M10" in result.stderr
+def test_yeet_without_out_flag_defaults_next_to_source(tmp_path):
+    # `funny yeet` (M10) is now real; the slow end-to-end packaging tests
+    # (a session-cached stub, actually running the .exe) live in
+    # test_packager.py, which skips cleanly without PyInstaller.
+    import shutil
+
+    from funnylang.packager import pyinstaller_available
+
+    if not pyinstaller_available():
+        pytest.skip("PyInstaller isn't installed")
+    src = tmp_path / "hello.funny"
+    shutil.copyfile("examples/hello.funny", src)
+    result = _run_cli("yeet", str(src))
+    assert result.returncode == 0
+    expected_exe = src.with_suffix(".exe" if sys.platform == "win32" else "")
+    assert expected_exe.exists()
 
 
 def test_bootstrap_reports_not_yet_implemented():
