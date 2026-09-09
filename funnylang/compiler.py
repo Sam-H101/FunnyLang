@@ -54,15 +54,23 @@ class Compiler:
 
     # -- top level ----------------------------------------------------------
 
-    def compile_program(self, program: A.Program, source_name: str = "<script>") -> CompiledUnit:
+    def compile_program(self, program: A.Program, source_name: str = "<script>", repl_capture_last: bool = False) -> CompiledUnit:
+        """`repl_capture_last`: if the program's last statement is a bare
+        expression statement, compile it to RETURN its value instead of
+        POPping it — funny vibe's "last expression value auto-printed"."""
         func_info = self.result.func_info[id(program)]
         chunk = Chunk("<script>", 0, 0, False, self.const_pool)
         chunk.local_count = func_info.local_count
         self.stack.append(_FuncCtx(chunk, func_info))
-        for stmt in program.statements:
+        statements = program.statements
+        capture = repl_capture_last and statements and isinstance(statements[-1], A.ExprStmt)
+        for stmt in (statements[:-1] if capture else statements):
             self._compile_stmt(stmt)
-        self._emit(Op.GHOST)
-        self._push()
+        if capture:
+            self._compile_expr(statements[-1].expr)
+        else:
+            self._emit(Op.GHOST)
+            self._push()
         self._emit(Op.RETURN)
         self._pop()
         proto = chunk.finish()

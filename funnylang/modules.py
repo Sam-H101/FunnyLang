@@ -102,3 +102,106 @@ class ModuleResolver:
             self.loading.pop()
         self.loaded[key] = module
         return module
+
+
+# ---------------------------------------------------------------------------
+# Bundling (`funny build`) and pak-aware loading (`funny run x.funnypak`)
+# ---------------------------------------------------------------------------
+
+
+class CanonicalSource:
+    """A minimal stand-in for SourceFile when running from a bundle: no
+    source text is embedded in a .funnypak, so error snippets can't show
+    code, but line/col (from the bundled line table) and the module's
+    canonical name still work everywhere `source.path` is read."""
+
+    __slots__ = ("path",)
+
+    def __init__(self, path: str):
+        self.path = path
+
+    def line_text(self, n: int) -> str:
+        return ""
+
+    def num_lines(self) -> int:
+        return 0
+
+
+def _canonical_name(abs_path: Path, entry_dir: Path) -> str:
+    try:
+        return abs_path.relative_to(entry_dir).as_posix()
+    except ValueError:
+        return abs_path.as_posix()
+
+
+def build_bundle(entry_path: str) -> tuple[dict, str]:
+    """Walks every file-based `gimme` reachable from `entry_path`, compiling
+    each exactly once, keyed by its path relative to the entry file's own
+    directory (POSIX-style) — the same key scheme `make_pak_module_loader`
+    resolves against at runtime, with no filesystem access needed then."""
+    from . import ast_nodes as A
+    from .compiler import Compiler
+    from .resolver import resolve_program
+
+    entry_abs = Path(entry_path).resolve()
+    entry_dir = entry_abs.parent
+    resolver = ModuleResolver(vm=None)
+    units: dict[str, object] = {}
+
+    def visit(abs_path: Path, canonical: str) -> None:
+        if canonical in units:
+            return
+        text = abs_path.read_text(encoding="utf-8")
+        source = SourceFile(str(abs_path), text)
+        program = parse_source(source)
+        result = resolve_program(program, source)
+        unit = Compiler(result, source).compile_program(program, canonical)
+        units[canonical] = unit
+        for stmt in program.statements:
+            target = stmt.decl if isinstance(stmt, A.Export) else stmt
+            if isinstance(target, A.Import) and not target.is_stdlib:
+                child_abs = resolver.resolve(target.source, str(abs_path))
+                visit(child_abs, _canonical_name(child_abs, entry_dir))
+
+    entry_canonical = _canonical_name(entry_abs, entry_dir)
+    visit(entry_abs, entry_canonical)
+    return units, entry_canonical
+
+
+def make_pak_module_loader(modules: dict, entry_canonical: str):
+    """A VM module_loader for running a linked `.funnypak`: resolves a
+    quoted `gimme` path relative to the *currently executing* bundled
+    module's own canonical name (pure string/path logic — no filesystem
+    involved, since the bundle is meant to be self-contained)."""
+    import posixpath
+
+    from .errors import ImportSkillIssue
+
+    cache: dict[str, object] = {}
+
+    def _loader(vm, path: str, mode: int):
+        if mode == 2:
+            from .stdlib import get_stdlib_module
+
+            module = get_stdlib_module(path)
+            if module is None:
+                raise ImportSkillIssue(
+                    f"no stdlib module named '{path}'.",
+                    roast=f"can't find `{path}`. did you make it up?",
+                )
+            return module
+        current = getattr(vm.source, "path", entry_canonical)
+        current_dir = posixpath.dirname(current)
+        target = posixpath.normpath(posixpath.join(current_dir, path)) if current_dir else posixpath.normpath(path)
+        if target in cache:
+            return cache[target]
+        if target not in modules:
+            raise ImportSkillIssue(
+                f"'{path}' isn't in this bundle.",
+                roast=f"can't find `{path}`. did you make it up?",
+            )
+        module_obj = vm.run_module(modules[target], CanonicalSource(target), target)
+        cache[target] = module_obj
+        return module_obj
+
+    return _loader

@@ -86,9 +86,20 @@ class VM:
             if self.module_resolver is not None:
                 self.module_resolver.exit(entry_path)
 
-    def _make_entry_closure(self, unit) -> Closure:
+    def _make_entry_closure(self, unit, module_globals=None, module_exports=None) -> Closure:
         entry = unit.protos[unit.entry_proto]
-        return Closure(entry, [], const_pool=unit.const_pool, protos=unit.protos)
+        return Closure(
+            entry, [], const_pool=unit.const_pool, protos=unit.protos,
+            module_globals=module_globals, module_exports=module_exports,
+        )
+
+    def run_repl_unit(self, unit, source, module_globals: dict, module_exports: dict):
+        """Like interpret(), but reuses the given (persistent) globals dicts
+        instead of starting fresh each time — funny vibe's "persistent global
+        scope across inputs"."""
+        self.source = source
+        closure = self._make_entry_closure(unit, module_globals, module_exports)
+        return self.call_value(closure, [])
 
     def run_module(self, unit, source, module_name: str):
         """Runs a freshly-compiled file's top-level code once, in its own

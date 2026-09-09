@@ -1,2 +1,3 @@
-// util/helpers.funny
-flex bet shout(s) { bounce s.SCREAM() }
+flex bet shout(s) {
+    bounce s.SCREAM()
+}

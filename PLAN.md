@@ -1525,3 +1525,38 @@ Format: `- [Mn] <what changed> — <why>`.
   entire program a second time instead of raising `ImportSkillIssue`). Fixed by having
   `VM.interpret()` register/unregister the entry path with the resolver the same way
   `ModuleResolver.load()` does for every nested import.
+- [M8] `funny build`'s `.funnypak` bundling needed a scheme for resolving a bundled module's own
+  `gimme` statements *without* filesystem access at run time (the whole point of a self-contained
+  bundle). AGENT CHOICE: each bundled module is keyed by its path relative to the entry file's
+  directory (POSIX-style, forward slashes on every OS for portability); at runtime, a bundled
+  module's own `gimme "x"` resolves by taking the *currently executing* module's own canonical
+  name, joining `x` against its directory, and normalizing — pure string manipulation via
+  `posixpath`, no filesystem calls, so a moved or filesystem-less `.funnypak` still resolves its
+  own internal imports correctly. Verified end to end: `examples/modules/main.funny` (3 files, one
+  nested `./util/` import) built to a `.funnypak` and run from it, byte-for-byte identical stdout
+  to running from source.
+- [M8] The canonical formatter (`funny fmt`) is a genuine AST pretty-printer, per its own task
+  description — the AST doesn't retain comments, so formatting a file with comments necessarily
+  drops them. This is a real, accepted limitation, not a bug: the `--check` acceptance criterion is
+  explicitly phrased "after formatting the examples", i.e. formatting is a one-time transformation
+  after which a file's canonical (comment-free) form is stable and self-consistent under repeated
+  formatting. All of `examples/` were run through `funny fmt` once to reach that stable state.
+- [M8] Found and fixed three real bugs by manually exercising the finished CLI end to end (not just
+  unit-testing each command in isolation): (1) `--no-color`'s absence forced `color=True`
+  unconditionally in every diagnostic call, bypassing TTY auto-detection entirely — any redirected
+  or piped `funny run` printed raw ANSI escape codes into the file. (2) `the_args()` crashed
+  (`TypeError: 'Stash' object is not iterable`) because `cmd_run` stored `vm.program_args` as a
+  `Stash` while the builtin tried to `list()` it — standardized on a plain Python list, wrapped in
+  a `Stash` only at the point `the_args()` returns it. (3) Both `funny fmt` and `funny vibe` caught
+  only `ParseErrorBundle` around their `parse_source` calls, missing that a lexer error
+  (`LexerSaidNah`) is a bare `FunnyError` raised *before* the parser's own multi-error recovery
+  ever begins — an unterminated string in either command let a raw Python traceback straight
+  through to the user, a direct violation of the M11 rule that arrives later in the plan. Fixed by
+  adding the missing `except FunnyError` alongside `except ParseErrorBundle` at both sites.
+- [M8] `funny vibe`'s multi-line continuation heuristic (lex the buffer, check bracket depth) can't
+  distinguish "genuinely more input needed" from "this specific input can never become valid no
+  matter how much more is typed" (an unterminated `"..."` string is the clearest example — only a
+  literal newline inside `"""..."""` is fixable by adding lines; a bare `"` never is). Fixed with a
+  pragmatic escape hatch: a blank line while already continuing forces an attempt instead of
+  waiting forever, surfacing the real diagnostic — the same UX Python's own REPL uses to end a
+  multi-line block.

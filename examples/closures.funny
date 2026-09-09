@@ -1,9 +1,10 @@
-// closures.funny
 bet counter() {
     yo n = 0
-    bounce lowkey () => { n += 1; bounce n }
+    bounce lowkey () {
+        n += 1
+        bounce n
+    }
 }
-
 yo a = counter()
 yo b = counter()
 yap a()

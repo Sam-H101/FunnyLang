@@ -1,4 +1,6 @@
-// mathstuff.funny
 flex deadass TAU = 6.28318
-flex bet double(x) { bounce x * 2 }
-bet secret() { }                 // not exported
+flex bet double(x) {
+    bounce x * 2
+}
+bet secret() {
+}

@@ -95,11 +95,17 @@ class _FunctionScope:
 
 
 class Resolver:
-    def __init__(self, source=None):
+    def __init__(self, source=None, known_globals=None, const_globals=None):
+        """`known_globals`/`const_globals`: pass a REPL session's accumulated
+        sets (by reference — they're mutated in place) so each new input
+        remembers names declared by earlier ones (funny vibe's "persistent
+        global scope across inputs")."""
         self.source = source
         self.result = ResolverResult({}, {}, {})
-        self.known_globals: set[str] = set(BUILTIN_GLOBAL_NAMES) | set(STDLIB_MODULE_NAMES)
-        self.const_globals: set[str] = set()
+        self.known_globals: set[str] = (
+            known_globals if known_globals is not None else set(BUILTIN_GLOBAL_NAMES) | set(STDLIB_MODULE_NAMES)
+        )
+        self.const_globals: set[str] = const_globals if const_globals is not None else set()
         self.root: _FunctionScope | None = None
         self.current: _FunctionScope | None = None
 

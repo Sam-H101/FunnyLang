@@ -1,9 +1,7 @@
-// main.funny
-gimme "mathstuff.funny"                    // binds module object as `mathstuff`
-gimme "./util/helpers.funny" as helpers    // explicit alias
-gimme { double, TAU } from "mathstuff.funny"   // named import
-gimme mafs                                 // stdlib module (no quotes, no extension)
-
+gimme "mathstuff.funny"
+gimme "./util/helpers.funny" as helpers
+gimme { double, TAU } from "mathstuff.funny"
+gimme mafs
 yap mathstuff.double(21)
 yap mafs.sqrt(16)
 yap double(10)

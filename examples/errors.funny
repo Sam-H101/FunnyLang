@@ -1,8 +1,6 @@
-// errors.funny — demonstrates both handled and unhandled errors
 bet divide(a, b) {
     bounce a / b
 }
-
 sketchy {
     yap divide(10, 2)
     yap divide(10, 0)
@@ -12,14 +10,9 @@ sketchy {
 } regardless {
     yap "cleanup always runs"
 }
-
 yap "still running"
-
-// this one is deliberately left uncaught, so `funny run` shows the full
-// diagnostic — a numba and a yapstring do not have the same energy.
 bet main() {
     yo name = "sam"
     yap name + 5
 }
-
 main()

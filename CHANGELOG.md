@@ -35,3 +35,12 @@ All notable changes to FunnyLang are documented here.
   detection) and stdlib modules. Each module gets its own isolated global namespace — a real
   architectural change (constant pools and globals moved from the VM onto each Closure) documented
   in PLAN.md §16.
+
+### M8 — The CLI
+- `funny run/build/xray/fmt/test/vibe` all fully implemented, plus global flags (`--version
+  --serious --no-color --time --vibes`) usable before or after the subcommand. `build` links a
+  whole dependency tree into a self-contained `.funnypak` that resolves its own internal imports
+  with no filesystem access at run time. `vibe` is a real REPL: persistent global scope, multi-line
+  continuation, last-expression auto-print, `.help/.exit/.clear/.xray/.time`. `yeet`/`bootstrap`
+  cleanly report "lands in M10/M12" until those milestones. `fmt` is an AST pretty-printer (drops
+  comments, a documented limitation — see PLAN.md §16).
