@@ -1463,3 +1463,15 @@ Format: `- [Mn] <what changed> — <why>`.
   `/`, `\`, `%`, and `**` are never folded, even between two literals, since they can throw
   (`MathAintMathin` on div-by-zero / bad domain) and folding must never change what a program can
   observe (§M4 task 3: "fold only when... the op can't throw").
+- [M4] `sketchy/my_bad/regardless` codegen, per §M5's explicit instruction to duplicate the finally
+  body: `regardless` is compiled twice — once inline for the normal-completion path, and once more
+  as a separate, otherwise-unreachable "exceptional" copy that ends with `GET_LOCAL <depth-at-try>;
+  CHUCK` to re-throw. `TRY_PUSH`'s `finallyOff` always points at this exceptional copy (it's only
+  ever consulted while unwinding); the normal path reaches copy 1 purely by falling through, no
+  jump needed. The VM's contract for this to work: on an unhandled exception, truncate the value
+  stack to the depth recorded at `TRY_PUSH` time, push the error value there, then jump to
+  `finallyOff` and resume normal dispatch — the error is exactly where the exceptional copy's
+  trailing `GET_LOCAL` expects it. If the `try` has a `my_bad` but the catch body itself throws,
+  the outer handler must not re-catch its own exception; the catch body is compiled inside a
+  second, handler-less `TRY_PUSH` whose `finallyOff` points at the same exceptional copy, so
+  `regardless` still runs before the new exception keeps propagating.

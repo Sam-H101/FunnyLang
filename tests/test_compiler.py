@@ -186,6 +186,37 @@ def test_try_catch_finally_uses_try_push_pop():
     assert "TRY_PUSH" in ops and "TRY_POP" in ops and "CHUCK" in ops
 
 
+def test_regardless_body_is_compiled_twice():
+    # once inline (normal path) and once for the exceptional/unwind path,
+    # which re-CHUCKs — PLAN.md §M5's explicit requirement.
+    unit = compile_prog('sketchy {\n yap "try"\n} regardless {\n yap "cleanup-marker"\n}\n')
+    marker_count = sum(
+        1 for tag, v in unit.const_pool.entries if tag == TAG_STRING and v == "cleanup-marker"
+    )
+    assert marker_count == 1  # constant is deduped even though the code using it isn't
+    ops = op_sequence(unit)
+    assert ops.count("YAP") == 3  # try, cleanup (normal), cleanup (exceptional)
+    assert "CHUCK" in ops
+
+
+def test_try_with_catch_and_finally_wraps_catch_in_inner_protection():
+    # if the catch body itself throws, `regardless` must still run before
+    # the new exception propagates further.
+    unit = compile_prog(
+        'sketchy {\n chuck "a"\n} my_bad (e) {\n chuck "b"\n} regardless {\n yap "cleanup"\n}\n'
+    )
+    ops = op_sequence(unit)
+    assert ops.count("TRY_PUSH") == 2
+    assert ops.count("TRY_POP") == 2
+
+
+def test_try_finally_no_catch_still_protects_and_rethrows():
+    unit = compile_prog('sketchy {\n yap 1\n} regardless {\n yap "cleanup"\n}\n')
+    ops = op_sequence(unit)
+    assert ops.count("YAP") == 3
+    assert "CHUCK" in ops
+
+
 def test_stash_and_groupchat_literals():
     unit = compile_prog('yap [1, 2, 3]\nyap {"a": 1}\n')
     ops = op_sequence(unit)

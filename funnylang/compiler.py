@@ -354,19 +354,40 @@ class Compiler:
     # Sentinel meaning "not present" for TRY_PUSH's handlerOff/finallyOff —
     # a real relative offset of 0 is reachable (an empty catch body sitting
     # immediately after the try body), so 0 can't double as "absent".
+    # Sentinel meaning "not present" for TRY_PUSH's handlerOff/finallyOff —
+    # a real relative offset of 0 is reachable (an empty catch body sitting
+    # immediately after the try body), so 0 can't double as "absent".
     _TRY_ABSENT = 0xFFFF
 
+    def _patch_try_push(self, site: int, base_ip: int, handler_abs: int | None, finally_abs: int | None) -> None:
+        handler_rel = self._TRY_ABSENT if handler_abs is None else handler_abs - base_ip
+        finally_rel = self._TRY_ABSENT if finally_abs is None else finally_abs - base_ip
+        code = self.chunk.code
+        code[site + 1: site + 3] = handler_rel.to_bytes(2, "big")
+        code[site + 3: site + 5] = finally_rel.to_bytes(2, "big")
+
     def _stmt_Try(self, node: A.Try) -> None:
-        # Both offsets are relative to the address right after TRY_PUSH's own
-        # operands (i.e. where the protected body begins) — the same
+        # PLAN.md §M5: "regardless" must run on both the normal path and the
+        # exceptional (unwinding) path, so its bytecode is compiled twice.
+        # Both TRY_PUSH offsets are relative to the address right after its
+        # own operands (i.e. where the protected body begins) — the same
         # convention as JUMP's "ip after the instruction".
-        handler_jump_site = self.chunk.emit(Op.TRY_PUSH, 0, 0, span=node.span)
-        base_ip = handler_jump_site + 5
+        try_base_depth = self.chunk.stack_depth
+        outer_site = self.chunk.emit(Op.TRY_PUSH, 0, 0, span=node.span)
+        outer_base_ip = outer_site + 5
         self._compile_scoped_block(node.body.statements)
         self._emit(Op.TRY_POP, span=node.span)
         after_try_jump = self.chunk.emit_jump(Op.JUMP, span=node.span)
+
+        inner_site = None
+        handler_abs = None
         if node.catch_body is not None:
-            handler_rel = self.chunk.next_offset - base_ip
+            handler_abs = self.chunk.next_offset
+            # Wrap the catch body in its own (handler-less) TRY_PUSH so that
+            # if the catch body itself throws, this try's `regardless` still
+            # runs before the new exception keeps propagating outward.
+            if node.finally_body is not None:
+                inner_site = self.chunk.emit(Op.TRY_PUSH, 0, 0, span=node.span)
             self._push()  # the caught error value, bound to catch_var's slot
             base_depth = self.chunk.stack_depth
             for s in node.catch_body.statements:
@@ -374,17 +395,36 @@ class Compiler:
             self._close_locals_above(base_depth)
             self._emit(Op.POP, span=node.span)  # pop the caught error binding
             self._pop()
-        else:
-            handler_rel = self._TRY_ABSENT
+            if inner_site is not None:
+                self._emit(Op.TRY_POP, span=node.span)
         self.chunk.patch_jump(after_try_jump)
+
+        finally_abs = None
         if node.finally_body is not None:
-            finally_rel = self.chunk.next_offset - base_ip
+            # Copy 1: inline, normal-path finally — reached by falling
+            # through, never by a TRY_PUSH jump, so it needs no address noted.
             self._compile_scoped_block(node.finally_body.statements)
-        else:
-            finally_rel = self._TRY_ABSENT
-        code = self.chunk.code
-        code[handler_jump_site + 1: handler_jump_site + 3] = handler_rel.to_bytes(2, "big")
-        code[handler_jump_site + 3: handler_jump_site + 5] = finally_rel.to_bytes(2, "big")
+            skip_exceptional_copy = self.chunk.emit_jump(Op.JUMP, span=node.span)
+            # Copy 2: exceptional-path finally. This is what `finallyOff`
+            # actually points to — TRY_PUSH's finally field is only ever
+            # consulted during exception unwinding. Reached after the VM
+            # truncates the stack to try_base_depth and pushes the pending
+            # error there; re-CHUCKs it when done so unwinding continues,
+            # using only opcodes that already exist.
+            finally_abs = self.chunk.next_offset
+            if inner_site is not None:
+                self._patch_try_push(inner_site, inner_site + 5, None, finally_abs)
+            saved_depth = self.chunk.stack_depth
+            self.chunk.stack_depth = try_base_depth + 1
+            self._compile_scoped_block(node.finally_body.statements)
+            self._emit(Op.GET_LOCAL, try_base_depth, span=node.span)
+            self._push()
+            self._emit(Op.CHUCK, span=node.span)
+            self._pop()
+            self.chunk.stack_depth = saved_depth
+            self.chunk.patch_jump(skip_exceptional_copy)
+
+        self._patch_try_push(outer_site, outer_base_ip, handler_abs, finally_abs)
 
     def _stmt_Chuck(self, node: A.Chuck) -> None:
         self._compile_expr(node.value)
