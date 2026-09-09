@@ -208,10 +208,10 @@ Mitigations, mandatory from N1 onward and non-negotiable:
 native/
   main.c            CLI entry, argument parsing
   value.h/.c        tagged-union Value, type predicates, equality, truthiness
-  object.h/.c       Obj header, allocation, the all-objects list
-  gc.c              mark-sweep, gray stack, temp roots, stress mode
+  object.h          Obj header (struct + ObjType enum) -- no object.c; see §9's N1 entry
+  gc.h/.c           mark-sweep, gray stack, temp roots, stress mode
   bignum.h/.c       arbitrary-precision integers + fixnum promotion
-  numfmt.c          Ryū float formatting (shortest round-trip)
+  numfmt.h/.c       shortest-round-trip float formatting (bignum-based, not literally Ryū — §9)
   string.c          UTF-8 yapstring, interning, codepoint indexing
   unicode_tbl.c     GENERATED — do not hand-edit (see tools/gen_unicode.py)
   toolchain_blob.c  GENERATED — the linked toolchain .funnypak as a byte array (N10)
@@ -754,6 +754,50 @@ gets an entry explaining what changed and why.
   way). `release-build`/`release-publish` jobs added to `ci.yml`, gated on `startsWith(github.ref,
   'refs/tags/v')`; the CI smoke test runs the frozen binary's `--version`, `run examples/hello.funny`,
   and `test examples`, not just a version print, so a broken freeze fails CI instead of shipping.
+- **N1 · complete (values, GC, bignum, numfmt) · all four acceptance criteria met.** `value.h/.c`
+  (tagged-union `Value`, narrow equality/truthiness), `object.h` (the common `Obj` header),
+  `gc.c` (mark-sweep with a gray stack, a temp-root stack for the native-function protocol, an
+  external-roots callback N2's VM will register into, `FUNNY_GC_STRESS` via `getenv`), `bignum.c`
+  (sign-magnitude, Knuth Algorithm D division), and `numfmt.c` (float formatting). Every acceptance
+  bar hit for real, not approximately: `test_bignum`/`test_value`/`test_gc` assertion suites pass;
+  1,000,000-case differential fuzz against Python's own `int` (bignum) and `repr()` (numfmt) each
+  pass with **zero** mismatches (`tests/native/fuzz_*_check.py`); every unit test and both fuzzers
+  are ASan/UBSan-clean under both gcc and clang. Verified via a WSL Ubuntu toolchain installed this
+  session specifically for this purpose — see the persisted memory
+  `wsl-c-toolchain-for-native-runtime-work.md`.
+  **AGENT CHOICE · numfmt.c is not literally Ryū.** Full rationale lives in numfmt.h's own header
+  comment: exact bignum rational arithmetic plus round-trip verification via `strtod`, reusing
+  bignum.c's already-proven correctness, rather than a hand-rolled table-driven Ryu implementation.
+  Behaviorally identical (matches `repr()` byte for byte, confirmed at 1M cases); revisit for raw
+  formatting speed post-2.0 if it's ever actually on a hot path.
+  **object.c was planned (§4) but never written** — `object.h` alone (a struct + enum) turned out to
+  be sufficient; the "allocate and link" step differs enough per concrete type (`bignum_new`'s plain
+  `malloc`, deliberately GC-agnostic, versus `gc_track()`'s separate opt-in) that a shared
+  `allocate_obj` had no real body to contain. May return once N4 needs shared object-level
+  utilities.
+  Three real bugs, found only by testing (not by re-reading the code) — the concrete argument for
+  why this milestone's acceptance criteria demand fuzzing, not just hand-picked unit tests:
+  1. **bignum.c: every nonzero result of `bignum_add`/`bignum_sub`/`bignum_divmod_trunc`'s sign was
+     silently zeroed.** Each called `bignum_is_zero(r)` (which reads `r->sign`) to decide whether to
+     apply the caller's intended sign — but `r` came straight out of a magnitude-only helper
+     (`mag_add`/`mag_sub`/`mag_divmod`) whose result's `sign` field is still the `bignum_new` default
+     of 0 at that point, regardless of whether the magnitude is actually zero. `99999999999999999999
+     + 1` printed as `"0"`. Fixed by checking `r->count == 0` (the real signal `trim()` already
+     establishes) instead of the not-yet-meaningful `sign`. Caught immediately by
+     `test_add_sub_basic`'s very first assertion.
+  2. **numfmt.c: `compare_to_power_of_ten` leaked a bignum on every call taking its negative-exponent
+     branch** (the `pw` allocated there was never freed). Invisible under a plain correctness run;
+     caught by running the differential fuzzer under ASan with leak detection.
+  3. **numfmt.c: `compute_dec_exp`'s original double-based initial guess could hang for a very long
+     time on subnormal doubles.** It computed `bignum_to_double(num) / bignum_to_double(den)`, but a
+     subnormal's exact denominator is up to 2^1074 — which overflows a `double` to `+Inf`, sending
+     `log10` to `-Inf` and an out-of-range `(int)` cast (undefined behavior) to a garbage
+     huge-magnitude value, which the correction loop then had to walk back one step at a time toward
+     the real answer (~-324) — in practice, took effectively forever rather than genuinely never
+     terminating. `numfmt_repr(5e-324)` (the smallest positive double) hung; found by timing out a
+     debug harness that printed progress per test case and watching where it stalled. Fixed by
+     estimating the initial guess from bit lengths instead of ever converting either bignum to a
+     `double`.
 - **N10 · ADDITION · prebuilt binary distribution.** Not in the original plan; added at the user's
   request so that using FunnyLang never requires building it. GitHub Releases on
   `github.com/Sam-H101/FunnyLang`, five platform artifacts per tag plus a rolling `nightly`, checksums,

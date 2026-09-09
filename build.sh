@@ -32,5 +32,9 @@ else
     exit 1
 fi
 
-echo "+ $CC ${FLAGS[*]} -o $OUT ${SRCS[*]}"
-"$CC" "${FLAGS[@]}" -o "$OUT" "${SRCS[@]}"
+# -lm: numfmt.c uses <math.h> (floor/log10/isnan/isinf/signbit). Must come
+# after the sources on the link line (GNU ld resolves libraries left to
+# right against what's already been seen). Harmless where it's not needed
+# (macOS's libSystem already has these symbols; passing -lm is a no-op).
+echo "+ $CC ${FLAGS[*]} -o $OUT ${SRCS[*]} -lm"
+"$CC" "${FLAGS[@]}" -o "$OUT" "${SRCS[@]}" -lm

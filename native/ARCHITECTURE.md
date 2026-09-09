@@ -22,11 +22,15 @@ must reproduce Python's `repr()` byte for byte, since the differential suite dif
 ## The object model
 
 Every heap value (`yapstring`, `stash`, `groupchat`, `Closure`, `Squad`, `Instance`, a boxed
-upvalue cell, a `pointa`'s backing state, ...) is an `Obj` with a common header: a type tag, a mark
-bit, and an intrusive `next` pointer threading every live object into one all-objects list —
-`object.c`'s `allocate_obj` is the only place that list is appended to. This is the same layout
-`clox`/Crafting Interpreters uses, chosen for the same reason: sweeping needs no separate
-bookkeeping structure, just a walk of that list.
+upvalue cell, a `pointa`'s backing state, ...) is an `Obj` (`object.h`) with a common header: a type
+tag, a mark bit, a size, and an intrusive `next` pointer threading every live object into one
+all-objects list. `object.h` is header-only (a struct definition and the `ObjType` enum) — each
+concrete type's own file (`bignum.c`, and later `string.c`/`stash.c`/...) allocates itself with a
+plain `malloc`, independently of any GC, so it stays unit-testable on its own; `gc_track()`
+(`gc.c`) is the one place that actually appends a freshly-allocated object onto a `GC`'s
+all-objects list and starts counting it toward the heap-growth threshold. This split (allocate,
+then separately opt into GC tracking) is the same layout `clox`/Crafting Interpreters uses for the
+list itself, adapted so N1's GC could be built and fuzz-tested before any VM existed to drive it.
 
 ## Garbage collection: the contract
 
