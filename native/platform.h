@@ -63,4 +63,24 @@ bool platform_list_dir(const char *path, char ***out_names, size_t *out_count, c
    require existence either. */
 bool platform_abs_path(const char *path, char *out, size_t out_len, char *errbuf, size_t errbuf_len);
 
+/* -- timing (NATIVE_PLAN.md N5 task 2, `clock`) --------------------- */
+
+/* Wall-clock time, seconds since the Unix epoch -- matches Python's
+   time.time(). */
+double platform_now_seconds(void);
+/* A monotonic clock unaffected by wall-clock adjustments -- matches
+   Python's time.perf_counter(); only ever used for measuring elapsed
+   time between two calls, never compared against platform_now_seconds's
+   own epoch. */
+double platform_monotonic_seconds(void);
+/* Blocks the calling thread for `seconds` (no-op for <= 0) -- matches
+   Python's time.sleep(). */
+void platform_sleep_seconds(double seconds);
+/* Formats the current local time with a strftime(3)-style `fmt` into
+   `out` (out_len bytes); returns the byte count written, same convention
+   as strftime itself (0 for either an empty format or a buffer too
+   small -- out_len is generous enough in every caller that the two never
+   need distinguishing). Matches Python's time.strftime(fmt). */
+size_t platform_strftime_now(const char *fmt, char *out, size_t out_len);
+
 #endif /* FUNNY_PLATFORM_H */

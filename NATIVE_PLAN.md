@@ -1253,3 +1253,34 @@ gets an entry explaining what changed and why.
   up real files/directories under `build/n4/filez_scratch`, plus every path-string edge case the test
   program exercises against the real Python CLI first) plus the full suite re-run, byte-identical,
   gcc and clang, `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.
+
+- **N5 · sub-phase 5g complete · `clock` (task 2's eighth module).** All 5 functions port from
+  `funnylang/stdlib/clock.py`, all real timing routed through 4 new `platform.c`/`.h` functions
+  (`platform_now_seconds`/`platform_monotonic_seconds`/`platform_sleep_seconds`/
+  `platform_strftime_now`) per ARCHITECTURE.md's platform-boundary rule, which lists timing
+  alongside filesystem access as something only `platform.c` may know the OS-specific shape of
+  (POSIX `clock_gettime`/`nanosleep`/`localtime_r`, same deferred-Win32-branch note as `filez`'s
+  own sub-phase).
+  **`stopwatch()`'s captured state:** Python's own `_stopwatch` returns a closure over a local
+  `start` variable — C has no such thing, and `ObjNativeFn`'s C signature carries no userdata slot.
+  Solved by repurposing `ObjBoundNative` (already built for ordinary receiver-bound methods): its
+  `receiver` field holds `FLOAT_VAL(start)` instead of an actual receiver object, and
+  `call_bound_native` already unconditionally prepends that value as `args[0]` on every call,
+  bound-method-syntax or bare `sw()` alike (confirmed by reading `do_call`'s own dispatch, which
+  treats `OBJ_BOUND_NATIVE` as directly callable) — so `elapsed()`'s body just reads `args[0]` back
+  out as its captured start time. No new object type needed.
+  Every function here touches the wall clock or a monotonic clock, so — the same established
+  exception as `rizz`'s randomness and `ask()`'s interactive input — nothing is tested for exact
+  output; the differential program checks *properties* (`what_is_it()` types, non-negative/
+  monotonically-increasing elapsed times, a literal-format `date_yap` round-trip using formats with
+  no time-dependent `%` directives) rather than any timestamp value that could legitimately differ
+  by the time the Python run and the native run each reach that line.
+  **Found the Python reference itself crash uncatchably twice while writing the test** (not while
+  porting the C side): `touch_grass("nope")` hits `time.sleep()`'s own bare `TypeError` on a
+  non-numeric argument, and `date_yap(42)` hits `time.strftime()`'s own bare `TypeError` on a
+  non-string format — neither is a `FunnyError`, so no `sketchy`/`my_bad` can catch either on the
+  Python side. Removed both cases from the test, same rationale as `rizz.roll`'s and
+  `filez.write_bytes`'s own narrower-than-Python safety improvements (this native VM throws a clean
+  `TypeVibeMismatch` for both instead).
+  Verified: 1 new differential program plus the full suite re-run, byte-identical, gcc and clang,
+  `-Werror`, ASan/UBSan, and `FUNNY_GC_STRESS=1`.

@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 static void set_errbuf(char *errbuf, size_t n, int err) {
@@ -240,4 +241,31 @@ bool platform_abs_path(const char *path, char *out, size_t out_len, char *errbuf
     lexical_normalize(raw_abs, out, out_len);
     free(raw_abs);
     return true;
+}
+
+double platform_now_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+double platform_monotonic_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+void platform_sleep_seconds(double seconds) {
+    if (seconds <= 0.0) return;
+    struct timespec ts;
+    ts.tv_sec = (time_t)seconds;
+    ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
+    nanosleep(&ts, NULL);
+}
+
+size_t platform_strftime_now(const char *fmt, char *out, size_t out_len) {
+    time_t t = time(NULL);
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    return strftime(out, out_len, fmt, &tmv);
 }
