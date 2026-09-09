@@ -265,7 +265,16 @@ def test_yeet_without_out_flag_defaults_next_to_source(tmp_path):
     assert expected_exe.exists()
 
 
-def test_bootstrap_reports_not_yet_implemented():
+@pytest.mark.slow
+def test_bootstrap_verify_reaches_fixed_point():
+    # `funny bootstrap` is real as of M12 — see tests/test_bootstrap.py for
+    # the full self-hosting fixed-point and cross-validation coverage; this
+    # is just a smoke test that the CLI subcommand itself works end to end.
     result = _run_cli("bootstrap", "--verify")
+    assert result.returncode == 0
+    assert "stage3 and stage4 are byte-identical" in result.stdout
+
+
+def test_bootstrap_needs_verify_flag():
+    result = _run_cli("bootstrap")
     assert result.returncode == 1
-    assert "M12" in result.stderr

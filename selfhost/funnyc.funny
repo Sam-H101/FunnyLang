@@ -1,0 +1,24 @@
+// selfhost/funnyc.funny — PLAN.md §M12 task 2, sixth and last file: the
+// CLI. `the_args()` -> in-path, out-path; compile; write.
+//
+// This is the file the bootstrap process (PLAN.md §M12 task 4) actually
+// runs: stage1 (the Python compiler) compiles this file into stage2.funnyc,
+// which is then *run* with args [in-path, out-path] to compile this same
+// file again (stage3), and so on. A FunnyLang compiler, in bytecode,
+// compiling FunnyLang.
+
+gimme filez
+gimme { compile_source } from "compiler.funny"
+gimme { emit_funnyc } from "emitter.funny"
+
+yo args = the_args()
+sus (args.how_thicc() < 2) {
+    yap "usage: funnyc <in-path.funny> <out-path.funnyc>"
+    dip(1)
+}
+yo in_path = args[0]
+yo out_path = args[1]
+yo src = filez.slurp(in_path)
+yo unit = compile_source(src, fax)
+yo buf = emit_funnyc(unit, in_path)
+filez.write_bytes(out_path, buf)

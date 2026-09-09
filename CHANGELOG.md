@@ -42,7 +42,7 @@ All notable changes to FunnyLang are documented here.
   appended plus a 17-byte trailer. Verified end to end: hello world, a multi-module bundle, an
   uncaught-error exit code, a naked stub, and running after being moved to a different directory.
 
-### M12 — Self-hosting (in progress)
+### M12 — Self-hosting
 - `selfhost/prelude.funny`: assert helpers and `.funnyc`-format byte-buffer writers (u8/u16/u32/u64
   big-endian, a hand-rolled UTF-8 encoder, and the arbitrary-precision int-magnitude encoding for
   §5.2's tag-2 constants), cross-checked byte-for-byte against Python's own `struct`-based encoding.
@@ -76,6 +76,20 @@ All notable changes to FunnyLang are documented here.
   `funnylang.serializer.dump_funnyc()`'s output, and — separately — every emitted `.funnyc` file
   actually loads and runs correctly through the real Python VM, producing identical stdout to
   running the original source directly.
+- `selfhost/funnyc.funny`: the sixth and last file — the CLI. `funny bootstrap --verify` (a new
+  Python CLI subcommand) is real: stage1 (Python) bundles `selfhost/funnyc.funny` into a
+  self-contained stage2 `.funnypak`; running stage2 (compiling `funnyc.funny` using the self-hosted
+  compiler's logic for the first time) produces stage3; running stage3 produces stage4. **stage3
+  and stage4 are byte-identical — the self-hosting fixed point is reached.** `--keep` writes all
+  three stage artifacts to `build/bootstrap/`; `--diff` disassembles the first divergent proto on a
+  mismatch. Cross-validated per §M12 task 5: stage3 compiles the entire `tests/lang/` corpus (not
+  just `funnyc.funny`) with stdout identical to stage1 on every file, including every squad,
+  closure, template, and try/catch/finally test — the real proof self-hosting works.
+
+  Self-hosting is complete: `funnylang/` (the Python implementation) is still what ships and what
+  the VM runs — the VM itself never becomes self-hosted, by design — but the compiler now has a
+  second, independent implementation, written in FunnyLang, that reproduces itself byte for byte
+  and agrees with the Python one on every test in the repo.
 
 ### M11 — Hardening pass
 - No Python traceback ever escapes the CLI (a clean "COMPILER SKILL ISSUE" message + exit 70

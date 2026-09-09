@@ -1400,8 +1400,8 @@ main()
 
 - [ ] `pytest -q` green on Windows, Linux, macOS × Python 3.10–3.12
 - [ ] ≥ 90% coverage on `funnylang/`
-- [ ] `funny bootstrap --verify` reaches a fixed point
-- [ ] All of `tests/lang/` produces identical output under the stage1 and stage3 compilers
+- [x] `funny bootstrap --verify` reaches a fixed point
+- [x] All of `tests/lang/` produces identical output under the stage1 and stage3 compilers
 - [ ] `funny yeet examples/chaos.funny -o chaos.exe` → a working standalone binary
 - [ ] No Python traceback is reachable from any user input
 - [ ] Every error in §4.1 has a golden test asserting its rendered diagnostic
@@ -1684,3 +1684,23 @@ Format: `- [Mn] <what changed> — <why>`.
   allows (no bit-level float access exists anywhere in the language) would be fragile and pointless
   given Python already does this exactly right. Reduced to a plain integer, the emitter writes it
   with the same big-endian byte-writer already used for everything else, no new machinery needed.
+- [M12] `selfhost/funnyc.funny` (the last of the six files) only compiles a single input file — it
+  has no bundler of its own, unlike `funny build`'s automatic `.funnypak` linking for multi-module
+  entry points. AGENT CHOICE, resolved the simplest way: `funny bootstrap` (the new Python CLI
+  subcommand implementing task 4) builds stage2 as a `.funnypak` via the *existing* `build_bundle`/
+  `dump_funnypak` machinery (stage1 already has a working bundler; nothing new needed there), so
+  stage2 is self-contained and needs no filesystem access to run. Stages 3 and 4, though, are each
+  produced by *running* the previous stage with args `[selfhost/funnyc.funny, out-path]` — i.e. by
+  funnyc.funny's own single-file compile logic — so they come out as bare `.funnyc` files whose own
+  `gimme {...} from "compiler.funny"` has no bundle to resolve against and no embedded source path
+  to resolve relative to (a loaded `.funnyc` carries no source at all). Confirmed by hand: a bare
+  compiled `.funnyc` moved outside `selfhost/` fails those imports outright. Fixed with the
+  resolution order §3.8 already specifies: `ModuleResolver`'s second-priority `FUNNYPATH` search
+  path. `funny bootstrap` points every stage's `ModuleResolver` at `selfhost/` directly (via the
+  constructor's `funnypath=` override, not the environment variable), so each stage's own imports
+  resolve correctly no matter which directory the compiled artifact itself lives in — `--keep`'s
+  `build/bootstrap/` included. Writing a self-hosted bundler was considered and rejected: it would
+  duplicate real, nontrivial logic (`modules.py`'s dependency walk, canonical-path resolution, cycle
+  detection) for a purely mechanical linking step the existing resolution order already handles for
+  free, without weakening what the fixed point actually proves — stage3 and stage4 are still
+  produced by *running* the self-hosted compiler's real logic on real source text, byte for byte.

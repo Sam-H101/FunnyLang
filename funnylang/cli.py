@@ -12,7 +12,7 @@ from pathlib import Path
 from . import BYTECODE_VERSION, __version__
 from .ast_nodes import ExprStmt, dump_ast
 from .compiler import Compiler
-from .disasm import disassemble
+from .disasm import disassemble, disassemble_proto
 from .errors import (
     ComputerExploded, FunnyError, ParseErrorBundle, render_diagnostic,
     render_parse_error_bundle,
@@ -462,9 +462,115 @@ def cmd_yeet(args) -> int:
     return 0
 
 
-def cmd_bootstrap(_args) -> int:
-    print("funny bootstrap lands in M12 — self-hosting isn't wired up yet.", file=sys.stderr)
-    return 1
+def _bootstrap_run_stage(compiler_path, in_path, out_path, selfhost_dir) -> tuple[bool, str]:
+    """Runs the compiler at `compiler_path` (a .funnypak for stage2, a bare
+    .funnyc for stage3+) with args [in_path, out_path] — exactly what
+    `funny run compiler_path -- in_path out_path` does, just in-process so
+    the whole bootstrap runs as one `funny bootstrap` call. `funnypath`
+    makes a bare .funnyc's own `gimme {...} from "compiler.funny"` (it has
+    no embedded source path to resolve relative to) find its siblings in
+    selfhost/ regardless of where the compiled artifact itself lives."""
+    from .modules import ModuleResolver
+
+    vm = VM()
+    install_stdlib(vm)
+    vm.module_resolver = ModuleResolver(vm, funnypath=str(selfhost_dir))
+    vm.program_args = [str(in_path), str(out_path)]
+    data = Path(compiler_path).read_bytes()
+    try:
+        if str(compiler_path).endswith(".funnypak"):
+            modules, entry_name = load_funnypak(data)
+            vm.module_loader = make_pak_module_loader(modules, entry_name)
+            unit = modules[entry_name]
+            source = CanonicalSource(entry_name)
+        else:
+            unit = load_funnyc(data)
+            source = None
+        vm.interpret(unit, source)
+    except FunnyError as err:
+        return False, render_diagnostic(err)
+    return True, ""
+
+
+def _bootstrap_diff(stage3_path, stage4_path) -> str:
+    """Disassembles the first proto where stage3 and stage4 diverge and
+    prints both versions, for `--diff`."""
+    unit3 = load_funnyc(Path(stage3_path).read_bytes())
+    unit4 = load_funnyc(Path(stage4_path).read_bytes())
+    if len(unit3.protos) != len(unit4.protos):
+        return f"proto count differs: stage3 has {len(unit3.protos)}, stage4 has {len(unit4.protos)}."
+    for i, (p3, p4) in enumerate(zip(unit3.protos, unit4.protos)):
+        if p3 != p4:
+            label = f"proto #{i} ({p3.name})"
+            out = [f"first divergent proto: {label}", "", "-- stage3 --", disassemble_proto(unit3, p3, label)]
+            out += ["", "-- stage4 --", disassemble_proto(unit4, p4, label)]
+            return "\n".join(out)
+    return "protos are equal but the raw bytes differ (const pool or header mismatch)."
+
+
+def cmd_bootstrap(args) -> int:
+    verify = getattr(args, "verify", False)
+    keep = getattr(args, "keep", False)
+    show_diff = getattr(args, "diff", False)
+    if not verify:
+        print("funny bootstrap needs --verify.", file=sys.stderr)
+        return 1
+
+    selfhost_dir = Path(__file__).resolve().parent.parent / "selfhost"
+    funnyc_path = selfhost_dir / "funnyc.funny"
+
+    tmp_ctx = None
+    if keep:
+        build_dir = Path("build") / "bootstrap"
+        build_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        import tempfile
+
+        tmp_ctx = tempfile.TemporaryDirectory(prefix="funny-bootstrap-")
+        build_dir = Path(tmp_ctx.name)
+
+    try:
+        try:
+            units, entry_canonical = build_bundle(str(funnyc_path))
+        except ParseErrorBundle as bundle:
+            print(render_parse_error_bundle(bundle), file=sys.stderr, end="")
+            return 1
+        except FunnyError as err:
+            print(render_diagnostic(err), file=sys.stderr, end="")
+            return 1
+        stage2_path = build_dir / "stage2.funnypak"
+        stage2_path.write_bytes(dump_funnypak(units, entry_canonical))
+        print("🥁 stage 2... compiled.")
+
+        stage3_path = build_dir / "stage3.funnyc"
+        ok, err_text = _bootstrap_run_stage(stage2_path, funnyc_path, stage3_path, selfhost_dir)
+        if not ok:
+            print(f"stage 2 -> stage 3 failed:\n{err_text}", file=sys.stderr)
+            return 1
+        print("🥁 stage 3... compiled by stage 2.")
+
+        stage4_path = build_dir / "stage4.funnyc"
+        ok, err_text = _bootstrap_run_stage(stage3_path, funnyc_path, stage4_path, selfhost_dir)
+        if not ok:
+            print(f"stage 3 -> stage 4 failed:\n{err_text}", file=sys.stderr)
+            return 1
+        print("🥁 stage 4... compiled by stage 3.")
+        print()
+
+        stage3_bytes = stage3_path.read_bytes()
+        stage4_bytes = stage4_path.read_bytes()
+        if stage3_bytes == stage4_bytes:
+            print(f"stage3 and stage4 are byte-identical ({len(stage3_bytes):,} bytes).")
+            print("FunnyLang now compiles FunnyLang. we are so back. 🏆")
+            return 0
+
+        print(f"stage3 ({len(stage3_bytes)} bytes) and stage4 ({len(stage4_bytes)} bytes) differ.", file=sys.stderr)
+        if show_diff:
+            print(_bootstrap_diff(stage3_path, stage4_path), file=sys.stderr)
+        return 1
+    finally:
+        if tmp_ctx is not None:
+            tmp_ctx.cleanup()
 
 
 # ---------------------------------------------------------------------------
