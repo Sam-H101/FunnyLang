@@ -1,0 +1,873 @@
+// selfhost/parser.funny — PLAN.md §M12 task 2, third file: a port of
+// funnylang/parser.py (recursive-descent statements + precedence-climbing
+// expressions, covering the whole grammar of §3).
+//
+// AST nodes are groupchat records with a "node" key, per the plan's own
+// example. Every node also carries "line"/"col" -- the start position,
+// which is all the .funnyc line table (§5.2) ever needs; there's no "end"
+// field, since nothing downstream reads one (span-merging in the Python
+// parser only ever keeps the *start* position for that same reason).
+//
+// Parser state (the token list + a cursor + collected errors) is threaded
+// as a mutable groupchat (`ps`), the same pattern lexer.funny uses for
+// scanner state.
+
+gimme { tokenize } from "lexer.funny"
+gimme { KEYWORDS } from "lexer.funny"
+
+// -- precedence table ---------------------------------------------------
+// [left_binding_power, next_min_bp_for_rhs, op_text]. `**` and unary are
+// handled outside this table (see parse_power/parse_unary) since unary
+// binds *tighter* than `**` here, unlike Python.
+
+flex deadass BINOP_TABLE = {
+    "PIPE_GT": [3, 4, "|>"],
+    "QUESTION_QUESTION": [4, 5, "??"],
+    "PIPE_PIPE": [5, 6, "||"], "ORR": [5, 6, "||"],
+    "AMP_AMP": [6, 7, "&&"], "FR": [6, 7, "&&"],
+    "PIPE": [7, 8, "|"],
+    "CARET": [8, 9, "^"],
+    "AMP": [9, 10, "&"],
+    "EQ_EQ": [10, 11, "=="], "BANG_EQ": [10, 11, "!="],
+    "SAME_ENERGY": [10, 11, "=="], "DIFF_ENERGY": [10, 11, "!="],
+    "LT": [11, 12, "<"], "LE": [11, 12, "<="],
+    "GT": [11, 12, ">"], "GE": [11, 12, ">="],
+    "IN": [11, 12, "in"],
+    "LT_LT": [12, 13, "<<"], "GT_GT": [12, 13, ">>"],
+    "PLUS": [13, 14, "+"], "MINUS": [13, 14, "-"],
+    "STAR": [14, 15, "*"], "SLASH": [14, 15, "/"],
+    "BACKSLASH": [14, 15, "\\"], "PERCENT": [14, 15, "%"],
+}
+
+flex deadass UNARY_OPS = {"MINUS": "-", "BANG": "!", "AINT": "!", "TILDE": "~"}
+
+flex deadass ASSIGN_OPS = {
+    "EQ": "=", "PLUS_EQ": "+=", "MINUS_EQ": "-=", "STAR_EQ": "*=",
+    "SLASH_EQ": "/=", "PERCENT_EQ": "%=", "STAR_STAR_EQ": "**=",
+    "PIPE_PIPE_EQ": "||=",
+}
+
+flex deadass STMT_START_KINDS = [
+    "YO", "DEADASS", "BET", "SQUAD", "SUS", "BRUH", "GRIND", "BOUNCE",
+    "BAIL", "NVM", "SKETCHY", "CHUCK", "GIMME", "FLEX", "YAP", "YEET",
+    "MUMBLE", "VIBE",
+]
+
+flex deadass STMT_END_KINDS = ["NEWLINE", "SEMICOLON", "RBRACE", "EOF"]
+
+flex deadass RESERVED_FUTURE = [
+    "vibin", "async_ngl", "await_fr", "yield_lol", "match_this", "when",
+]
+
+flex deadass KEYWORD_KINDS = KEYWORDS.values()
+
+flex deadass MAX_ERRORS = 5
+
+// -- token-stream primitives -----------------------------------------
+
+flex bet new_parser(tokens) {
+    bounce {"tokens": tokens, "pos": 0, "errors": []}
+}
+
+flex bet p_peek(ps, offset) {
+    yo i = ps["pos"] + offset
+    yo last = ps["tokens"].how_thicc() - 1
+    sus (i > last) {
+        i = last
+    }
+    bounce ps["tokens"][i]
+}
+
+flex bet p_check(ps, kind) {
+    bounce p_peek(ps, 0)["kind"] == kind
+}
+
+flex bet p_advance(ps) {
+    yo tok = ps["tokens"][ps["pos"]]
+    sus (tok["kind"] != "EOF") {
+        ps["pos"] += 1
+    }
+    bounce tok
+}
+
+flex bet p_match(ps, kind) {
+    sus (p_check(ps, kind)) {
+        bounce p_advance(ps)
+    }
+    bounce ghost
+}
+
+flex bet parser_error(ps, tok, message) {
+    chuck "ParserHadAStroke at " + to_yap(tok["line"]) + ":" + to_yap(tok["col"]) + ": " + message
+}
+
+flex bet p_expect(ps, kind, message) {
+    sus (p_check(ps, kind)) {
+        bounce p_advance(ps)
+    }
+    parser_error(ps, p_peek(ps, 0), message)
+}
+
+// Like p_expect(ps, "IDENT", ...), but also accepts any keyword token used
+// as a name -- property/method names specifically, where the frozen
+// keyword list collides with a magic method name or squad constructor.
+flex bet p_expect_name(ps, message) {
+    yo tok = p_peek(ps, 0)
+    sus (tok["kind"] == "IDENT" || KEYWORD_KINDS.contains(tok["kind"])) {
+        p_advance(ps)
+        bounce tok
+    }
+    parser_error(ps, tok, message)
+}
+
+flex bet p_skip_newlines(ps) {
+    bruh (p_check(ps, "NEWLINE")) {
+        p_advance(ps)
+    }
+}
+
+flex bet p_skip_stmt_seps(ps) {
+    bruh (p_check(ps, "NEWLINE") || p_check(ps, "SEMICOLON")) {
+        p_advance(ps)
+    }
+}
+
+flex bet check_reserved(ps, tok) {
+    sus (RESERVED_FUTURE.contains(tok["text"])) {
+        parser_error(ps, tok, "'" + tok["text"] + "' isn't implemented yet.")
+    }
+}
+
+flex bet p_expect_stmt_end(ps) {
+    sus (p_check(ps, "NEWLINE") || p_check(ps, "SEMICOLON")) {
+        p_advance(ps)
+        bounce ghost
+    }
+    sus (p_check(ps, "EOF") || p_check(ps, "RBRACE")) {
+        bounce ghost
+    }
+    parser_error(ps, p_peek(ps, 0), "expected end of statement (a newline or ';') here.")
+}
+
+// Skip to the next statement boundary, or to `end_kind` -- whichever comes
+// first. `end_kind` itself is left unconsumed.
+flex bet p_synchronize(ps, end_kind) {
+    bruh (!p_check(ps, "EOF") && !p_check(ps, end_kind)) {
+        sus (p_check(ps, "NEWLINE") || p_check(ps, "SEMICOLON")) {
+            p_advance(ps)
+            bounce ghost
+        }
+        sus (STMT_START_KINDS.contains(p_peek(ps, 0)["kind"])) {
+            bounce ghost
+        }
+        p_advance(ps)
+    }
+}
+
+flex bet p_parse_statement_list(ps, end_kind) {
+    yo statements = []
+    p_skip_stmt_seps(ps)
+    bruh (!p_check(ps, end_kind) && !p_check(ps, "EOF")) {
+        sketchy {
+            yo stmt = parse_statement(ps)
+            sus (stmt != ghost) {
+                statements.yeet_in(stmt)
+            }
+        } my_bad (exc) {
+            ps["errors"].yeet_in(exc.message)
+            p_synchronize(ps, end_kind)
+        }
+        p_skip_stmt_seps(ps)
+    }
+    bounce statements
+}
+
+// -- top level ------------------------------------------------------
+
+flex bet parse_program(tokens) {
+    yo ps = new_parser(tokens)
+    yo statements = p_parse_statement_list(ps, "EOF")
+    sus (ps["errors"].how_thicc() > 0) {
+        chuck ps["errors"].join("; ")
+    }
+    bounce {"node": "Program", "statements": statements, "line": 1, "col": 1}
+}
+
+// -- statements -------------------------------------------------------
+
+flex bet parse_statement(ps) {
+    yo tok = p_peek(ps, 0)
+    check_reserved(ps, tok)
+    yo kind = tok["kind"]
+    sus (kind == "YO") { bounce parse_var_decl(ps) }
+    sus (kind == "DEADASS") { bounce parse_const_decl(ps) }
+    sus (kind == "BET") { bounce parse_func_decl(ps, cap) }
+    sus (kind == "SQUAD") { bounce parse_squad_decl(ps) }
+    sus (kind == "SUS") { bounce parse_if(ps) }
+    sus (kind == "BRUH") { bounce parse_while(ps) }
+    sus (kind == "GRIND") { bounce parse_for(ps) }
+    sus (kind == "BOUNCE") { bounce parse_return(ps) }
+    sus (kind == "BAIL") { bounce parse_break(ps) }
+    sus (kind == "NVM") { bounce parse_continue(ps) }
+    sus (kind == "SKETCHY") { bounce parse_try(ps) }
+    sus (kind == "CHUCK") { bounce parse_chuck(ps) }
+    sus (kind == "GIMME") { bounce parse_import(ps) }
+    sus (kind == "FLEX") { bounce parse_export(ps) }
+    sus (kind == "YAP" || kind == "YEET") { bounce parse_yap(ps, fax) }
+    sus (kind == "MUMBLE") { bounce parse_yap(ps, cap) }
+    sus (kind == "VIBE") { bounce parse_vibe_stmt(ps) }
+    bounce parse_expr_stmt(ps)
+}
+
+flex bet parse_block(ps) {
+    yo open_tok = p_expect(ps, "LBRACE", "expected '{' to start a block here.")
+    yo statements = []
+    p_skip_stmt_seps(ps)
+    bruh (!p_check(ps, "RBRACE") && !p_check(ps, "EOF")) {
+        yo stmt = parse_statement(ps)
+        sus (stmt != ghost) {
+            statements.yeet_in(stmt)
+        }
+        p_skip_stmt_seps(ps)
+    }
+    p_expect(ps, "RBRACE", "this block never closes. it's missing a '}'.")
+    bounce {"node": "Block", "statements": statements, "line": open_tok["line"], "col": open_tok["col"]}
+}
+
+flex bet parse_var_decl(ps) {
+    yo start = p_advance(ps) // yo
+    yo name_tok = p_expect(ps, "IDENT", "expected a variable name after 'yo'.")
+    yo initializer = ghost
+    sus (p_match(ps, "EQ") != ghost) {
+        initializer = parse_assignment(ps)
+    }
+    p_expect_stmt_end(ps)
+    bounce {"node": "VarDecl", "name": name_tok["text"], "initializer": initializer, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_const_decl(ps) {
+    yo start = p_advance(ps) // deadass
+    yo name_tok = p_expect(ps, "IDENT", "expected a constant name after 'deadass'.")
+    p_expect(ps, "EQ", "'deadass' needs a value right away: deadass X = something.")
+    yo initializer = parse_assignment(ps)
+    p_expect_stmt_end(ps)
+    bounce {"node": "ConstDecl", "name": name_tok["text"], "initializer": initializer, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_param_list(ps) {
+    yo params = []
+    yo variadic = ghost
+    yo seen_default = cap
+    p_skip_newlines(ps)
+    bruh (!p_check(ps, "RPAREN")) {
+        sus (p_match(ps, "ELLIPSIS") != ghost) {
+            yo name_tok = p_expect(ps, "IDENT", "expected a parameter name after '...'.")
+            variadic = name_tok["text"]
+            p_skip_newlines(ps)
+            sus (p_check(ps, "COMMA")) {
+                parser_error(ps, p_peek(ps, 0), "'...rest' has to be the last parameter.")
+            }
+            bail
+        }
+        yo name_tok = p_expect(ps, "IDENT", "expected a parameter name.")
+        yo default = ghost
+        sus (p_match(ps, "EQ") != ghost) {
+            p_skip_newlines(ps)
+            default = parse_assignment(ps)
+            seen_default = fax
+        } kinda_sus (seen_default) {
+            parser_error(ps, name_tok, "default parameters must come after all required ones.")
+        }
+        params.yeet_in({"name": name_tok["text"], "default": default, "line": name_tok["line"], "col": name_tok["col"]})
+        p_skip_newlines(ps)
+        sus (p_match(ps, "COMMA") == ghost) {
+            bail
+        }
+        p_skip_newlines(ps)
+    }
+    p_skip_newlines(ps)
+    bounce {"params": params, "variadic": variadic}
+}
+
+flex bet parse_func_decl(ps, allow_keyword_name) {
+    yo start = p_advance(ps) // bet
+    yo name_tok = ghost
+    sus (allow_keyword_name) {
+        name_tok = p_expect_name(ps, "expected a method name after 'bet'.")
+    } nah {
+        name_tok = p_expect(ps, "IDENT", "expected a function name after 'bet'.")
+    }
+    p_expect(ps, "LPAREN", "expected '(' to start this function's parameter list.")
+    yo pv = parse_param_list(ps)
+    p_expect(ps, "RPAREN", "this parameter list never closes. it's missing a ')'.")
+    p_skip_newlines(ps)
+    yo body = parse_block(ps)
+    bounce {"node": "FuncDecl", "name": name_tok["text"], "params": pv["params"], "variadic": pv["variadic"], "body": body, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_if(ps) {
+    yo start = p_advance(ps) // sus
+    p_expect(ps, "LPAREN", "'sus' needs parens around its condition: sus (condition) { }.")
+    p_skip_newlines(ps)
+    yo cond = parse_assignment(ps)
+    p_skip_newlines(ps)
+    p_expect(ps, "RPAREN", "this condition never closes. it's missing a ')'.")
+    p_skip_newlines(ps)
+    yo then_branch = parse_block(ps)
+    yo elif_branches = []
+    p_skip_newlines(ps)
+    bruh (p_check(ps, "KINDA_SUS")) {
+        p_advance(ps)
+        p_expect(ps, "LPAREN", "'kinda_sus' needs parens around its condition too.")
+        p_skip_newlines(ps)
+        yo econd = parse_assignment(ps)
+        p_skip_newlines(ps)
+        p_expect(ps, "RPAREN", "this condition never closes. it's missing a ')'.")
+        p_skip_newlines(ps)
+        yo eblock = parse_block(ps)
+        elif_branches.yeet_in({"cond": econd, "block": eblock})
+        p_skip_newlines(ps)
+    }
+    yo else_branch = ghost
+    sus (p_check(ps, "NAH")) {
+        p_advance(ps)
+        p_skip_newlines(ps)
+        else_branch = parse_block(ps)
+    }
+    bounce {"node": "If", "cond": cond, "then_branch": then_branch, "elif_branches": elif_branches, "else_branch": else_branch, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_while(ps) {
+    yo start = p_advance(ps) // bruh
+    p_expect(ps, "LPAREN", "'bruh' needs parens around its condition: bruh (condition) { }.")
+    p_skip_newlines(ps)
+    yo cond = parse_assignment(ps)
+    p_skip_newlines(ps)
+    p_expect(ps, "RPAREN", "this condition never closes. it's missing a ')'.")
+    p_skip_newlines(ps)
+    yo body = parse_block(ps)
+    bounce {"node": "While", "cond": cond, "body": body, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_for(ps) {
+    yo start = p_advance(ps) // grind
+    yo var_tok = p_expect(ps, "IDENT", "expected a loop variable name after 'grind'.")
+    sus (p_match(ps, "FROM") != ghost) {
+        p_skip_newlines(ps)
+        yo start_e = parse_assignment(ps)
+        p_skip_newlines(ps)
+        p_expect(ps, "TO", "range loops need 'to': grind i from 0 to 10 { }.")
+        p_skip_newlines(ps)
+        yo stop_e = parse_assignment(ps)
+        yo step_e = ghost
+        p_skip_newlines(ps)
+        sus (p_match(ps, "STEP") != ghost) {
+            p_skip_newlines(ps)
+            step_e = parse_assignment(ps)
+            p_skip_newlines(ps)
+        }
+        yo body = parse_block(ps)
+        bounce {"node": "ForRange", "var": var_tok["text"], "start": start_e, "stop": stop_e, "step": step_e, "body": body, "line": start["line"], "col": start["col"]}
+    }
+    sus (p_match(ps, "IN") != ghost) {
+        p_skip_newlines(ps)
+        yo iterable = parse_assignment(ps)
+        p_skip_newlines(ps)
+        yo body = parse_block(ps)
+        bounce {"node": "ForEach", "var": var_tok["text"], "iterable": iterable, "body": body, "line": start["line"], "col": start["col"]}
+    }
+    parser_error(ps, p_peek(ps, 0), "a 'grind' loop needs 'from ... to ...' or 'in' after the loop variable.")
+}
+
+flex bet parse_return(ps) {
+    yo start = p_advance(ps) // bounce
+    yo value = ghost
+    sus (!STMT_END_KINDS.contains(p_peek(ps, 0)["kind"])) {
+        value = parse_assignment(ps)
+    }
+    p_expect_stmt_end(ps)
+    bounce {"node": "Return", "value": value, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_break(ps) {
+    yo start = p_advance(ps)
+    p_expect_stmt_end(ps)
+    bounce {"node": "Break", "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_continue(ps) {
+    yo start = p_advance(ps)
+    p_expect_stmt_end(ps)
+    bounce {"node": "Continue", "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_try(ps) {
+    yo start = p_advance(ps) // sketchy
+    p_skip_newlines(ps)
+    yo body = parse_block(ps)
+    yo catch_var = ghost
+    yo catch_body = ghost
+    yo finally_body = ghost
+    p_skip_newlines(ps)
+    sus (p_check(ps, "MY_BAD")) {
+        p_advance(ps)
+        p_expect(ps, "LPAREN", "'my_bad' needs the caught error in parens: my_bad (e) { }.")
+        yo name_tok = p_expect(ps, "IDENT", "expected a name for the caught error.")
+        p_expect(ps, "RPAREN", "this never closes. it's missing a ')'.")
+        p_skip_newlines(ps)
+        catch_var = name_tok["text"]
+        catch_body = parse_block(ps)
+        p_skip_newlines(ps)
+    }
+    sus (p_check(ps, "REGARDLESS")) {
+        p_advance(ps)
+        p_skip_newlines(ps)
+        finally_body = parse_block(ps)
+    }
+    sus (catch_body == ghost && finally_body == ghost) {
+        parser_error(ps, start, "a 'sketchy' block needs a 'my_bad' or a 'regardless'.")
+    }
+    bounce {"node": "Try", "body": body, "catch_var": catch_var, "catch_body": catch_body, "finally_body": finally_body, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_chuck(ps) {
+    yo start = p_advance(ps) // chuck
+    yo value = parse_assignment(ps)
+    p_expect_stmt_end(ps)
+    bounce {"node": "Chuck", "value": value, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_import(ps) {
+    yo start = p_advance(ps) // gimme
+    sus (p_check(ps, "LBRACE")) {
+        p_advance(ps)
+        yo names = []
+        p_skip_newlines(ps)
+        bruh (!p_check(ps, "RBRACE")) {
+            yo name_tok = p_expect(ps, "IDENT", "expected a name to import.")
+            names.yeet_in(name_tok["text"])
+            p_skip_newlines(ps)
+            sus (p_match(ps, "COMMA") == ghost) {
+                bail
+            }
+            p_skip_newlines(ps)
+        }
+        p_skip_newlines(ps)
+        p_expect(ps, "RBRACE", "this import list never closes. it's missing a '}'.")
+        p_expect(ps, "FROM", "named imports need 'from': gimme { a, b } from \"file.funny\".")
+        yo path_tok = p_expect(ps, "STRING", "expected a quoted module path after 'from'.")
+        p_expect_stmt_end(ps)
+        bounce {"node": "Import", "source": path_tok["value"], "is_stdlib": cap, "alias": ghost, "names": names, "line": start["line"], "col": start["col"]}
+    }
+    sus (p_check(ps, "STRING")) {
+        yo path_tok = p_advance(ps)
+        yo alias = ghost
+        sus (p_match(ps, "AS") != ghost) {
+            yo alias_tok = p_expect(ps, "IDENT", "expected a name after 'as'.")
+            alias = alias_tok["text"]
+        }
+        p_expect_stmt_end(ps)
+        bounce {"node": "Import", "source": path_tok["value"], "is_stdlib": cap, "alias": alias, "names": ghost, "line": start["line"], "col": start["col"]}
+    }
+    sus (p_check(ps, "IDENT") || p_check(ps, "SUS")) {
+        yo name_tok = p_advance(ps)
+        yo alias = ghost
+        sus (p_match(ps, "AS") != ghost) {
+            yo alias_tok = p_expect(ps, "IDENT", "expected a name after 'as'.")
+            alias = alias_tok["text"]
+        }
+        p_expect_stmt_end(ps)
+        bounce {"node": "Import", "source": name_tok["text"], "is_stdlib": fax, "alias": alias, "names": ghost, "line": start["line"], "col": start["col"]}
+    }
+    parser_error(ps, p_peek(ps, 0), 'gimme needs a quoted path, a stdlib module name, or { names } from "path".')
+}
+
+flex bet parse_export(ps) {
+    yo start = p_advance(ps) // flex
+    yo decl = ghost
+    sus (p_check(ps, "BET")) {
+        decl = parse_func_decl(ps, cap)
+    } kinda_sus (p_check(ps, "DEADASS")) {
+        decl = parse_const_decl(ps)
+    } kinda_sus (p_check(ps, "YO")) {
+        decl = parse_var_decl(ps)
+    } kinda_sus (p_check(ps, "SQUAD")) {
+        decl = parse_squad_decl(ps)
+    } nah {
+        parser_error(ps, p_peek(ps, 0), "'flex' needs something to flex: flex bet ..., flex deadass ..., flex yo ..., or flex squad ....")
+    }
+    bounce {"node": "Export", "decl": decl, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_squad_decl(ps) {
+    yo start = p_advance(ps) // squad
+    yo name_tok = p_expect(ps, "IDENT", "expected a squad name after 'squad'.")
+    yo superclass = ghost
+    sus (p_match(ps, "INHERITS") != ghost) {
+        yo super_tok = p_expect(ps, "IDENT", "expected a superclass name after 'inherits'.")
+        superclass = super_tok["text"]
+    }
+    p_skip_newlines(ps)
+    p_expect(ps, "LBRACE", "expected '{' to start this squad's body.")
+    p_skip_stmt_seps(ps)
+    yo spawn_decl = ghost
+    yo methods = []
+    bruh (!p_check(ps, "RBRACE") && !p_check(ps, "EOF")) {
+        sus (p_check(ps, "SPAWN")) {
+            yo spawn_tok = p_advance(ps)
+            sus (spawn_decl != ghost) {
+                parser_error(ps, spawn_tok, "a squad can only have one spawn. pick one.")
+            }
+            p_expect(ps, "LPAREN", "expected '(' after 'spawn'.")
+            yo pv = parse_param_list(ps)
+            p_expect(ps, "RPAREN", "this parameter list never closes. it's missing a ')'.")
+            p_skip_newlines(ps)
+            yo body = parse_block(ps)
+            spawn_decl = {"node": "FuncDecl", "name": "spawn", "params": pv["params"], "variadic": pv["variadic"], "body": body, "line": spawn_tok["line"], "col": spawn_tok["col"]}
+        } kinda_sus (p_check(ps, "BET")) {
+            methods.yeet_in(parse_func_decl(ps, fax))
+        } nah {
+            parser_error(ps, p_peek(ps, 0), "a squad body only has 'spawn' and 'bet' methods in it.")
+        }
+        p_skip_stmt_seps(ps)
+    }
+    p_expect(ps, "RBRACE", "this squad never closes. it's missing a '}'.")
+    bounce {"node": "SquadDecl", "name": name_tok["text"], "superclass": superclass, "spawn": spawn_decl, "methods": methods, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_yap(ps, newline) {
+    yo start = p_advance(ps) // yap / yeet / mumble
+    yo args = []
+    sus (!STMT_END_KINDS.contains(p_peek(ps, 0)["kind"])) {
+        args.yeet_in(parse_assignment(ps))
+        bruh (p_match(ps, "COMMA") != ghost) {
+            p_skip_newlines(ps)
+            args.yeet_in(parse_assignment(ps))
+        }
+    }
+    p_expect_stmt_end(ps)
+    bounce {"node": "Yap", "args": args, "newline": newline, "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_vibe_stmt(ps) {
+    yo start = p_advance(ps)
+    p_expect_stmt_end(ps)
+    bounce {"node": "VibeStmt", "line": start["line"], "col": start["col"]}
+}
+
+flex bet parse_expr_stmt(ps) {
+    yo expr = parse_assignment(ps)
+    p_expect_stmt_end(ps)
+    bounce {"node": "ExprStmt", "expr": expr, "line": expr["line"], "col": expr["col"]}
+}
+
+// -- expressions: precedence climbing --------------------------------
+
+flex bet parse_assignment(ps) {
+    yo left = parse_ternary(ps)
+    yo op_kind = p_peek(ps, 0)["kind"]
+    sus (ASSIGN_OPS.has(op_kind)) {
+        p_advance(ps)
+        p_skip_newlines(ps)
+        yo value = parse_assignment(ps)
+        bounce make_assign(ps, left, ASSIGN_OPS.get(op_kind), value)
+    }
+    bounce left
+}
+
+flex bet make_assign(ps, target, op, value) {
+    sus (target["node"] == "Identifier") {
+        bounce {"node": "Assign", "target": target, "op": op, "value": value, "line": target["line"], "col": target["col"]}
+    }
+    sus (target["node"] == "Get") {
+        bounce {"node": "Set", "obj": target["obj"], "name": target["name"], "op": op, "value": value, "line": target["line"], "col": target["col"]}
+    }
+    sus (target["node"] == "Index") {
+        bounce {"node": "SetIndex", "obj": target["obj"], "index": target["index"], "op": op, "value": value, "line": target["line"], "col": target["col"]}
+    }
+    chuck "ParserHadAStroke at " + to_yap(target["line"]) + ":" + to_yap(target["col"]) + ": that's not something you can assign to."
+}
+
+flex bet parse_ternary(ps) {
+    yo cond = parse_binary(ps, 3)
+    sus (p_match(ps, "QUESTION") != ghost) {
+        p_skip_newlines(ps)
+        yo then_e = parse_assignment(ps)
+        p_skip_newlines(ps)
+        p_expect(ps, "COLON", "a ternary needs ':' for its else branch: cond ? a : b.")
+        p_skip_newlines(ps)
+        yo else_e = parse_ternary(ps)
+        bounce {"node": "Ternary", "cond": cond, "then_expr": then_e, "else_expr": else_e, "line": cond["line"], "col": cond["col"]}
+    }
+    bounce cond
+}
+
+flex bet make_binary_node(op, left, right, line, col) {
+    sus (op == "&&" || op == "||") {
+        bounce {"node": "Logical", "op": op, "left": left, "right": right, "line": line, "col": col}
+    }
+    sus (op == "??") {
+        bounce {"node": "Coalesce", "left": left, "right": right, "line": line, "col": col}
+    }
+    sus (op == "|>") {
+        bounce {"node": "Pipe", "left": left, "right": right, "line": line, "col": col}
+    }
+    bounce {"node": "Binary", "op": op, "left": left, "right": right, "line": line, "col": col}
+}
+
+flex bet parse_binary(ps, min_bp) {
+    yo left = parse_power(ps)
+    bruh (fax) {
+        yo entry = BINOP_TABLE.get(p_peek(ps, 0)["kind"])
+        sus (entry == ghost) {
+            bail
+        }
+        yo lbp = entry[0]
+        yo rbp = entry[1]
+        yo op = entry[2]
+        sus (lbp < min_bp) {
+            bail
+        }
+        p_advance(ps)
+        p_skip_newlines(ps)
+        yo right = parse_binary(ps, rbp)
+        left = make_binary_node(op, left, right, left["line"], left["col"])
+    }
+    bounce left
+}
+
+flex bet parse_power(ps) {
+    yo base = parse_unary(ps)
+    sus (p_check(ps, "STAR_STAR")) {
+        p_advance(ps)
+        p_skip_newlines(ps)
+        yo exponent = parse_power(ps)
+        bounce {"node": "Binary", "op": "**", "left": base, "right": exponent, "line": base["line"], "col": base["col"]}
+    }
+    bounce base
+}
+
+flex bet parse_unary(ps) {
+    yo tok = p_peek(ps, 0)
+    sus (UNARY_OPS.has(tok["kind"])) {
+        p_advance(ps)
+        yo operand = parse_unary(ps)
+        bounce {"node": "Unary", "op": UNARY_OPS.get(tok["kind"]), "operand": operand, "line": tok["line"], "col": tok["col"]}
+    }
+    bounce parse_postfix(ps)
+}
+
+flex bet parse_postfix(ps) {
+    yo expr = parse_primary(ps)
+    bruh (fax) {
+        sus (p_check(ps, "LPAREN")) {
+            expr = finish_call(ps, expr)
+            nvm
+        }
+        sus (p_check(ps, "LBRACKET")) {
+            expr = finish_index(ps, expr)
+            nvm
+        }
+        sus (p_check(ps, "DOT")) {
+            p_advance(ps)
+            yo name_tok = p_expect_name(ps, "expected a property name after '.'.")
+            expr = {"node": "Get", "obj": expr, "name": name_tok["text"], "line": expr["line"], "col": expr["col"]}
+            nvm
+        }
+        sus (p_check(ps, "QUESTION_DOT")) {
+            p_advance(ps)
+            yo name_tok = p_expect_name(ps, "expected a property name after '?.'.")
+            expr = {"node": "SafeGet", "obj": expr, "name": name_tok["text"], "line": expr["line"], "col": expr["col"]}
+            nvm
+        }
+        bail
+    }
+    bounce expr
+}
+
+flex bet finish_call(ps, callee) {
+    p_advance(ps) // (
+    p_skip_newlines(ps)
+    yo args = []
+    bruh (!p_check(ps, "RPAREN")) {
+        args.yeet_in(parse_assignment(ps))
+        p_skip_newlines(ps)
+        sus (p_match(ps, "COMMA") == ghost) {
+            bail
+        }
+        p_skip_newlines(ps)
+    }
+    p_expect(ps, "RPAREN", "this call never closes. it's missing a ')'.")
+    bounce {"node": "Call", "callee": callee, "args": args, "line": callee["line"], "col": callee["col"]}
+}
+
+flex bet finish_index(ps, obj) {
+    p_advance(ps) // [
+    p_skip_newlines(ps)
+    yo start_e = ghost
+    sus (!p_check(ps, "COLON") && !p_check(ps, "RBRACKET")) {
+        start_e = parse_assignment(ps)
+        p_skip_newlines(ps)
+    }
+    sus (p_match(ps, "COLON") != ghost) {
+        p_skip_newlines(ps)
+        yo stop_e = ghost
+        sus (!p_check(ps, "COLON") && !p_check(ps, "RBRACKET")) {
+            stop_e = parse_assignment(ps)
+            p_skip_newlines(ps)
+        }
+        yo step_e = ghost
+        sus (p_match(ps, "COLON") != ghost) {
+            p_skip_newlines(ps)
+            sus (!p_check(ps, "RBRACKET")) {
+                step_e = parse_assignment(ps)
+                p_skip_newlines(ps)
+            }
+        }
+        p_expect(ps, "RBRACKET", "this slice never closes. it's missing a ']'.")
+        bounce {"node": "Slice", "obj": obj, "start": start_e, "stop": stop_e, "step": step_e, "line": obj["line"], "col": obj["col"]}
+    }
+    sus (start_e == ghost) {
+        parser_error(ps, p_peek(ps, 0), "empty [] isn't indexing anything.")
+    }
+    p_expect(ps, "RBRACKET", "this index never closes. it's missing a ']'.")
+    bounce {"node": "Index", "obj": obj, "index": start_e, "line": obj["line"], "col": obj["col"]}
+}
+
+flex bet parse_stash_lit(ps) {
+    yo open_tok = p_advance(ps) // [
+    p_skip_newlines(ps)
+    yo elements = []
+    bruh (!p_check(ps, "RBRACKET")) {
+        elements.yeet_in(parse_assignment(ps))
+        p_skip_newlines(ps)
+        sus (p_match(ps, "COMMA") == ghost) {
+            bail
+        }
+        p_skip_newlines(ps)
+    }
+    p_expect(ps, "RBRACKET", "this stash literal never closes. it's missing a ']'.")
+    bounce {"node": "StashLit", "elements": elements, "line": open_tok["line"], "col": open_tok["col"]}
+}
+
+flex bet parse_groupchat_lit(ps) {
+    yo open_tok = p_advance(ps) // {
+    p_skip_newlines(ps)
+    yo pairs = []
+    bruh (!p_check(ps, "RBRACE")) {
+        yo key = parse_assignment(ps)
+        p_skip_newlines(ps)
+        p_expect(ps, "COLON", "a groupchat entry needs ':' between key and value.")
+        p_skip_newlines(ps)
+        yo value = parse_assignment(ps)
+        pairs.yeet_in({"key": key, "value": value})
+        p_skip_newlines(ps)
+        sus (p_match(ps, "COMMA") == ghost) {
+            bail
+        }
+        p_skip_newlines(ps)
+    }
+    p_expect(ps, "RBRACE", "this groupchat literal never closes. it's missing a '}'.")
+    bounce {"node": "GroupChatLit", "pairs": pairs, "line": open_tok["line"], "col": open_tok["col"]}
+}
+
+flex bet parse_lambda(ps) {
+    yo start = p_advance(ps) // lowkey
+    p_expect(ps, "LPAREN", "lambdas need parens around their params: lowkey (x) => x.")
+    yo pv = parse_param_list(ps)
+    p_expect(ps, "RPAREN", "this parameter list never closes. it's missing a ')'.")
+    sus (p_match(ps, "ARROW") != ghost) {
+        p_skip_newlines(ps)
+        sus (p_check(ps, "LBRACE")) {
+            yo body = parse_block(ps)
+            bounce {"node": "Lambda", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_expr_body": cap, "line": start["line"], "col": start["col"]}
+        }
+        yo body = parse_assignment(ps)
+        bounce {"node": "Lambda", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_expr_body": fax, "line": start["line"], "col": start["col"]}
+    }
+    sus (p_check(ps, "LBRACE")) {
+        yo body = parse_block(ps)
+        bounce {"node": "Lambda", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_expr_body": cap, "line": start["line"], "col": start["col"]}
+    }
+    parser_error(ps, p_peek(ps, 0), "a lambda needs '=>' or a '{ }' body.")
+}
+
+flex bet build_template(tok) {
+    yo parts = []
+    grind part in tok["value"] {
+        sus (part["kind"] == "str") {
+            parts.yeet_in({"kind": "str", "value": part["text"]})
+        } nah {
+            yo sub_ps = new_parser(part["tokens"])
+            yo expr = parse_assignment(sub_ps)
+            p_skip_newlines(sub_ps)
+            sus (!p_check(sub_ps, "EOF")) {
+                parser_error(sub_ps, p_peek(sub_ps, 0), "this template substitution has leftover junk after the expression.")
+            }
+            parts.yeet_in({"kind": "expr", "value": expr})
+        }
+    }
+    bounce {"node": "TemplateString", "parts": parts, "line": tok["line"], "col": tok["col"]}
+}
+
+flex bet parse_primary(ps) {
+    yo tok = p_peek(ps, 0)
+    check_reserved(ps, tok)
+    yo kind = tok["kind"]
+    sus (kind == "INT" || kind == "FLOAT" || kind == "STRING") {
+        p_advance(ps)
+        bounce {"node": "Literal", "value": tok["value"], "line": tok["line"], "col": tok["col"]}
+    }
+    sus (kind == "TEMPLATE") {
+        p_advance(ps)
+        bounce build_template(tok)
+    }
+    sus (kind == "FAX") {
+        p_advance(ps)
+        bounce {"node": "Literal", "value": fax, "line": tok["line"], "col": tok["col"]}
+    }
+    sus (kind == "CAP") {
+        p_advance(ps)
+        bounce {"node": "Literal", "value": cap, "line": tok["line"], "col": tok["col"]}
+    }
+    sus (kind == "GHOST") {
+        p_advance(ps)
+        bounce {"node": "Literal", "value": ghost, "line": tok["line"], "col": tok["col"]}
+    }
+    sus (kind == "IDENT" || kind == "SUS") {
+        p_advance(ps)
+        bounce {"node": "Identifier", "name": tok["text"], "line": tok["line"], "col": tok["col"]}
+    }
+    sus (kind == "ME") {
+        p_advance(ps)
+        bounce {"node": "Me", "line": tok["line"], "col": tok["col"]}
+    }
+    sus (kind == "OG") {
+        p_advance(ps)
+        bounce {"node": "Og", "line": tok["line"], "col": tok["col"]}
+    }
+    sus (kind == "LPAREN") {
+        p_advance(ps)
+        p_skip_newlines(ps)
+        yo expr = parse_assignment(ps)
+        p_skip_newlines(ps)
+        p_expect(ps, "RPAREN", "this group never closes. it's missing a ')'.")
+        bounce expr
+    }
+    sus (kind == "LBRACKET") {
+        bounce parse_stash_lit(ps)
+    }
+    sus (kind == "LBRACE") {
+        bounce parse_groupchat_lit(ps)
+    }
+    sus (kind == "LOWKEY") {
+        bounce parse_lambda(ps)
+    }
+    parser_error(ps, tok, "didn't expect to see '" + tok["text"] + "' here.")
+}
+
+// -- public API ---------------------------------------------------------
+
+flex bet parse_source(src) {
+    bounce parse_program(tokenize(src))
+}

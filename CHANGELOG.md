@@ -53,6 +53,11 @@ All notable changes to FunnyLang are documented here.
   template-structure checks. Needed a small, deliberate stdlib addition — `yapper.is_letter`/
   `yapper.is_alnum` — since nothing in the self-hosting subset previously exposed Unicode character
   classification; see PLAN.md §16.
+- `selfhost/parser.funny`: a full port of `parser.py` (recursive-descent statements +
+  precedence-climbing expressions, the whole §3 grammar including `squad`). AST nodes are
+  groupchat records with a `"node"` key. Cross-checked against the Python parser's `dump_ast()`
+  S-expression output across the entire `tests/lang/` + `examples/` corpus (72 files) — exact
+  match on every one, including every squad/template/closure/module test.
 
 ### M11 — Hardening pass
 - No Python traceback ever escapes the CLI (a clean "COMPILER SKILL ISSUE" message + exit 70
