@@ -1741,3 +1741,51 @@ gets an entry explaining what changed and why.
   scope skipped, matching the plan's own stated exception plus this session's own prior decision) --
   byte-identical on gcc and clang, ASan/UBSan clean, and the full `tests/native/` differential suite
   (47/47) still green under `FUNNY_GC_STRESS=1`.
+
+- **N8 task 1 · `selfhost/bundler.funny` + `selfhost/linker.funny`, and the native-VM bug they
+  exposed.** The `.funnypak` bundler in FunnyLang, replacing `funnylang/modules.py`'s `build_bundle`
+  and `funnylang/serializer.py`'s `dump_funnypak` — between them the last Python needed to *build*
+  anything, the self-hosted compiler's own bootstrap bundle included. Split into a library
+  (`bundler.funny`: `resolve_import`, `canonical_name`, `collect_imports`, `build_bundle`,
+  `emit_funnypak`) and a thin CLI (`linker.funny`), the same shape `funnyc.funny` has over
+  compiler+emitter, so N8 task 6's `cli.funny` can use the bundler without triggering another file's
+  argument handling.
+  The bar was byte-identity with the Python bundler, not "the bundle runs": a `.funnypak` is a
+  sequence of `.funnyc` blobs in a fixed order, so an equally-correct walk of the import graph in a
+  different order still produces a different file. Reaching it took two fixes.
+  (1) **Walk order.** The first draft was breadth-first with an explicit queue, reasoning that a deep
+  import chain shouldn't be able to hit the VM's frame limit. Correct, but it does not match
+  `modules.py`'s `visit()` recursion, which is pre-order depth-first. Rewritten to pre-order DFS with
+  an explicit *stack* — keeping the no-recursion property, matching the order. Each stack job carries
+  the *unresolved* quoted import plus the file that asked for it, resolving only when popped, so the
+  order in which paths get resolved — and therefore which bad import is reported first — matches
+  Python's too.
+  (2) **A real native-VM bug: NUL bytes were being truncated out of strings.** Chasing a one-entry
+  const-pool difference on `lexer.funny` (375 vs 374) led to `SIMPLE_ESCAPES` in
+  `selfhost/lexer.funny` itself, whose `"0"` key maps to a one-character NUL string: the self-hosted
+  compiler running on the C VM emitted an empty string where the Python compiler emitted that NUL. A
+  FunnyLang string may legitimately contain NUL bytes, but `vm_value_to_display` returns a plain
+  NUL-terminated `char *`, and every caller measured it with `strlen()` — silently cutting the value
+  at the first NUL. That affected `yap`, template interpolation (`OP_BUILD_STRING`), `to_yap`,
+  `stash.join`, `yapper.join`, `yapper.format`, and `ask`'s prompt; `.how_thicc()` and concatenation
+  were already correct, which is why it hid this long. Fixed with `vm_value_to_display_len`, which
+  reports the true byte length: a top-level string yields its own bytes, and an instance whose
+  `to_yap` returns one is followed through. Nested strings needed no change — they render via
+  `repr_value_rec`, which json-escapes a NUL exactly like `funnylang/values.py`'s `to_repr` does.
+  Covered by a new differential program, `tests/native/programs/nul_bytes_in_strings.funny`,
+  exercising every display-producing operation.
+  With both fixed, the FunnyLang linker and the Python bundler produce **byte-identical** bundles,
+  and the linker reaches a fixed point: a linker linked by itself relinks the compiler to the same
+  bytes. `tests/native/test_native_linker.py` (6 tests) asserts byte-identity, the fixed point,
+  module order and entry name, relative imports from a subdirectory, an end-to-end
+  link → compile → run with no Python past the bootstrap, and that a missing import is reported
+  rather than dropped.
+  **AGENT CHOICE · no `FUNNYPATH` in the FunnyLang resolver.** §3.8's resolution order is (1) relative
+  to the importing file, (2) `FUNNYPATH`, (3) `./funny_modules/` walking up. The FunnyLang bundler
+  implements 1 and 3 and skips 2: reading an environment variable is not something the FunnyLang
+  stdlib can do, and inventing a stdlib function for it here would put the two implementations out of
+  step over something no bundled program has ever used. Logged rather than silently skipped; if
+  `FUNNYPATH` support is wanted, it needs a stdlib addition first.
+  Verified: full suite 1183 passed (Linux, gcc, `-Werror`); MSVC `/W4 /WX` build clean on Windows,
+  both binaries, with the new differential program producing identical output there.
+

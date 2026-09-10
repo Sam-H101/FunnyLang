@@ -259,8 +259,8 @@ static Value m_join(VM *vm, Value *a, int argc) {
     char *buf = NULL;
     size_t len = 0, cap = 0;
     for (int i = 0; i < s->count; i++) {
-        char *piece = vm_value_to_display(vm, s->items[i]);
-        size_t pieceLen = strlen(piece);
+        size_t pieceLen;
+        char *piece = vm_value_to_display_len(vm, s->items[i], &pieceLen);
         size_t addLen = pieceLen + (i > 0 ? sepLen : 0);
         if (len + addLen > cap) {
             cap = (len + addLen) * 2 + 16;

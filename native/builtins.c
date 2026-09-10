@@ -74,8 +74,9 @@ static Value m_what_is_it(VM *vm, Value *a, int argc) {
 
 static Value m_to_yap(VM *vm, Value *a, int argc) {
     (void)argc;
-    char *disp = vm_value_to_display(vm, a[0]);
-    ObjString *r = string_new(&vm->gc, disp, (uint32_t)strlen(disp));
+    size_t len;
+    char *disp = vm_value_to_display_len(vm, a[0], &len);
+    ObjString *r = string_new(&vm->gc, disp, (uint32_t)len);
     free(disp);
     return OBJ_VAL(r);
 }
@@ -208,8 +209,9 @@ static Value m_no_cap(VM *vm, Value *a, int argc) {
 
 static Value m_ask(VM *vm, Value *a, int argc) {
     if (argc > 0 && !IS_GHOST(a[0])) {
-        char *disp = vm_value_to_display(vm, a[0]);
-        fputs(disp, vm->out);
+        size_t len;
+        char *disp = vm_value_to_display_len(vm, a[0], &len);
+        fwrite(disp, 1, len, vm->out);
         free(disp);
         fflush(vm->out);
     }

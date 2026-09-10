@@ -217,6 +217,11 @@ void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...);
 void vm_throw_native_roast(VM *vm, const char *flavor, const char *roast, const char *fmt, ...);
 const char *vm_type_name(Value v);
 char *vm_value_to_display(VM *vm, Value v);
+/* Same, but reports the display's true byte length. A FunnyLang string can
+   contain NUL bytes, so any caller that copies the display into a new
+   string or writes it to a stream must use this -- strlen() would cut the
+   value short at the first NUL. */
+char *vm_value_to_display_len(VM *vm, Value v, size_t *lenOut);
 /* Like vm_value_to_display, but a string is quoted (json-style) --
    funnylang/values.py's own `to_repr`, for the one builtin (sheesh) that
    calls it directly rather than through a stash/groupchat's own nested

@@ -360,6 +360,53 @@ static char *display_value_rec(VM *vm, Value v, SeenStack *seen) {
     return dup_str("<obj>"); /* unreachable for N4's value set so far */
 }
 
+/* A FunnyLang string may legitimately contain NUL bytes -- `"\0"` is a real
+   escape, and selfhost/lexer.funny's own SIMPLE_ESCAPES table holds one --
+   so strlen() on a display result silently truncates it. Only a *top-level*
+   string can carry an interior NUL into a display: every other branch of
+   display_value_rec builds its result from snprintf'd C strings, and a
+   nested string renders through repr_value_rec, which json-escapes a
+   NUL exactly like funnylang/values.py's to_repr. The one indirect way
+   to reach a top-level string is an instance whose `to_yap` returns one,
+   so that hop is repeated here rather than delegated. */
+static char *display_value_rec_len(VM *vm, Value v, SeenStack *seen, size_t *lenOut) {
+    if (IS_STRING(v)) {
+        ObjString *s = AS_STRING(v);
+        char *out = (char *)malloc((size_t)s->byteLen + 1);
+        memcpy(out, s->chars, s->byteLen);
+        out[s->byteLen] = '\0';
+        *lenOut = s->byteLen;
+        return out;
+    }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_INSTANCE) {
+        ObjInstance *inst = (ObjInstance *)AS_OBJ(v);
+        ObjClosure *method = squad_find_method(inst->squad, "to_yap");
+        if (method != NULL) {
+            gc_push_temp(&vm->gc, v);
+            Value args[1] = {v};
+            Value result = vm_call_value(vm, OBJ_VAL(method), args, 1);
+            gc_pop_temp(&vm->gc);
+            if (vm->hadError) {
+                *lenOut = 0;
+                return dup_str(""); /* dispatch loop unwinds; this string is discarded */
+            }
+            return display_value_rec_len(vm, result, seen, lenOut);
+        }
+    }
+    char *r = display_value_rec(vm, v, seen);
+    *lenOut = strlen(r);
+    return r;
+}
+
+static char *value_to_display_len(VM *vm, Value v, size_t *lenOut) {
+    gc_push_temp(&vm->gc, v); /* same rooting reasoning as value_to_display */
+    SeenStack seen = {0};
+    char *r = display_value_rec_len(vm, v, &seen, lenOut);
+    free(seen.items);
+    gc_pop_temp(&vm->gc);
+    return r;
+}
+
 static char *value_to_display(VM *vm, Value v) {
     /* Rooted for the whole walk: an Instance found anywhere in this value
        (directly, or nested inside a Stash/GroupChat) may call back into
@@ -396,6 +443,7 @@ void vm_throw_native_roast(VM *vm, const char *flavor, const char *roast, const 
 
 const char *vm_type_name(Value v) { return type_name_of(v); }
 char *vm_value_to_display(VM *vm, Value v) { return value_to_display(vm, v); }
+char *vm_value_to_display_len(VM *vm, Value v, size_t *lenOut) { return value_to_display_len(vm, v, lenOut); }
 
 char *vm_value_to_repr(VM *vm, Value v) {
     /* Same rooting reasoning as value_to_display's own wrapper -- an
@@ -2929,17 +2977,17 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 frame->ip += 2;
                 int base = vm->stackCount - n;
                 char *parts[256];
+                size_t lens[256];
                 size_t totalLen = 0;
                 for (int i = 0; i < n; i++) {
-                    parts[i] = value_to_display(vm, vm->stack[base + i]);
-                    totalLen += strlen(parts[i]);
+                    parts[i] = value_to_display_len(vm, vm->stack[base + i], &lens[i]);
+                    totalLen += lens[i];
                 }
                 char *buf = (char *)malloc(totalLen + 1);
                 size_t o = 0;
                 for (int i = 0; i < n; i++) {
-                    size_t pl = strlen(parts[i]);
-                    memcpy(buf + o, parts[i], pl);
-                    o += pl;
+                    memcpy(buf + o, parts[i], lens[i]);
+                    o += lens[i];
                     free(parts[i]);
                 }
                 buf[o] = '\0';
@@ -2953,10 +3001,11 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 uint8_t argc = code[frame->ip++];
                 uint8_t newline = code[frame->ip++];
                 char *parts[256];
-                for (int i = argc - 1; i >= 0; i--) parts[i] = value_to_display(vm, pop(vm));
+                size_t lens[256];
+                for (int i = argc - 1; i >= 0; i--) parts[i] = value_to_display_len(vm, pop(vm), &lens[i]);
                 for (int i = 0; i < argc; i++) {
                     if (i > 0) fputc(' ', vm->out);
-                    fputs(parts[i], vm->out);
+                    fwrite(parts[i], 1, lens[i], vm->out); /* not fputs: the display may contain NULs */
                     free(parts[i]);
                 }
                 if (newline) fputc('\n', vm->out);

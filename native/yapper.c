@@ -84,9 +84,12 @@ static Value m_split(VM *vm, Value *a, int argc) {
    this uses to_display for instead -- disproportionate effort for what
    looks like a reference bug nothing should depend on. Logged rather than
    silently matched or silently diverged. */
-static char *join_item_str(VM *vm, Value v) {
-    if (IS_BOOL(v)) return dup_cstr(AS_BOOL(v) ? "True" : "False");
-    return vm_value_to_display(vm, v);
+static char *join_item_str(VM *vm, Value v, size_t *lenOut) {
+    if (IS_BOOL(v)) {
+        *lenOut = AS_BOOL(v) ? 4 : 5;
+        return dup_cstr(AS_BOOL(v) ? "True" : "False");
+    }
+    return vm_value_to_display_len(vm, v, lenOut);
 }
 
 static Value m_join(VM *vm, Value *a, int argc) {
@@ -101,8 +104,8 @@ static Value m_join(VM *vm, Value *a, int argc) {
     char *buf = NULL;
     size_t len = 0, cap = 0;
     for (int i = 0; i < items->count; i++) {
-        char *piece = join_item_str(vm, items->items[i]);
-        size_t pieceLen = strlen(piece);
+        size_t pieceLen;
+        char *piece = join_item_str(vm, items->items[i], &pieceLen);
         size_t addLen = pieceLen + (i > 0 ? sep->byteLen : 0);
         if (len + addLen > cap) {
             cap = (len + addLen) * 2 + 16;
@@ -473,8 +476,8 @@ static Value m_format(VM *vm, Value *a, int argc) {
                     free(buf);
                     return GHOST_VAL;
                 }
-                char *piece = vm_value_to_display(vm, a[argIndex + 1]);
-                size_t pieceLen = strlen(piece);
+                size_t pieceLen;
+                char *piece = vm_value_to_display_len(vm, a[argIndex + 1], &pieceLen);
                 if (len + pieceLen > cap) {
                     cap = (len + pieceLen) * 2 + 16;
                     buf = (char *)realloc(buf, cap);
