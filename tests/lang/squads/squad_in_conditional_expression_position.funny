@@ -1,0 +1,2 @@
+squad A { bet f() { bounce fax } }
+sus (A().f()) { yap "yes" } nah { yap "no" }

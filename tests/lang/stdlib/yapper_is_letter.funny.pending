@@ -1,0 +1,7 @@
+gimme yapper
+yap yapper.is_letter("a")
+yap yapper.is_letter("中")
+yap yapper.is_letter("é")
+yap yapper.is_letter("1")
+yap yapper.is_letter("_")
+yap yapper.is_letter("🎉")

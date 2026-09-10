@@ -1,0 +1,6 @@
+bet sum_all(...rest) {
+ yo total = 0
+ grind n in rest { total += n }
+ bounce total
+}
+yap sum_all(1,2,3,4)

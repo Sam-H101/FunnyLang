@@ -1,0 +1,3 @@
+gimme clock
+yo sw = clock.stopwatch()
+yap what_is_it(sw())

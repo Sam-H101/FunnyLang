@@ -1,0 +1,3 @@
+squad P { spawn(x) { me.x = x }
+ bet get() { bounce me.x } }
+yap P(42).get()

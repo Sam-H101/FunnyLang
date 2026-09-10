@@ -1,0 +1,4 @@
+// The same rule on the runtime path: the shift amount is a variable, so
+// nothing is folded and the check has to be in the VM too.
+yo a = -1
+yap 5 << a

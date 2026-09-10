@@ -1,0 +1,4 @@
+gimme mafs
+yap mafs.abs(-5)
+yap mafs.floor(3.7)
+yap mafs.ceil(3.2)

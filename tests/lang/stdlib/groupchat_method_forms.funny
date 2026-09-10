@@ -1,0 +1,4 @@
+yo m = {"a": 1}
+yap m.get("a")
+yap m.get("z", 99)
+yap m.pairs()

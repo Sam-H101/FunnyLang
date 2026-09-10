@@ -1,0 +1,8 @@
+sketchy {
+ chuck "boom"
+} my_bad (e) {
+ yap "caught"
+} regardless {
+ yap "cleanup"
+}
+yap "after"

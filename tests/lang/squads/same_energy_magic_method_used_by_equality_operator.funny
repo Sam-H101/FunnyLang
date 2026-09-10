@@ -1,0 +1,4 @@
+squad P { spawn(v) { me.v = v }
+ bet same_energy(other) { bounce me.v same_energy other.v } }
+yap P(1) same_energy P(1)
+yap P(1) same_energy P(2)

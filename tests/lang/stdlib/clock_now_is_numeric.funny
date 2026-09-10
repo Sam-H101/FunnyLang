@@ -1,0 +1,2 @@
+gimme clock
+yap what_is_it(clock.now())

@@ -1,0 +1,7 @@
+grind i from 0 to 3 {
+    grind j from 0 to 3 {
+        sus (j == 1) { nvm }
+        sus (j == 2) { bail }
+        yap i, j
+    }
+}

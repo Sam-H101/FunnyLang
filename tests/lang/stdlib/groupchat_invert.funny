@@ -1,0 +1,2 @@
+gimme groupchat
+yap groupchat.invert({"a": 1, "b": 2})

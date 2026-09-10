@@ -1,0 +1,6 @@
+gimme filez
+yo p = filez.temp_file()
+filez.yeet_out(p, "a")
+filez.append_to(p, "b")
+yap filez.slurp(p)
+filez.obliterate(p)

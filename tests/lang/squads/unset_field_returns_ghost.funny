@@ -1,0 +1,3 @@
+squad A { spawn() { } }
+yo a = A()
+yap a.nope

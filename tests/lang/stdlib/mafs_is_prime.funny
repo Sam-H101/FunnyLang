@@ -1,0 +1,3 @@
+gimme mafs
+yap mafs.is_prime(17)
+yap mafs.is_prime(18)

@@ -1,0 +1,10 @@
+// SQUAD / METHOD / INHERIT for the declarations, INVOKE for a method call
+// through an instance, and INVOKE_OG for the `og.` super call.
+squad A {
+    spawn() { }
+    bet f() { bounce 1 }
+}
+squad B inherits A {
+    bet f() { bounce og.f() }
+}
+yap A().f()

@@ -1,0 +1,7 @@
+squad C { spawn() { me.n = 0 }
+ bet bump() { me.n += 1
+ bounce me.n } }
+yo c = C()
+yo b = c.bump
+yap b()
+yap b()

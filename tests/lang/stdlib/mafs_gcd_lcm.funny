@@ -1,0 +1,3 @@
+gimme mafs
+yap mafs.gcd(12, 18)
+yap mafs.lcm(4, 6)

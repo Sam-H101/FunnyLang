@@ -1,0 +1,5 @@
+yap 3.14159.round(2)
+yap (-5).abs()
+yap 3.9.floor()
+yap 3.1.ceil()
+yap 4.0.is_whole()

@@ -1,0 +1,2 @@
+flex squad Point { spawn(x) { me.x = x } }
+yap Point(5).x

@@ -2427,3 +2427,39 @@ gets an entry explaining what changed and why.
   and the closure goldens exercise them — which is weaker than a direct structural assertion and is
   recorded here rather than papered over. Printing them would change `funny xray`'s output format and
   break its byte-identity with the Python disassembler, which is not a trade worth making for this.
+
+- **N11 task 1 (cont.) · the corpus goes from 76 goldens to 268.** `test_stdlib.py`, `test_vm.py`
+  and `test_squads.py` were 161 tests of the shape `assert run_funny(SRC) == EXPECTED`, with both
+  halves literals a person wrote as a specification. That is a golden pair already, so converting
+  them is **transcription, not capture** — `build/n4/convert_goldens.py` lifts the two literals out
+  of the AST and writes the files. A test with several such asserts becomes several files, so a
+  failure names one behaviour instead of a bundle of them. 144 came across mechanically; the rest
+  were written by hand from the same assertions.
+
+  **All 268 were then run through the *Python* VM as an oracle** — `stdlib` 86/86, `vm` 48/48,
+  `squads` 20/21, `errors` 14/15, the two "failures" being the `!XRAY` and `!DIAG` directives that
+  the Python runner does not know. That matters most for the goldens that were *not* transcribed:
+  `filez`, `clock`, `computer`, `rizz` and the squad display cases were written fresh and had no
+  reference behind them until this run.
+
+  Three of the 144 disagreed with the native VM, and each is recorded rather than adjusted:
+  - **`yapper.is_letter` and `yapper.is_alnum`** — the ASCII-only gap above. The goldens are right
+    and the implementation is wrong, so they are parked as `.pending` files rather than deleted or
+    weakened: `funny test` pairs `*.funny` with `*.expected`, so a `.pending` suffix leaves them
+    inert with their expected output intact and activating them is dropping the suffix.
+  - **`internet.is_it_up` with `FUNNY_NO_NET=1`** — dropped. The pytest sets the variable with
+    `monkeypatch`; a golden cannot set an environment variable for the program it runs, and §5
+    already puts network behaviour in the "tested on properties, not goldens" bucket. The
+    alternatives were an `!ENV` directive that mutates the runner's own process environment, or a
+    hostname chosen to fail DNS — a test that hangs on a slow resolver.
+
+  **Tests that asserted on a property rather than a value convert fine, once the property moves
+  inside the language.** `test_clock_now_is_numeric` asserted `isinstance`-ish things about a
+  timestamp in Python; the golden is `yap what_is_it(clock.now())` against `numba`. Same for
+  `computer.ram()`, `rizz.uuid()`'s length, and the `mafs` constants. `test_filez_roundtrip` used
+  pytest's `tmp_path`; the golden asks the language for `filez.temp_file()` and removes it again, so
+  it carries no absolute path and leaves nothing behind.
+
+  **Eleven `isinstance(err, Flavor)` tests in `test_vm.py` needed nothing at all** — `err_div_zero`,
+  `err_type_mismatch`, `err_wrong_arity_too_few` and the rest already exist in `tests/lang/`, one
+  per flavor. Checked name by name rather than assumed.

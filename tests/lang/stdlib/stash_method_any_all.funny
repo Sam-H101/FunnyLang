@@ -1,0 +1,2 @@
+yap [1,2,3].any(lowkey (x) => x > 2)
+yap [1,2,3].all(lowkey (x) => x > 0)

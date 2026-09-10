@@ -1,0 +1,2 @@
+squad Plain { spawn() { } }
+yap Plain()

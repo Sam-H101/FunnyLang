@@ -1,0 +1,3 @@
+bet inc(x) { bounce x + 1 }
+bet double(x) { bounce x * 2 }
+yap 3 |> inc |> double

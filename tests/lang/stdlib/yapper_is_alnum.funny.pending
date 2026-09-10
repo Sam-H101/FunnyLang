@@ -1,0 +1,6 @@
+gimme yapper
+yap yapper.is_alnum("a")
+yap yapper.is_alnum("1")
+yap yapper.is_alnum("中")
+yap yapper.is_alnum("_")
+yap yapper.is_alnum(" ")

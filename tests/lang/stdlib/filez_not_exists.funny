@@ -1,0 +1,2 @@
+gimme filez
+yap filez.exists("definitely_missing_xyz.txt")

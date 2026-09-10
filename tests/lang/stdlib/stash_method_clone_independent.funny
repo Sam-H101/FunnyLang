@@ -1,0 +1,5 @@
+yo a = [1,2]
+yo b = a.clone()
+b.yeet_in(3)
+yap a
+yap b

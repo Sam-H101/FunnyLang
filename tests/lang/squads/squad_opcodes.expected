@@ -1,0 +1,40 @@
+!XRAY
+== bet spawn (arity 1) ==
+0000  line 4  GHOST
+0001          RETURN
+
+== bet f (arity 1) ==
+0000  line 5  CONST         3    ; 1
+0003          RETURN
+0004          GHOST
+0005          RETURN
+
+== bet f (arity 1) ==
+0000  line 8  GET_LOCAL     0
+0002          INVOKE_OG     5 0    ; "f"
+0006          RETURN
+0007          GHOST
+0008          RETURN
+
+== <script> (entry) (arity 0) ==
+0000  line 3  SQUAD         0
+0003  line 4  CLOSURE       1    ; proto #0
+0006  line 3  METHOD        2
+0009  line 5  CLOSURE       4    ; proto #1
+0012  line 3  METHOD        5
+0015          DEF_GLOBAL    0    ; "A"
+0018  line 7  GET_GLOBAL    0    ; "A"
+0021          SQUAD         6
+0024          INHERIT
+0025          SWAP
+0026          POP
+0027  line 8  CLOSURE       7    ; proto #2
+0030  line 7  METHOD        5
+0033          DEF_GLOBAL    6    ; "B"
+0036  line 10 GET_GLOBAL    0    ; "A"
+0039          CALL          0
+0041          INVOKE        5 0    ; "f"
+0045          YAP           1 1
+0048          GHOST
+0049          RETURN
+

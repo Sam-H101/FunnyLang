@@ -1,0 +1,3 @@
+squad Empty { }
+yo e = Empty()
+yap what_is_it(e)

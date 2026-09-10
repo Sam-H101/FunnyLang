@@ -1,0 +1,2 @@
+gimme stash
+yap stash.flatten([1, [2, 3], [4, [5]]])

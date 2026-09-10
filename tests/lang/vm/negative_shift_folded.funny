@@ -1,0 +1,4 @@
+// PLAN.md §16: a negative shift amount must become a MathAintMathin, not a
+// raw host-language error -- and it has to happen at *compile* time here,
+// because the operands are literals and get constant-folded.
+yap 5 << -1

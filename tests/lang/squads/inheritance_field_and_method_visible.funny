@@ -1,0 +1,4 @@
+squad A { spawn(x) { me.x = x } }
+squad B inherits A { }
+yo b = B(5)
+yap b.x

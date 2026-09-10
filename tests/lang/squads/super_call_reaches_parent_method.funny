@@ -1,0 +1,3 @@
+squad A { bet f() { bounce 1 } }
+squad B inherits A { bet f() { bounce og.f() + 10 } }
+yap B().f()

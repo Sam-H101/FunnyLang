@@ -1,0 +1,4 @@
+gimme rizz
+rizz.seed(42)
+yo r = rizz.roll(1, 6)
+yap r >= 1 && r <= 6
