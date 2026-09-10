@@ -46,6 +46,7 @@ typedef int SockFd;
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/SecureTransport.h>
 #include <mach-o/dyld.h> /* _NSGetExecutablePath */
+#include <sys/sysctl.h>  /* sysctlbyname: hw.memsize, hw.logicalcpu */
 #else
 #include <dlfcn.h>
 #endif
@@ -697,12 +698,28 @@ int platform_cpu_count(void) {
 
 #else
 
+/* `_SC_PHYS_PAGES` is a glibc extension and does not exist on Darwin, so this
+   is one of the two functions in the POSIX branch that genuinely has to
+   split. `hw.memsize` answers in bytes directly, with no page arithmetic. */
+#ifdef __APPLE__
+
+uint64_t platform_ram_bytes(void) {
+    uint64_t bytes = 0;
+    size_t len = sizeof bytes;
+    if (sysctlbyname("hw.memsize", &bytes, &len, NULL, 0) != 0) return 0;
+    return bytes;
+}
+
+#else
+
 uint64_t platform_ram_bytes(void) {
     long pageSize = sysconf(_SC_PAGESIZE);
     long pages = sysconf(_SC_PHYS_PAGES);
     if (pageSize <= 0 || pages <= 0) return 0;
     return (uint64_t)pageSize * (uint64_t)pages;
 }
+
+#endif
 
 double platform_uptime_seconds(void) {
     FILE *f = fopen("/proc/uptime", "r");
@@ -731,10 +748,31 @@ void platform_os_info(char *sysname_out, size_t sysname_len, char *release_out, 
     }
 }
 
+/* `_SC_NPROCESSORS_ONLN` is the other glibc extension Darwin lacks.
+   `hw.logicalcpu` is the online logical count, which is what
+   `_SC_NPROCESSORS_ONLN` means -- `hw.ncpu` is the older name for roughly
+   the same thing and is kept as the fallback, since it is what older Darwin
+   releases answer to. */
+#ifdef __APPLE__
+
+int platform_cpu_count(void) {
+    int n = 0;
+    size_t len = sizeof n;
+    if (sysctlbyname("hw.logicalcpu", &n, &len, NULL, 0) == 0 && n > 0) return n;
+    n = 0;
+    len = sizeof n;
+    if (sysctlbyname("hw.ncpu", &n, &len, NULL, 0) == 0 && n > 0) return n;
+    return 0;
+}
+
+#else
+
 int platform_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int)n : 0;
 }
+
+#endif
 
 #endif
 

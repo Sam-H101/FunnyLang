@@ -2913,3 +2913,41 @@ gets an entry explaining what changed and why.
   Note this does *not* apply to `funny yeet`, which appends its payload past the existing signature
   blob rather than rewriting the Mach-O — and the macOS CI job has been yeeting and running the
   result all along, so that path is already covered by evidence rather than by assumption.
+
+- **The macOS matrix entry had never compiled.** Two glibc extensions to `sysconf` reached the
+  shared POSIX branch of `platform.c`:
+
+  ```
+  native/platform.c:702: error: use of undeclared identifier '_SC_PHYS_PAGES'
+  native/platform.c:735: error: use of undeclared identifier '_SC_NPROCESSORS_ONLN'
+  ```
+
+  Neither exists on Darwin. `platform_ram_bytes` and `platform_cpu_count` now have an `__APPLE__`
+  branch using `sysctlbyname`: `hw.memsize` gives physical RAM in bytes directly, with no page-size
+  arithmetic, and `hw.logicalcpu` gives the online logical CPU count that `_SC_NPROCESSORS_ONLN`
+  means (falling back to the older `hw.ncpu`).
+
+  **What it was not**, checked before assuming: `-std=c11` sets `__STRICT_ANSI__` on Darwin and does
+  hide some non-standard declarations, which is the obvious suspect and the wrong one —
+  `_SC_PAGESIZE` on the line immediately above compiles, and so does `CLOCK_MONOTONIC` earlier in the
+  file. The constants simply do not exist there, so `_DARWIN_C_SOURCE` would have fixed nothing.
+
+  **The lesson is about the gap, not the constants.** A Linux build never compiles the other side of
+  an `#ifdef __APPLE__`, so a break in that branch reaches the runner untested — which is how this
+  survived from N5 onwards. `build/n4/check_apple_branch.py` lifts the Apple-branch bodies straight
+  out of `platform.c`, splices them into a harness with Darwin's real `sysctlbyname` declaration,
+  and compiles that with `build.sh`'s own flags. It cannot prove a sysctl *name* is right — only a
+  Mac can — but it proves the branch compiles and the types line up, which is the half that was
+  failing.
+
+  Verified alongside: every `#if`/`#endif` in `native/` is balanced (`check_cpp_balance.py`, which
+  matters because half of each conditional is invisible to any one platform's build), no Linux-only
+  header or `/proc` read exists outside `platform.c`, and `tests/lang/programs/modules_computer.funny`
+  asserts *properties* (`what_is_it(computer.ram())` is a numba, `>= 0`) rather than values — so the
+  goldens the macOS job now runs are portable, and would have passed even while `ram()` answered 0.
+
+  **Still wrong on macOS, and not fixed here:** `platform_uptime_seconds` reads `/proc/uptime`, fails,
+  and falls back to time-since-process-start — so `computer.uptime()` answers a small number rather
+  than the system's uptime. It compiles, and the golden only asserts `>= 0.0`, so nothing goes red.
+  `kern.boottime` is the Darwin answer. Left alone deliberately rather than bundled into a build fix
+  that has to be right.
