@@ -7,6 +7,11 @@ dist/
 .pytest_cache/
 *.funnyc
 *.funnypak
+# ...except the bootstrap compiler (NATIVE_PLAN.md §4 lists it as checked
+# in). It is what lets a machine with only a C compiler build `funny` and
+# then compile FunnyLang, with no Python anywhere; see bootstrap/STAGE0.md
+# for its provenance and the staleness check that keeps it honest.
+!bootstrap/funnyc.funnypak
 *.exe
 .coverage
 htmlcov/

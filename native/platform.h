@@ -105,6 +105,21 @@ void platform_os_info(char *sysname_out, size_t sysname_len, char *release_out, 
    unknown. */
 int platform_cpu_count(void);
 
+/* -- the running executable (NATIVE_PLAN.md N7) ---------------------- */
+
+/* Absolute path of the running binary itself. Two callers need it and
+   neither can use argv[0]: `funny` locates its toolchain bundle beside
+   itself (argv[0] may be a bare name found on PATH), and the yeet stub
+   reads its *own* file to find the payload appended to it (PLAN.md §5.4).
+   False if the OS won't say, leaving `out` untouched. */
+bool platform_executable_path(char *out, size_t out_len);
+
+/* A path in the system temp directory that nothing else is using, for the
+   bytecode `funny run <file.funny>` compiles to before running it. The
+   file is created empty so the name can't be handed out twice; the caller
+   removes it when done. */
+bool platform_temp_file(const char *prefix, char *out, size_t out_len);
+
 /* -- console (NATIVE_PLAN.md N6, diagnostics) ------------------------ */
 
 /* True when *stdout* is a terminal. Deliberately stdout and not stderr,

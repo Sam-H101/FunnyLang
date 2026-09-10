@@ -1534,12 +1534,43 @@ gets an entry explaining what changed and why.
   compiler on the C VM and run on the C VM, matching its golden. Verified on Linux (gcc and clang,
   ASan/UBSan) and native Windows (MSVC).
 
-  Not done here, and deliberately: `bootstrap/funnyc.funnypak` is *not* checked in yet. §4 lists it as
-  a checked-in artifact but hands the provenance/staleness policy to N9, and a generated binary in the
-  tree without that policy is how stale bootstrap artifacts happen — the test links its own from
-  `selfhost/` instead. Wiring `funny run foo.funny` into one command is likewise left to N7, since
-  §4's layout has the toolchain bundle eventually *embedded* in the binary (`toolchain_blob.c`, N10)
-  rather than found on disk, and inventing a disk-search scheme now would just be something to delete.
+  Not done in that step, and deliberately: `bootstrap/funnyc.funnypak` was not checked in yet, and
+  `funny run foo.funny` was not wired up — both landed in N7 immediately after, below.
+
+- **N7 (part 1) · the native CLI: `funny foo.funny` works, in one command, with no Python.**
+  `funny [--serious] [--no-color] [--time] [--vibes] [--version] [run] <file> [args...]`, where
+  `<file>` is `.funny` (compiled on the spot by the self-hosted compiler), `.funnyc`, or `.funnypak`.
+  Bytecode files are told apart by their own magic rather than their extension, so a bundle under any
+  name still runs — which is what the yeet stub will need, since it reads a payload with no name at
+  all. Source is the one case decided by extension, because there is no magic number for "FunnyLang
+  source" and guessing from content would be worse than reading the name.
+  `funny <file> [args]` still works exactly as before, since every native test invokes it that way.
+  **Deliberately thin, and meant to get thinner**: N8 moves argument parsing and subcommand dispatch
+  into `selfhost/cli.funny`, so what's in C is only what has to be — the flags that configure the
+  C-side diagnostic renderer, choosing a loader, and driving the compiler. Writing a full C argument
+  parser now would be writing something N8 deletes.
+  New in `platform.c`: `platform_executable_path` (neither caller can use `argv[0]` — `funny` locates
+  its bundle beside itself, and the yeet stub must read its *own* file) and `platform_temp_file`.
+  **`bootstrap/funnyc.funnypak` is now checked in**, with `bootstrap/STAGE0.md` for provenance and
+  regeneration. This is the deferral from the previous entry, taken now that it is load-bearing:
+  without it `funny run foo.funny` cannot work at all, and more to the point it is what will let a
+  machine with *only* a C compiler compile FunnyLang once Python is gone. The staleness policy it was
+  waiting on is a test: `test_checked_in_bootstrap_is_not_stale` relinks from `selfhost/` and compares
+  bytes (linking is deterministic), so editing `selfhost/` without regenerating fails CI rather than
+  rotting quietly. `.gitignore` gains a matching `!bootstrap/funnyc.funnypak`.
+  **Compile errors don't leak compiler internals.** A syntax error in the user's file is not the
+  compiler failing, and rendering it as one buried the real problem under a stack trace through
+  `funnyc.funny`. The self-hosted compiler encodes the real flavour and position into its message
+  (it can only `chuck` a plain value), so the compile phase prints that message under a
+  `couldn't compile <path>:` header instead. Proper §4.2 diagnostics for source errors need the
+  *compiler* to report them properly — N8's job, and not something worth faking from out here.
+  Caught by the test suite rather than by review: `find_toolchain`'s path join tripped a
+  format-truncation error that only appears at `-O2`, which the `native_binary` fixture uses while the
+  `build.sh debug` loop uses `-O0` — so the whole suite silently *skipped* rather than failed until
+  the build was reproduced at the fixture's optimisation level.
+  Verified on Linux (gcc and clang) and native Windows (MSVC), including finding the bundle beside the
+  executable on both. 105 native tests green including under `FUNNY_GC_STRESS=1`; acceptance corpus
+  73/73 and 7/7; self-hosted zero-Python corpus still 64/64.
   **Found a language-grammar quirk while writing the test, not a bug in either VM:** `sus` is itself
   a reserved statement-leading keyword (FunnyLang's own conditional, "sus (cond) { }"), so
   `sus.dump(x)` as a bare statement fails to parse on *both* VMs identically — confirmed by checking

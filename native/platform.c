@@ -45,6 +45,7 @@ typedef int SockFd;
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/SecureTransport.h>
+#include <mach-o/dyld.h> /* _NSGetExecutablePath */
 #else
 #include <dlfcn.h>
 #endif
@@ -573,9 +574,32 @@ int platform_cpu_count(void) {
 
 #endif
 
-/* -- console ------------------------------------------------------------ */
+/* -- the running executable ---------------------------------------------- */
 
 #ifdef _WIN32
+
+bool platform_executable_path(char *out, size_t out_len) {
+    DWORD n = GetModuleFileNameA(NULL, out, (DWORD)out_len);
+    if (n == 0 || n >= out_len) return false;
+    for (char *p = out; *p; p++) {
+        if (*p == '\\') *p = '/'; /* keep one path flavour above this layer */
+    }
+    return true;
+}
+
+bool platform_temp_file(const char *prefix, char *out, size_t out_len) {
+    char dir[MAX_PATH];
+    DWORD n = GetTempPathA((DWORD)sizeof(dir), dir);
+    if (n == 0 || n >= sizeof(dir)) return false;
+    char path[MAX_PATH];
+    if (GetTempFileNameA(dir, prefix, 0, path) == 0) return false; /* creates it */
+    for (char *p = path; *p; p++) {
+        if (*p == '\\') *p = '/';
+    }
+    if (strlen(path) >= out_len) return false;
+    snprintf(out, out_len, "%s", path);
+    return true;
+}
 
 bool platform_stdout_is_tty(void) { return _isatty(_fileno(stdout)) != 0; }
 
@@ -596,6 +620,30 @@ void platform_console_init(void) {
 }
 
 #else
+
+bool platform_executable_path(char *out, size_t out_len) {
+#ifdef __APPLE__
+    uint32_t size = (uint32_t)out_len;
+    if (_NSGetExecutablePath(out, &size) != 0) return false;
+    return true;
+#else
+    ssize_t n = readlink("/proc/self/exe", out, out_len - 1);
+    if (n <= 0) return false;
+    out[n] = '\0';
+    return true;
+#endif
+}
+
+bool platform_temp_file(const char *prefix, char *out, size_t out_len) {
+    const char *dir = getenv("TMPDIR");
+    if (!dir || dir[0] == '\0') dir = "/tmp";
+    int written = snprintf(out, out_len, "%s/%sXXXXXX", dir, prefix);
+    if (written < 0 || (size_t)written >= out_len) return false;
+    int fd = mkstemp(out);
+    if (fd < 0) return false;
+    close(fd);
+    return true;
+}
 
 bool platform_stdout_is_tty(void) { return isatty(STDOUT_FILENO) != 0; }
 

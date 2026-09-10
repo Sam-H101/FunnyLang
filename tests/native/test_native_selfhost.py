@@ -15,6 +15,7 @@ another crosses compiled units mid-execution.
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 from pathlib import Path
 
@@ -76,6 +77,57 @@ def test_natively_compiled_corpus_matches_its_golden(name, native_binary, selfho
     out = tmp_path / f"{name}.funnyc"
     _native_compile(native_binary, selfhost_pak, source, out)
     assert _native_run(native_binary, out) == expected
+
+
+def test_checked_in_bootstrap_is_not_stale(selfhost_pak):
+    """`bootstrap/funnyc.funnypak` is the one generated binary in the tree,
+    and it is what lets a machine with only a C compiler compile FunnyLang.
+    A checked-in artifact is only safe while something notices when it stops
+    matching its sources -- linking is deterministic, so this is just a byte
+    comparison. See bootstrap/STAGE0.md for how to regenerate it."""
+    checked_in = ROOT / "bootstrap" / "funnyc.funnypak"
+    assert checked_in.exists(), "bootstrap/funnyc.funnypak is missing; see bootstrap/STAGE0.md"
+    assert checked_in.read_bytes() == selfhost_pak.read_bytes(), (
+        "bootstrap/funnyc.funnypak is stale -- selfhost/ changed without it being regenerated. "
+        "Run: python3 -m funnylang build selfhost/funnyc.funny -o bootstrap/funnyc.funnypak"
+    )
+
+
+def test_cli_runs_a_source_file_in_one_command(native_binary, tmp_path):
+    """`funny foo.funny` -- compile and run, no Python, one command. Uses the
+    checked-in bootstrap bundle the way a user would, via FUNNY_TOOLCHAIN so
+    the test doesn't depend on where the binary happens to sit."""
+    source = tmp_path / "hello.funny"
+    source.write_text('yap "hi from source"\n', encoding="utf-8")
+    env = dict(os.environ)
+    env["FUNNY_TOOLCHAIN"] = str(ROOT / "bootstrap" / "funnyc.funnypak")
+    result = subprocess.run(
+        [str(native_binary), str(source)], capture_output=True, text=True, timeout=300, env=env
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "hi from source\n"
+
+
+def test_cli_reports_a_source_error_without_compiler_internals(native_binary, tmp_path):
+    """A syntax error is the user's problem, so it must not be buried under a
+    stack trace through the compiler's own source."""
+    source = tmp_path / "bad.funny"
+    source.write_text('yap "unclosed\n', encoding="utf-8")
+    env = dict(os.environ)
+    env["FUNNY_TOOLCHAIN"] = str(ROOT / "bootstrap" / "funnyc.funnypak")
+    result = subprocess.run(
+        [str(native_binary), str(source)], capture_output=True, text=True, timeout=300, env=env
+    )
+    assert result.returncode == 1
+    assert "couldn't compile" in result.stderr
+    assert "this string hits a newline before it closes" in result.stderr
+    assert "funnyc.funny" not in result.stderr, "compiler internals leaked into a user-facing error"
+
+
+def test_cli_version_flag(native_binary):
+    result = subprocess.run([str(native_binary), "--version"], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0
+    assert result.stdout == "funny 1.1.0 (bytecode v2)\n"
 
 
 def test_both_vms_run_the_compiler_to_the_same_bytecode(native_binary, selfhost_pak, tmp_path):
