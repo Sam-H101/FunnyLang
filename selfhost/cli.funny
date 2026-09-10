@@ -26,7 +26,7 @@ gimme yapper
 gimme rizz
 gimme clock
 gimme computer
-gimme { build_bundle, emit_funnypak } from "bundler.funny"
+gimme { build_bundle, emit_funnypak, normalize_seps } from "bundler.funny"
 gimme { emit_funnyc } from "emitter.funny"
 // The tools, as libraries. Imported rather than compiled at run time, so
 // they end up inside this bundle and a shipped binary needs nothing beside
@@ -114,12 +114,36 @@ flex bet compile_to_blob(path, vibes) {
     quip(vibes, "compiling")
     yo bundle = build_bundle(path)
     sus (bundle["names"].how_thicc() == 1) {
-        bounce emit_funnyc(bundle["units"][0], path)
+        // The unit's name is what a *runtime* diagnostic reports, so it gets
+        // the same separator normalisation the bundler gives a compile-time
+        // one. Otherwise the two halves of the same program's error reporting
+        // would disagree about how to spell a path on Windows.
+        bounce emit_funnyc(bundle["units"][0], normalize_seps(path))
     }
     bounce emit_funnypak(bundle)
 }
 
 // -- run ------------------------------------------------------------------
+
+// A compile-time failure gets the full §4.2 diagnostic, the same as a runtime
+// one -- caret line included. That became possible only once the front end
+// started carrying the source path (N11): before, an `oops(...)` named no
+// file, so the renderer had nothing to quote and would have attributed the
+// error to whatever unit was running, which is the toolchain. The two-line
+// "couldn't compile X: message" summary this replaces was the honest thing to
+// print while that was true, and is now strictly less than what is known.
+//
+// The fallback is kept for the case `render_diag` cannot render -- an error
+// value from somewhere that never set a position.
+flex bet report_compile_error(path, e) {
+    yo text = sus.render_diag(e)
+    sus (text == ghost) {
+        yell("couldn't compile " + path + ":")
+        yell("  " + e.message)
+        bounce ghost
+    }
+    yell(yapper.rtrim(text))
+}
 
 flex bet cmd_run(path, program_args, show_time, vibes) {
     // Source is the one case decided by extension rather than magic: there
@@ -136,8 +160,7 @@ flex bet cmd_run(path, program_args, show_time, vibes) {
         sketchy {
             blob = compile_to_blob(path, vibes)
         } my_bad (e) {
-            yell("couldn't compile " + path + ":")
-            yell("  " + e.message)
+            report_compile_error(path, e)
             bounce 1
         }
         compile_ms = started() * 1000.0
@@ -204,8 +227,7 @@ flex bet cmd_yeet(path, out, vibes) {
     sketchy {
         payload = compile_to_blob(path, vibes)
     } my_bad (e) {
-        yell("couldn't compile " + path + ":")
-        yell("  " + e.message)
+        report_compile_error(path, e)
         bounce 1
     }
 

@@ -141,16 +141,16 @@ flex bet xray_lines(path, want_tokens, want_ast, want_pak) {
     yo src = filez.slurp(path)
     sus (want_tokens) {
         yo out = []
-        grind t in tokenize(src) {
+        grind t in tokenize(src, path) {
             out.yeet_in(token_repr(t))
         }
         bounce out
     }
-    yo program = parse_program(tokenize(src))
+    yo program = parse_program(tokenize(src, path), path)
     sus (want_ast) {
         bounce [dump(program)]
     }
-    bounce [disassemble(compile_source(src, fax))]
+    bounce [disassemble(compile_source(src, fax, path))]
 }
 
 flex bet xray_text(path, want_tokens, want_ast, want_pak) {

@@ -267,8 +267,13 @@ flex deadass MAX_LOCALS = 256
 // squad). Before `oops` existed these were all one SkillIssue with the
 // intended name buried in the message, which is why an `!ERROR WhoDis`
 // golden could not pass under the self-hosted compiler.
-flex bet resolver_error_flavored(rs, flavor, line, col, message) {
-    chuck oops(flavor, message, line, col)
+flex bet resolver_error_flavored(rs, flavor, line, col, message, extras = ghost) {
+    yo info = extras
+    sus (info == ghost) {
+        info = {}
+    }
+    info["file"] = rs["file"]
+    chuck oops(flavor, message, line, col, info)
 }
 
 flex bet resolver_error(rs, line, col, message) {
@@ -411,6 +416,86 @@ flex bet resolve_upvalue(scope, name) {
     bounce ghost
 }
 
+// -- "did you mean" ---------------------------------------------------------
+//
+// A port of funnylang/errors.py's `levenshtein` and `suggest_name`, which the
+// self-hosted resolver simply did not have: every WhoDis came out with the
+// flavor's default roast and no hint, where the reference offers the closest
+// visible name. `tests/test_resolver.py::test_whodis_suggests_close_match`
+// checks for exactly that suggestion, and there was nothing here to check.
+//
+// Plain edit distance with a rolling row, and the same tie-break: `<` rather
+// than `<=`, so the *first* candidate at the best distance wins. Order
+// therefore matters and is the reference's -- innermost scope's locals first,
+// walking outwards, then the known globals.
+flex bet levenshtein(a, b) {
+    sus (a == b) {
+        bounce 0
+    }
+    sus (a == "") {
+        bounce b.how_thicc()
+    }
+    sus (b == "") {
+        bounce a.how_thicc()
+    }
+    yo bn = b.how_thicc()
+    yo prev = []
+    grind j from 0 to bn + 1 {
+        prev.yeet_in(j)
+    }
+    yo ac = a.chars()
+    yo bc = b.chars()
+    grind i from 1 to a.how_thicc() + 1 {
+        yo cur = [i]
+        grind j from 1 to bn + 1 {
+            yo cost = ac[i - 1] == bc[j - 1] ? 0 : 1
+            yo best = prev[j] + 1
+            sus (cur[j - 1] + 1 < best) {
+                best = cur[j - 1] + 1
+            }
+            sus (prev[j - 1] + cost < best) {
+                best = prev[j - 1] + cost
+            }
+            cur.yeet_in(best)
+        }
+        prev = cur
+    }
+    bounce prev[bn]
+}
+
+deadass MAX_SUGGEST_DISTANCE = 2
+
+flex bet suggest_name(name, candidates) {
+    yo best = ghost
+    yo best_dist = MAX_SUGGEST_DISTANCE + 1
+    grind cand in candidates {
+        sus (cand == name) {
+            nvm
+        }
+        yo d = levenshtein(name, cand)
+        sus (d < best_dist) {
+            best = cand
+            best_dist = d
+        }
+    }
+    bounce best
+}
+
+flex bet all_visible_names(rs) {
+    yo names = []
+    yo scope = rs["current"]
+    bruh (scope != ghost) {
+        grind local in scope["locals"] {
+            names.yeet_in(local["name"])
+        }
+        scope = scope["enclosing"]
+    }
+    grind g in rs["known_globals"] {
+        names.yeet_in(g)
+    }
+    bounce names
+}
+
 flex bet resolve_name(rs, name, line, col) {
     yo local_idx = resolve_local(rs["current"], name)
     sus (local_idx != ghost) {
@@ -424,7 +509,15 @@ flex bet resolve_name(rs, name, line, col) {
     sus (rs["known_globals"].contains(name)) {
         bounce {"kind": "global", "index": ghost, "name": name, "is_const": rs["const_globals"].contains(name)}
     }
-    resolver_error_flavored(rs, "WhoDis", line, col, "'" + name + "' isn't defined anywhere i can see.")
+    yo hint = suggest_name(name, all_visible_names(rs))
+    yo roast = "`" + name + "` who? never heard of them."
+    yo hint_text = ghost
+    sus (hint != ghost) {
+        roast = roast + " did you mean `" + hint + "`?"
+        hint_text = "did you mean `" + hint + "`?"
+    }
+    resolver_error_flavored(rs, "WhoDis", line, col, "'" + name + "' isn't defined anywhere i can see.",
+                            {"roast": roast, "hint": hint_text})
 }
 
 flex bet in_method_context(rs) {
@@ -737,7 +830,8 @@ flex bet rexpr_Assign(rs, node) {
     yo resolution = resolve_name(rs, target["name"], target["line"], target["col"])
     target["resolution"] = resolution
     sus (resolution["is_const"]) {
-        resolver_error_flavored(rs, "ImmutableVibes", node["line"], node["col"], "'" + target["name"] + "' is a deadass constant.")
+        resolver_error_flavored(rs, "ImmutableVibes", node["line"], node["col"], "'" + target["name"] + "' is a deadass constant.",
+                                {"roast": "`" + target["name"] + "` is deadass. it doesn't change. like your ex's opinion of you."})
     }
 }
 
@@ -759,7 +853,8 @@ flex bet rexpr_AddressOf(rs, node) {
         yo resolution = resolve_name(rs, place["name"], place["line"], place["col"])
         place["resolution"] = resolution
         sus (resolution["is_const"]) {
-            resolver_error_flavored(rs, "ImmutableVibes", node["line"], node["col"], "'" + place["name"] + "' is a deadass constant.")
+            resolver_error_flavored(rs, "ImmutableVibes", node["line"], node["col"], "'" + place["name"] + "' is a deadass constant.",
+                                    {"roast": "`" + place["name"] + "` is deadass. it doesn't change. like your ex's opinion of you."})
         }
         sus (resolution["kind"] == "local") {
             // Taking a pointer to a local boxes it via the identical
@@ -887,7 +982,7 @@ flex bet prepass_globals(rs, statements) {
 // exactly these two and passes them into a fresh Resolver each time, which
 // is how `yo x = 1` on one line resolves on the next. They are mutated in
 // place, so the caller sees whatever this program added.
-flex bet resolve_program(program, known_globals = ghost, const_globals = ghost) {
+flex bet resolve_program(program, known_globals = ghost, const_globals = ghost, file = ghost) {
     yo names = known_globals
     sus (names == ghost) {
         names = BUILTIN_GLOBAL_NAMES.clone()
@@ -897,7 +992,7 @@ flex bet resolve_program(program, known_globals = ghost, const_globals = ghost) 
     sus (consts == ghost) {
         consts = []
     }
-    yo rs = {"known_globals": names, "const_globals": consts, "current": ghost}
+    yo rs = {"known_globals": names, "const_globals": consts, "current": ghost, "file": file}
     yo root = new_scope(ghost, fax, cap)
     rs["current"] = root
     prepass_globals(rs, program["statements"])
@@ -1912,8 +2007,11 @@ flex bet compile_program(program, fold_constants, repl_capture_last = cap) {
 
 // -- public API: source text -> CompiledUnit-equivalent -------------------
 
-flex bet compile_source(src, fold_constants) {
-    yo program = parse_source(src)
-    resolve_program(program)
+// `file` is optional and threads straight through to every error the front
+// end can raise, so a diagnostic names the program being compiled rather
+// than the toolchain compiling it.
+flex bet compile_source(src, fold_constants, file = ghost) {
+    yo program = parse_source(src, file)
+    resolve_program(program, ghost, ghost, file)
     bounce compile_program(program, fold_constants)
 }

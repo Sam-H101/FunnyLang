@@ -138,8 +138,28 @@ flex bet build_bundle(entry_path) {
             nvm
         }
         yo src = filez.slurp(abs_path)
-        yo program = parse_source(src)
-        resolve_program(program)
+        // Two different names for two different jobs. The compiled *unit* is
+        // keyed by `canonical`, because that is what the loader resolves a
+        // quoted `gimme` against once there is no filesystem left. A front-end
+        // *error* gets a real path instead, because the diagnostic renderer
+        // opens it to show the caret line -- and a canonical key like
+        // `err.funny` does not resolve from wherever `funny` was run. The
+        // entry keeps the path the user typed, so its diagnostic reads back
+        // the way they wrote it.
+        // Separator-normalised, like the canonical keys just above and for the
+        // same reason: a diagnostic is compared byte for byte by the golden
+        // corpus, and `tests\lang\x.funny` on Windows against
+        // `tests/lang/x.funny` everywhere else would make every `!DIAG` golden
+        // platform-specific. It also means a diagnostic and a disassembly name
+        // a module the same way on every platform. Windows accepts '/' in
+        // every path API the renderer uses to find the source, so nothing is
+        // lost by saying it this way.
+        yo error_file = normalize_seps(abs_path)
+        sus (canonical == entry_canonical) {
+            error_file = normalize_seps(entry_path)
+        }
+        yo program = parse_source(src, error_file)
+        resolve_program(program, ghost, ghost, error_file)
         yo unit = compile_program(program, fax)
         names.yeet_in(canonical)
         units.yeet_in(unit)

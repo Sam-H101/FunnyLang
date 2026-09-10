@@ -374,7 +374,7 @@ flex bet format_program(program) {
 
 flex bet run_fmt(path, check) {
     yo text = filez.slurp(path)
-    yo formatted = format_program(parse_source(text))
+    yo formatted = format_program(parse_source(text, path))
 
     sus (check) {
         sus (formatted == text) {

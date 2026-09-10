@@ -93,8 +93,12 @@ flex bet show_error(flavor, message, line, col) {
 
 flex bet xray_expr(text) {
     sketchy {
-        yo program = parse_program(tokenize(text))
-        resolve_program(program, fresh_globals(), [])
+        // "<vibe>" is what the REPL already names its compiled unit, so an
+        // error from a typed line points at the same place the disassembly
+        // does. There is no file to read a snippet from, and the renderer
+        // skips the snippet when there is not -- which is right here.
+        yo program = parse_program(tokenize(text, "<vibe>"), "<vibe>")
+        resolve_program(program, fresh_globals(), [], "<vibe>")
         yap disassemble(compile_program(program, fax))
     } my_bad (e) {
         show_error(e.flavor, e.message, e.line, e.col)
@@ -178,10 +182,10 @@ flex bet run_repl() {
         yo blob = ghost
         yo is_expr = cap
         sketchy {
-            yo program = parse_program(tokenize(buffer_text))
+            yo program = parse_program(tokenize(buffer_text, "<vibe>"), "<vibe>")
             yo statements = program["statements"]
             is_expr = statements.how_thicc() > 0 && statements.last()["node"] == "ExprStmt"
-            resolve_program(program, known, consts)
+            resolve_program(program, known, consts, "<vibe>")
             blob = emit_funnyc(compile_program(program, fax, is_expr), "<vibe>")
         } my_bad (e) {
             show_error(e.flavor, e.message, e.line, e.col)

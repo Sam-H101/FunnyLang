@@ -4,8 +4,9 @@ Python in the loop.
 The C VM loads the self-hosted compiler (`selfhost/`, itself FunnyLang,
 linked into a PLAN.md §5.3 bundle), runs it to compile a `.funny` file to
 bytecode, and then runs that bytecode. Python appears here only to *link*
-the bundle -- a dev-time step, the same way tools/gen_unicode.py regenerates
-a checked-in table -- and to be the oracle the result is compared against.
+the bundle -- a dev-time step -- and to be the oracle the result is compared
+against. (The other dev-time generators, tools/gen_unicode.funny and
+tools/bin2c.funny, are FunnyLang: N11 leaves no .py anywhere.)
 
 What this actually exercises, beyond "it works": bundled-module imports on
 the C VM (`gimme { compile_source } from "compiler.funny"`), which need
@@ -18,6 +19,7 @@ import io
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -120,17 +122,38 @@ def test_cli_runs_a_source_file_in_one_command(native_binary, tmp_path):
     assert result.stdout == "hi from source\n"
 
 
+def _python(*args: str, cwd: Path = ROOT) -> subprocess.CompletedProcess:
+    """The reference CLI, with PYTHONPATH set explicitly -- several callers run
+    with `cwd` somewhere else, and `python -m funnylang` otherwise resolves
+    only from the repo root or a pip install."""
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")]))}
+    return subprocess.run(
+        [sys.executable, "-m", "funnylang", *args],
+        capture_output=True, text=True, encoding="utf-8", cwd=cwd, timeout=300, env=env,
+    )
+
+
 def test_cli_reports_a_source_error_without_compiler_internals(native_binary, tmp_path):
     """A syntax error is the user's problem, so it must not be buried under a
-    stack trace through the compiler's own source."""
+    stack trace through the compiler's own source.
+
+    It used to be reported as a two-line `couldn't compile X:` summary, which
+    was the honest thing to print while the self-hosted front end carried no
+    source path and the renderer therefore had no file to quote. N11 threaded
+    the path through, so this is now the full §4.2 diagnostic — checked
+    against `python -m funnylang run` on the same input and byte-identical to
+    it, roast included."""
     source = tmp_path / "bad.funny"
     source.write_text('yap "unclosed\n', encoding="utf-8")
     result = subprocess.run(
         [str(native_binary), str(source)], capture_output=True, text=True, timeout=300, cwd=tmp_path
     )
+    theirs = _python("run", str(source), cwd=tmp_path)
     assert result.returncode == 1
-    assert "couldn't compile" in result.stderr
-    assert "this string hits a newline before it closes" in result.stderr
+    assert result.stderr == theirs.stderr
+    # The caret line, and the roast rather than the flavor's generic default.
+    assert 'yap "unclosed' in result.stderr
+    assert "strings don't just end whenever they feel like it" in result.stderr
     assert "funnyc.funny" not in result.stderr, "compiler internals leaked into a user-facing error"
 
 

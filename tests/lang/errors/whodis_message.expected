@@ -1,0 +1,13 @@
+!DIAG
+💀💀💀 FUNNYLANG MOMENT 💀💀💀
+
+  WhoDis  ──  tests/lang/errors/whodis_message.funny:2:5
+
+     1 │ yo greeting = "yo"
+     2 │ yap greetin
+       │     ^ this right here
+     3 │ 
+
+  `greetin` who? never heard of them. did you mean `greeting`?
+
+  💡 skill issue fix:  did you mean `greeting`?

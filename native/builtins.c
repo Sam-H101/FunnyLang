@@ -264,7 +264,37 @@ static Value m_oops(VM *vm, Value *a, int argc) {
         }
         col = (uint32_t)AS_INT(a[3]);
     }
-    ObjError *e = error_new(&vm->gc, AS_STRING(a[0])->chars, message, NULL, NULL, line, col, NULL, GHOST_VAL, NULL, 0);
+    /* Everything else an error can carry, as a groupchat rather than three
+       more positional parameters: "file", "roast", "hint". A sixth, seventh
+       and eighth argument would have been unreadable at the call site, and
+       this leaves room for the rest of PLAN.md Â§3.9's field set later.
+
+       `file` is the one that had to exist. Without it a parse error raised by
+       the self-hosted front end carried no source at all, so the diagnostic
+       renderer attributed it to whatever unit happened to be running -- the
+       toolchain -- and dropped the caret line, because it had no file to
+       quote. `roast` and `hint` are here because funnylang/parser.py and
+       resolver.py set them on exactly four errors between them, and matching
+       the reference means being able to say so. */
+    const char *file = NULL;
+    const char *roast = NULL;
+    const char *hint = NULL;
+    if (argc > 4 && IS_OBJ(a[4]) && AS_OBJ(a[4])->type == OBJ_GROUPCHAT) {
+        ObjGroupChat *extras = (ObjGroupChat *)AS_OBJ(a[4]);
+        static const char *const keys[] = {"file", "roast", "hint"};
+        const char **slots[] = {&file, &roast, &hint};
+        for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+            GroupChatEntry *e = groupchat_find(extras, OBJ_VAL(string_new(&vm->gc, keys[i], (uint32_t)strlen(keys[i]))));
+            if (e == NULL || IS_GHOST(e->value)) continue;
+            if (!IS_STRING(e->value)) {
+                vm_throw_native(vm, "TypeVibeMismatch", "'oops' needs a yapstring %s, not a %s.",
+                                keys[i], vm_type_name(e->value));
+                return GHOST_VAL;
+            }
+            *slots[i] = AS_STRING(e->value)->chars;
+        }
+    }
+    ObjError *e = error_new(&vm->gc, AS_STRING(a[0])->chars, message, roast, hint, line, col, file, GHOST_VAL, NULL, 0);
     return OBJ_VAL(e);
 }
 
@@ -472,7 +502,7 @@ static const BuiltinEntry BUILTIN_TABLE[] = {
     {"no_cap", m_no_cap, 1, 2},
     {"ask", m_ask, 0, 1},
     {"yell", m_yell, 0, 255},
-    {"oops", m_oops, 1, 4},
+    {"oops", m_oops, 1, 5},
     {"dip", m_dip, 0, 1},
     {"the_args", m_the_args, 0, 0},
     {"combo", m_combo, 0, 255},

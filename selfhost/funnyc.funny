@@ -19,6 +19,6 @@ sus (args.how_thicc() < 2) {
 yo in_path = args[0]
 yo out_path = args[1]
 yo src = filez.slurp(in_path)
-yo unit = compile_source(src, fax)
+yo unit = compile_source(src, fax, in_path)
 yo buf = emit_funnyc(unit, in_path)
 filez.write_bytes(out_path, buf)

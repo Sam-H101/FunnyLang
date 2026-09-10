@@ -2509,3 +2509,54 @@ gets an entry explaining what changed and why.
   see is worth keeping on the page. Verified: 273/273 goldens on Linux and Windows, all 90
   `tests/lang/stdlib/` goldens **also pass on the Python VM**, `tests/native` 248 passed, bootstrap
   fixed point byte-identical at the same size on both platforms, MSVC `/W4 /WX` clean.
+
+- **N11 · source paths through the front end, and compile-time diagnostics that match the reference.**
+  Chosen by the project owner from three candidate mechanisms. The symptom was small — a `!DIAG`
+  golden for a parse error rendered as coming from `cli.funny` — and the cause was structural:
+  `parse_source(src)` took text and no path, and `oops()` had no file argument, so a self-hosted
+  front-end error carried **no source at all**. The renderer fell back to whatever unit was running
+  (the toolchain) and dropped the caret line entirely, because it had no file to quote. `funny run`
+  papered over it by printing its own `couldn't compile <path>: <message>` summary, which was the
+  honest thing to print while that was true and is strictly less than what is now known.
+
+  A path now threads through `tokenize` → `parse_program` → `parse_source` → `resolve_program` →
+  `compile_source`, and through `build_bundle` and `fmt`. The bundler keeps **two** names per module,
+  which is the part worth remembering: the compiled *unit* is keyed by its canonical name, because
+  that is what the loader resolves a quoted `gimme` against once there is no filesystem left; a
+  front-end *error* gets a real path, because the renderer opens it to show the caret and
+  `err.funny` does not resolve from wherever `funny` was run.
+
+  **`oops`'s fifth argument became an extras groupchat rather than three more positional
+  parameters** — `{"file", "roast", "hint"}`. A sixth, seventh and eighth argument would have been
+  unreadable at the call site, and this leaves room for the rest of §3.9's field set. `roast` had to
+  exist because **in funny mode the rendered body is the roast, not the message**: every self-hosted
+  compile error was rendering with its flavor's generic default, so an unterminated string reported
+  "what even IS that character. i'm not doing this." `funnylang/lexer.py`, `parser.py` and
+  `resolver.py` override the roast on eleven errors between them, and all eleven are now copied
+  verbatim.
+
+  **The self-hosted resolver had no "did you mean" at all.** `suggest_name` and `levenshtein` did
+  not exist on this side, so a `WhoDis` never suggested the name you probably meant — and
+  `tests/test_resolver.py::test_whodis_suggests_close_match` had no native counterpart to fail.
+  Ported including the tie-break: `<` not `<=`, so the *first* candidate at the best distance wins,
+  which makes the order the reference walks scopes in part of the observable behaviour.
+
+  **Two things fell out that were not the point but are worth recording:**
+  - `exc.roast` raises `WhoDis`. §3.9's readable field set is flavor/message/line/col/file/trace/
+    payload — `roast` and `hint` are not in it. The parser's error-recovery list now holds the error
+    *objects* rather than copies of their fields, and a single parse error is **re-raised
+    unchanged**, so its roast, hint and position survive exactly as the site that raised them wrote
+    them. Several errors still get a joined message with the first's flavor and position, the way
+    `ParseErrorBundle` exposes `errors[0]`.
+  - Diagnostic paths are now separator-normalised to `/` on every platform, the same as bundle keys
+    already were. Without it, `tests\lang\x.funny` on Windows against `tests/lang/x.funny`
+    everywhere else made every `!DIAG` golden platform-specific. Applied to the runtime path too
+    (`compile_to_blob`'s unit name), because the two halves of one program's error reporting
+    disagreeing about how to spell a path would be worse than either choice.
+
+  **Verified by comparison, not by taste:** `build/n4/diagcmp.sh` runs the same file through
+  `./funny run` and `python -m funnylang run` and the stderr is byte-identical for the parse, lexer
+  and resolver cases — caret line, roast, hint and all. `tests/native/test_native_selfhost.py`'s
+  syntax-error test now asserts that equality directly instead of grepping for a summary line whose
+  premise has changed. 275/275 goldens on Linux and Windows, `tests/native` 248 passed, bootstrap
+  fixed point byte-identical on both.
