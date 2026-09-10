@@ -64,13 +64,42 @@ jobs:
         shell: cmd
         run: build.bat
 
-      # Task 4. `strip -s` on POSIX; MSVC's linker already omits debug info
-      # without /DEBUG, so there is nothing to strip there.
-      - name: Strip
-        if: runner.os != 'Windows'
+      # Task 4. MSVC's linker already omits debug info without /DEBUG, so
+      # there is nothing to strip on Windows.
+      #
+      # Linux and macOS need different commands, not just different flags.
+      # `-s` is GNU ("strip all symbols"); on macOS `-s` takes a *filename*
+      # and means "save the symbols listed in it", so `strip -s funny funnyrt`
+      # asks strip to read a symbol list out of the `funny` Mach-O. Plain
+      # `strip` is the equivalent there.
+      - name: Strip (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
         run: |
           strip -s funny funnyrt
           ls -la funny funnyrt
+
+      # Stripping a Mach-O invalidates its code signature, and arm64 macOS
+      # refuses to exec a binary whose signature does not verify -- the
+      # process is killed on launch with nothing but `Killed: 9` to show for
+      # it. Every arm64 Mach-O carries at least an ad-hoc signature, so one
+      # goes back on. `-f` because the binary already has one to replace.
+      - name: Strip and re-sign (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          set -eu
+          strip funny funnyrt
+          codesign -s - -f funny
+          codesign -s - -f funnyrt
+          codesign -v funny
+          codesign -v funnyrt
+          ls -la funny funnyrt
+
+      # The point of the step above, checked rather than assumed: a stripped
+      # arm64 binary that was not re-signed does not run at all, and that
+      # failure looks like a crash rather than a signing problem.
+      - name: The stripped binary still runs (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: ./funny --version
 
       # Task 3's floor, asserted rather than assumed. objdump is not on the
       # macOS runners and the symbol versions are a glibc concept anyway, so

@@ -2895,3 +2895,21 @@ gets an entry explaining what changed and why.
   well as none on PATH. ✔
 - The coverage gap is written down in §9, file by file, with dispositions and with the four things
   genuinely not covered named. ✔
+
+- **`strip -s` is GNU, and it silently meant something else on macOS.** `release.yml`'s Strip step ran
+  `strip -s funny funnyrt` for every non-Windows runner. On Linux `-s` means "strip all symbols";
+  on macOS **`-s` takes a filename** and means "save the symbols listed in it", so the command asked
+  `strip` to read a symbol list out of the `funny` Mach-O and then strip `funnyrt`. Split into two
+  steps, because the two platforms need different *commands*, not the same command with a different
+  flag.
+
+  The macOS half needs a second thing the Linux half does not: **stripping a Mach-O invalidates its
+  code signature**, and arm64 macOS refuses to exec a binary whose signature does not verify — the
+  process is killed on launch with nothing but `Killed: 9` to go on. Every arm64 Mach-O carries at
+  least an ad-hoc signature, so `codesign -s - -f` puts one back, `codesign -v` checks it, and a
+  `./funny --version` immediately after proves the artifact still runs. A stripped-but-unsigned
+  binary is exactly the kind of failure that gets misread as a crash in the program.
+
+  Note this does *not* apply to `funny yeet`, which appends its payload past the existing signature
+  blob rather than rewriting the Mach-O — and the macOS CI job has been yeeting and running the
+  result all along, so that path is already covered by evidence rather than by assumption.
