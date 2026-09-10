@@ -1,7 +1,8 @@
 """`sus` — reflection / debug helpers (PLAN.md §M6 task 4)."""
 from __future__ import annotations
 
-from ..values import GroupChat, Instance, Module, NativeFn, Stash, to_repr, type_name
+from ..errors import TypeVibeMismatch
+from ..values import GHOST, GroupChat, Instance, Module, NativeFn, Stash, to_repr, type_name
 
 
 def _nf(name, fn, lo, hi=None):
@@ -32,6 +33,68 @@ def _dump(vm, a):
     return a[0]
 
 
+def _run_bytecode(vm, a):
+    """NATIVE_PLAN.md N8 task 4: run compiled FunnyLang from FunnyLang.
+
+    A self-hosted toolchain needs this — `funny test` has to observe another
+    program's stdout and find out which error flavor (if any) escaped it,
+    and `funny bootstrap --verify` has to run a compiler bundle three times.
+    In Python those are one `VM(stdout=StringIO()); vm.interpret(unit)`;
+    there was no equivalent a FunnyLang program could reach.
+
+    A *fresh* VM with its own globals, deliberately: this is isolation, not
+    `eval`. The child cannot see or disturb the caller's state.
+    """
+    import io
+
+    from ..chunk import CompiledUnit  # noqa: F401  (documents the contract)
+    from ..errors import FunnyError
+    from ..modules import CanonicalSource, make_pak_module_loader
+    from ..serializer import load_funnyc, load_funnypak
+    from ..vm import VM
+    from . import install_stdlib
+
+    blob = a[0]
+    if not isinstance(blob, Stash):
+        raise TypeVibeMismatch(f"'run_bytecode' needs a stash of bytes, not a {type_name(blob)}.")
+    try:
+        data = bytes(bytearray(blob.items))
+    except (TypeError, ValueError):
+        raise TypeVibeMismatch("'run_bytecode' needs a stash of ints 0-255.") from None
+
+    child = VM(stdout=io.StringIO())
+    install_stdlib(child)
+    args = a[1] if len(a) > 1 and isinstance(a[1], Stash) else Stash([])
+    child.program_args = [str(x) for x in args.items]
+
+    flavor = message = None
+    exit_code = 0
+    try:
+        if data[:9] == b"FUNNYPAK\x00":
+            modules, entry_name = load_funnypak(data)
+            child.module_loader = make_pak_module_loader(modules, entry_name)
+            child.interpret(modules[entry_name], CanonicalSource(entry_name))
+        else:
+            child.interpret(load_funnyc(data), None)
+    except SystemExit as exc:
+        # dip(n) is a clean exit, not a failure. Caught here rather than let
+        # through: the *child* asked to exit, not the process running it.
+        exit_code = exc.code if isinstance(exc.code, int) else 0
+    except FunnyError as err:
+        flavor, message = err.flavor, err.message
+        exit_code = 69 if err.flavor == "ComputerExploded" else 1
+    except Exception as exc:  # a malformed blob that got past the loader
+        flavor, message = "BytecodeVersionMismatch", str(exc)
+        exit_code = 1
+
+    return GroupChat({
+        "out": child.stdout.getvalue(),
+        "flavor": flavor if flavor is not None else GHOST,
+        "message": message if message is not None else GHOST,
+        "code": exit_code,
+    })
+
+
 def build() -> Module:
     members = {
         "type_of": _nf("type_of", _type_of, 1),
@@ -39,5 +102,6 @@ def build() -> Module:
         "is_a": _nf("is_a", _is_a, 2),
         "stack_trace": _nf("stack_trace", _stack_trace, 0),
         "dump": _nf("dump", _dump, 1),
+        "run_bytecode": _nf("run_bytecode", _run_bytecode, 1, 2),
     }
     return Module("sus", members)

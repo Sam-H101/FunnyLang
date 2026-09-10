@@ -47,6 +47,20 @@ yap crText.split("\n")
 filez.obliterate(crlfFile)
 filez.obliterate(crFile)
 
+// is_dir / is_file: `exists` alone can't drive a recursive walk. Both are
+// cap for a path that isn't there, rather than raising.
+yap filez.is_dir(dir)
+yap filez.is_file(dir)
+yap filez.is_dir(f1)
+yap filez.is_file(f1)
+yap filez.is_dir(filez.join_path(dir, "nope"))
+yap filez.is_file(filez.join_path(dir, "nope"))
+sketchy {
+    yap filez.is_dir(42)
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
 yo abs1 = filez.abs_path(f1)
 yap abs1.contains("hello.txt")
 
@@ -62,6 +76,15 @@ yap filez.ext_of("a/noext")
 yap filez.join_path("a", "b", "c.txt")
 yap filez.join_path("a/", "b")
 yap filez.join_path("a", "/root", "b")
+
+// join_path builds with the *OS* separator, and dir_of/base_of split on it
+// again -- so this round trip holds on every platform even though the
+// strings themselves differ between them.
+yo built = filez.join_path("a", "b", "c.txt")
+yap filez.dir_of(built) == filez.join_path("a", "b")
+yap filez.base_of(built)
+yap filez.ext_of(built)
+yap filez.base_of(filez.join_path(filez.join_path("x", "y"), "z.md"))
 
 sketchy {
     filez.slurp(filez.join_path(dir, "does_not_exist.txt"))

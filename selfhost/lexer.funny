@@ -141,8 +141,12 @@ flex bet make_token(kind, text, value, line, col, start, end) {
     bounce {"kind": kind, "text": text, "value": value, "line": line, "col": col, "start": start, "end": end}
 }
 
+// `oops` (NATIVE_PLAN.md N8) is what lets this carry the *real* flavor
+// rather than encoding it into a SkillIssue's message: `chuck "text"` can
+// only ever raise a SkillIssue, and an `!ERROR LexerSaidNah` golden checks
+// the flavor.
 flex bet lexer_error(st, start_line, start_col, message) {
-    chuck "LexerSaidNah at " + to_yap(start_line) + ":" + to_yap(start_col) + ": " + message
+    chuck oops("LexerSaidNah", message, start_line, start_col)
 }
 
 // -- comments -------------------------------------------------------------

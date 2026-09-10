@@ -319,6 +319,12 @@ reference: [STDLIB.md](STDLIB.md).
 `yapstring`), `.message`, `.line`, `.col`, `.file`, `.trace` (a `stash` of `yapstring`s),
 `.payload` (whatever was `chuck`ed, if it wasn't a plain string).
 
+`chuck "some text"` always raises a `SkillIssue`. To raise a specific flavor, build the error value
+first with `oops(flavor, message?, line?, col?)` and `chuck` that — `chuck oops("WhoDis", "no such
+name")`. The flavor must be one of `PLAN.md` §4.1's error names; the taxonomy is closed, so an
+invented one is a `TypeVibeMismatch`. Chucking a caught error re-raises it with its flavor, message
+and original position intact.
+
 ## Errors
 
 Errors are a first-class, comedic feature — see the taxonomy and rendered diagnostic format in

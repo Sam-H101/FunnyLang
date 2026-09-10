@@ -38,6 +38,17 @@ static const char *default_roast_for(const char *flavor, const char *fallback) {
     return fallback;
 }
 
+/* This table *is* PLAN.md §4.1's taxonomy, so it doubles as the guest list
+   for `oops(flavor, ...)`: a FunnyLang program may raise any of these and
+   nothing else. Keeping the set closed means an error flavor always means
+   the same thing, rather than being whatever string a library invented. */
+bool error_is_known_flavor(const char *flavor) {
+    for (int i = 0; i < DEFAULT_ROAST_COUNT; i++) {
+        if (strcmp(DEFAULT_ROASTS[i].flavor, flavor) == 0) return true;
+    }
+    return false;
+}
+
 ObjError *error_new(GC *gc, const char *flavor, const char *message, const char *roast, const char *hint,
                      uint32_t line, uint32_t col, const char *file, Value payload, char **trace, int traceCount) {
     ObjError *e = (ObjError *)malloc(sizeof(ObjError));

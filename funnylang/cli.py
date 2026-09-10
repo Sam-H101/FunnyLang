@@ -257,6 +257,11 @@ def _run_one_test(funny_path: Path) -> tuple[bool, str]:
             resolved = resolve_program(program, source)
             unit = Compiler(resolved, source).compile_program(program, str(funny_path))
             vm.interpret(unit, source)
+        except SystemExit:
+            # `dip(n)` inside a test is that *test* exiting, not the runner.
+            # Left uncaught it takes the whole `funny test` process with it,
+            # so one test could silently truncate the run.
+            pass
         except ParseErrorBundle as bundle:
             got = bundle.errors[0].flavor if bundle.errors else "?"
             return got == wanted_flavor, f"expected !ERROR {wanted_flavor}, got {got}"
@@ -270,6 +275,8 @@ def _run_one_test(funny_path: Path) -> tuple[bool, str]:
         resolved = resolve_program(program, source)
         unit = Compiler(resolved, source).compile_program(program, str(funny_path))
         vm.interpret(unit, source)
+    except SystemExit:
+        pass  # see above: the test exited, the runner did not
     except (ParseErrorBundle, FunnyError) as exc:
         return False, f"unexpected error: {exc}"
     actual = vm.stdout.getvalue()

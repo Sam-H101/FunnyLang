@@ -222,6 +222,52 @@ static Value m_ask(VM *vm, Value *a, int argc) {
     return OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)len));
 }
 
+/* Builds an `error` value with a chosen flavor, ready to `chuck`.
+
+   `chuck "text"` can only ever raise a SkillIssue, so until now nothing
+   written *in* FunnyLang could raise a WhoDis or an ImmutableVibes -- which
+   is exactly what the self-hosted resolver has to raise for an undefined
+   variable or a const reassignment (NATIVE_PLAN.md N8; runner.c's own
+   comment already flagged this as the milestone's job). OP_CHUCK re-raises
+   an error value flavor and all, so this is the only missing half.
+
+   The flavor set stays closed to PLAN.md §4.1's taxonomy: an unknown name
+   is a TypeVibeMismatch, not a new error class invented at run time. */
+static Value m_oops(VM *vm, Value *a, int argc) {
+    if (!IS_STRING(a[0]) || !error_is_known_flavor(AS_STRING(a[0])->chars)) {
+        char *shown = vm_value_to_repr(vm, a[0]);
+        vm_throw_native(vm, "TypeVibeMismatch", "'oops' needs one of PLAN.md §4.1's error flavors, not %s.", shown);
+        free(shown);
+        return GHOST_VAL;
+    }
+    const char *message = "";
+    if (argc > 1 && !IS_GHOST(a[1])) {
+        if (!IS_STRING(a[1])) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'oops' needs a yapstring message, not a %s.", vm_type_name(a[1]));
+            return GHOST_VAL;
+        }
+        message = AS_STRING(a[1])->chars;
+    }
+    uint32_t line = 0, col = 0;
+    if (argc > 2 && !IS_GHOST(a[2])) {
+        if (!IS_INT(a[2])) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'oops' needs a numba line, not a %s.", vm_type_name(a[2]));
+            return GHOST_VAL;
+        }
+        line = (uint32_t)AS_INT(a[2]);
+        col = 1;
+    }
+    if (argc > 3 && !IS_GHOST(a[3])) {
+        if (!IS_INT(a[3])) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'oops' needs a numba col, not a %s.", vm_type_name(a[3]));
+            return GHOST_VAL;
+        }
+        col = (uint32_t)AS_INT(a[3]);
+    }
+    ObjError *e = error_new(&vm->gc, AS_STRING(a[0])->chars, message, NULL, NULL, line, col, NULL, GHOST_VAL, NULL, 0);
+    return OBJ_VAL(e);
+}
+
 /* `yap`, but to stderr -- space-separated, newline-terminated, values
    rendered exactly as OP_YAP renders them. Added for NATIVE_PLAN.md N8: the
    self-hosted CLI has to put a diagnostic on stderr and nothing in the
@@ -426,6 +472,7 @@ static const BuiltinEntry BUILTIN_TABLE[] = {
     {"no_cap", m_no_cap, 1, 2},
     {"ask", m_ask, 0, 1},
     {"yell", m_yell, 0, 255},
+    {"oops", m_oops, 1, 4},
     {"dip", m_dip, 0, 1},
     {"the_args", m_the_args, 0, 0},
     {"combo", m_combo, 0, 255},

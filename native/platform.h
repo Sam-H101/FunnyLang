@@ -38,7 +38,26 @@ bool platform_write_file(const char *path, const unsigned char *data, size_t len
 bool platform_append_file(const char *path, const unsigned char *data, size_t len, char *errbuf,
                            size_t errbuf_len);
 
+/* The separator this OS's own path APIs produce: '\\' on Windows, '/'
+   elsewhere. `filez.join_path` and friends must build paths with it, since
+   Python's `Path.__truediv__` -- the reference they match -- does. */
+char platform_path_sep(void);
+/* Whether `c` separates path components *on this OS*. Both '/' and '\\' do
+   on Windows; only '/' does on POSIX, where '\\' is a legal filename
+   character. */
+bool platform_is_path_sep(char c);
+/* The length of `path`'s drive prefix ("C:" and the like), always 0 off
+   Windows. pathlib treats a component carrying one as a new root, exactly
+   like a leading separator. */
+size_t platform_drive_prefix_len(const char *path);
+
 bool platform_path_exists(const char *path);
+/* Both answer false for a path that does not exist, rather than failing --
+   same as Python's Path.is_dir()/is_file(), which filez.is_dir/is_file
+   mirror. A recursive directory walk needs these; `exists` alone cannot
+   tell a file from a directory. */
+bool platform_path_is_dir(const char *path);
+bool platform_path_is_file(const char *path);
 
 /* Removes a file, or an empty directory (dispatched the same way
    filez.py's own `obliterate` picks between unlink() and rmdir()). */

@@ -21,6 +21,7 @@ No `gimme` needed — these are available everywhere.
 | `no_cap(cond, msg?)` | Assert: raises `SkillIssue` with `msg` (default `"assertion failed. couldn't be you."`) if `cond` is falsy. |
 | `ask(prompt?)` | Prints `prompt` (no newline) if given, reads and returns one line of stdin. |
 | `yell(...)` | Like `yap`, but to stderr: values space-separated, newline-terminated. The only way to write to stderr. |
+| `oops(flavor, message?, line?, col?)` | Builds an `error` value with a chosen flavor, ready to `chuck`. `flavor` must be one of `PLAN.md` §4.1's error names — the taxonomy is closed. Without a `line`, the `chuck` site is used. |
 | `dip(code?)` | Exits the process immediately with `code` (default 0). |
 | `the_args()` | The program's own extra CLI arguments (after `--`), as a `stash` of `yapstring`s. |
 | `combo(...fns)` | Composes functions left to right: `combo(f, g, h)` is `lowkey (x) => h(g(f(x)))`. |
@@ -179,6 +180,7 @@ Free functions below; most are also `groupchat` instance methods.
 | `filez.yeet_out(path, text)` | Writes `text` to `path`, overwriting it; returns the byte count. Writes exactly the bytes given — a `\n` stays a `\n` on every platform. |
 | `filez.append_to(path, text)` | Appends `text` to `path`; returns the byte count written. |
 | `filez.exists(path)` | Whether `path` exists. |
+| `filez.is_dir(path)` / `filez.is_file(path)` | Whether `path` is a directory / a regular file. Both are `cap` for a path that doesn't exist. |
 | `filez.obliterate(path)` | Deletes a file, or an empty directory. |
 | `filez.list_dir(path)` | Directory entries as a sorted `stash` of names. |
 | `filez.mkdir(path)` | Creates a directory (and any missing parents). |

@@ -253,6 +253,14 @@ def type_name(v) -> str:
         return "iterator"
     if isinstance(v, Pointa):
         return "pointa"
+    from .errors import FunnyError  # deferred: errors.py has no dependency on this module
+
+    if isinstance(v, FunnyError):
+        # docs/LANGUAGE.md calls this type `error` — the value `my_bad (e)`
+        # binds, and now also what `oops(...)` returns. `what_is_it(e)` used
+        # to raise a Python TypeError here, which no FunnyLang program could
+        # catch; the C VM has always answered "error".
+        return "error"
     raise TypeError(f"funnylang: no type name for {v!r}")  # pragma: no cover
 
 

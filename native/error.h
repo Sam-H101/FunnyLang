@@ -56,4 +56,8 @@ ObjError *error_new(struct GC *gc, const char *flavor, const char *message, cons
    *out write) for anything else, so the caller can raise its own WhoDis. */
 bool error_get_field(struct GC *gc, const ObjError *err, const char *name, Value *out);
 
+/* Whether `flavor` is one of PLAN.md §4.1's error flavors. The taxonomy is
+   closed, so this is what `oops(flavor, ...)` validates against. */
+bool error_is_known_flavor(const char *flavor);
+
 #endif /* FUNNY_ERROR_H */

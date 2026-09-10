@@ -1,0 +1,189 @@
+// selfhost/test.funny — NATIVE_PLAN.md N8 task 4: `funny test`, in
+// FunnyLang. A byte-exact port of funnylang/cli.py's `cmd_test` and
+// `_run_one_test`.
+//
+//     funny test <dir>
+//
+// Every `*.funny` under `<dir>` that has a sibling `*.expected` is compiled
+// and run in an isolated VM, and its stdout compared against the golden.
+// A golden whose first line is `!ERROR <Flavor>` instead asserts that the
+// program raises that flavor — at compile time or at run time, either is
+// fine, the same way `_run_one_test` catches both.
+//
+// This file matters beyond N8: N11 deletes the Python implementation, and
+// with it the pytest suite that uses it as an oracle. What survives is the
+// golden corpus, and this is what runs it. It has to be right.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme filez
+gimme sus
+gimme yapper
+gimme { build_bundle, emit_funnypak } from "bundler.funny"
+
+// A guard against a symlink loop, not a real depth limit.
+deadass MAX_WALK_DEPTH = 64
+
+// cli.py does `sorted(base.rglob("*.funny"))`, and `sorted` on `Path`
+// objects compares them component by component -- so a directory's contents
+// sort immediately after its own name, and files and subdirectories
+// interleave by name rather than being grouped. That is exactly pre-order
+// depth-first with each directory's entries in name order, which is what
+// this walk produces. `filez.list_dir` already returns names sorted.
+//
+// Explicit stack rather than recursion, for the same reason bundler.funny
+// uses one: a deep tree shouldn't be able to hit the VM's frame limit.
+// cli.py builds paths with pathlib, and `Path(".") / "examples"` renders as
+// "examples" -- a lone "." component is dropped, not kept as "./". Matching
+// that is what makes `funny test .` print the same paths as the Python CLI.
+flex bet path_join(here, name) {
+    sus (here == ".") {
+        bounce name
+    }
+    bounce filez.join_path(here, name)
+}
+
+flex bet find_pairs(dir_path) {
+    yo found = []
+    // The stack holds *entries*, not directories, so a subdirectory is
+    // expanded exactly where its name sorts among its siblings -- files and
+    // directories interleaving, the way comparing path components does.
+    yo pending = [[dir_path, 0]]
+    bruh (pending.how_thicc() > 0) {
+        yo job = pending.yoink_at(pending.how_thicc() - 1)
+        yo here = job[0]
+        yo depth = job[1]
+        sus (!filez.is_dir(here)) {
+            sus (yapper.ends_with(here, ".funny")) {
+                yo golden = yapper.slice(here, 0, here.how_thicc() - 6) + ".expected"
+                sus (filez.exists(golden)) {
+                    found.yeet_in(here)
+                }
+            }
+            nvm
+        }
+        sus (depth > MAX_WALK_DEPTH) {
+            nvm
+        }
+        yo names = filez.list_dir(here)
+        // Reversed, so popping takes them in name order.
+        grind i from 0 to names.how_thicc() {
+            yo name = names[names.how_thicc() - 1 - i]
+            pending.yeet_in([path_join(here, name), depth + 1])
+        }
+    }
+    bounce found
+}
+
+// Returns [ok, detail]. `detail` is only read when ok is cap.
+flex bet run_one_test(path) {
+    yo golden = filez.slurp(yapper.slice(path, 0, path.how_thicc() - 6) + ".expected")
+
+    sus (yapper.starts_with(golden, "!ERROR")) {
+        yo wanted = yapper.trim(yapper.slice(yapper.lines(golden)[0], 6))
+        yo got = ghost
+        sketchy {
+            yo r = sus.run_bytecode(compile_to_bytes(path), [])
+            got = r["flavor"]
+        } my_bad (e) {
+            // A compile-time failure -- an undefined variable, a const
+            // reassignment, a parse error. cli.py catches these in the same
+            // `try` as the run, so they satisfy an !ERROR golden too.
+            got = e.flavor
+        }
+        sus (got == ghost) {
+            bounce [cap, "expected !ERROR " + wanted + ", but nothing was raised"]
+        }
+        bounce [got == wanted, "expected !ERROR " + wanted + ", got " + got]
+    }
+
+    yo actual = ghost
+    sketchy {
+        yo r = sus.run_bytecode(compile_to_bytes(path), [])
+        sus (r["flavor"] != ghost) {
+            bounce [cap, "unexpected error: " + r["flavor"] + ": " + r["message"]]
+        }
+        actual = r["out"]
+    } my_bad (e) {
+        bounce [cap, "unexpected error: " + e.flavor + ": " + e.message]
+    }
+    sus (actual == golden) {
+        bounce [fax, ""]
+    }
+    bounce [cap, "expected " + py_repr_str(golden) + ", got " + py_repr_str(actual)]
+}
+
+// Linked, not just compiled: a test program may `gimme "sibling.funny"`,
+// and the native runtime resolves a file import at *link* time -- there is
+// no compiler inside the running VM to load one on demand. cli.py's runner
+// gets away with compiling a single unit because the Python VM carries a
+// module resolver; bundling is the equivalent here, and it works for any
+// multi-module test rather than only the single-file case.
+flex bet compile_to_bytes(path) {
+    bounce emit_funnypak(build_bundle(path))
+}
+
+// cli.py builds its mismatch detail with f-string `!r`, so matching it means
+// matching CPython's own repr for strings. Same port as selfhost/xray.funny
+// carries for `--tokens`, and the same documented limit: non-ASCII code
+// points CPython considers unprintable are passed through literally, since
+// deciding that needs Unicode tables the language does not expose.
+flex bet py_repr_str(s) {
+    yo quote = "'"
+    sus (yapper.contains(s, "'") fr !yapper.contains(s, "\"")) {
+        quote = "\""
+    }
+    yo out = [quote]
+    grind ch in s.chars() {
+        yo cp = ch.code_at(0)
+        sus (ch == quote || ch == "\\") {
+            out.yeet_in("\\" + ch)
+        } kinda_sus (ch == "\t") {
+            out.yeet_in("\\t")
+        } kinda_sus (ch == "\n") {
+            out.yeet_in("\\n")
+        } kinda_sus (ch == "\r") {
+            out.yeet_in("\\r")
+        } kinda_sus (cp < 0x20 || cp == 0x7F) {
+            deadass HEX = "0123456789abcdef"
+            out.yeet_in("\\x" + HEX[(cp >> 4) & 0xF] + HEX[cp & 0xF])
+        } nah {
+            out.yeet_in(ch)
+        }
+    }
+    out.yeet_in(quote)
+    bounce out.join("")
+}
+
+flex bet run_tests(dir_path) {
+    yo files = find_pairs(dir_path)
+    sus (files.how_thicc() == 0) {
+        yap "no *.funny/*.expected pairs found under " + dir_path + "."
+        bounce 0
+    }
+    yo passed = 0
+    yo failed = 0
+    grind f in files {
+        yo result = run_one_test(f)
+        sus (result[0]) {
+            passed += 1
+            yap "PASS " + f
+        } nah {
+            failed += 1
+            yap "FAIL " + f + " — " + result[1]
+        }
+    }
+    yap ""
+    yap to_yap(passed) + "/" + to_yap(passed + failed) + " passed."
+    sus (failed == 0) {
+        bounce 0
+    }
+    bounce 1
+}
+
+yo args = the_args()
+sus (args.how_thicc() < 1) {
+    yap "usage: test <dir>"
+    dip(1)
+}
+dip(run_tests(args[0]))

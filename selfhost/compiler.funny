@@ -249,7 +249,7 @@ flex bet chunk_finish(ch) {
 
 flex deadass BUILTIN_GLOBAL_NAMES = [
     "how_thicc", "what_is_it", "to_yap", "to_numba", "to_int", "sheesh",
-    "no_cap", "ask", "yell", "dip", "the_args", "combo", "identity",
+    "no_cap", "ask", "yell", "oops", "dip", "the_args", "combo", "identity",
     "range_stash", "zip_em", "enumerate_em", "deep_clone",
 ]
 
@@ -260,8 +260,19 @@ flex deadass STDLIB_MODULE_NAMES = [
 
 flex deadass MAX_LOCALS = 256
 
+// The resolver raises three different flavors, matching funnylang/
+// resolver.py exactly: WhoDis for a name it can't find, ImmutableVibes for
+// writing through a `deadass`, and ParserHadAStroke for every structural
+// complaint (a duplicate declaration, `bail` outside a loop, `me` outside a
+// squad). Before `oops` existed these were all one SkillIssue with the
+// intended name buried in the message, which is why an `!ERROR WhoDis`
+// golden could not pass under the self-hosted compiler.
+flex bet resolver_error_flavored(rs, flavor, line, col, message) {
+    chuck oops(flavor, message, line, col)
+}
+
 flex bet resolver_error(rs, line, col, message) {
-    chuck "ResolverError at " + to_yap(line) + ":" + to_yap(col) + ": " + message
+    resolver_error_flavored(rs, "ParserHadAStroke", line, col, message)
 }
 
 flex bet discard_str(arr, value) {
@@ -413,7 +424,7 @@ flex bet resolve_name(rs, name, line, col) {
     sus (rs["known_globals"].contains(name)) {
         bounce {"kind": "global", "index": ghost, "name": name, "is_const": rs["const_globals"].contains(name)}
     }
-    resolver_error(rs, line, col, "'" + name + "' isn't defined anywhere i can see.")
+    resolver_error_flavored(rs, "WhoDis", line, col, "'" + name + "' isn't defined anywhere i can see.")
 }
 
 flex bet in_method_context(rs) {
@@ -726,7 +737,7 @@ flex bet rexpr_Assign(rs, node) {
     yo resolution = resolve_name(rs, target["name"], target["line"], target["col"])
     target["resolution"] = resolution
     sus (resolution["is_const"]) {
-        resolver_error(rs, node["line"], node["col"], "'" + target["name"] + "' is a deadass constant.")
+        resolver_error_flavored(rs, "ImmutableVibes", node["line"], node["col"], "'" + target["name"] + "' is a deadass constant.")
     }
 }
 
@@ -748,7 +759,7 @@ flex bet rexpr_AddressOf(rs, node) {
         yo resolution = resolve_name(rs, place["name"], place["line"], place["col"])
         place["resolution"] = resolution
         sus (resolution["is_const"]) {
-            resolver_error(rs, node["line"], node["col"], "'" + place["name"] + "' is a deadass constant.")
+            resolver_error_flavored(rs, "ImmutableVibes", node["line"], node["col"], "'" + place["name"] + "' is a deadass constant.")
         }
         sus (resolution["kind"] == "local") {
             // Taking a pointer to a local boxes it via the identical

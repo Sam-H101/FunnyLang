@@ -33,30 +33,47 @@ static void io_fail(VM *vm, const char *fn_name, const char *path, const char *e
 
 /* -- pure path-string helpers (funnylang/stdlib/filez.py never touches
    the filesystem for these -- pathlib's join/parent/name/suffix are all
-   string manipulation over a POSIX-flavoured parse) ---------------- */
+   string manipulation) --------------------------------------------- */
 
 typedef struct {
     bool absolute;
+    char drive[8]; /* "C:" on Windows, empty everywhere else */
     char **parts;
     int count;
 } ParsedPath;
 
+/* Splits on whatever this OS treats as a separator, and keeps any drive
+   prefix aside. filez.py uses pathlib, which is WindowsPath on Windows --
+   so a POSIX-only parse would disagree with the reference about every path
+   a Windows program builds. */
 static ParsedPath parse_path(const char *path) {
     ParsedPath p;
-    p.absolute = path[0] == '/';
+    p.drive[0] = '\0';
+    size_t driveLen = platform_drive_prefix_len(path);
+    if (driveLen > 0 && driveLen < sizeof(p.drive)) {
+        memcpy(p.drive, path, driveLen);
+        p.drive[driveLen] = '\0';
+    }
+    const char *rest = path + driveLen;
+    p.absolute = rest[0] != '\0' && platform_is_path_sep(rest[0]);
     p.parts = (char **)malloc(sizeof(char *) * 256);
     p.count = 0;
-    char *copy = (char *)malloc(strlen(path) + 1);
-    memcpy(copy, path, strlen(path) + 1);
-    char *tok = strtok(copy, "/");
-    while (tok && p.count < 256) {
-        if (strcmp(tok, ".") != 0) {
-            size_t len = strlen(tok);
-            char *dup = (char *)malloc(len + 1);
-            memcpy(dup, tok, len + 1);
-            p.parts[p.count++] = dup;
+    size_t restLen = strlen(rest);
+    char *copy = (char *)malloc(restLen + 1);
+    memcpy(copy, rest, restLen + 1);
+    size_t start = 0;
+    for (size_t i = 0; i <= restLen; i++) {
+        if (i == restLen || platform_is_path_sep(copy[i])) {
+            copy[i] = '\0';
+            const char *tok = copy + start;
+            if (tok[0] != '\0' && strcmp(tok, ".") != 0 && p.count < 256) {
+                size_t len = strlen(tok);
+                char *dup = (char *)malloc(len + 1);
+                memcpy(dup, tok, len + 1);
+                p.parts[p.count++] = dup;
+            }
+            start = i + 1;
         }
-        tok = strtok(NULL, "/");
     }
     free(copy);
     return p;
@@ -78,12 +95,15 @@ static Value m_join_path(VM *vm, Value *a, int argc) {
     size_t cap = 256, len = 0;
     char *buf = (char *)malloc(cap);
     buf[0] = '\0';
+    const char sep = platform_path_sep();
     for (int i = 0; i < argc; i++) {
         ObjString *part = AS_STRING(a[i]);
         if (part->byteLen == 0) continue;
-        if (i == 0 || part->chars[0] == '/') {
-            /* An absolute later part overrides everything before it,
-               matching pathlib's Path.__truediv__ / os.path.join. */
+        bool rooted = platform_is_path_sep(part->chars[0]) || platform_drive_prefix_len(part->chars) > 0;
+        if (i == 0 || rooted) {
+            /* A later part that starts a root of its own -- a leading
+               separator, or a drive prefix on Windows -- overrides
+               everything before it, matching pathlib's Path.__truediv__. */
             if (part->byteLen + 1 > cap) {
                 cap = part->byteLen + 1;
                 buf = (char *)realloc(buf, cap);
@@ -93,20 +113,39 @@ static Value m_join_path(VM *vm, Value *a, int argc) {
             buf[len] = '\0';
             continue;
         }
-        bool needSlash = len > 0 && buf[len - 1] != '/';
-        size_t needed = len + (needSlash ? 1 : 0) + part->byteLen + 1;
+        bool needSep = len > 0 && !platform_is_path_sep(buf[len - 1]);
+        size_t needed = len + (needSep ? 1 : 0) + part->byteLen + 1;
         if (needed > cap) {
             cap = needed;
             buf = (char *)realloc(buf, cap);
         }
-        if (needSlash) buf[len++] = '/';
+        if (needSep) buf[len++] = sep;
         memcpy(buf + len, part->chars, part->byteLen);
         len += part->byteLen;
         buf[len] = '\0';
     }
-    Value result = OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)len));
+    /* pathlib does not concatenate: it parses each part into components and
+       re-renders them with the OS separator, so "a/" + "b" is "a\b" on
+       Windows and repeated or "." components collapse. Re-rendering the
+       joined string through the same parser gets all of that for free. */
+    ParsedPath parsed = parse_path(buf);
     free(buf);
-    return result;
+    char out[4096];
+    size_t pos = strlen(parsed.drive);
+    memcpy(out, parsed.drive, pos);
+    if (parsed.absolute) out[pos++] = sep;
+    for (int i = 0; i < parsed.count; i++) {
+        if (i > 0) out[pos++] = sep;
+        size_t l = strlen(parsed.parts[i]);
+        if (pos + l < sizeof(out)) {
+            memcpy(out + pos, parsed.parts[i], l);
+            pos += l;
+        }
+    }
+    if (pos == 0) out[pos++] = '.'; /* str(Path("")) is "." */
+    out[pos] = '\0';
+    free_parsed(&parsed);
+    return OBJ_VAL(string_new(&vm->gc, out, (uint32_t)pos));
 }
 
 static Value m_dir_of(VM *vm, Value *a, int argc) {
@@ -114,22 +153,31 @@ static Value m_dir_of(VM *vm, Value *a, int argc) {
     const char *path = path_str(vm, a[0], "dir_of");
     if (!path) return GHOST_VAL;
     ParsedPath p = parse_path(path);
+    const char sep = platform_path_sep();
     char buf[4096];
+    size_t driveLen = strlen(p.drive);
+    memcpy(buf, p.drive, driveLen);
+    size_t pos = driveLen;
     if (p.count <= 1) {
-        snprintf(buf, sizeof(buf), "%s", p.absolute ? "/" : ".");
+        /* pathlib: the parent of a bare name is ".", of a root is the root
+           itself, and a drive keeps its drive. */
+        if (p.absolute) {
+            buf[pos++] = sep;
+        } else if (driveLen == 0) {
+            buf[pos++] = '.';
+        }
     } else {
-        size_t pos = 0;
-        if (p.absolute) buf[pos++] = '/';
+        if (p.absolute) buf[pos++] = sep;
         for (int i = 0; i < p.count - 1; i++) {
-            if (i > 0) buf[pos++] = '/';
+            if (i > 0) buf[pos++] = sep;
             size_t l = strlen(p.parts[i]);
             if (pos + l < sizeof(buf)) {
                 memcpy(buf + pos, p.parts[i], l);
                 pos += l;
             }
         }
-        buf[pos] = '\0';
     }
+    buf[pos] = '\0';
     free_parsed(&p);
     return OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)strlen(buf)));
 }
@@ -239,6 +287,20 @@ static Value m_exists(VM *vm, Value *a, int argc) {
     const char *path = path_str(vm, a[0], "exists");
     if (!path) return GHOST_VAL;
     return BOOL_VAL(platform_path_exists(path));
+}
+
+static Value m_is_dir(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "is_dir");
+    if (!path) return GHOST_VAL;
+    return BOOL_VAL(platform_path_is_dir(path));
+}
+
+static Value m_is_file(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "is_file");
+    if (!path) return GHOST_VAL;
+    return BOOL_VAL(platform_path_is_file(path));
 }
 
 static Value m_obliterate(VM *vm, Value *a, int argc) {
@@ -381,6 +443,8 @@ static const FilezEntry FILEZ_FUNCTIONS[] = {
     {"yeet_out", m_yeet_out, 2, 2},
     {"append_to", m_append_to, 2, 2},
     {"exists", m_exists, 1, 1},
+    {"is_dir", m_is_dir, 1, 1},
+    {"is_file", m_is_file, 1, 1},
     {"obliterate", m_obliterate, 1, 1},
     {"list_dir", m_list_dir, 1, 1},
     {"mkdir", m_mkdir, 1, 1},

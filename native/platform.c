@@ -108,12 +108,28 @@ static bool path_is_dir(const char *path) {
     DWORD attrs = GetFileAttributesA(path);
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
+
+/* Python's Path.is_file() is S_ISREG; Windows has no such attribute, so
+   "exists and isn't a directory" is the closest equivalent -- which is what
+   Python itself reports for every ordinary file on this platform. */
+static bool path_is_file(const char *path) {
+    DWORD attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
 #else
 static bool path_is_dir(const char *path) {
     struct stat st;
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
+
+static bool path_is_file(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
 #endif
+
+bool platform_path_is_dir(const char *path) { return path_is_dir(path); }
+bool platform_path_is_file(const char *path) { return path_is_file(path); }
 
 /* -- file I/O: plain standard-C stdio, portable without any #ifdef -----
    (open/read/write/close's own errno-setting behavior is standardized by
@@ -273,6 +289,32 @@ static bool is_path_sep(char c) {
     return c == '/' || c == '\\';
 #else
     return c == '/';
+#endif
+}
+
+bool platform_is_path_sep(char c) { return is_path_sep(c); }
+
+char platform_path_sep(void) {
+#ifdef _WIN32
+    return '\\';
+#else
+    return '/';
+#endif
+}
+
+size_t platform_drive_prefix_len(const char *path) {
+#ifdef _WIN32
+    /* "C:" -- one letter and a colon. UNC paths ("\\\\server\\share") are
+       not special-cased: their leading separators already make them
+       absolute, which is all the path helpers need from them. */
+    if (path[0] != '\0' && path[1] == ':' &&
+        ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'))) {
+        return 2;
+    }
+    return 0;
+#else
+    (void)path;
+    return 0;
 #endif
 }
 

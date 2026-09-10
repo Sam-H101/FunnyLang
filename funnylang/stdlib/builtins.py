@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ..errors import SkillIssue, TypeVibeMismatch, WhoDis
+from ..source import Span
 from ..values import GHOST, GroupChat, Instance, NativeFn, Stash, is_truthy, to_display, to_repr, type_name
 
 
@@ -71,6 +72,45 @@ def _sheesh(vm, args):
     x = args[0]
     vm.stdout.write(to_repr(x, vm) + "\n")
     return x
+
+
+def _oops(vm, args):
+    """Builds an `error` value with a chosen flavor, ready to `chuck`.
+
+    `chuck "text"` can only ever raise a `SkillIssue`, so until now nothing
+    written *in* FunnyLang could raise a `WhoDis` or an `ImmutableVibes` —
+    which is exactly what the self-hosted resolver has to raise for an
+    undefined variable or a const reassignment (NATIVE_PLAN.md N8; `runner.c`
+    already flagged it as this milestone's job). `chuck` on an error value
+    re-raises it flavor and all, so this is the only missing half.
+
+    The flavor set is PLAN.md §4.1's taxonomy and stays closed: an unknown
+    name is a `TypeVibeMismatch`, not a new error class invented at run time.
+    Custom error *types* are what squads and `.payload` are for.
+    """
+    from ..errors import DEFAULT_ROASTS, FunnyError
+
+    flavor = args[0]
+    if not isinstance(flavor, str) or flavor not in DEFAULT_ROASTS:
+        raise TypeVibeMismatch(f"'oops' needs one of PLAN.md §4.1's error flavors, not {to_repr(flavor)}.")
+    message = args[1] if len(args) > 1 and args[1] is not GHOST else ""
+    if not isinstance(message, str):
+        raise TypeVibeMismatch(f"'oops' needs a yapstring message, not a {type_name(message)}.")
+    err = FunnyError(message)
+    err.flavor = flavor
+    err.roast = DEFAULT_ROASTS[flavor]
+    if len(args) > 2 and args[2] is not GHOST:
+        # Only line/col matter to a diagnostic header; the offsets exist for
+        # source snippets, which an error built by hand has no way to know.
+        if isinstance(args[2], bool) or not isinstance(args[2], int):
+            raise TypeVibeMismatch(f"'oops' needs a numba line, not a {type_name(args[2])}.")
+        col = 1
+        if len(args) > 3 and args[3] is not GHOST:
+            if isinstance(args[3], bool) or not isinstance(args[3], int):
+                raise TypeVibeMismatch(f"'oops' needs a numba col, not a {type_name(args[3])}.")
+            col = args[3]
+        err.span = Span(0, 0, args[2], col)
+    return err
 
 
 def _yell(vm, args):
@@ -194,6 +234,7 @@ def build_globals() -> dict:
         "no_cap": _nf("no_cap", _no_cap, 1, 2),
         "ask": _nf("ask", _ask, 0, 1),
         "yell": _nf("yell", _yell, 0, 255),
+        "oops": _nf("oops", _oops, 1, 4),
         "dip": _nf("dip", _dip, 0, 1),
         "the_args": _nf("the_args", _the_args, 0),
         "combo": _nf("combo", _combo, 0, 255),

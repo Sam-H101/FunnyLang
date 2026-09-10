@@ -2725,6 +2725,28 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
             case OP_CHUCK: {
                 Value payload = pop(vm);
                 if (IS_OBJ(payload) && AS_OBJ(payload)->type == OBJ_ERROR) {
+                    /* An error built by hand -- `oops(flavor, message)` with
+                       no position -- gets the chuck site stamped onto it,
+                       the same way funnylang/vm.py fills in `err.span` and
+                       `err.frames` for any FunnyError propagating without
+                       them. A rethrown error already has both and keeps the
+                       position it was originally raised at. */
+                    ObjError *e = (ObjError *)AS_OBJ(payload);
+                    if (e->line == 0) {
+                        uint32_t line, col;
+                        chunk_line_for_offset(frame->closure->proto, vm->currentInstrStart, &line, &col);
+                        e->line = line;
+                        e->col = col;
+                    }
+                    if (e->file->byteLen == 0 && vm->unit->sourceName != NULL) {
+                        e->file = string_new(&vm->gc, vm->unit->sourceName, (uint32_t)strlen(vm->unit->sourceName));
+                    }
+                    if (e->rawTraceCount == 0) {
+                        int traceCount;
+                        char **trace = build_trace(vm, &traceCount);
+                        e->rawTrace = trace; /* adopted: free_trace is error_free's job from here */
+                        e->rawTraceCount = traceCount;
+                    }
                     vm->pendingError = payload;
                 } else {
                     char *display = value_to_display(vm, payload);

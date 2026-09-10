@@ -1,0 +1,104 @@
+// oops(flavor, message, line?, col?): building an `error` value with a
+// chosen flavor, so a FunnyLang program can raise something other than a
+// SkillIssue. `chuck "text"` has only ever produced SkillIssue, which meant
+// the self-hosted resolver could not raise the WhoDis an undefined variable
+// deserves -- it had to bury the name in a message instead.
+
+// The whole taxonomy round-trips, flavor and message intact.
+grind flavor in ["LexerSaidNah", "ParserHadAStroke", "WhoDis", "TypeVibeMismatch",
+                 "MathAintMathin", "OutOfPocket", "KeyGhosted", "GhostError",
+                 "NotACallableRizz", "WrongNumberOfHomies", "TooDeepBro",
+                 "ImportSkillIssue", "ImmutableVibes", "SkillIssue", "ComputerExploded"] {
+    sketchy {
+        chuck oops(flavor, "a message for " + flavor)
+    } my_bad (e) {
+        yap e.flavor + " | " + e.message
+    }
+}
+
+// An error value is a value: it can be built, stored, passed around and
+// chucked later.
+yo saved = oops("KeyGhosted", "saved for later")
+yap what_is_it(saved)
+sketchy {
+    chuck saved
+} my_bad (e) {
+    yap e.flavor, e.message
+}
+
+// Line and column come back on the caught error.
+sketchy {
+    chuck oops("WhoDis", "somewhere specific", 42, 7)
+} my_bad (e) {
+    yap e.line, e.col
+}
+
+// Line alone defaults the column to 1, matching a header with no column.
+sketchy {
+    chuck oops("WhoDis", "line only", 12)
+} my_bad (e) {
+    yap e.line, e.col
+}
+
+// Neither given: both are 0, the same as any error raised without a span.
+sketchy {
+    chuck oops("WhoDis", "no position")
+} my_bad (e) {
+    yap e.line, e.col
+}
+
+// The message is optional.
+sketchy {
+    chuck oops("SkillIssue")
+} my_bad (e) {
+    yap sheesh(e.message)
+}
+
+// A caught oops re-chucks with its flavor intact, which is what makes
+// rethrowing work at all.
+sketchy {
+    sketchy {
+        chuck oops("OutOfPocket", "inner")
+    } my_bad (inner) {
+        chuck inner
+    }
+} my_bad (outer) {
+    yap outer.flavor, outer.message
+}
+
+// -- the taxonomy is closed ----------------------------------------------
+// An invented flavor is a TypeVibeMismatch, not a new error class.
+sketchy {
+    yo bad = oops("MadeUpVibes", "nope")
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    yo bad = oops("whodis", "case matters")
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    yo bad = oops(42, "not a yapstring")
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    yo bad = oops("WhoDis", 42)
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+sketchy {
+    yo bad = oops("WhoDis", "msg", "not a numba")
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+// An uncaught oops carries its flavor all the way out -- including
+// ComputerExploded's exit-code-69 mapping, which is why the taxonomy being
+// closed matters.
+yap "done"

@@ -64,6 +64,19 @@ def _exists(vm, a):
     return Path(_path_str(a[0], "exists")).exists()
 
 
+def _is_dir(vm, a):
+    # `exists` alone cannot drive a recursive walk, which is what
+    # selfhost/test.funny needs to find *.funny/*.expected pairs under a
+    # directory tree (NATIVE_PLAN.md N8 task 4). Both of these answer `cap`
+    # for a path that does not exist, rather than raising -- same as
+    # Python's own `Path.is_dir()`/`is_file()`.
+    return Path(_path_str(a[0], "is_dir")).is_dir()
+
+
+def _is_file(vm, a):
+    return Path(_path_str(a[0], "is_file")).is_file()
+
+
 def _obliterate(vm, a):
     path = _path_str(a[0], "obliterate")
 
@@ -135,6 +148,8 @@ def build() -> Module:
         "yeet_out": _nf("yeet_out", _yeet_out, 2),
         "append_to": _nf("append_to", _append_to, 2),
         "exists": _nf("exists", _exists, 1),
+        "is_dir": _nf("is_dir", _is_dir, 1),
+        "is_file": _nf("is_file", _is_file, 1),
         "obliterate": _nf("obliterate", _obliterate, 1),
         "list_dir": _nf("list_dir", _list_dir, 1),
         "mkdir": _nf("mkdir", _mkdir, 1),

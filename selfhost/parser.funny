@@ -98,7 +98,7 @@ flex bet p_match(ps, kind) {
 }
 
 flex bet parser_error(ps, tok, message) {
-    chuck "ParserHadAStroke at " + to_yap(tok["line"]) + ":" + to_yap(tok["col"]) + ": " + message
+    chuck oops("ParserHadAStroke", message, tok["line"], tok["col"])
 }
 
 flex bet p_expect(ps, kind, message) {

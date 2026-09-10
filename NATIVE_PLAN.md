@@ -1943,4 +1943,59 @@ gets an entry explaining what changed and why.
   can add a golden instead of a Python-only test makes N11 smaller. N10 task 1's `bin2c` and N5's
   `gen_unicode` were changed from `.py` to `.funny` in the same pass — writing them in Python today
   only creates work for N11, and the native toolchain can already run them.
+- **N8 task 4 · `funny test`, in FunnyLang — and the two language additions it needed.**
+  `selfhost/test.funny` ports `cli.py`'s `cmd_test`/`_run_one_test`. It matters well beyond N8: N11
+  deletes the Python implementation and with it the `pytest` suite that uses it as an oracle, and what
+  survives is the `.funny`/`.expected` golden corpus — which this is what runs.
+  **ADDITION · `sus.run_bytecode(bytes, args?)`.** A test runner has to observe *another* program's
+  stdout and find out which error flavor escaped it. In Python that is one line —
+  `VM(stdout=StringIO()); vm.interpret(unit)` — and there was no equivalent a FunnyLang program could
+  reach at all. Two designs were possible: spawn a subprocess, or run the bytecode in-process in a
+  fresh VM. In-process won on three counts: it mirrors the reference's semantics exactly (so no
+  parsing a rendered diagnostic back into a flavor), it needs no process-spawning code in
+  `platform.c` (a large, security-relevant surface to add for one caller), and the *same* primitive
+  is what N8 task 5's REPL and N9 task 2's `bootstrap --verify` need. A **fresh** VM with its own
+  globals and its own GC heap: this is isolation, not `eval` — nothing escapes the child's heap, every
+  string handed back is copied out before it is destroyed, and the child never calls back, so the
+  caller's collector cannot run while it is alive. stdout is captured via `tmpfile()`, since
+  `open_memstream` is POSIX-only and `vm_run` takes a plain `FILE *`. Verified clean under
+  `FUNNY_GC_STRESS=1` and under ASan/UBSan — a second heap built and torn down inside a native call is
+  exactly the shape that hides use-after-free.
+  **ADDITION · `oops(flavor, message?, line?, col?)`.** `chuck "text"` can only ever raise a
+  `SkillIssue`, so nothing written *in* FunnyLang could raise the `WhoDis` an undefined variable
+  deserves — which is why `!ERROR WhoDis` and `!ERROR ImmutableVibes` goldens could not pass under the
+  self-hosted compiler at all. `runner.c`'s own comment already called this out as "N8's job". `oops`
+  builds an error value; `chuck` on an error value already re-raises it flavor and all, so this was
+  the only missing half. The flavor set stays **closed** to §4.1's taxonomy — an invented name is a
+  `TypeVibeMismatch`, because an error flavor should mean the same thing everywhere rather than being
+  whatever string a library made up. `selfhost/lexer.funny`, `parser.funny` and `compiler.funny` now
+  raise real flavors instead of encoding the intended one into a `SkillIssue`'s message. `OP_CHUCK`
+  stamps the chuck site onto an error that has no position yet, mirroring `funnylang/vm.py` filling in
+  `err.span`/`err.frames` for any error propagating without them. `what_is_it(e)` on an error also
+  used to raise an uncatchable Python `TypeError`; `values.py` now answers `"error"`, which the C VM
+  always did.
+  **Fixed · three cross-platform path bugs, found by running the runner on Windows.** (1)
+  `filez.join_path` hardcoded `/`; `filez.py` uses `pathlib`, which is `WindowsPath` on Windows, so
+  every path a FunnyLang program built there was POSIX-shaped. (2) The same for `dir_of`, which also
+  dropped a drive prefix. (3) `join_path` *concatenated* where `pathlib` **normalizes** — parsing each
+  part into components and re-rendering, so `"a/"` joined with `"b"` is `a\b` and repeated or `.`
+  components collapse. Fixed with `platform_path_sep`/`platform_is_path_sep`/
+  `platform_drive_prefix_len` and a parse-then-re-render `join_path`. Covered in
+  `tests/native/programs/modules_filez.funny` with a round trip
+  (`dir_of(join_path(...)) == join_path(...)`) that holds on every platform even though the strings
+  differ between them.
+  **ADDITION · `filez.is_dir` / `filez.is_file`.** `exists` alone cannot drive a recursive walk, and
+  finding `*.funny`/`*.expected` pairs under a directory tree is exactly that. Both answer `cap` for a
+  path that isn't there, matching `Path.is_dir()`/`is_file()`.
+  **Fixed · a bug in the Python runner, rather than replicating it.** A test calling `dip()` raised
+  `SystemExit` straight through `_run_one_test` and killed the whole `funny test` process, silently
+  truncating the run at that test. The native runner isolates properly and kept going, so the two
+  disagreed; the reference was simply wrong, and `cmd_test` now catches `SystemExit` per test.
+  Verified: `selfhost/test.funny` on the C VM vs `python3 -m funnylang test` over `tests/lang` (76),
+  `examples` (9) and the whole repository (85) — **identical output and exit code, 0 mismatches** —
+  plus 12 tests in `tests/native/test_native_test_runner.py` covering error-flavor goldens, the
+  CPython-`repr` mismatch detail, nested-directory ordering, multi-module tests (linked, not just
+  compiled, since the native runtime resolves a file import at *link* time), and isolation between
+  tests. Full suite 1256 passed; MSVC `/W4 /WX` clean, with `funny test tests\lang` byte-identical to
+  the Python CLI on Windows too.
 
