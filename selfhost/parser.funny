@@ -174,7 +174,10 @@ flex bet p_parse_statement_list(ps, end_kind) {
                 statements.yeet_in(stmt)
             }
         } my_bad (exc) {
-            ps["errors"].yeet_in(exc.message)
+            // Position kept alongside the message: parse_program reports the
+            // *first* error's flavor and position, the way parser.py's
+            // ParseErrorBundle exposes `errors[0]`.
+            ps["errors"].yeet_in({"flavor": exc.flavor, "message": exc.message, "line": exc.line, "col": exc.col})
             p_synchronize(ps, end_kind)
         }
         p_skip_stmt_seps(ps)
@@ -188,7 +191,12 @@ flex bet parse_program(tokens) {
     yo ps = new_parser(tokens)
     yo statements = p_parse_statement_list(ps, "EOF")
     sus (ps["errors"].how_thicc() > 0) {
-        chuck ps["errors"].join("; ")
+        yo messages = []
+        grind e in ps["errors"] {
+            messages.yeet_in(e["message"])
+        }
+        yo first = ps["errors"][0]
+        chuck oops(first["flavor"], messages.join("; "), first["line"], first["col"])
     }
     bounce {"node": "Program", "statements": statements, "line": 1, "col": 1}
 }

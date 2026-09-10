@@ -623,15 +623,46 @@ void vm_init(VM *vm) {
     vm->hadError = false;
     vm->pendingError = GHOST_VAL;
     vm->uncaughtError = GHOST_VAL;
+    vm->sessionGlobals = GHOST_VAL;
+    vm->sessionExports = GHOST_VAL;
+    vm->sessions = NULL;
+    vm->sessionCount = 0;
+    vm->sessionCapacity = 0;
+    vm->ownedUnits = NULL;
+    vm->ownedUnitCount = 0;
+    vm->ownedUnitCapacity = 0;
 }
 
 void vm_destroy(VM *vm) {
+    /* Sessions first: each owns a whole child VM whose heap may hold
+       closures pointing into units this VM's table also owns. */
+    for (int i = vm->sessionCount; i > 0; i--) vm_session_close(vm, i);
+    free(vm->sessions);
+    vm->sessions = NULL;
+    vm->sessionCount = 0;
+    vm->sessionCapacity = 0;
     free(vm->stack);
     for (int i = 0; i < vm->frameCount; i++) frame_destroy(&vm->frames[i]);
     free(vm->frames);
     free(vm->openUpvalues);
     free(vm->builtins);
+    /* After gc_destroy, not before: a closure still on the heap points into
+       its unit, and the sweep must not run over freed protos. */
     gc_destroy(&vm->gc);
+    for (int i = 0; i < vm->ownedUnitCount; i++) chunk_free_unit(vm->ownedUnits[i]);
+    free(vm->ownedUnits);
+    vm->ownedUnits = NULL;
+    vm->ownedUnitCount = 0;
+    vm->ownedUnitCapacity = 0;
+}
+
+void vm_adopt_unit(VM *vm, CompiledUnit *unit) {
+    if (vm->ownedUnitCount == vm->ownedUnitCapacity) {
+        vm->ownedUnitCapacity = vm->ownedUnitCapacity < 8 ? 8 : vm->ownedUnitCapacity * 2;
+        vm->ownedUnits = (CompiledUnit **)realloc(vm->ownedUnits,
+                                                   (size_t)vm->ownedUnitCapacity * sizeof(CompiledUnit *));
+    }
+    vm->ownedUnits[vm->ownedUnitCount++] = unit;
 }
 
 /* -- roots -------------------------------------------------------------- */
@@ -651,6 +682,22 @@ static void mark_vm_roots(GC *gc, void *userdata) {
     gc_mark_value(gc, vm->programArgs);
     gc_mark_value(gc, vm->pendingError);
     gc_mark_value(gc, vm->uncaughtError);
+    /* A session's namespaces outlive every frame that touches them -- that
+       is the whole point of a REPL session -- so nothing else roots them
+       between inputs. */
+    gc_mark_value(gc, vm->sessionGlobals);
+    gc_mark_value(gc, vm->sessionExports);
+    /* Every unit this VM owns -- in a REPL session, every input ever run in
+       it. A `bet` defined by one input can be called by a later one, and its
+       CONSTs come from the unit it was compiled in, not from whichever one
+       is executing now. Rooted *here*, on the VM whose heap those constants
+       were allocated on: rooting them from the parent would have the parent
+       marking objects the child's collector owns and may already have
+       freed. */
+    for (int u = 0; u < vm->ownedUnitCount; u++) {
+        CompiledUnit *ou = vm->ownedUnits[u];
+        for (uint32_t i = 0; i < ou->constCount; i++) gc_mark_value(gc, ou->consts[i].value);
+    }
     /* Every constant any live proto can CONST-push must stay reachable
        through the whole run, not just while its own proto is executing
        (a closure created early can still be sitting in a local when a
@@ -3043,6 +3090,62 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 break;
         }
     }
+}
+
+int vm_session_open(VM *vm) {
+    if (vm->sessionCount == vm->sessionCapacity) {
+        vm->sessionCapacity = vm->sessionCapacity < 4 ? 4 : vm->sessionCapacity * 2;
+        vm->sessions = (struct ReplSession *)realloc(vm->sessions,
+                                                      (size_t)vm->sessionCapacity * sizeof(struct ReplSession));
+    }
+    struct ReplSession *s = &vm->sessions[vm->sessionCount++];
+    s->vm = (VM *)malloc(sizeof(VM));
+    vm_init(s->vm);
+    builtins_install(s->vm);
+    s->vm->sessionGlobals = OBJ_VAL(groupchat_new(&s->vm->gc, NULL, 0));
+    s->vm->sessionExports = OBJ_VAL(groupchat_new(&s->vm->gc, NULL, 0));
+    s->open = true;
+    return vm->sessionCount;
+}
+
+struct ReplSession *vm_session_get(VM *vm, int id) {
+    if (id < 1 || id > vm->sessionCount) return NULL;
+    struct ReplSession *s = &vm->sessions[id - 1];
+    return s->open ? s : NULL;
+}
+
+void vm_session_close(VM *vm, int id) {
+    struct ReplSession *s = vm_session_get(vm, id);
+    if (s == NULL) return;
+    /* vm_destroy frees the units it owns, in the right order. */
+    vm_destroy(s->vm);
+    free(s->vm);
+    s->vm = NULL;
+    s->open = false;
+}
+
+VmResult vm_run_repl_unit(VM *vm, CompiledUnit *unit, FILE *out, Value *valueOut) {
+    vm->unit = unit;
+    vm->out = out;
+    vm->gc.markExternalRoots = mark_vm_roots;
+    vm->gc.externalRootsUserdata = vm;
+    if (valueOut != NULL) *valueOut = GHOST_VAL;
+
+    FunctionProto *entryProto = &unit->protos[unit->entryProto];
+    ObjClosure *entryClosure =
+        closure_new(&vm->gc, entryProto, NULL, 0, vm->sessionGlobals, vm->sessionExports, unit);
+    gc_push_temp(&vm->gc, OBJ_VAL(entryClosure));
+    Value result = vm_call_value(vm, OBJ_VAL(entryClosure), NULL, 0);
+    gc_pop_temp(&vm->gc);
+
+    if (vm->hadError) {
+        vm->uncaughtError = vm->pendingError;
+        vm->hadError = false;
+        vm->pendingError = GHOST_VAL;
+        return VM_ERROR;
+    }
+    if (valueOut != NULL) *valueOut = result;
+    return VM_OK;
 }
 
 VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {

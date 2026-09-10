@@ -166,7 +166,43 @@ struct VM {
        Value), for the caller (main.c today, a real CLI's diagnostic
        renderer from N6 on) to report. */
     Value uncaughtError;
+
+    /* A REPL session's persistent top-level namespaces (see
+       vm_run_repl_unit). GHOST for any VM that is not one; rooted by the
+       GC so they survive between inputs, when no frame refers to them. */
+    Value sessionGlobals;
+    Value sessionExports;
+
+    /* sus.new_session()'s bookkeeping, owned by this VM so that
+       vm_destroy closes any session a program left open. Sessions are
+       addressed by a 1-based index rather than a heap object: that keeps
+       them out of the collector entirely, at the cost of needing
+       sus.close_session() to reclaim one early. */
+    struct ReplSession *sessions;
+    int sessionCount;
+    int sessionCapacity;
+
+    /* CompiledUnits this VM owns outright, rather than borrowing from an
+       embedder: every REPL input ever run in a session. A `bet` defined by
+       one input and called by a later one holds a pointer into its unit, so
+       they have to live as long as the VM -- and their constants have to be
+       rooted by *this* VM's collector, since that is the heap the strings
+       in them were allocated on. */
+    CompiledUnit **ownedUnits;
+    int ownedUnitCount;
+    int ownedUnitCapacity;
 };
+
+/* A persistent child VM. The units it has run live on the VM itself (see
+   ownedUnits) rather than here, so the collector that allocated their
+   constants is the one that roots and frees them. */
+struct ReplSession {
+    VM *vm;
+    bool open;
+};
+
+/* Hands `unit` to `vm` to own and root for the rest of its life. */
+void vm_adopt_unit(VM *vm, CompiledUnit *unit);
 
 void vm_init(VM *vm);
 void vm_destroy(VM *vm);
@@ -181,6 +217,20 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out);
    entry imports resolves against the bundle rather than the filesystem, so
    a .funnypak is self-contained by construction. */
 VmResult vm_run_pak(VM *vm, CompiledPak *pak, FILE *out);
+
+/* Runs `unit`'s entry as the top level of a *persistent* session: the
+   globals and exports live on the VM rather than being created fresh, which
+   is what "the REPL's globals survive between inputs" means. `*valueOut`
+   receives the entry's own return value -- the last expression's value when
+   the unit was compiled with repl_capture_last, `ghost` otherwise. The unit
+   must outlive the session, not just the call. */
+VmResult vm_run_repl_unit(VM *vm, CompiledUnit *unit, FILE *out, Value *valueOut);
+
+/* Opens a session and returns its 1-based id, or closes one. Reopening a
+   closed id never happens: ids are handed out monotonically. */
+int vm_session_open(VM *vm);
+struct ReplSession *vm_session_get(VM *vm, int id);
+void vm_session_close(VM *vm, int id);
 
 /* Runs one module's top-level code once, in its own fresh namespace, and
    returns a Module of whatever it `flex`ed -- funnylang/vm.py's own

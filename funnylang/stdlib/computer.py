@@ -9,7 +9,7 @@ import sys
 import time
 
 from ..errors import ComputerExploded, SkillIssue
-from ..values import GHOST, Module, NativeFn
+from ..values import GHOST, Module, NativeFn, to_display
 
 _PROCESS_START = time.time()
 
@@ -98,6 +98,29 @@ def _ram(vm, a):
     return _ram_bytes()
 
 
+def _readline(vm, a):
+    """One line of stdin, or `ghost` at end of input.
+
+    The builtin `ask()` returns "" for both an empty line and end of input,
+    which a REPL cannot live with: Ctrl-D has to end the session and a blank
+    line has to not. NATIVE_PLAN.md N8 task 5 named this as its prerequisite.
+    The trailing newline is stripped, exactly as `ask` strips it.
+    """
+    import sys
+
+    if a and a[0] is not GHOST:
+        vm.stdout.write(to_display(a[0], vm))
+        flush = getattr(vm.stdout, "flush", None)
+        if callable(flush):
+            flush()
+    line = sys.stdin.readline()
+    if line == "":
+        return GHOST
+    while line and line[-1] in ("\n", "\r"):
+        line = line[:-1]
+    return line
+
+
 def _yeet_to_void(vm, a):
     return GHOST
 
@@ -129,6 +152,7 @@ def build() -> Module:
         "flex": _nf("flex", _flex, 0),
         "ram": _nf("ram", _ram, 0),
         "yeet_to_void": _nf("yeet_to_void", _yeet_to_void, 0, 1),
+        "readline": _nf("readline", _readline, 0, 1),
         "beep": _nf("beep", _beep, 0),
         "clear": _nf("clear", _clear, 0),
         "uptime": _nf("uptime", _uptime, 0),

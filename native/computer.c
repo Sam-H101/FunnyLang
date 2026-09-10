@@ -1,6 +1,7 @@
 #include "computer.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "gc.h"
@@ -78,6 +79,45 @@ static Value m_ram(VM *vm, Value *a, int argc) {
     return INT_VAL((int64_t)platform_ram_bytes());
 }
 
+/* One line of stdin, or `ghost` at end of input.
+
+   The builtin `ask()` returns "" for both an empty line and end of input,
+   which a REPL cannot live with: Ctrl-D has to end the session and a blank
+   line has to not. NATIVE_PLAN.md N8 task 5 named this as its prerequisite.
+   Reads in chunks rather than assuming a line fits one buffer, so a pasted
+   paragraph is not silently split. */
+static Value m_readline(VM *vm, Value *a, int argc) {
+    if (argc > 0 && !IS_GHOST(a[0])) {
+        size_t promptLen;
+        char *prompt = vm_value_to_display_len(vm, a[0], &promptLen);
+        fwrite(prompt, 1, promptLen, vm->out);
+        free(prompt);
+        fflush(vm->out);
+    }
+    size_t cap = 256, len = 0;
+    char *buf = (char *)malloc(cap);
+    bool sawAny = false;
+    for (;;) {
+        int c = fgetc(stdin);
+        if (c == EOF) break;
+        sawAny = true;
+        if (c == '\n') break;
+        if (len + 1 >= cap) {
+            cap *= 2;
+            buf = (char *)realloc(buf, cap);
+        }
+        buf[len++] = (char)c;
+    }
+    if (!sawAny) {
+        free(buf);
+        return GHOST_VAL; /* end of input, distinct from an empty line */
+    }
+    while (len > 0 && buf[len - 1] == '\r') len--;
+    Value result = OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)len));
+    free(buf);
+    return result;
+}
+
 static Value m_yeet_to_void(VM *vm, Value *a, int argc) {
     (void)vm;
     (void)a;
@@ -129,6 +169,7 @@ static const ComputerEntry COMPUTER_FUNCTIONS[] = {
     {"flex", m_flex, 0, 0},
     {"ram", m_ram, 0, 0},
     {"yeet_to_void", m_yeet_to_void, 0, 1},
+    {"readline", m_readline, 0, 1},
     {"beep", m_beep, 0, 0},
     {"clear", m_clear, 0, 0},
     {"uptime", m_uptime, 0, 0},

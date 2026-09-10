@@ -1998,4 +1998,57 @@ gets an entry explaining what changed and why.
   compiled, since the native runtime resolves a file import at *link* time), and isolation between
   tests. Full suite 1256 passed; MSVC `/W4 /WX` clean, with `funny test tests\lang` byte-identical to
   the Python CLI on Windows too.
+- **N8 task 5 · `funny vibe`, the REPL, in FunnyLang.** `selfhost/vibe.funny` ports `cli.py`'s
+  `cmd_vibe`. What separates a REPL from every other subcommand is *persistence* — `yo x = 1` on one
+  line has to still be there on the next — and nothing in the language could express that, so this
+  task is mostly the four things underneath it.
+  **ADDITION · `sus.new_session()` / `sus.run_in(id, bytes, args?)` / `sus.close_session(id)`.**
+  Task 4's `sus.run_bytecode` is deliberately a *fresh* VM every time, which is exactly wrong for a
+  REPL. A session is the same isolated child VM, kept alive between calls, with its top-level
+  namespaces living on the VM itself so nothing else has to root them. Two other differences, both
+  driven by what a REPL needs: output is **not** captured (it goes straight to the caller's stream, so
+  a long input streams and an `ask()` prompt appears before its input), and the entry's return value
+  comes back — as `repr` **text**, not as a value. That is not a shortcut: the child has its own
+  collector, and handing one of its objects to the caller would let the caller's GC free something it
+  does not own. Sessions are addressed by a small integer rather than a heap object, keeping them out
+  of the collector entirely; the cost is that an unclosed session lives until its owning VM dies,
+  which is what `close_session` (the REPL's `.clear`) is for.
+  **A real GC bug ASan caught, worth writing down.** The first cut had each session's `CompiledUnit`s
+  owned by the *parent*, and the parent's `mark_vm_roots` marking the constants inside them — but
+  those constants are strings on the **child's** heap, so once the child collected one, the parent's
+  next mark read freed memory. Units now belong to the VM that ran them (`vm_adopt_unit`), which is
+  also the collector that must root and free them. The rule this makes concrete: *a heap's roots are
+  the job of the collector that owns the heap*, and the boundary between two VMs is exactly where that
+  is easy to get wrong.
+  **ADDITION · `computer.readline(prompt?)`.** The plan listed this as N5 work; it was never added.
+  `ask()` returns `""` for both an empty line and end of input, and a REPL has to tell Ctrl-D from a
+  blank line, so `readline` returns `ghost` at end of input.
+  **Compiler and resolver knobs**, both optional so no existing caller changed:
+  `compile_program(program, fold_constants, repl_capture_last?)` compiles a bare trailing expression
+  to RETURN its value instead of POPping it, and `resolve_program(program, known_globals?,
+  const_globals?)` accepts the names the previous input defined and mutates them in place — exactly
+  the two sets `cmd_vibe` threads through a fresh `Resolver` each time.
+  **Fixed · the self-hosted parser's error bundle lost its flavor.** `parse_program` collected
+  recovered errors as message *strings* and then `chuck`ed them joined, which made every multi-error
+  parse failure a `SkillIssue` positioned inside `parser.funny` itself. It now keeps each error's
+  flavor and position and re-raises the first one's, the way `parser.py`'s `ParseErrorBundle` exposes
+  `errors[0]`. Visible immediately in the REPL, which is how it was found.
+  **KNOWN DIVERGENCE · REPL diagnostics are a summary line.** The Python REPL renders the full §4.2
+  diagnostic, source snippet and caret included, because it still has the input text sitting next to
+  the error. Reproducing that needs a FunnyLang port of §4.2's renderer, which belongs with N6's
+  renderer rather than bolted onto the REPL — so this prints flavor, position and message. Everything
+  else about a session is byte-identical.
+  **Two more reserved-word collisions**, both found by writing this file: `vibe` is a keyword
+  (§3.3's `vibe` statement) so `bet vibe()` will not parse, and `sus` opening an if-statement means a
+  statement *starting* with `sus.` is a parse error — so `sus.dump(x)` can never be a bare statement,
+  only `yo _ = sus.dump(x)`. The second is a genuine usability wart with a one-token-lookahead fix
+  (`sus` followed by `.` is not an if), but changing the grammar is not N8's job; logged here so it
+  is decided deliberately rather than discovered again.
+  Verified: 19 tests in `tests/native/test_native_vibe.py`, 11 of them running the *same scripted
+  session* through both REPLs and comparing everything after the banner **byte for byte** —
+  expressions, statements, persistent globals, multi-line blocks, a squad across lines, `.help`,
+  `.clear`, blank lines, `.quit`, Ctrl-D, a stdlib import, and a closure created in one input and
+  called in two later ones. Plus `.xray`, `.time`'s `:.2f` shape, `dip()` not killing the host, and
+  errors of both kinds leaving the session alive. Clean under `FUNNY_GC_STRESS=1` and ASan/UBSan.
+  Full suite 1276 passed; MSVC `/W4 /WX` clean, REPL verified on Windows.
 

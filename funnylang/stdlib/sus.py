@@ -95,6 +95,84 @@ def _run_bytecode(vm, a):
     })
 
 
+# NATIVE_PLAN.md N8 task 5: a REPL session is `run_bytecode`'s twin, kept
+# alive between calls so `yo x = 1` on one line is still there on the next.
+# Sessions are addressed by a small integer rather than a value the program
+# holds, which keeps them out of the collector on the C side; the two
+# implementations stay symmetric by doing it the same way here.
+_SESSIONS: dict[int, object] = {}
+_NEXT_SESSION = [0]
+
+
+def _new_session(vm, a):
+    import io  # noqa: F401  (parity with the C implementation's own imports)
+
+    from ..vm import VM
+    from . import install_stdlib
+
+    child = VM()
+    install_stdlib(child)
+    child.repl_globals = {}
+    child.repl_exports = {}
+    _NEXT_SESSION[0] += 1
+    _SESSIONS[_NEXT_SESSION[0]] = child
+    return _NEXT_SESSION[0]
+
+
+def _close_session(vm, a):
+    if isinstance(a[0], bool) or not isinstance(a[0], int):
+        raise TypeVibeMismatch(f"'close_session' needs a session id, not a {type_name(a[0])}.")
+    _SESSIONS.pop(a[0], None)
+    return GHOST
+
+
+def _run_in(vm, a):
+    from ..errors import FunnyError, OutOfPocket
+    from ..serializer import load_funnyc
+
+    if isinstance(a[0], bool) or not isinstance(a[0], int):
+        raise TypeVibeMismatch(f"'run_in' needs a session id, not a {type_name(a[0])}.")
+    child = _SESSIONS.get(a[0])
+    if child is None:
+        raise OutOfPocket(f"there's no open session {a[0]}.")
+    blob = a[1]
+    if not isinstance(blob, Stash):
+        raise TypeVibeMismatch(f"'run_in' needs a stash of bytes, not a {type_name(blob)}.")
+    try:
+        data = bytes(bytearray(blob.items))
+    except (TypeError, ValueError):
+        raise TypeVibeMismatch("'run_in' needs a stash of ints 0-255.") from None
+    if len(a) > 2 and isinstance(a[2], Stash):
+        child.program_args = [str(x) for x in a[2].items]
+
+    # Output is deliberately *not* captured: it goes to the caller's own
+    # stream, so a long-running input streams and an `ask()` prompt appears
+    # before its input.
+    child.stdout = vm.stdout
+    flavor = message = repr_text = None
+    exit_code = 0
+    try:
+        unit = load_funnyc(data)
+    except Exception as exc:
+        flavor, message, exit_code = "BytecodeVersionMismatch", str(exc), 1
+    else:
+        try:
+            value = child.run_repl_unit(unit, None, child.repl_globals, child.repl_exports)
+            repr_text = to_repr(value, child)
+        except SystemExit as exc:
+            exit_code = exc.code if isinstance(exc.code, int) else 0
+        except FunnyError as err:
+            flavor, message = err.flavor, err.message
+            exit_code = 69 if err.flavor == "ComputerExploded" else 1
+
+    return GroupChat({
+        "repr": repr_text if repr_text is not None else GHOST,
+        "flavor": flavor if flavor is not None else GHOST,
+        "message": message if message is not None else GHOST,
+        "code": exit_code,
+    })
+
+
 def build() -> Module:
     members = {
         "type_of": _nf("type_of", _type_of, 1),
@@ -103,5 +181,8 @@ def build() -> Module:
         "stack_trace": _nf("stack_trace", _stack_trace, 0),
         "dump": _nf("dump", _dump, 1),
         "run_bytecode": _nf("run_bytecode", _run_bytecode, 1, 2),
+        "new_session": _nf("new_session", _new_session, 0),
+        "run_in": _nf("run_in", _run_in, 2, 3),
+        "close_session": _nf("close_session", _close_session, 1),
     }
     return Module("sus", members)

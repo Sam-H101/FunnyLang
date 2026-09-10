@@ -211,6 +211,142 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
     return OBJ_VAL(out);
 }
 
+/* -- REPL sessions ---------------------------------------------------------
+ *
+ * `sus.run_bytecode` is deliberately a *fresh* VM every time, which is what a
+ * test runner wants and exactly what a REPL does not: `yo x = 1` on one line
+ * has to still be there on the next. A session is that same isolated child
+ * VM, kept alive between calls, with its top-level namespaces living on the
+ * VM itself so nothing else has to root them.
+ *
+ * Two other differences from run_bytecode, both driven by what a REPL needs:
+ * output is *not* captured (it goes straight to the caller's own stream, so a
+ * long-running input streams and an `ask()` prompt appears before its input),
+ * and the entry's return value comes back as `repr` -- the repr text of the
+ * last expression's value, when the unit was compiled with repl_capture_last.
+ *
+ * `repr` is *text*, not the value. The child has its own collector, and
+ * handing one of its objects to the caller would let the caller's GC free
+ * something it does not own; only the rendering crosses over. A REPL only
+ * ever prints it, so nothing is lost.
+ *
+ * Sessions are addressed by a small integer rather than a heap object, which
+ * keeps them out of the collector entirely. The cost is that an unclosed
+ * session lives until its owning VM is destroyed; `sus.close_session` exists
+ * for a caller (the REPL's `.clear`) that wants one reclaimed sooner.
+ */
+static Value m_new_session(VM *vm, Value *a, int argc) {
+    (void)a;
+    (void)argc;
+    return INT_VAL(vm_session_open(vm));
+}
+
+static Value m_close_session(VM *vm, Value *a, int argc) {
+    (void)argc;
+    if (!IS_INT(a[0])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'close_session' needs a session id, not a %s.",
+                        vm_type_name(a[0]));
+        return GHOST_VAL;
+    }
+    vm_session_close(vm, (int)AS_INT(a[0]));
+    return GHOST_VAL;
+}
+
+static Value m_run_in(VM *vm, Value *a, int argc) {
+    if (!IS_INT(a[0])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'run_in' needs a session id, not a %s.", vm_type_name(a[0]));
+        return GHOST_VAL;
+    }
+    struct ReplSession *session = vm_session_get(vm, (int)AS_INT(a[0]));
+    if (session == NULL) {
+        vm_throw_native(vm, "OutOfPocket", "there's no open session %lld.", (long long)AS_INT(a[0]));
+        return GHOST_VAL;
+    }
+    if (!(IS_OBJ(a[1]) && AS_OBJ(a[1])->type == OBJ_STASH)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'run_in' needs a stash of bytes, not a %s.", vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjStash *blob = (ObjStash *)AS_OBJ(a[1]);
+    size_t len = (size_t)blob->count;
+    uint8_t *data = (uint8_t *)malloc(len > 0 ? len : 1);
+    for (size_t i = 0; i < len; i++) {
+        Value b = blob->items[i];
+        if (!IS_INT(b) || AS_INT(b) < 0 || AS_INT(b) > 255) {
+            free(data);
+            vm_throw_native(vm, "TypeVibeMismatch", "'run_in' needs a stash of ints 0-255.");
+            return GHOST_VAL;
+        }
+        data[i] = (uint8_t)AS_INT(b);
+    }
+
+    VM *child = session->vm;
+    if (argc > 2 && IS_OBJ(a[2]) && AS_OBJ(a[2])->type == OBJ_STASH) {
+        ObjStash *argStash = (ObjStash *)AS_OBJ(a[2]);
+        ObjStash *args = stash_new(&child->gc, NULL, 0);
+        child->programArgs = OBJ_VAL(args);
+        for (int i = 0; i < argStash->count; i++) {
+            const char *s = IS_STRING(argStash->items[i]) ? AS_STRING(argStash->items[i])->chars : "";
+            stash_push(&child->gc, args, OBJ_VAL(string_new(&child->gc, s, (uint32_t)strlen(s))));
+        }
+    }
+
+    char *loadErr = NULL;
+    CompiledUnit *unit = chunk_load_funnyc(data, len, &child->gc, &loadErr);
+    free(data);
+
+    char *flavor = NULL;
+    char *message = NULL;
+    char *repr = NULL;
+    int64_t exitCode = 0;
+
+    if (unit == NULL) {
+        flavor = dup_cstr("BytecodeVersionMismatch");
+        message = loadErr != NULL ? loadErr : dup_cstr("couldn't load that bytecode.");
+        loadErr = NULL;
+        exitCode = 1;
+    } else {
+        /* The child VM owns the unit from here: a `bet` defined by this
+           input and called by a later one holds a pointer into it, and its
+           constants were allocated on the child's heap, so the child is what
+           must root them. */
+        vm_adopt_unit(child, unit);
+
+        Value result;
+        VmResult status = vm_run_repl_unit(child, unit, vm->out, &result);
+        if (status == VM_ERROR) {
+            int64_t systemExitCode;
+            if (vm_is_system_exit(child->uncaughtError, &systemExitCode)) {
+                exitCode = systemExitCode;
+            } else {
+                ObjError *e = (ObjError *)AS_OBJ(child->uncaughtError);
+                flavor = dup_cstr(e->flavor->chars);
+                message = dup_cstr(e->message->chars);
+                exitCode = strcmp(e->flavor->chars, "ComputerExploded") == 0 ? 69 : 1;
+            }
+            child->uncaughtError = GHOST_VAL;
+        } else {
+            repr = vm_value_to_repr(child, result);
+        }
+    }
+    free(loadErr);
+
+    ObjGroupChat *out = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "repr", 4)),
+                  repr != NULL ? OBJ_VAL(string_new(&vm->gc, repr, (uint32_t)strlen(repr))) : GHOST_VAL);
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "flavor", 6)),
+                  flavor != NULL ? OBJ_VAL(string_new(&vm->gc, flavor, (uint32_t)strlen(flavor))) : GHOST_VAL);
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "message", 7)),
+                  message != NULL ? OBJ_VAL(string_new(&vm->gc, message, (uint32_t)strlen(message))) : GHOST_VAL);
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "code", 4)), INT_VAL(exitCode));
+    gc_pop_temp(&vm->gc);
+
+    free(flavor);
+    free(message);
+    free(repr);
+    return OBJ_VAL(out);
+}
+
 typedef struct {
     const char *name;
     NativeMethodFn fn;
@@ -225,6 +361,9 @@ static const SusEntry SUS_FUNCTIONS[] = {
     {"stack_trace", m_stack_trace, 0, 0},
     {"dump", m_dump, 1, 1},
     {"run_bytecode", m_run_bytecode, 1, 2},
+    {"new_session", m_new_session, 0, 0},
+    {"run_in", m_run_in, 2, 3},
+    {"close_session", m_close_session, 1, 1},
 };
 #define SUS_FUNCTIONS_COUNT (int)(sizeof(SUS_FUNCTIONS) / sizeof(SUS_FUNCTIONS[0]))
 

@@ -882,9 +882,22 @@ flex bet prepass_globals(rs, statements) {
     }
 }
 
-flex bet resolve_program(program) {
-    yo rs = {"known_globals": BUILTIN_GLOBAL_NAMES.clone(), "const_globals": [], "current": ghost}
-    rs["known_globals"].extend(STDLIB_MODULE_NAMES)
+// `known_globals`/`const_globals` are optional so that a REPL can hand back
+// the sets from the previous input -- funnylang/cli.py's `cmd_vibe` keeps
+// exactly these two and passes them into a fresh Resolver each time, which
+// is how `yo x = 1` on one line resolves on the next. They are mutated in
+// place, so the caller sees whatever this program added.
+flex bet resolve_program(program, known_globals = ghost, const_globals = ghost) {
+    yo names = known_globals
+    sus (names == ghost) {
+        names = BUILTIN_GLOBAL_NAMES.clone()
+        names.extend(STDLIB_MODULE_NAMES)
+    }
+    yo consts = const_globals
+    sus (consts == ghost) {
+        consts = []
+    }
+    yo rs = {"known_globals": names, "const_globals": consts, "current": ghost}
     yo root = new_scope(ghost, fax, cap)
     rs["current"] = root
     prepass_globals(rs, program["statements"])
@@ -1868,17 +1881,27 @@ flex bet compile_closure(cs, node, params, variadic, body_statements, name, line
 
 // -- compiler: top level --------------------------------------------------
 
-flex bet compile_program(program, fold_constants) {
+// `repl_capture_last`: if the program's last statement is a bare expression
+// statement, compile it to RETURN its value instead of POPping it -- funny
+// vibe's "last expression value auto-printed".
+flex bet compile_program(program, fold_constants, repl_capture_last = cap) {
     yo cs = {"pool": new_const_pool(), "protos": [], "stack": [], "fold_constants": fold_constants}
     yo func_info = program["func_info"]
     yo ch = new_chunk("<script>", 0, 0, cap, cs["pool"])
     ch["local_count"] = func_info["local_count"]
     cs["stack"].yeet_in({"chunk": ch, "func_info": func_info, "loops": []})
-    grind stmt in program["statements"] {
-        compile_stmt(cs, stmt)
+    yo statements = program["statements"]
+    yo capture = repl_capture_last && statements.how_thicc() > 0 && statements.last()["node"] == "ExprStmt"
+    yo n = capture ? statements.how_thicc() - 1 : statements.how_thicc()
+    grind i from 0 to n {
+        compile_stmt(cs, statements[i])
     }
-    c_emit(cs, "GHOST", [], ghost, ghost)
-    c_push(cs, 1)
+    sus (capture) {
+        compile_expr(cs, statements.last()["expr"])
+    } nah {
+        c_emit(cs, "GHOST", [], ghost, ghost)
+        c_push(cs, 1)
+    }
     c_emit(cs, "RETURN", [], ghost, ghost)
     c_pop(cs, 1)
     yo proto = chunk_finish(ch)

@@ -211,6 +211,7 @@ platform info.
 | `computer.flex()` | Prints a summary of the OS, CPU count, RAM, and Python version. |
 | `computer.ram()` | Total system RAM, in bytes. |
 | `computer.yeet_to_void(x?)` | Accepts anything, does nothing, returns `ghost` — the `/dev/null` of functions. |
+| `computer.readline(prompt?)` | Prints `prompt` (no newline) if given, then reads one line of stdin. Returns `ghost` at end of input — unlike `ask()`, which returns `""` for both that and an empty line. |
 | `computer.beep()` | Rings the terminal bell (`\a`). |
 | `computer.clear()` | Clears the terminal screen. |
 | `computer.uptime()` | Seconds since the FunnyLang process itself started. |
