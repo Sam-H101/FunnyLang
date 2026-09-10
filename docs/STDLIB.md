@@ -66,6 +66,7 @@ free-function form.
 | `mafs.factorial(n)` | `n!`. |
 | `mafs.is_float(x)` | Whether `x` is specifically a float value (as opposed to an int with the same magnitude — `what_is_it` calls both `"numba"`). |
 | `mafs.float_to_bits(x)` | The IEEE-754 binary64 bit pattern of `x`, as an unsigned integer. |
+| `mafs.bits_to_float(bits)` | The inverse: the float an unsigned 64-bit IEEE-754 pattern encodes. |
 | `mafs.skibidi_pi`, `mafs.e`, `mafs.phi`, `mafs.infinity`, `mafs.nan` | Constants: π, *e*, the golden ratio, `+inf`, `NaN`. |
 
 Also exposed as `numba` instance methods: `to_yap()`, `abs()`, `floor()`, `ceil()`, `round(digits?)`,

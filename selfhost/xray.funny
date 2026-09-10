@@ -1,0 +1,173 @@
+// selfhost/xray.funny — NATIVE_PLAN.md N8 task 2: `funny xray`, in
+// FunnyLang. A byte-exact port of funnylang/cli.py's `cmd_xray`.
+//
+//     funny xray <file> [--tokens] [--ast] [--pak]
+//
+// A `.funnypak` (or `--pak`) is disassembled module by module; a `.funnyc`
+// is disassembled directly; anything else is treated as source and compiled
+// first. `--tokens` and `--ast` stop after the lexer and parser
+// respectively.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme filez
+gimme yapper
+gimme { tokenize } from "lexer.funny"
+gimme { parse_program } from "parser.funny"
+gimme { compile_source } from "compiler.funny"
+gimme { dump } from "astdump.funny"
+gimme { disassemble } from "disasm.funny"
+gimme { load_funnyc, load_funnypak } from "loader.funny"
+
+// -- Python's repr(), for `--tokens` ---------------------------------------
+// funnylang/tokens.py renders a Token with f-string `!r` conversions, so
+// matching its output means matching CPython's own `repr` for strings:
+// single quotes unless that would need escaping and double quotes wouldn't,
+// backslash escapes for the quote character and \\ \t \n \r, and a lowercase
+// \xNN for everything else below space plus DEL.
+//
+// KNOWN DIVERGENCE, logged in NATIVE_PLAN.md §9: CPython also escapes any
+// *non-ASCII* code point that `str.isprintable()` rejects (zero-width
+// spaces, soft hyphens, unassigned code points). Deciding that needs Unicode
+// general-category tables, which the language does not expose to a program;
+// non-ASCII is passed through literally here instead. Every printable
+// character -- the overwhelming majority of what appears in real source --
+// renders identically either way.
+flex bet py_repr_str(s) {
+    yo quote = "'"
+    sus (yapper.contains(s, "'") fr !yapper.contains(s, "\"")) {
+        quote = "\""
+    }
+    yo out = [quote]
+    grind ch in s.chars() {
+        yo cp = ch.code_at(0)
+        sus (ch == quote || ch == "\\") {
+            out.yeet_in("\\" + ch)
+        } kinda_sus (ch == "\t") {
+            out.yeet_in("\\t")
+        } kinda_sus (ch == "\n") {
+            out.yeet_in("\\n")
+        } kinda_sus (ch == "\r") {
+            out.yeet_in("\\r")
+        } kinda_sus (cp < 0x20 || cp == 0x7F) {
+            deadass HEX = "0123456789abcdef"
+            out.yeet_in("\\x" + HEX[(cp >> 4) & 0xF] + HEX[cp & 0xF])
+        } nah {
+            out.yeet_in(ch)
+        }
+    }
+    out.yeet_in(quote)
+    bounce out.join("")
+}
+
+flex bet py_repr(value) {
+    sus (what_is_it(value) == "yapstring") {
+        bounce py_repr_str(value)
+    }
+    sus (value == fax) {
+        bounce "True"
+    }
+    sus (value == cap) {
+        bounce "False"
+    }
+    bounce to_yap(value)
+}
+
+// A TEMPLATE token's value is the part list, which lexer.py builds out of
+// ("str", text) / ("tokens", [Token, ...]) *tuples*; this file's lexer uses
+// groupchats for them, so the repr is rebuilt rather than derived.
+flex bet template_parts_repr(parts) {
+    yo out = []
+    grind p in parts {
+        sus (p["kind"] == "str") {
+            out.yeet_in("('str', " + py_repr_str(p["text"]) + ")")
+        } nah {
+            yo toks = []
+            grind sub in p["tokens"] {
+                toks.yeet_in(token_repr(sub))
+            }
+            out.yeet_in("('tokens', [" + toks.join(", ") + "])")
+        }
+    }
+    bounce "[" + out.join(", ") + "]"
+}
+
+// tokens.py: Token(KIND, 'text'[ value], line:col) -- the value is omitted
+// entirely when it is None (ghost here).
+flex bet token_repr(t) {
+    yo v = ""
+    sus (t["kind"] == "TEMPLATE") {
+        v = " " + template_parts_repr(t["value"])
+    } kinda_sus (t["value"] != ghost) {
+        v = " " + py_repr(t["value"])
+    }
+    bounce "Token(" + t["kind"] + ", " + py_repr_str(t["text"]) + v + ", " + to_yap(t["line"]) + ":" + to_yap(t["col"]) + ")"
+}
+
+// -- the command -----------------------------------------------------------
+
+flex bet xray_pak(path) {
+    yo bundle = load_funnypak(filez.read_bytes(path))
+    yap "entry: " + bundle["entry"]
+    grind i from 0 to bundle["names"].how_thicc() {
+        yo name = bundle["names"][i]
+        yo marker = ""
+        sus (name == bundle["entry"]) {
+            marker = " (entry)"
+        }
+        yap "=== module: " + name + marker + " ==="
+        yap disassemble(bundle["units"][i])
+    }
+}
+
+flex bet xray(path, want_tokens, want_ast, want_pak) {
+    sus (want_pak || yapper.ends_with(path, ".funnypak")) {
+        xray_pak(path)
+        bounce 0
+    }
+    sus (yapper.ends_with(path, ".funnyc")) {
+        yap disassemble(load_funnyc(filez.read_bytes(path)))
+        bounce 0
+    }
+    yo src = filez.slurp(path)
+    sus (want_tokens) {
+        grind t in tokenize(src) {
+            yap token_repr(t)
+        }
+        bounce 0
+    }
+    yo program = parse_program(tokenize(src))
+    sus (want_ast) {
+        yap dump(program)
+        bounce 0
+    }
+    yap disassemble(compile_source(src, fax))
+    bounce 0
+}
+
+// -- argv ------------------------------------------------------------------
+// Deliberately minimal: N8 task 6's cli.funny takes over parsing for every
+// subcommand at once, and a second full-featured parser here would only be
+// something that gets deleted.
+
+yo args = the_args()
+yo path = ghost
+yo want_tokens = cap
+yo want_ast = cap
+yo want_pak = cap
+grind a in args {
+    sus (a == "--tokens") {
+        want_tokens = fax
+    } kinda_sus (a == "--ast") {
+        want_ast = fax
+    } kinda_sus (a == "--pak") {
+        want_pak = fax
+    } kinda_sus (path == ghost) {
+        path = a
+    }
+}
+sus (path == ghost) {
+    yap "usage: xray <file> [--tokens] [--ast] [--pak]"
+    dip(1)
+}
+dip(xray(path, want_tokens, want_ast, want_pak))

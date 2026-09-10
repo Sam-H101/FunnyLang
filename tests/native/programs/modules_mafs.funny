@@ -9,6 +9,33 @@ yap mafs.is_float(5)
 yap mafs.is_float(5.0)
 yap mafs.float_to_bits(1.0)
 yap mafs.float_to_bits(0.0)
+
+// bits_to_float: the inverse, added so selfhost/loader.funny can read a
+// float constant back out of .funnyc bytes. Negative floats have the sign
+// bit set, so their pattern exceeds INT64_MAX and arrives as a bignum --
+// worth covering explicitly, along with the round trip in both directions.
+yap mafs.bits_to_float(4607182418800017408)
+yap mafs.bits_to_float(0)
+yap mafs.bits_to_float(mafs.float_to_bits(3.14159))
+yap mafs.bits_to_float(mafs.float_to_bits(-0.5))
+yap mafs.bits_to_float(mafs.float_to_bits(1e300))
+yap mafs.bits_to_float(mafs.float_to_bits(2.5e-8))
+yap mafs.float_to_bits(mafs.bits_to_float(13835058055282163712))
+sketchy {
+    yap mafs.bits_to_float(-1)
+} my_bad (e) {
+    yap "caught: " + e.flavor
+}
+sketchy {
+    yap mafs.bits_to_float(1.5)
+} my_bad (e) {
+    yap "caught: " + e.flavor
+}
+sketchy {
+    yap mafs.bits_to_float("nope")
+} my_bad (e) {
+    yap "caught: " + e.flavor
+}
 yap mafs.floor(5.7)
 yap mafs.ceil(5.2)
 yap mafs.floor(5)

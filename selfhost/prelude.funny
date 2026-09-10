@@ -1,10 +1,12 @@
 // selfhost/prelude.funny — PLAN.md §M12 task 2, first file.
 //
 // Shared helpers for the self-hosted FunnyLang toolchain: assert helpers and
-// byte-buffer writers (a buffer is just a plain `stash` of ints 0-255) for
-// the .funnyc format (PLAN.md §5.2). Restricted to the self-hosting subset
+// byte-buffer writers and readers (a buffer is just a plain `stash` of ints
+// 0-255) for the .funnyc format (PLAN.md §5.2). Restricted to the self-hosting subset
 // (PLAN.md §8): no squad/inherits/me/og/spawn/regardless, no template
 // strings, no ?., no |>, no stepped slices.
+
+gimme yapper
 
 // -- assertions --------------------------------------------------------
 
@@ -105,4 +107,152 @@ flex bet write_int_magnitude(buf, value) {
         write_u8(buf, (mag >> shift) & 0xFF)
         shift -= 8
     }
+}
+
+// -- byte readers ----------------------------------------------------------
+// The exact inverses of the writers above, for reading a .funnyc or
+// .funnypak back in (NATIVE_PLAN.md N8 task 2 -- `funny xray` has to
+// disassemble bytecode files, not just source). A reader is a groupchat so
+// the position advances for the caller, the same way lexer.funny's scanner
+// state works.
+
+flex bet new_reader(bytes) {
+    bounce {"bytes": bytes, "pos": 0, "n": bytes.how_thicc()}
+}
+
+flex bet reader_done(r) {
+    bounce r["pos"] >= r["n"]
+}
+
+flex bet read_u8(r) {
+    assert_that(r["pos"] < r["n"], "unexpected end of bytecode.")
+    yo b = r["bytes"][r["pos"]]
+    r["pos"] = r["pos"] + 1
+    bounce b
+}
+
+flex bet read_u16(r) {
+    yo hi = read_u8(r)
+    bounce (hi << 8) | read_u8(r)
+}
+
+flex bet read_u32(r) {
+    yo hi = read_u16(r)
+    bounce (hi << 16) | read_u16(r)
+}
+
+flex bet read_u64(r) {
+    yo hi = read_u32(r)
+    bounce (hi << 32) | read_u32(r)
+}
+
+flex bet read_bytes(r, n) {
+    assert_that(r["pos"] + n <= r["n"], "unexpected end of bytecode.")
+    yo out = r["bytes"].slice(r["pos"], r["pos"] + n)
+    r["pos"] = r["pos"] + n
+    bounce out
+}
+
+// The inverse of utf8_encode. Strings are sequences of code points, so this
+// rebuilds them one `chr_of` at a time; a malformed sequence is a corrupt
+// file, not something to paper over with a replacement character.
+flex bet utf8_decode(bytes) {
+    yo out = []
+    yo i = 0
+    yo n = bytes.how_thicc()
+    bruh (i < n) {
+        yo b = bytes[i]
+        yo cp = 0
+        yo extra = 0
+        sus (b < 0x80) {
+            cp = b
+            extra = 0
+        } kinda_sus ((b & 0xE0) == 0xC0) {
+            cp = b & 0x1F
+            extra = 1
+        } kinda_sus ((b & 0xF0) == 0xE0) {
+            cp = b & 0x0F
+            extra = 2
+        } kinda_sus ((b & 0xF8) == 0xF0) {
+            cp = b & 0x07
+            extra = 3
+        } nah {
+            chuck "malformed UTF-8 in bytecode: bad leading byte."
+        }
+        assert_that(i + extra < n, "malformed UTF-8 in bytecode: truncated sequence.")
+        grind k from 0 to extra {
+            yo cont = bytes[i + 1 + k]
+            assert_that((cont & 0xC0) == 0x80, "malformed UTF-8 in bytecode: bad continuation byte.")
+            cp = (cp << 6) | (cont & 0x3F)
+        }
+        out.yeet_in(yapper.chr_of(cp))
+        i += extra + 1
+    }
+    bounce out.join("")
+}
+
+flex bet read_str(r) {
+    yo n = read_u32(r)
+    bounce utf8_decode(read_bytes(r, n))
+}
+
+// -- JSON string quoting ---------------------------------------------------
+// Python's `json.dumps` with its default ensure_ascii=True, which is what
+// funnylang/disasm.py and ast_nodes.py's dump_ast both use to render a
+// string: everything outside printable ASCII becomes a \uXXXX escape (a
+// UTF-16 surrogate pair above the BMP), with lowercase hex.
+
+flex bet hex4(n) {
+    deadass DIGITS = "0123456789abcdef"
+    yo out = []
+    grind i from 0 to 4 {
+        out.yeet_in(DIGITS[(n >> ((3 - i) * 4)) & 0xF])
+    }
+    bounce out.join("")
+}
+
+flex bet json_quote(s) {
+    yo out = ["\""]
+    grind ch in s.chars() {
+        yo cp = ch.code_at(0)
+        sus (ch == "\"") {
+            out.yeet_in("\\\"")
+        } kinda_sus (ch == "\\") {
+            out.yeet_in("\\\\")
+        } kinda_sus (ch == "\n") {
+            out.yeet_in("\\n")
+        } kinda_sus (ch == "\t") {
+            out.yeet_in("\\t")
+        } kinda_sus (ch == "\r") {
+            out.yeet_in("\\r")
+        } kinda_sus (cp == 8) {
+            out.yeet_in("\\b")
+        } kinda_sus (cp == 12) {
+            out.yeet_in("\\f")
+        } kinda_sus (cp >= 0x20 fr cp < 0x7F) {
+            out.yeet_in(ch)
+        } kinda_sus (cp > 0xFFFF) {
+            // Above the BMP, json.dumps emits the UTF-16 surrogate pair.
+            yo v = cp - 0x10000
+            out.yeet_in("\\u" + hex4(0xD800 | (v >> 10)))
+            out.yeet_in("\\u" + hex4(0xDC00 | (v & 0x3FF)))
+        } nah {
+            out.yeet_in("\\u" + hex4(cp))
+        }
+    }
+    out.yeet_in("\"")
+    bounce out.join("")
+}
+
+flex bet read_int_magnitude(r) {
+    yo sign = read_u8(r)
+    yo n = read_u32(r)
+    yo mag = 0
+    grind i from 0 to n {
+        mag = (mag << 8) | read_u8(r)
+    }
+    sus (sign == 1) {
+        bounce -mag
+    }
+    bounce mag
 }

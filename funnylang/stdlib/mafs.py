@@ -37,6 +37,15 @@ def _float_to_bits(vm, a):
     return int.from_bytes(struct.pack(">d", float(_num(a[0], "float_to_bits"))), "big")
 
 
+def _bits_to_float(vm, a):
+    bits = _num(a[0], "bits_to_float")
+    if isinstance(bits, float) or bits < 0 or bits > 0xFFFFFFFFFFFFFFFF:
+        # Checked rather than left to struct's own OverflowError, which is a
+        # Python exception no FunnyLang program could ever catch.
+        raise MathAintMathin("'bits_to_float' needs an unsigned 64-bit bit pattern.")
+    return struct.unpack(">d", int(bits).to_bytes(8, "big"))[0]
+
+
 def _floor(vm, a):
     return math.floor(_num(a[0], "floor"))
 
@@ -160,6 +169,7 @@ def build() -> Module:
         "abs": _nf("abs", lambda vm, a: _abs(vm, a), 1),
         "is_float": _nf("is_float", lambda vm, a: _is_float(vm, a), 1),
         "float_to_bits": _nf("float_to_bits", lambda vm, a: _float_to_bits(vm, a), 1),
+        "bits_to_float": _nf("bits_to_float", lambda vm, a: _bits_to_float(vm, a), 1),
         "floor": _nf("floor", lambda vm, a: _floor(vm, a), 1),
         "ceil": _nf("ceil", lambda vm, a: _ceil(vm, a), 1),
         "round": _nf("round", lambda vm, a: _round(vm, a), 1, 2),

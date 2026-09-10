@@ -1789,3 +1789,42 @@ gets an entry explaining what changed and why.
   Verified: full suite 1183 passed (Linux, gcc, `-Werror`); MSVC `/W4 /WX` build clean on Windows,
   both binaries, with the new differential program producing identical output there.
 
+- **N8 task 2 · `funny xray`, in FunnyLang.** Four new files: `selfhost/disasm.funny` (a port of
+  `funnylang/disasm.py`), `selfhost/loader.funny` (the exact inverse of `emitter.funny`, so a
+  `.funnyc`/`.funnypak` on disk disassembles through the same path as a program just compiled),
+  `selfhost/astdump.funny` (promoted out of `selfhost/_drivers/dump_ast.funny`, which is now a thin
+  wrapper, since `--ast` needs the same rendering the parser cross-check already had), and
+  `selfhost/xray.funny` (the CLI, a port of `cli.py`'s `cmd_xray`). `prelude.funny` gained the byte
+  *readers* mirroring its writers, a `utf8_decode`, and a `json_quote` matching Python's
+  `json.dumps` defaults (the driver's older one escaped only five characters and would have been
+  wrong on any control or non-ASCII character).
+  **ADDITION · `mafs.bits_to_float(bits)`.** The inverse of `mafs.float_to_bits`, which PLAN.md §16
+  added at M12 for exactly the mirror-image reason: the emitter must write a float constant's raw 8
+  bytes, and now the loader must read them back. Nothing in the language gives a program bit-level
+  access to a float, so decoding IEEE-754 by hand in the self-hosting subset would be fragile and
+  pointless when both runtimes can reinterpret the bits directly. Out-of-range input (negative, a
+  float, or wider than 64 bits) raises `MathAintMathin` in both implementations rather than letting
+  Python's `struct` raise an `OverflowError` no FunnyLang program could catch. Documented in
+  `docs/STDLIB.md`, covered in `tests/native/programs/modules_mafs.funny`.
+  **Fixed · template-substitution EOF spans in `selfhost/lexer.funny`.** `lexer.py` gives the EOF
+  token it synthesizes at the end of a `{...}` substitution the span of the *last token consumed*
+  (the closing brace); the self-hosted lexer was using wherever the scanner had since moved to, one
+  column further on. Nothing had cross-checked it: `_drivers/lex_template.funny` compares only the
+  token *kinds* inside a template. `xray --tokens`, which prints those nested tokens in full, is what
+  surfaced it.
+  **KNOWN DIVERGENCE · `--tokens` and non-ASCII.** Token reprs go through a hand-rolled port of
+  CPython's `repr` for strings, because that is what `tokens.py`'s f-string `!r` produces. It matches
+  CPython exactly across ASCII -- quote selection, backslash escapes, lowercase `\xNN` below space
+  and for DEL. CPython additionally escapes any non-ASCII code point `str.isprintable()` rejects
+  (zero-width spaces, soft hyphens, unassigned code points); deciding that needs Unicode
+  general-category tables the language does not expose to a program, so non-ASCII is passed through
+  literally instead. Every printable character renders identically either way, and the corpus check
+  below covers files with non-ASCII identifiers and string literals.
+  Verified: `selfhost/xray.funny` on the C VM vs `python3 -m funnylang xray` across
+  `tests/lang/` + `examples/` + `selfhost/` -- **0 mismatches out of 101 files** disassembling,
+  104 with `--ast`, 104 with `--tokens` -- plus 84 already-compiled `.funnyc`/`.funnypak` files
+  through the loader path. `tests/native/test_native_xray.py` (33 tests) pins a representative slice
+  of that. `bootstrap/funnyc.funnypak` regenerated, since `selfhost/lexer.funny` and
+  `selfhost/prelude.funny` both changed. Full suite green; MSVC `/W4 /WX` clean, with `xray` output
+  byte-identical on Windows too.
+

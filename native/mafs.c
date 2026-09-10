@@ -94,6 +94,35 @@ static Value m_is_float(VM *vm, Value *a, int argc) {
     return BOOL_VAL(IS_FLOAT(a[0]));
 }
 
+/* The inverse of float_to_bits, added for the same reason it was (PLAN.md
+   §16, M12): selfhost/emitter.funny writes a float constant's raw 8 bytes,
+   and NATIVE_PLAN.md N8's disassembler has to read them back. Nothing in
+   the language gives FunnyLang bit-level access to a float, so decoding
+   IEEE-754 by hand in the self-hosting subset would be fragile and
+   pointless when both runtimes can just reinterpret the bits. */
+static Value m_bits_to_float(VM *vm, Value *a, int argc) {
+    (void)argc;
+    if (!check_num(vm, a[0], "bits_to_float")) return GHOST_VAL;
+    uint64_t bits;
+    if (IS_INT(a[0]) && AS_INT(a[0]) >= 0) {
+        bits = (uint64_t)AS_INT(a[0]);
+    } else if (IS_BIGNUM(a[0]) && AS_BIGNUM(a[0])->sign >= 0 && AS_BIGNUM(a[0])->count <= 2) {
+        const ObjBignum *n = AS_BIGNUM(a[0]);
+        bits = n->count > 0 ? (uint64_t)n->limbs[0] : 0;
+        if (n->count == 2) bits |= (uint64_t)n->limbs[1] << 32;
+    } else {
+        /* A float lands here too: check_num accepts one, but a bit pattern
+           is an integer by definition, and the Python side rejects it the
+           same way rather than letting struct raise an OverflowError no
+           FunnyLang program could catch. */
+        vm_throw_native(vm, "MathAintMathin", "'bits_to_float' needs an unsigned 64-bit bit pattern.");
+        return GHOST_VAL;
+    }
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return FLOAT_VAL(d);
+}
+
 static Value m_float_to_bits(VM *vm, Value *a, int argc) {
     (void)argc;
     if (!check_num(vm, a[0], "float_to_bits")) return GHOST_VAL;
@@ -423,6 +452,7 @@ static const MafsEntry MAFS_FUNCTIONS[] = {
     {"abs", m_abs, 1, 1},
     {"is_float", m_is_float, 1, 1},
     {"float_to_bits", m_float_to_bits, 1, 1},
+    {"bits_to_float", m_bits_to_float, 1, 1},
     {"floor", m_floor, 1, 1},
     {"ceil", m_ceil, 1, 1},
     {"round", m_round, 1, 2},

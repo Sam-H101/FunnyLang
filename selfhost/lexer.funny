@@ -408,6 +408,12 @@ flex bet scan_template(st) {
 flex bet consume_template_expr(st, template_line, template_col) {
     yo result = []
     yo depth = 1
+    // lexer.py gives the synthesized EOF the span of the *last token
+    // consumed* (the closing brace, normally) rather than wherever the
+    // scanner has since moved to -- a one-column difference that nothing
+    // cross-checked until `funny xray --tokens` started printing these
+    // nested tokens in full.
+    yo last = ghost
     bruh (fax) {
         yo tok = next_token(st)
         sus (tok["kind"] == "EOF") {
@@ -418,6 +424,7 @@ flex bet consume_template_expr(st, template_line, template_col) {
         } kinda_sus (tok["kind"] == "RBRACE") {
             depth -= 1
             sus (depth == 0) {
+                last = tok
                 bail
             }
         }
@@ -425,8 +432,13 @@ flex bet consume_template_expr(st, template_line, template_col) {
             nvm
         }
         result.yeet_in(tok)
+        last = tok
     }
-    result.yeet_in(make_token("EOF", "", ghost, st["line"], st["col"], st["pos"], st["pos"]))
+    sus (last == ghost) {
+        result.yeet_in(make_token("EOF", "", ghost, st["line"], st["col"], st["pos"], st["pos"]))
+    } nah {
+        result.yeet_in(make_token("EOF", "", ghost, last["line"], last["col"], last["start"], last["end"]))
+    }
     bounce result
 }
 

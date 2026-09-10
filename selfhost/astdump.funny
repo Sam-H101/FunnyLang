@@ -1,0 +1,227 @@
+// selfhost/astdump.funny — NATIVE_PLAN.md N8 task 2: a byte-exact port of
+// funnylang/ast_nodes.py's dump_ast(), the s-expression rendering behind
+// `funny xray --ast`. Promoted out of selfhost/_drivers/, where it lived as
+// a parser cross-check, now that the real CLI needs it too. `dump` is the
+// entry point; `dump_seq`/`opt`/`lit_of` are exported only because the
+// driver that still cross-checks this against Python imports them.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme { json_quote } from "prelude.funny"
+
+flex bet lit_of(value) {
+    sus (value == ghost) {
+        bounce "ghost"
+    }
+    sus (value == fax) {
+        bounce "fax"
+    }
+    sus (value == cap) {
+        bounce "cap"
+    }
+    sus (what_is_it(value) == "yapstring") {
+        bounce json_quote(value)
+    }
+    bounce to_yap(value)
+}
+
+
+flex bet opt(node) {
+    sus (node == ghost) {
+        bounce "ghost"
+    }
+    bounce dump(node)
+}
+
+flex bet dump_seq(nodes) {
+    yo parts = []
+    grind n in nodes {
+        parts.yeet_in(dump(n))
+    }
+    bounce parts.join(" ")
+}
+
+flex bet dump(node) {
+    sus (node == ghost) {
+        bounce "ghost"
+    }
+    yo kind = node["node"]
+    sus (kind == "Program") {
+        bounce "(program " + dump_seq(node["statements"]) + ")"
+    }
+    sus (kind == "Literal") {
+        bounce lit_of(node["value"])
+    }
+    sus (kind == "TemplateString") {
+        yo parts = []
+        grind p in node["parts"] {
+            sus (p["kind"] == "str") {
+                parts.yeet_in(json_quote(p["value"]))
+            } nah {
+                parts.yeet_in(dump(p["value"]))
+            }
+        }
+        bounce "(template " + parts.join(" ") + ")"
+    }
+    sus (kind == "Identifier") {
+        bounce node["name"]
+    }
+    sus (kind == "Unary") {
+        bounce "(" + node["op"] + " " + dump(node["operand"]) + ")"
+    }
+    sus (kind == "Binary" || kind == "Logical") {
+        bounce "(" + node["op"] + " " + dump(node["left"]) + " " + dump(node["right"]) + ")"
+    }
+    sus (kind == "Coalesce") {
+        bounce "(?? " + dump(node["left"]) + " " + dump(node["right"]) + ")"
+    }
+    sus (kind == "Pipe") {
+        bounce "(|> " + dump(node["left"]) + " " + dump(node["right"]) + ")"
+    }
+    sus (kind == "Ternary") {
+        bounce "(?: " + dump(node["cond"]) + " " + dump(node["then_expr"]) + " " + dump(node["else_expr"]) + ")"
+    }
+    sus (kind == "Assign") {
+        bounce "(" + node["op"] + " " + node["target"]["name"] + " " + dump(node["value"]) + ")"
+    }
+    sus (kind == "Set") {
+        bounce "(" + node["op"] + " (get " + dump(node["obj"]) + " " + node["name"] + ") " + dump(node["value"]) + ")"
+    }
+    sus (kind == "SetIndex") {
+        bounce "(" + node["op"] + " (index " + dump(node["obj"]) + " " + dump(node["index"]) + ") " + dump(node["value"]) + ")"
+    }
+    sus (kind == "AddressOf") {
+        bounce "(& " + dump(node["place"]) + ")"
+    }
+    sus (kind == "Deref") {
+        bounce "(* " + dump(node["ptr"]) + ")"
+    }
+    sus (kind == "SetDeref") {
+        bounce "(" + node["op"] + " (* " + dump(node["ptr"]) + ") " + dump(node["value"]) + ")"
+    }
+    sus (kind == "Call") {
+        yo args = dump_seq(node["args"])
+        bounce "(call " + dump(node["callee"]) + (args.how_thicc() > 0 ? " " + args : "") + ")"
+    }
+    sus (kind == "Index") {
+        bounce "(index " + dump(node["obj"]) + " " + dump(node["index"]) + ")"
+    }
+    sus (kind == "Slice") {
+        bounce "(slice " + dump(node["obj"]) + " " + opt(node["start"]) + " " + opt(node["stop"]) + " " + opt(node["step"]) + ")"
+    }
+    sus (kind == "Get") {
+        bounce "(get " + dump(node["obj"]) + " " + node["name"] + ")"
+    }
+    sus (kind == "SafeGet") {
+        bounce "(safe-get " + dump(node["obj"]) + " " + node["name"] + ")"
+    }
+    sus (kind == "StashLit") {
+        bounce "(stash " + dump_seq(node["elements"]) + ")"
+    }
+    sus (kind == "GroupChatLit") {
+        yo pairs = []
+        grind pr in node["pairs"] {
+            pairs.yeet_in("(" + dump(pr["key"]) + " " + dump(pr["value"]) + ")")
+        }
+        bounce "(groupchat " + pairs.join(" ") + ")"
+    }
+    sus (kind == "Lambda") {
+        yo pnames = []
+        grind p in node["params"] {
+            pnames.yeet_in(p["name"])
+        }
+        yo variadic = node["variadic"] != ghost ? " ..." + node["variadic"] : ""
+        bounce "(lambda (" + pnames.join(" ") + variadic + ") " + dump(node["body"]) + ")"
+    }
+    sus (kind == "Me") {
+        bounce "me"
+    }
+    sus (kind == "Og") {
+        bounce "og"
+    }
+    sus (kind == "Block") {
+        bounce "(block " + dump_seq(node["statements"]) + ")"
+    }
+    sus (kind == "VarDecl") {
+        bounce "(yo " + node["name"] + " " + opt(node["initializer"]) + ")"
+    }
+    sus (kind == "ConstDecl") {
+        bounce "(deadass " + node["name"] + " " + dump(node["initializer"]) + ")"
+    }
+    sus (kind == "FuncDecl") {
+        yo pnames = []
+        grind p in node["params"] {
+            pnames.yeet_in(p["name"])
+        }
+        yo variadic = node["variadic"] != ghost ? " ..." + node["variadic"] : ""
+        bounce "(bet " + node["name"] + " (" + pnames.join(" ") + variadic + ") " + dump(node["body"]) + ")"
+    }
+    sus (kind == "SquadDecl") {
+        yo sup = node["superclass"] != ghost ? " inherits " + node["superclass"] : ""
+        yo spawn_part = node["spawn"] != ghost ? " " + dump(node["spawn"]) : ""
+        bounce "(squad " + node["name"] + sup + spawn_part + " " + dump_seq(node["methods"]) + ")"
+    }
+    sus (kind == "If") {
+        yo elifs = []
+        grind e in node["elif_branches"] {
+            elifs.yeet_in("(kinda_sus " + dump(e["cond"]) + " " + dump(e["block"]) + ")")
+        }
+        yo elifs_s = elifs.join(" ")
+        yo els = node["else_branch"] != ghost ? " (nah " + dump(node["else_branch"]) + ")" : ""
+        bounce "(sus " + dump(node["cond"]) + " " + dump(node["then_branch"]) + (elifs_s.how_thicc() > 0 ? " " + elifs_s : "") + els + ")"
+    }
+    sus (kind == "While") {
+        bounce "(bruh " + dump(node["cond"]) + " " + dump(node["body"]) + ")"
+    }
+    sus (kind == "ForRange") {
+        yo step_s = node["step"] != ghost ? " step " + dump(node["step"]) : ""
+        bounce "(grind " + node["var"] + " from " + dump(node["start"]) + " to " + dump(node["stop"]) + step_s + " " + dump(node["body"]) + ")"
+    }
+    sus (kind == "ForEach") {
+        bounce "(grind " + node["var"] + " in " + dump(node["iterable"]) + " " + dump(node["body"]) + ")"
+    }
+    sus (kind == "Return") {
+        bounce "(bounce " + opt(node["value"]) + ")"
+    }
+    sus (kind == "Break") {
+        bounce "(bail)"
+    }
+    sus (kind == "Continue") {
+        bounce "(nvm)"
+    }
+    sus (kind == "Try") {
+        yo catch_part = node["catch_body"] != ghost ? " (my_bad " + node["catch_var"] + " " + dump(node["catch_body"]) + ")" : ""
+        yo fin_part = node["finally_body"] != ghost ? " (regardless " + dump(node["finally_body"]) + ")" : ""
+        bounce "(sketchy " + dump(node["body"]) + catch_part + fin_part + ")"
+    }
+    sus (kind == "Chuck") {
+        bounce "(chuck " + dump(node["value"]) + ")"
+    }
+    sus (kind == "Import") {
+        yo kind_s = node["is_stdlib"] ? "stdlib" : "path"
+        yo alias = node["alias"] != ghost ? " as " + node["alias"] : ""
+        yo names = ghost
+        sus (node["names"] != ghost) {
+            names = " names(" + node["names"].join(",") + ")"
+        } nah {
+            names = ""
+        }
+        bounce "(gimme " + kind_s + " " + json_quote(node["source"]) + alias + names + ")"
+    }
+    sus (kind == "Export") {
+        bounce "(flex " + dump(node["decl"]) + ")"
+    }
+    sus (kind == "Yap") {
+        yo kw = node["newline"] ? "yap" : "mumble"
+        yo args = dump_seq(node["args"])
+        bounce "(" + kw + (args.how_thicc() > 0 ? " " + args : "") + ")"
+    }
+    sus (kind == "ExprStmt") {
+        bounce dump(node["expr"])
+    }
+    sus (kind == "VibeStmt") {
+        bounce "(vibe)"
+    }
+    chuck "dump_ast: no case for " + kind
+}
+
