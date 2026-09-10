@@ -3044,3 +3044,29 @@ gets an entry explaining what changed and why.
   entire release rather than quietly shipping four artifacts where §8 promises five. Blocked and loud
   beats published and wrong. The asset name is untouched too — `funny-macos-x86_64` is what
   `install.sh` looks for, and which runner produced it is not the installer's business.
+
+- **`verify-published` never downloaded the runtime stub — and caught itself.**
+
+  ```
+  FAIL tests/lang/cli/yeet.funny — got 'yeet -> exit 1\noutput exists: cap\n'
+  ```
+
+  `funny yeet` copies `funnyrt` from beside the binary and appends the compiled program to it. The job
+  downloaded only `funny-<target>` and `SHA256SUMS`, so there was no stub to copy and yeet reported
+  "can't find the runtime stub". Reproduced exactly before changing anything, by moving `funnyrt`
+  aside locally: byte-for-byte the same failure line.
+
+  This is the job doing precisely what its own comment says it is for — "an artifact never uploaded,
+  uploaded truncated, uploaded without the executable bit". The artifact it was not exercising was
+  the stub. It found a hole in itself on its first real run, which is the best possible outcome for a
+  job that had never executed.
+
+  **The rename is part of the fix, not tidying.** Release assets are `funny-linux-x86_64` and
+  `funnyrt-linux-x86_64`; `install.sh` renames them to `funny` and `funnyrt` on the way in, and yeet
+  looks for a sibling called exactly `funnyrt`. Downloading the stub under its release name would not
+  have helped either. So the job now lays the download out the way a real install does, verifies
+  **both** checksums rather than one, and runs `tests/slow` as well.
+
+  Rehearsed locally end to end (`build/n4/simulate_verify_published.sh`): stage both binaries under
+  their release asset names, rename, run what the job runs. 376/376, `tests/slow` green, bootstrap
+  fixed point holds. An unverified stub is half a verified release.

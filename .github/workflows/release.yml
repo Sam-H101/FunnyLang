@@ -279,9 +279,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,   asset: funny-linux-x86_64 }
-          - { os: macos-latest,    asset: funny-macos-aarch64 }
-          - { os: windows-latest,  asset: funny-windows-x86_64.exe }
+          # `stub` and the installed names are here because `funny yeet`
+          # copies `funnyrt` from beside the binary: verifying the CLI alone
+          # leaves half the release untested, which is how a broken yeet got
+          # this far.
+          - { os: ubuntu-latest,   asset: funny-linux-x86_64,       stub: funnyrt-linux-x86_64,       bin: funny,     rt: funnyrt }
+          - { os: macos-latest,    asset: funny-macos-aarch64,      stub: funnyrt-macos-aarch64,      bin: funny,     rt: funnyrt }
+          - { os: windows-latest,  asset: funny-windows-x86_64.exe, stub: funnyrt-windows-x86_64.exe, bin: funny.exe, rt: funnyrt.exe }
 
     defaults:
       run:
@@ -300,31 +304,46 @@ jobs:
           mkdir -p published
           gh release download "${{ needs.publish.outputs.tag }}" \
             --repo "${{ github.repository }}" \
-            --pattern "${{ matrix.asset }}" --pattern "SHA256SUMS" \
+            --pattern "${{ matrix.asset }}" \
+            --pattern "${{ matrix.stub }}" \
+            --pattern "SHA256SUMS" \
             --dir published --clobber
 
       - name: Verify the checksum
         working-directory: published
         run: |
           set -eu
-          grep " ${{ matrix.asset }}$" SHA256SUMS > one.txt
-          cat one.txt
+          grep -E " (${{ matrix.asset }}|${{ matrix.stub }})$" SHA256SUMS > ours.txt
+          cat ours.txt
           if command -v sha256sum >/dev/null; then
-            sha256sum -c one.txt
+            sha256sum -c ours.txt
           else
-            shasum -a 256 -c one.txt
+            shasum -a 256 -c ours.txt
           fi
+
+      # install.sh renames the release assets to `funny` and `funnyrt` on the
+      # way in, and `funny yeet` looks for a sibling called exactly `funnyrt`.
+      # So the rename is part of what is being verified, not tidying: the
+      # release asset names are not the names the toolchain expects.
+      - name: Lay it out the way install.sh does
+        working-directory: published
+        run: |
+          set -eu
+          mv "${{ matrix.asset }}" "${{ matrix.bin }}"
+          mv "${{ matrix.stub }}" "${{ matrix.rt }}"
+          chmod +x "${{ matrix.bin }}" "${{ matrix.rt }}" || true
+          ls -la
 
       - name: Run what was published
         env:
           FUNNY_NO_NET: "1"
         run: |
           set -eu
-          BIN="published/${{ matrix.asset }}"
-          chmod +x "$BIN" || true
+          BIN="published/${{ matrix.bin }}"
           "$BIN" --version
           "$BIN" run examples/hello.funny
           "$BIN" test tests/lang
+          "$BIN" test tests/slow
           "$BIN" bootstrap --verify
 
       # A published Linux binary that needs a glibc newer than Debian 12's is
@@ -335,6 +354,6 @@ jobs:
         run: |
           set -eu
           docker run --rm -v "$PWD:/w" -w /w -e FUNNY_NO_NET=1 debian:12 \
-            sh -c './published/${{ matrix.asset }} --version && \
-                   ./published/${{ matrix.asset }} run examples/hello.funny && \
-                   ./published/${{ matrix.asset }} test tests/lang'
+            sh -c './published/${{ matrix.bin }} --version && \
+                   ./published/${{ matrix.bin }} run examples/hello.funny && \
+                   ./published/${{ matrix.bin }} test tests/lang'
