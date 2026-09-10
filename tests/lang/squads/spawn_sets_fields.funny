@@ -1,0 +1,5 @@
+squad P { spawn(x, y) { me.x = x
+ me.y = y } }
+yo p = P(1, 2)
+yap p.x
+yap p.y

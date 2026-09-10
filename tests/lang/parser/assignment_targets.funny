@@ -1,0 +1,17 @@
+// An assignment's target decides which node it becomes: a bare name is an
+// assign, `obj.name` a set, `arr[0]` a set-index, `*p` a set-deref. The
+// compound operator is carried on the node rather than desugared away.
+yo x = 1
+yo arr = [1, 2]
+yo obj = {"name": 0}
+yo p = &x
+x = 1
+obj.name = 1
+arr[0] = 1
+x += 1
+*p = 1
+*p += 1
+// `&` binds at unary precedence, so it takes the postfix chain and stops.
+yo cmp = &arr[0] == &arr[1]
+// `&&` wins maximal munch; an address-of after it needs the space.
+yo both = x && &x

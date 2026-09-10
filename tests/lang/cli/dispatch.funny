@@ -1,0 +1,43 @@
+// The command line, driven from inside the language.
+//
+// tests/test_cli.py ran the CLI as a subprocess 34 times. There is no
+// process-spawn primitive here and adding one to test the CLI would be a
+// large capability bought for a small reason -- but `sus.run_bytecode`
+// already runs a bundle in an isolated VM with argv, captured stdout and an
+// exit code, which *is* a CLI invocation. `sus.toolchain()` supplies the
+// bytes: the same ones `main.c` runs, so this exercises the shipped dispatch
+// rather than a re-linked copy of it.
+gimme sus
+gimme yapper
+
+flex bet cli(args) {
+    bounce sus.run_bytecode(sus.toolchain(), args)
+}
+
+flex bet show(label, args) {
+    yo r = cli(args)
+    yap label + " -> exit " + to_yap(r["code"])
+    yap r["out"]
+}
+
+show("run hello", ["run", "examples/hello.funny"])
+show("run fizzbuzz head", ["run", "tests/lang/cli/fizz_head.funny"])
+show("no subcommand", [])
+
+// An unknown subcommand is a usage error, not a crash.
+yo bad = cli(["definitely-not-a-subcommand"])
+yap "unknown -> exit " + to_yap(bad["code"])
+
+// A program that dips with a code: the CLI passes it straight through.
+yo dipped = cli(["run", "tests/lang/cli/dip_sets_exit_code.funny"])
+yap "dip -> exit " + to_yap(dipped["code"])
+yap dipped["out"]
+
+// A program that raises: exit 1, and the diagnostic goes to stderr rather
+// than into the captured stdout.
+yo boom = cli(["run", "tests/lang/errors/caret_points_at_column.funny"])
+yap "uncaught -> exit " + to_yap(boom["code"])
+yap "stdout was empty: " + to_yap(boom["out"] == "")
+// The diagnostic went to the child's *stderr*, captured separately -- not
+// into its stdout, and not into this program's own terminal.
+yap "diagnostic in err: " + to_yap(yapper.contains(boom["err"], "TypeVibeMismatch"))

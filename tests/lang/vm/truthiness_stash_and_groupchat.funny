@@ -1,0 +1,2 @@
+sus ([]) { yap "t" } nah { yap "f" }
+sus ([1]) { yap "t" } nah { yap "f" }

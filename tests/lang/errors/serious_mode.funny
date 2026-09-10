@@ -1,0 +1,7 @@
+// The same error, rendered in serious mode: no emoji, the *message* instead
+// of the roast, "fix:" instead of "skill issue fix:", "stack trace" instead
+// of "stack of shame". tests/test_errors.py checks both modes; a golden can
+// only be one, so its sibling caret_points_at_column.funny is the funny one
+// and this is the serious one.
+yo x = 1
+yap x + "nope"

@@ -1,0 +1,53 @@
+gimme rizz
+gimme yapper
+
+bet yapper_check(s) {
+    bounce yapper.contains(s, "-") fr s.how_thicc() == 36
+}
+
+rizz.seed(42)
+
+yo r1 = rizz.roll(1, 6)
+yap r1 >= 1 fr r1 <= 6
+
+yo r2 = rizz.roll(10, 1)
+yap r2 >= 1 fr r2 <= 10
+
+yo fr1 = rizz.float_roll()
+yap fr1 >= 0 fr fr1 < 1
+
+yo items = ["a", "b", "c", "d", "e"]
+yo picked = rizz.pick(items)
+yap items.contains(picked)
+
+sketchy {
+    rizz.pick([])
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+yo to_shuffle = [1, 2, 3, 4, 5]
+yo shuffled = rizz.shuffle(to_shuffle)
+shuffled.sort()
+yap shuffled
+
+yo cf = rizz.coinflip()
+yap what_is_it(cf)
+
+yo u = rizz.uuid()
+yap yapper_check(u)
+
+yo g1 = rizz.gamble(1.0)
+yap g1
+yo g2 = rizz.gamble(0.0)
+yap g2
+
+sketchy {
+    rizz.gamble("nope")
+} my_bad (e) {
+    yap "caught:", e.flavor
+}
+
+rizz.seed()
+yo r3 = rizz.roll(1, 100)
+yap r3 >= 1 fr r3 <= 100

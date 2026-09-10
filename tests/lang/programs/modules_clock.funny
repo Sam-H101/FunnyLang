@@ -1,0 +1,29 @@
+gimme clock
+
+yo t = clock.now()
+yap what_is_it(t)
+yap t > 0
+
+yo tms = clock.now_ms()
+yap what_is_it(tms)
+yap tms > 0
+
+yap what_is_it(clock.touch_grass())
+yap what_is_it(clock.touch_grass(0))
+yap what_is_it(clock.touch_grass(0.0))
+
+yo sw = clock.stopwatch()
+yo e = sw()
+yap what_is_it(e)
+yap e >= 0.0
+
+yo e2 = sw()
+yap e2 >= e
+
+yap clock.date_yap("no percent signs here")
+yap clock.date_yap("%%")
+yap clock.date_yap("")
+
+yo defaultStamp = clock.date_yap()
+yap what_is_it(defaultStamp)
+yap defaultStamp.how_thicc() > 0

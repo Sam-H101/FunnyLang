@@ -1,0 +1,15 @@
+// A structure that contains itself must print an ellipsis rather than
+// recursing until the stack gives out. tests/test_hardening.py task 4.
+yo s = [1, 2, 3]
+s[0] = s
+yap s
+
+yo g = {"a": 1}
+g["self"] = g
+yap g
+
+yo a = [1]
+yo b = [2]
+a[0] = b
+b[0] = a
+yap a

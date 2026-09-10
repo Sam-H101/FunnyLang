@@ -1,0 +1,3 @@
+gimme yapper
+yap yapper.is_numba("3.5")
+yap yapper.is_numba("abc")

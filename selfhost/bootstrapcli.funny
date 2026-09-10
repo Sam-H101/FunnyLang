@@ -1,0 +1,25 @@
+// selfhost/bootstrapcli.funny — NATIVE_PLAN.md N9 task 2's CLI half:
+// `funny bootstrap --verify [--keep] [--diff]`, a port of funnylang/cli.py's
+// `cmd_bootstrap` argument handling. All the work is in bootstrap.funny.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme { bootstrap } from "bootstrap.funny"
+
+yo verify = cap
+yo keep = cap
+yo show_diff = cap
+grind a in the_args() {
+    sus (a == "--verify") {
+        verify = fax
+    } kinda_sus (a == "--keep") {
+        keep = fax
+    } kinda_sus (a == "--diff") {
+        show_diff = fax
+    }
+}
+sus (!verify) {
+    yell("funny bootstrap needs --verify.")
+    dip(1)
+}
+dip(bootstrap(keep, show_diff))

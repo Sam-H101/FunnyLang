@@ -1,0 +1,3 @@
+// Any other uncaught error is exit 1. The output before it still counts.
+yap "before"
+yap 1 / 0

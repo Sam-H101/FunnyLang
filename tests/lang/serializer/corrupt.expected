@@ -1,0 +1,5 @@
+!NATIVE
+bad magic -> exit 1, flavor ghost
+truncated -> exit 1, flavor ghost
+version mismatch -> exit 1, flavor ghost
+bad pak magic -> exit 1

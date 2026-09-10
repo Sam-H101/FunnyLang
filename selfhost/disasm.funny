@@ -1,0 +1,180 @@
+// selfhost/disasm.funny — NATIVE_PLAN.md N8 task 2: `funny xray`'s
+// disassembler, in FunnyLang. A byte-exact port of funnylang/disasm.py,
+// working on the unit shape `compiler.funny` produces and `loader.funny`
+// reads back, so a freshly compiled program and a `.funnyc` on disk go
+// through one code path.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme yapper
+gimme { json_quote } from "prelude.funny"
+gimme { OPCODES, OPERAND_WIDTHS } from "compiler.funny"
+
+flex deadass TAG_GHOST = 0
+flex deadass TAG_BOOL = 1
+flex deadass TAG_INT = 2
+flex deadass TAG_FLOAT = 3
+flex deadass TAG_STRING = 4
+flex deadass TAG_PROTO_REF = 5
+
+// Opcode number -> name, the inverse of compiler.funny's OPCODES. Built
+// once at import rather than written out again, so the two can't drift.
+flex bet build_opcode_names() {
+    yo names = {}
+    grind name in OPCODES.keys() {
+        names[OPCODES.get(name)] = name
+    }
+    bounce names
+}
+
+flex deadass OPCODE_NAMES = build_opcode_names()
+
+// Opcodes whose operand is a const-pool index holding a *name*, rendered as
+// a trailing comment the same way CONST's is.
+flex deadass NAMED_CONST_OPS = [
+    "GET_GLOBAL", "SET_GLOBAL", "DEF_GLOBAL", "GET_PROP", "SET_PROP",
+    "GET_PROP_SAFE", "INVOKE", "INVOKE_OG", "EXPORT",
+    "PTR_GLOBAL", "PTR_PROP", "PTR_LOCAL", "PTR_UPVAL",
+]
+
+// Which fixed operand carries that index -- 0 for everything except
+// PTR_LOCAL/PTR_UPVAL, whose *second* operand is the (redundant,
+// display-only) name const; their first is the slot/upvalue index.
+flex bet named_const_operand_index(op_name) {
+    sus (op_name == "PTR_LOCAL" || op_name == "PTR_UPVAL") {
+        bounce 1
+    }
+    bounce 0
+}
+
+flex bet const_repr(unit, idx) {
+    yo entry = unit["const_pool"]["entries"][idx]
+    yo tag = entry["tag"]
+    yo value = entry["value"]
+    sus (tag == TAG_GHOST) {
+        bounce "ghost"
+    }
+    sus (tag == TAG_BOOL) {
+        bounce value ? "fax" : "cap"
+    }
+    sus (tag == TAG_INT) {
+        bounce to_yap(value)
+    }
+    sus (tag == TAG_FLOAT) {
+        // disasm.py uses repr() here, which agrees with to_yap for every
+        // float a constant pool can hold: both render an integral float as
+        // "1.0" and everything else through the shortest round-trip form.
+        bounce to_yap(value)
+    }
+    sus (tag == TAG_STRING) {
+        bounce json_quote(value)
+    }
+    sus (tag == TAG_PROTO_REF) {
+        bounce "<proto #" + to_yap(value) + ">"
+    }
+    bounce "?"
+}
+
+// Big-endian, `width` bytes starting at `pos`.
+flex bet read_operand(code, pos, width) {
+    yo v = 0
+    grind i from 0 to width {
+        v = (v << 8) | code[pos + i]
+    }
+    bounce v
+}
+
+// The line number in effect at `ip`: the last line entry whose offset has
+// been reached. Linear per instruction, exactly like disasm.py's own loop --
+// a disassembler is not on any hot path.
+flex bet line_at(proto, ip) {
+    yo current = ghost
+    grind entry in proto["lines"] {
+        sus (entry["offset"] > ip) {
+            bail
+        }
+        current = entry["line"]
+    }
+    bounce current
+}
+
+flex bet disassemble_proto(unit, proto, label) {
+    yo out = ["== " + label + " (arity " + to_yap(proto["arity"]) + ") =="]
+    yo code = proto["code"]
+    yo ip = 0
+    yo last_shown_line = ghost
+    bruh (ip < code.how_thicc()) {
+        yo op_name = OPCODE_NAMES.get(code[ip])
+        sus (op_name == ghost) {
+            chuck "unknown opcode " + to_yap(code[ip]) + " at offset " + to_yap(ip) + "."
+        }
+        yo current_line = line_at(proto, ip)
+        yo marker = ""
+        sus (current_line != ghost fr current_line != last_shown_line) {
+            marker = "line " + to_yap(current_line)
+            last_shown_line = current_line
+        }
+        yo pos = ip + 1
+        yo parts = []
+        yo comment = ""
+        sus (op_name == "CLOSURE") {
+            // Variable-width: a u16 const index, then two bytes per upvalue
+            // of the proto it names.
+            yo const_idx = read_operand(code, pos, 2)
+            pos += 2
+            parts.yeet_in(to_yap(const_idx))
+            yo entry = unit["const_pool"]["entries"][const_idx]
+            yo ref = entry["value"]
+            yo n_upvals = 0
+            sus (entry["tag"] == TAG_PROTO_REF) {
+                n_upvals = unit["protos"][ref]["upvalue_count"]
+            }
+            yo upvals = []
+            grind i from 0 to n_upvals {
+                yo is_local = code[pos]
+                yo uv_idx = code[pos + 1]
+                pos += 2
+                upvals.yeet_in((is_local != 0 ? "local" : "upval") + ":" + to_yap(uv_idx))
+            }
+            comment = "; proto #" + to_yap(ref)
+            sus (upvals.how_thicc() > 0) {
+                comment = comment + " [" + upvals.join(", ") + "]"
+            }
+        } nah {
+            yo operands = []
+            grind w in OPERAND_WIDTHS.get(op_name) {
+                yo v = read_operand(code, pos, w)
+                operands.yeet_in(v)
+                parts.yeet_in(to_yap(v))
+                pos += w
+            }
+            sus (op_name == "CONST" || NAMED_CONST_OPS.contains(op_name)) {
+                comment = "; " + const_repr(unit, operands[named_const_operand_index(op_name)])
+            }
+        }
+        yo line = yapper.pad_left(to_yap(ip), 4, "0") + "  " + yapper.pad_right(marker, 8) + yapper.pad_right(op_name, 14) + parts.join(" ")
+        sus (comment != "") {
+            line = line + "    " + comment
+        }
+        out.yeet_in(yapper.rtrim(line))
+        ip = pos
+    }
+    bounce out.join("\n")
+}
+
+flex bet disassemble(unit) {
+    yo sections = []
+    yo protos = unit["protos"]
+    grind i from 0 to protos.how_thicc() {
+        yo proto = protos[i]
+        yo label = proto["name"]
+        sus (label != "<script>") {
+            label = "bet " + label
+        }
+        sus (i == unit["entry_proto"]) {
+            label = label + " (entry)"
+        }
+        sections.yeet_in(disassemble_proto(unit, proto, label))
+    }
+    bounce sections.join("\n\n") + "\n"
+}

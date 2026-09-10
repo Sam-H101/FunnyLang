@@ -1,0 +1,2 @@
+!XRAY --ast
+(program (yo name "sam") (yo age 3) (yo t (template "yo " name ", you are " age)) (yo st (stash 1 2 3)) (yo gc (groupchat ("a" 1) ("b" 2))) (yo empty (groupchat )) (yo f (lambda (x) (+ x 1))) (yo g (lambda (x) (block (bounce (* x 2))))) (yo h (lambda ( ...rest) rest)))

@@ -1,0 +1,7 @@
+sketchy {
+ chuck "custom"
+} my_bad (e) {
+ yap e.flavor
+ yap e.message
+ yap e.payload
+}

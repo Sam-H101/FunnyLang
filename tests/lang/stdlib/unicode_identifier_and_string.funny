@@ -1,0 +1,6 @@
+// tests/test_hardening.py::test_unicode_identifier_and_string_end_to_end.
+// An identifier mixing an accented letter, an underscore and an emoji, and a
+// string mixing Latin-1 and CJK -- through the lexer, the compiler and the VM
+// and back out of `yap` unchanged.
+yo café_🎉 = "héllo 中文 world"
+yap café_🎉

@@ -1,0 +1,161 @@
+// tests/test_fuzz.py, in FunnyLang: throw garbage and near-garbage at the
+// front end and assert nothing but a clean FunnyLang error ever comes back.
+//
+// The seed is fixed and *printed*. A fuzzer you cannot re-run is a bug report
+// you cannot act on, so the run is reproducible by construction and the seed
+// is in the output rather than buried in the source. `rizz` is xoshiro256**
+// seeded through splitmix64, which is deterministic and identical on every
+// platform, so this is a golden and not a coin flip.
+//
+// Each case goes through the real command line (`sus.toolchain()` plus
+// `sus.run_bytecode`, the same route tests/lang/cli/ uses), so what is being
+// fuzzed is the shipped pipeline rather than a library call into it. A build
+// costs about 6ms, which is what sets the case counts below.
+//
+// The assertion is the same one the pytest version made: a clean failure is
+// fine -- garbage *should* be rejected -- and anything else is the bug. Here
+// that means the CLI exits 0 or 1 and no error escapes it at all. A 69 would
+// be a ComputerExploded, and a non-ghost flavor would be an error the CLI
+// failed to catch.
+gimme sus
+gimme rizz
+gimme filez
+gimme yapper
+
+deadass SEED = 12345
+deadass SOUP_CASES = 200
+deadass PROGRAM_CASES = 100
+
+deadass SOUP_TOKENS = [
+    "yo", "deadass", "bet", "lowkey", "bounce", "sus", "kinda_sus", "nah",
+    "bruh", "grind", "from", "to", "step", "in", "bail", "nvm", "sketchy",
+    "my_bad", "regardless", "chuck", "gimme", "as", "flex", "squad",
+    "inherits", "me", "og", "spawn", "fax", "cap", "ghost", "fr", "orr",
+    "aint", "same_energy", "diff_energy", "vibe", "yap", "yeet", "mumble",
+    "(", ")", "[", "]", "{", "}", ",", ".", ";", ":", "=", "==", "!=", "+",
+    "-", "*", "/", "\\", "%", "**", "<", "<=", ">", ">=", "&&", "||", "!",
+    "?", "??", "?.", "|>", "=>", "...", "x", "y", "foo", "_bar", "42",
+    "3.14", "\"str\"", "`t{x}`", "\n", "//comment\n",
+]
+
+deadass NAMES = ["a", "b", "c", "x", "y", "n", "total", "value"]
+deadass LITERALS = ["0", "1", "-1", "3.14", "\"hi\"", "fax", "cap", "ghost", "[1, 2]", "{\"k\": 1}"]
+deadass BINOPS = ["+", "-", "*", "/", "%", "==", "<", ">", "&&", "||", "??"]
+
+flex bet pick(items) {
+    bounce items[rizz.roll(0, items.how_thicc() - 1)]
+}
+
+flex bet soup(n) {
+    yo parts = []
+    grind i from 0 to n {
+        parts.yeet_in(pick(SOUP_TOKENS))
+    }
+    bounce parts.join(" ")
+}
+
+flex bet rexpr(depth) {
+    sus (depth <= 0 || rizz.float_roll() < 0.4) {
+        sus (rizz.coinflip()) {
+            bounce pick(LITERALS)
+        }
+        bounce pick(NAMES)
+    }
+    yo choice = rizz.float_roll()
+    sus (choice < 0.5) {
+        bounce "(" + rexpr(depth - 1) + " " + pick(BINOPS) + " " + rexpr(depth - 1) + ")"
+    }
+    sus (choice < 0.7) {
+        bounce pick(NAMES) + "(" + rexpr(depth - 1) + ")"
+    }
+    sus (choice < 0.85) {
+        bounce rexpr(depth - 1) + "[" + rexpr(depth - 1) + "]"
+    }
+    bounce "(" + rexpr(depth - 1) + " ? " + rexpr(depth - 1) + " : " + rexpr(depth - 1) + ")"
+}
+
+flex bet rblock(depth) {
+    yo lines = []
+    grind i from 0 to rizz.roll(0, 4) {
+        lines.yeet_in(rstmt(depth))
+    }
+    bounce lines.join("\n")
+}
+
+flex bet rstmt(depth) {
+    yo name = pick(NAMES)
+    yo choice = rizz.float_roll()
+    sus (choice < 0.3) {
+        bounce "yo " + name + " = " + rexpr(3)
+    }
+    sus (choice < 0.45) {
+        bounce name + " = " + rexpr(3)
+    }
+    sus (choice < 0.6) {
+        bounce "yap " + rexpr(2)
+    }
+    sus (choice < 0.7 fr depth > 0) {
+        bounce "sus (" + rexpr(2) + ") {\n" + rblock(depth - 1) + "\n}"
+    }
+    sus (choice < 0.8 fr depth > 0) {
+        bounce "bruh (" + rexpr(2) + ") {\n" + rblock(depth - 1) + "\n}"
+    }
+    sus (choice < 0.9 fr depth > 0) {
+        bounce "grind " + name + " from 0 to 5 {\n" + rblock(depth - 1) + "\n}"
+    }
+    sus (rizz.coinflip()) {
+        bounce "bounce " + rexpr(2)
+    }
+    bounce "chuck " + rexpr(2)
+}
+
+flex bet rprogram() {
+    yo parts = []
+    grind i from 0 to rizz.roll(1, 8) {
+        parts.yeet_in(rstmt(2))
+    }
+    bounce parts.join("\n") + "\n"
+}
+
+// Returns [accepted, rejected] and yaps a report for anything that was
+// neither -- which is the only interesting outcome.
+flex bet run_cases(label, count, make) {
+    yo accepted = 0
+    yo rejected = 0
+    yo src = filez.temp_file()
+    yo out = filez.temp_file()
+    grind i from 0 to count {
+        yo text = make()
+        filez.yeet_out(src, text)
+        yo r = sus.run_bytecode(sus.toolchain(), ["build", src, "-o", out])
+        sus (r["flavor"] != ghost) {
+            yap "ESCAPED " + label + " case " + to_yap(i) + ": " + r["flavor"] + ": " + r["message"]
+            yap text
+            nvm
+        }
+        sus (r["code"] == 0) {
+            accepted += 1
+            nvm
+        }
+        sus (r["code"] == 1) {
+            rejected += 1
+            nvm
+        }
+        yap "BAD EXIT " + label + " case " + to_yap(i) + ": " + to_yap(r["code"])
+        yap text
+    }
+    filez.obliterate(src)
+    filez.obliterate(out)
+    bounce [accepted, rejected]
+}
+
+yap "seed " + to_yap(SEED)
+rizz.seed(SEED)
+
+yo s = run_cases("soup", SOUP_CASES, lowkey () => soup(rizz.roll(1, 25)))
+yap "soup: " + to_yap(s[0]) + " compiled, " + to_yap(s[1]) + " rejected, " + to_yap(SOUP_CASES) + " total"
+
+yo p = run_cases("program", PROGRAM_CASES, lowkey () => rprogram())
+yap "program: " + to_yap(p[0]) + " compiled, " + to_yap(p[1]) + " rejected, " + to_yap(PROGRAM_CASES) + " total"
+
+yap "nothing escaped."

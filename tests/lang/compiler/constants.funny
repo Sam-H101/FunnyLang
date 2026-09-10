@@ -1,0 +1,12 @@
+// ghost/fax/cap have dedicated opcodes and never reach the constant pool.
+// The pool dedupes a repeated string. Literal arithmetic is folded at
+// compile time -- `2 + 3 * 4` becomes the single constant 14 -- but folding
+// stops at a division by zero, which is a *runtime* error and has to stay
+// one, so `1 / 0` still emits DIV.
+yap ghost
+yap fax
+yap cap
+yap "hi"
+yap "hi"
+yap 2 + 3 * 4
+yap 1 / 0

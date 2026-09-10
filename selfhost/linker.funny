@@ -1,0 +1,24 @@
+// selfhost/linker.funny — NATIVE_PLAN.md N8 task 1's CLI: link a program
+// and everything it imports into one PLAN.md §5.3 bundle.
+//
+//     funny selfhost/linker.funny <entry.funny> <out.funnypak>
+//
+// Thin on purpose, the same shape funnyc.funny has over compiler+emitter:
+// all the work is in bundler.funny, so a caller that already has the module
+// graph in hand can use it without going through argv.
+
+gimme filez
+gimme { build_bundle, emit_funnypak } from "bundler.funny"
+
+yo args = the_args()
+sus (args.how_thicc() < 2) {
+    yap "usage: linker <entry.funny> <out.funnypak>"
+    dip(1)
+}
+yo entry_path = args[0]
+yo out_path = args[1]
+
+yo bundle = build_bundle(entry_path)
+yo bytes = emit_funnypak(bundle)
+filez.write_bytes(out_path, bytes)
+yap "linked", bundle["names"].how_thicc(), "modules ->", out_path

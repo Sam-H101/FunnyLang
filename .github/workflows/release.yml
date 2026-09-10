@@ -1,0 +1,328 @@
+name: release
+
+# NATIVE_PLAN.md N10 tasks 2-6 and 9. Two triggers:
+#   - a `v*` tag -> a permanent, versioned GitHub Release
+#   - a *green* push to master -> the rolling `nightly` prerelease,
+#     force-moved each time, so master is always downloadable without
+#     cutting a version.
+#
+# The nightly hangs off `workflow_run` rather than `push` on purpose: the
+# plan says "every green push", and a plain push trigger would happily ship a
+# nightly built from a master whose test suite had just failed.
+on:
+  push:
+    tags: ["v*"]
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    # A workflow_run firing for a *failed* ci run must not produce a release;
+    # every other trigger (a tag, a manual dispatch) always should.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux on ubuntu-22.04 *on purpose* (task 3): its glibc is 2.35, so
+          # the artifact runs on anything newer. Built on 24.04 it would link
+          # against 2.39 and refuse to start on Debian 12.
+          - { os: ubuntu-22.04,     target: linux-x86_64,  asset: funny-linux-x86_64,    stub: funnyrt-linux-x86_64 }
+          - { os: ubuntu-22.04-arm, target: linux-aarch64, asset: funny-linux-aarch64,   stub: funnyrt-linux-aarch64 }
+          - { os: macos-13,         target: macos-x86_64,  asset: funny-macos-x86_64,    stub: funnyrt-macos-x86_64 }
+          - { os: macos-14,         target: macos-aarch64, asset: funny-macos-aarch64,   stub: funnyrt-macos-aarch64 }
+          - { os: windows-latest,   target: windows-x86_64, asset: funny-windows-x86_64.exe, stub: funnyrt-windows-x86_64.exe }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # No Python anywhere in this job. The toolchain is compiled into the
+      # binary (native/toolchain_blob.c), so a C compiler is the whole
+      # dependency list -- which is the claim these artifacts exist to make.
+      - name: Build
+        if: runner.os != 'Windows'
+        run: ./build.sh
+
+      - name: Build
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: build.bat
+
+      # Task 4. MSVC's linker already omits debug info without /DEBUG, so
+      # there is nothing to strip on Windows.
+      #
+      # Linux and macOS need different commands, not just different flags.
+      # `-s` is GNU ("strip all symbols"); on macOS `-s` takes a *filename*
+      # and means "save the symbols listed in it", so `strip -s funny funnyrt`
+      # asks strip to read a symbol list out of the `funny` Mach-O. Plain
+      # `strip` is the equivalent there.
+      - name: Strip (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          strip -s funny funnyrt
+          ls -la funny funnyrt
+
+      # Stripping a Mach-O invalidates its code signature, and arm64 macOS
+      # refuses to exec a binary whose signature does not verify -- the
+      # process is killed on launch with nothing but `Killed: 9` to show for
+      # it. Every arm64 Mach-O carries at least an ad-hoc signature, so one
+      # goes back on. `-f` because the binary already has one to replace.
+      - name: Strip and re-sign (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          set -eu
+          strip funny funnyrt
+          codesign -s - -f funny
+          codesign -s - -f funnyrt
+          codesign -v funny
+          codesign -v funnyrt
+          ls -la funny funnyrt
+
+      # The point of the step above, checked rather than assumed: a stripped
+      # arm64 binary that was not re-signed does not run at all, and that
+      # failure looks like a crash rather than a signing problem.
+      - name: The stripped binary still runs (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: ./funny --version
+
+      # Task 3's floor, asserted rather than assumed. objdump is not on the
+      # macOS runners and the symbol versions are a glibc concept anyway, so
+      # this is Linux-only.
+      - name: Assert the glibc floor
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          set -eu
+          echo "glibc symbol versions required by the binary:"
+          objdump -T funny | grep -o 'GLIBC_[0-9.]*' | sort -u -V | tee /tmp/glibc.txt
+          floor=$(tail -1 /tmp/glibc.txt | sed 's/GLIBC_//')
+          echo "highest required: $floor"
+          # 2.35 is ubuntu-22.04's own glibc. Anything higher means the build
+          # picked up a symbol from a newer libc than we meant to target.
+          if [ "$(printf '%s\n2.35\n' "$floor" | sort -V | tail -1)" != "2.35" ]; then
+            echo "FAIL: needs glibc $floor, above the 2.35 floor -- this will not run on Debian 12."
+            exit 1
+          fi
+
+      # Task 4's ceiling. A regression past 2MB means something got shipped by
+      # mistake -- a debug section, an accidentally embedded corpus.
+      - name: Check the size ceiling
+        shell: bash
+        run: |
+          set -eu
+          for f in funny funnyrt; do
+            [ -f "$f" ] || f="$f.exe"
+            size=$(wc -c < "$f")
+            echo "$f: $size bytes"
+            if [ "$size" -gt 2097152 ]; then
+              echo "FAIL: $f is $size bytes, over the 2MB ceiling."
+              exit 1
+            fi
+          done
+
+      # Proves this is a real toolchain, not a binary that prints "hello".
+      # `bootstrap --verify` is the strongest single thing that can be
+      # asserted about a compiler artifact.
+      - name: Smoke test
+        shell: bash
+        env:
+          FUNNY_NO_NET: "1"
+        run: |
+          set -eu
+          BIN=./funny; [ -f "$BIN" ] || BIN=./funny.exe
+          "$BIN" --version
+          "$BIN" run examples/hello.funny
+          "$BIN" test tests/lang
+          "$BIN" test examples
+          "$BIN" bootstrap --verify
+
+      - name: Rename to the release asset names
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p dist
+          if [ -f funny.exe ]; then
+            cp funny.exe "dist/${{ matrix.asset }}"
+            cp funnyrt.exe "dist/${{ matrix.stub }}"
+          else
+            cp funny "dist/${{ matrix.asset }}"
+            cp funnyrt "dist/${{ matrix.stub }}"
+          fi
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          retention-days: 90
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.which.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Which release is this
+        id: which
+        run: |
+          set -eu
+          # Only a tag push is a real release; a green master (or a manual
+          # dispatch) moves the rolling `nightly` prerelease instead.
+          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Task 5. Generated here rather than per-job so one file covers every
+      # artifact, and so the install scripts have a single thing to fetch.
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -eu
+          chmod +x funny-* funnyrt-* 2>/dev/null || true
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      # The CHANGELOG section for this version becomes the release body, so
+      # the notes are the ones actually written rather than a commit dump.
+      - name: Release notes
+        id: notes
+        run: |
+          set -eu
+          tag="${{ steps.which.outputs.tag }}"
+          if [ "$tag" = "nightly" ]; then
+            {
+              echo "Rolling build of \`master\` (${GITHUB_SHA::7}). Moves on every green push."
+              echo
+              echo "Not a versioned release — for one of those, see the tags."
+            } > /tmp/notes.md
+          else
+            version="${tag#v}"
+            # index()-based rather than a regex: building one out of an awk
+            # string literal needs escapes that do not survive being quoted
+            # inside YAML inside shell, and this needs none.
+            awk -v want="## [$version]" '
+              index($0, want) == 1 { on = 1; next }
+              on && index($0, "## [") == 1 { exit }
+              on { print }
+            ' CHANGELOG.md > /tmp/notes.md
+            if [ ! -s /tmp/notes.md ]; then
+              echo "FAIL: CHANGELOG.md has no section for $version." >&2
+              exit 1
+            fi
+          fi
+          cat /tmp/notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.which.outputs.tag }}
+          name: ${{ steps.which.outputs.tag }}
+          prerelease: ${{ steps.which.outputs.prerelease }}
+          body_path: /tmp/notes.md
+          files: dist/*
+          fail_on_unmatched_files: true
+
+  # Task 9. The job that catches the classic release bugs: an artifact never
+  # uploaded, uploaded truncated, uploaded without the executable bit, or
+  # built against a glibc the world does not have. It downloads from the
+  # *published release*, not from the build job's artifacts, because those are
+  # different things and only one of them is what a user gets.
+  #
+  # A release that fails this job is deleted, not patched.
+  verify-published:
+    name: verify-published (${{ matrix.os }})
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,   asset: funny-linux-x86_64 }
+          - { os: macos-latest,    asset: funny-macos-aarch64 }
+          - { os: windows-latest,  asset: funny-windows-x86_64.exe }
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Deliberately a *bare* checkout of the corpus only -- this job must not
+      # build anything, or it stops testing what was published.
+      - uses: actions/checkout@v4
+
+      - name: Download from the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p published
+          gh release download "${{ needs.publish.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "${{ matrix.asset }}" --pattern "SHA256SUMS" \
+            --dir published --clobber
+
+      - name: Verify the checksum
+        working-directory: published
+        run: |
+          set -eu
+          grep " ${{ matrix.asset }}$" SHA256SUMS > one.txt
+          cat one.txt
+          if command -v sha256sum >/dev/null; then
+            sha256sum -c one.txt
+          else
+            shasum -a 256 -c one.txt
+          fi
+
+      - name: Run what was published
+        env:
+          FUNNY_NO_NET: "1"
+        run: |
+          set -eu
+          BIN="published/${{ matrix.asset }}"
+          chmod +x "$BIN" || true
+          "$BIN" --version
+          "$BIN" run examples/hello.funny
+          "$BIN" test tests/lang
+          "$BIN" bootstrap --verify
+
+      # A published Linux binary that needs a glibc newer than Debian 12's is
+      # the failure this whole exercise exists to prevent, so it gets checked
+      # on the actual OS rather than inferred from the build runner.
+      - name: Run it on Debian 12
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -eu
+          docker run --rm -v "$PWD:/w" -w /w -e FUNNY_NO_NET=1 debian:12 \
+            sh -c './published/${{ matrix.asset }} --version && \
+                   ./published/${{ matrix.asset }} run examples/hello.funny && \
+                   ./published/${{ matrix.asset }} test tests/lang'

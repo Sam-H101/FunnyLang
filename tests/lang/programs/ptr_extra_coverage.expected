@@ -1,0 +1,10 @@
+pointa -> groupchat["a"]
+1
+{"a": 100, "b": 2}
+pointa -> groupchat["key"]
+caught: TypeVibeMismatch
+caught: TypeVibeMismatch
+caught: TypeVibeMismatch
+pointa -> Box.v
+1
+42

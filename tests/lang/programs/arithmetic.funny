@@ -1,0 +1,44 @@
+// Operands go through variables, not raw literals, so the Python
+// compiler's constant folding can't turn these into plain CONST pushes --
+// this needs to actually exercise ADD/SUB/MUL/DIV/IDIV/MOD/POW/NEG at
+// runtime, in both VMs.
+yo a = 1
+yo b = 2
+yo c = 10
+yo d = 3
+yo e = 4
+yo f = 5
+yo g = 7
+yo h = 2
+yo big1 = 9223372036854775807
+yo one = 1
+yo negfive = -5
+yo three = 3
+yo oneandhalf = 1.5
+yo twoandhalf = 2.5
+yo ten = 10
+yo four = 4
+yo negseven = -7
+yo two = 2
+yo half = 0.5
+yo negone = -1
+yo zero = 0
+
+yap a + b
+yap c - d
+yap e * f
+yap g / h
+yap g \ h
+yap g % h
+yap h ** c
+yap negfive + three
+yap oneandhalf + twoandhalf
+yap one + twoandhalf
+yap ten / four
+yap negseven \ two
+yap negseven % two
+yap two ** half
+yap two ** negone
+yap zero - f
+yap big1 + one
+yap big1 * big1

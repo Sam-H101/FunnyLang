@@ -1,0 +1,7 @@
+squad R { spawn() { me.d = {} }
+ bet get_it(k) { bounce me.d.get(k, "none") }
+ bet set_it(k, v) { me.d.set(k, v) } }
+yo r = R()
+r["x"] = 99
+yap r["x"]
+yap r["y"]

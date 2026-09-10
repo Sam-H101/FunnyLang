@@ -1,0 +1,4 @@
+squad Empty { spawn() { } }
+yo e = Empty()
+yap e.nothing
+yap e.nothing == ghost

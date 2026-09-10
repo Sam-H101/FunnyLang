@@ -1,0 +1,2 @@
+bet f() { bounce 1 }
+yo p = &f()

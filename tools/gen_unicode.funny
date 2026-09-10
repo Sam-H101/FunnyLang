@@ -1,0 +1,315 @@
+// tools/gen_unicode.funny — NATIVE_PLAN.md N11 task 3: generates
+// native/unicode_tbl.c from the Unicode Character Database.
+//
+//     funny run tools/gen_unicode.funny [UnicodeData.txt] [-o native/unicode_tbl.c]
+//
+// With no input path it downloads UnicodeData.txt over HTTPS. That is fine
+// for a generator: it runs on a maintainer's machine, its output is checked
+// in, and a build needs nothing but a C compiler. The plan said "port
+// tools/gen_unicode.py" — there was never such a file to port, and no
+// unicode_tbl.c either. The table was deferred from N4 to N5 and then simply
+// did not happen, which is why `yapper.is_letter("中")` answers `cap` where
+// the reference answers `fax`, and why `yo 変数 = 1` does not lex.
+//
+// WHAT IS GENERATED, AND WHY THAT AND NOT MORE
+//
+// Python's `str.isalpha()` is exactly general category L* (Lu Ll Lt Lm Lo),
+// and `str.isalnum()` is that plus Nd, Nl and No. Those two predicates are
+// what `yapper.is_letter`/`is_alnum` and, through them, the lexer's
+// identifier rule are defined against, so they are the load-bearing output.
+//
+// Simple case mapping (UnicodeData.txt fields 12 and 13) comes along because
+// the file already carries it and SCREAM/whisper are wrong without it on
+// anything accented. What is NOT generated is *full* case mapping —
+// SpecialCasing.txt, where ß uppercases to SS and one code point becomes
+// two. Nothing in the corpus needs it, it cannot be expressed as a
+// code-point-to-code-point map, and a partial implementation that silently
+// differs from the reference is worse than a documented absence.
+//
+// SHAPE OF THE TABLES
+//
+// Sorted range arrays, binary-searched. A flat 0x110000-entry lookup would be
+// 1.1 MB in a binary with a 2 MB ceiling; ranges collapse the same
+// information into a few thousand entries because Unicode assigns categories
+// in blocks. Case mapping uses runs of a constant delta for the same reason —
+// most of Latin, Greek and Cyrillic upper/lowercase in lockstep.
+
+gimme filez
+gimme internet
+gimme yapper
+
+deadass SOURCE_URL = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt"
+deadass DEFAULT_OUT = "native/unicode_tbl.c"
+
+// Categories whose members `str.isalpha()` accepts.
+deadass LETTER_CATEGORIES = ["Lu", "Ll", "Lt", "Lm", "Lo"]
+// The rest of what `str.isalnum()` accepts, on top of the letters.
+deadass NUMERIC_CATEGORIES = ["Nd", "Nl", "No"]
+
+deadass HEX_DIGITS = "0123456789ABCDEF"
+
+// `ghost` for an empty field, not 0. UnicodeData.txt leaves the case-mapping
+// columns blank for the ~39,000 characters that have none, and reading blank
+// as U+0000 would give every one of them a "mapping" to the NUL character --
+// which is not just wrong, it defeats the run compression entirely, since
+// each such record then has its own unique delta.
+flex bet parse_hex(text) {
+    sus (text == "") {
+        bounce ghost
+    }
+    yo n = 0
+    grind ch in text.chars() {
+        yo d = yapper.index_of(HEX_DIGITS, yapper.SCREAM(ch))
+        sus (d < 0) {
+            bounce ghost
+        }
+        n = n * 16 + d
+    }
+    bounce n
+}
+
+flex bet to_hex(n) {
+    sus (n == 0) {
+        bounce "0"
+    }
+    yo out = []
+    yo v = n
+    bruh (v > 0) {
+        out.yeet_in(HEX_DIGITS[v % 16])
+        v = v \ 16
+    }
+    yo s = []
+    grind i from 0 to out.how_thicc() {
+        s.yeet_in(out[out.how_thicc() - 1 - i])
+    }
+    bounce s.join("")
+}
+
+flex bet contains_str(stash, name) {
+    grind s in stash {
+        sus (s == name) {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
+// -- reading the database ---------------------------------------------------
+
+flex bet load_database(path) {
+    sus (path != ghost) {
+        yap "reading " + path
+        bounce filez.slurp(path)
+    }
+    yap "downloading " + SOURCE_URL
+    yo r = internet.go_brrrr(SOURCE_URL)
+    sus (r["status"] != 200) {
+        chuck "UnicodeData.txt fetch failed with status " + to_yap(r["status"])
+    }
+    yap "  " + to_yap(how_thicc(r["body"])) + " bytes"
+    bounce r["body"]
+}
+
+// UnicodeData.txt is one record per line, fields separated by ';'. A block
+// assigned wholesale — every CJK ideograph, every Hangul syllable — is not
+// listed code point by code point; it appears as a pair of records whose
+// names end ", First>" and ", Last>". Missing that pair loses about 100,000
+// letters, which is most of CJK, so it is handled here rather than assumed
+// away.
+flex bet parse_records(text) {
+    yo records = []
+    yo pendingFirst = ghost
+    grind line in yapper.lines(text) {
+        sus (line == "") {
+            nvm
+        }
+        yo f = yapper.split(line, ";")
+        sus (f.how_thicc() < 15) {
+            nvm
+        }
+        yo cp = parse_hex(f[0])
+        sus (cp == ghost) {
+            nvm
+        }
+        yo rec = {
+            "start": cp,
+            "end": cp,
+            "cat": f[2],
+            "upper": parse_hex(f[12]),
+            "lower": parse_hex(f[13]),
+        }
+        sus (yapper.ends_with(f[1], ", First>")) {
+            pendingFirst = rec
+            nvm
+        }
+        sus (yapper.ends_with(f[1], ", Last>")) {
+            sus (pendingFirst == ghost) {
+                chuck "a ', Last>' record with no ', First>' before it at U+" + to_hex(cp)
+            }
+            pendingFirst["end"] = cp
+            records.yeet_in(pendingFirst)
+            pendingFirst = ghost
+            nvm
+        }
+        records.yeet_in(rec)
+    }
+    sus (pendingFirst != ghost) {
+        chuck "a ', First>' record with no ', Last>' after it"
+    }
+    bounce records
+}
+
+// -- building the tables ----------------------------------------------------
+
+// Contiguous code points sharing a predicate collapse into one [start, end].
+// Records arrive in code-point order, so this only ever has to look at the
+// range it is currently extending.
+flex bet ranges_for(records, categories) {
+    yo out = []
+    grind rec in records {
+        sus (!contains_str(categories, rec["cat"])) {
+            nvm
+        }
+        yo last = ghost
+        sus (out.how_thicc() > 0) {
+            last = out[out.how_thicc() - 1]
+        }
+        sus (last != ghost fr last[1] + 1 == rec["start"]) {
+            last[1] = rec["end"]
+        } nah {
+            out.yeet_in([rec["start"], rec["end"]])
+        }
+    }
+    bounce out
+}
+
+// Case mapping as runs of a constant offset: [start, end, delta], meaning
+// every code point in [start, end] maps to itself plus delta. Latin, Greek
+// and Cyrillic march in lockstep for long stretches, so this is a large win
+// over one entry per mapped code point.
+//
+// Only single-code-point records are eligible: a ", First>"/", Last>" block
+// never carries a case mapping, and pretending a whole CJK block shares one
+// delta would be silently wrong.
+flex bet case_runs(records, field) {
+    yo out = []
+    grind rec in records {
+        sus (rec["start"] != rec["end"]) {
+            nvm
+        }
+        yo mapped = rec[field]
+        sus (mapped == ghost) {
+            nvm
+        }
+        yo cp = rec["start"]
+        yo delta = mapped - cp
+        yo last = ghost
+        sus (out.how_thicc() > 0) {
+            last = out[out.how_thicc() - 1]
+        }
+        sus (last != ghost fr last[1] + 1 == cp fr last[2] == delta) {
+            last[1] = cp
+        } nah {
+            out.yeet_in([cp, cp, delta])
+        }
+    }
+    bounce out
+}
+
+// -- emitting C -------------------------------------------------------------
+
+flex bet emit_pair_table(lines, name, ranges) {
+    lines.yeet_in("const UnicodeRange " + name + "[] = {")
+    grind r in ranges {
+        lines.yeet_in("    {0x" + to_hex(r[0]) + ", 0x" + to_hex(r[1]) + "},")
+    }
+    lines.yeet_in("};")
+    lines.yeet_in("const unsigned int " + name + "_count = " + to_yap(ranges.how_thicc()) + "u;")
+    lines.yeet_in("")
+}
+
+flex bet emit_case_table(lines, name, runs) {
+    lines.yeet_in("const UnicodeCaseRun " + name + "[] = {")
+    grind r in runs {
+        lines.yeet_in("    {0x" + to_hex(r[0]) + ", 0x" + to_hex(r[1]) + ", " + to_yap(r[2]) + "},")
+    }
+    lines.yeet_in("};")
+    lines.yeet_in("const unsigned int " + name + "_count = " + to_yap(runs.how_thicc()) + "u;")
+    lines.yeet_in("")
+}
+
+flex bet build_output(letters, numerics, uppers, lowers, sourceNote) {
+    yo lines = []
+    lines.yeet_in("/* native/unicode_tbl.c -- GENERATED. Do not hand-edit.")
+    lines.yeet_in(" *")
+    lines.yeet_in(" * Regenerate with:")
+    lines.yeet_in(" *     funny run tools/gen_unicode.funny")
+    lines.yeet_in(" *")
+    lines.yeet_in(" * " + sourceNote)
+    lines.yeet_in(" *")
+    lines.yeet_in(" * Sorted, non-overlapping ranges, binary-searched by the accessors in")
+    lines.yeet_in(" * unicode_tbl.h. LETTER is general category L* (what Python's")
+    lines.yeet_in(" * str.isalpha() accepts); NUMERIC is Nd/Nl/No, and is_alnum is the union")
+    lines.yeet_in(" * of the two. Case runs are [start, end, delta] over the *simple* case")
+    lines.yeet_in(" * mapping only -- full mapping (SpecialCasing.txt, where one code point")
+    lines.yeet_in(" * can become two) is deliberately not represented. */")
+    lines.yeet_in("#include \"unicode_tbl.h\"")
+    lines.yeet_in("")
+    emit_pair_table(lines, "unicode_letter_ranges", letters)
+    emit_pair_table(lines, "unicode_numeric_ranges", numerics)
+    emit_case_table(lines, "unicode_upper_runs", uppers)
+    emit_case_table(lines, "unicode_lower_runs", lowers)
+    bounce lines.join("\n") + "\n"
+}
+
+// -- entry ------------------------------------------------------------------
+
+flex bet main() {
+    yo args = the_args()
+    yo inPath = ghost
+    yo outPath = DEFAULT_OUT
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        sus (args[i] == "-o") {
+            i += 1
+            sus (i >= args.how_thicc()) {
+                yap "gen_unicode: -o needs a path."
+                bounce 2
+            }
+            outPath = args[i]
+        } nah {
+            inPath = args[i]
+        }
+        i += 1
+    }
+
+    yo text = load_database(inPath)
+    // The URL is the source of record even when a local copy was used, so a
+    // reader of the generated file knows where the data came from rather than
+    // the path of a scratch file on somebody's machine. UnicodeData.txt
+    // carries no version line of its own; the `latest` URL is the only
+    // provenance there is to record.
+    yo sourceNote = "Source: " + SOURCE_URL
+    sus (inPath != ghost) {
+        sourceNote = sourceNote + " (read from a local copy)"
+    }
+
+    yo records = parse_records(text)
+    yap to_yap(records.how_thicc()) + " records"
+
+    yo letters = ranges_for(records, LETTER_CATEGORIES)
+    yo numerics = ranges_for(records, NUMERIC_CATEGORIES)
+    yo uppers = case_runs(records, "upper")
+    yo lowers = case_runs(records, "lower")
+
+    yap "  letter ranges : " + to_yap(letters.how_thicc())
+    yap "  numeric ranges: " + to_yap(numerics.how_thicc())
+    yap "  upper runs    : " + to_yap(uppers.how_thicc())
+    yap "  lower runs    : " + to_yap(lowers.how_thicc())
+
+    filez.yeet_out(outPath, build_output(letters, numerics, uppers, lowers, sourceNote))
+    yap "wrote " + outPath
+    bounce 0
+}
+
+dip(main())

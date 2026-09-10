@@ -1,0 +1,4 @@
+// Imported twice; "loaded" must appear once.
+gimme "lib.funny"
+gimme { X } from "lib.funny"
+yap X

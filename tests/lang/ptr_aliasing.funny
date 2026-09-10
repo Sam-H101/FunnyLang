@@ -1,0 +1,15 @@
+// A closure capturing `x` and an `&x` taken in the same scope must share
+// one box (PLAN.md §3.10) -- both routes see and cause the same writes.
+bet make_pair() {
+    yo n = 0
+    yo inc = lowkey () => { n += 1; bounce n }
+    bounce [inc, &n]
+}
+yo pair = make_pair()
+yo inc = pair[0]
+yo pn = pair[1]
+inc()
+inc()
+yap *pn
+*pn += 10
+yap inc()

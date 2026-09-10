@@ -1,0 +1,5 @@
+yo a = [[1,2]]
+yo b = deep_clone(a)
+b[0][0] = 99
+yap a
+yap b

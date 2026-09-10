@@ -1,0 +1,5 @@
+// `yolk` is not `yo` followed by `lk`: keyword matching is whole-word.
+yo yolk
+// Emoji are identifier characters on purpose (PLAN.md §3.3).
+yo 🚀 = 1
+// A CJK identifier belongs here too -- see tests/lang/lexer/README.md.

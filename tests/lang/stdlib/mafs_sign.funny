@@ -1,0 +1,4 @@
+gimme mafs
+yap mafs.sign(-5)
+yap mafs.sign(5)
+yap mafs.sign(0)

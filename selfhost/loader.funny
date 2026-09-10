@@ -1,0 +1,143 @@
+// selfhost/loader.funny — NATIVE_PLAN.md N8 task 2's other half: reading a
+// `.funnyc` / `.funnypak` back in. The exact inverse of `emitter.funny`,
+// against the same PLAN.md §5.2/§5.3 layout, producing the same in-memory
+// unit shape `compiler.funny`'s `compile_program()` returns -- so
+// `disasm.funny` disassembles a compiled file and a just-compiled program
+// through one code path.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme mafs
+gimme { new_reader, reader_done, read_u8, read_u16, read_u32, read_u64, read_bytes, read_str, read_int_magnitude, assert_that } from "prelude.funny"
+
+flex deadass MAGIC_FUNNYC = [0x46, 0x55, 0x4E, 0x4E, 0x59, 0x00]      // "FUNNY\0"
+flex deadass MAGIC_FUNNYPAK = [0x46, 0x55, 0x4E, 0x4E, 0x59, 0x50, 0x41, 0x4B, 0x00] // "FUNNYPAK\0"
+
+flex deadass TAG_GHOST = 0
+flex deadass TAG_BOOL = 1
+flex deadass TAG_INT = 2
+flex deadass TAG_FLOAT = 3
+flex deadass TAG_STRING = 4
+flex deadass TAG_PROTO_REF = 5
+
+flex bet starts_with_magic(bytes, magic) {
+    sus (bytes.how_thicc() < magic.how_thicc()) {
+        bounce cap
+    }
+    grind i from 0 to magic.how_thicc() {
+        sus (bytes[i] != magic[i]) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+flex bet is_funnypak(bytes) {
+    bounce starts_with_magic(bytes, MAGIC_FUNNYPAK)
+}
+
+flex bet is_funnyc(bytes) {
+    // Checked after is_funnypak: "FUNNY\0" is not a prefix of "FUNNYPAK\0"
+    // (byte 5 is 0x00 vs 0x50), so the two magics can't be confused.
+    bounce starts_with_magic(bytes, MAGIC_FUNNYC)
+}
+
+flex bet read_const_entry(r) {
+    yo tag = read_u8(r)
+    sus (tag == TAG_GHOST) {
+        bounce {"tag": tag, "value": ghost}
+    }
+    sus (tag == TAG_BOOL) {
+        bounce {"tag": tag, "value": read_u8(r) != 0}
+    }
+    sus (tag == TAG_INT) {
+        bounce {"tag": tag, "value": read_int_magnitude(r)}
+    }
+    sus (tag == TAG_FLOAT) {
+        bounce {"tag": tag, "value": mafs.bits_to_float(read_u64(r))}
+    }
+    sus (tag == TAG_STRING) {
+        bounce {"tag": tag, "value": read_str(r)}
+    }
+    sus (tag == TAG_PROTO_REF) {
+        bounce {"tag": tag, "value": read_u32(r)}
+    }
+    chuck "unknown constant tag " + to_yap(tag) + " in bytecode."
+}
+
+flex bet read_proto(r) {
+    yo name = read_str(r)
+    yo arity = read_u8(r)
+    yo default_count = read_u8(r)
+    yo is_variadic = read_u8(r) != 0
+    yo upvalue_count = read_u8(r)
+    yo max_stack = read_u16(r)
+    yo local_count = read_u8(r)
+    yo code_len = read_u32(r)
+    yo code = read_bytes(r, code_len)
+    yo line_count = read_u32(r)
+    yo lines = []
+    grind i from 0 to line_count {
+        yo offset = read_u32(r)
+        yo line = read_u32(r)
+        yo col = read_u32(r)
+        lines.yeet_in({"offset": offset, "line": line, "col": col})
+    }
+    bounce {
+        "name": name, "arity": arity, "default_count": default_count,
+        "is_variadic": is_variadic, "upvalue_count": upvalue_count,
+        "max_stack": max_stack, "local_count": local_count,
+        "code": code, "lines": lines,
+    }
+}
+
+// Returns { "const_pool": {"entries": [...]}, "protos": [...],
+//           "entry_proto": idx, "source_name": str, "version": n } --
+// compile_program()'s shape plus the two header fields only a file has.
+flex bet load_funnyc(bytes) {
+    assert_that(is_funnyc(bytes), "not a .funnyc file (bad magic).")
+    yo r = new_reader(bytes)
+    read_bytes(r, MAGIC_FUNNYC.how_thicc())
+    yo version = read_u16(r)
+    yo flags = read_u16(r)
+    yo source_name = read_str(r)
+    yo const_count = read_u32(r)
+    yo entries = []
+    grind i from 0 to const_count {
+        entries.yeet_in(read_const_entry(r))
+    }
+    yo proto_count = read_u32(r)
+    yo protos = []
+    grind i from 0 to proto_count {
+        protos.yeet_in(read_proto(r))
+    }
+    yo entry_proto = read_u32(r)
+    bounce {
+        "const_pool": {"entries": entries},
+        "protos": protos,
+        "entry_proto": entry_proto,
+        "source_name": source_name,
+        "version": version,
+        "flags": flags,
+    }
+}
+
+// Returns { "names": [...], "units": [...], "entry": name } -- the same
+// shape bundler.funny's build_bundle() produces, so a loaded bundle and a
+// freshly linked one are interchangeable.
+flex bet load_funnypak(bytes) {
+    assert_that(is_funnypak(bytes), "not a .funnypak file (bad magic).")
+    yo r = new_reader(bytes)
+    read_bytes(r, MAGIC_FUNNYPAK.how_thicc())
+    yo version = read_u16(r)
+    yo count = read_u32(r)
+    yo names = []
+    yo units = []
+    grind i from 0 to count {
+        names.yeet_in(read_str(r))
+        yo blob_len = read_u32(r)
+        units.yeet_in(load_funnyc(read_bytes(r, blob_len)))
+    }
+    yo entry = read_str(r)
+    bounce {"names": names, "units": units, "entry": entry, "version": version}
+}

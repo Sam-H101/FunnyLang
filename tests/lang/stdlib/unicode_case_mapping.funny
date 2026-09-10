@@ -1,0 +1,11 @@
+// Case mapping past ASCII, which used to pass non-ASCII bytes through
+// untouched. Greek and Cyrillic are the interesting cases: they map in long
+// contiguous runs, which is exactly what the generated table compresses.
+gimme yapper
+yap yapper.SCREAM("héllo")
+yap yapper.whisper("HÉLLO")
+yap yapper.SCREAM("σίγμα")
+yap yapper.whisper("ПРИВЕТ")
+yap yapper.title_case("héllo wörld")
+// No case of its own: it comes back exactly as it went in.
+yap yapper.SCREAM("中文")

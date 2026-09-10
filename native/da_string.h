@@ -1,0 +1,90 @@
+/* native/da_string.h -- `yapstring`: immutable, UTF-8 (NATIVE_PLAN.md N4
+ * task 1). Built incrementally -- N2 first needed just *something* to hold
+ * a string constant (`yap "hello"`) and a global's name (a plain byte
+ * buffer, no codepoint awareness), and every indexing/slicing/iteration
+ * opcode that touches a yapstring was byte-indexed until this task landed.
+ *
+ * `codepointCount`/`isAscii` are computed once, at construction (an O(n)
+ * UTF-8 decode pass, amortized over however many times the string is
+ * later indexed/sliced/measured) -- `isAscii` is true exactly when every
+ * byte is already its own codepoint, which is when `codepointCount ==
+ * byteLen`; a caller doing bulk conversions doesn't need to check both.
+ * `is_ascii` gives O(1) codepoint indexing (byte offset == codepoint
+ * index); a non-ASCII string still needs an O(n) walk to translate a
+ * codepoint index into a byte offset (utf8_byte_offset_of) -- exactly the
+ * tradeoff NATIVE_PLAN.md's own task description asks for.
+ *
+ * AGENT CHOICE: no interning (NATIVE_PLAN.md §9) -- every string compares
+ * by content already (string_equal/vm_value_equal), never by identity, so
+ * interning would only be a memory/allocation optimization here, not a
+ * correctness requirement; deferred until a milestone that actually needs
+ * the memory savings.
+ */
+/* NAMED `da_string`, NOT `string`, ON PURPOSE. A `native/string.h` shares
+ * its name with the C standard `<string.h>`, so the moment `native/` lands
+ * on the include path -- which happened once, when a test fixture added
+ * `-I native` so a generated file could find its header -- every
+ * `#include <string.h>` in the runtime resolves to *this* file instead, and
+ * the build fails across half the tree in a way that reads like nonsense.
+ * `deadass` is already the language's own word; `da_string` is short, cannot
+ * collide, and the trap is gone rather than documented. Please leave it. */
+#ifndef FUNNY_DA_STRING_H
+#define FUNNY_DA_STRING_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "object.h"
+
+typedef struct {
+    Obj obj;
+    char *chars;   /* NUL-terminated, owned, UTF-8 bytes */
+    uint32_t byteLen; /* excludes the NUL terminator */
+    uint32_t codepointCount;
+    bool isAscii;
+} ObjString;
+
+struct GC;
+
+/* Copies `len` bytes from `chars` into a new, GC-tracked ObjString (always
+   copies -- no ownership-transfer variant, since nothing needs one). */
+ObjString *string_new(struct GC *gc, const char *chars, uint32_t len);
+
+/* Like string_new, but for bytes that aren't guaranteed to already be
+   well-formed UTF-8 (an HTTP response body, unlike a source file) --
+   any invalid byte is replaced with U+FFFD, matching Python's own
+   bytes.decode("utf-8", errors="replace"). Everything else in this file
+   trusts well-formed input by construction (see the file header); this
+   is the one exception, for internet.c's go_brrrr(). */
+ObjString *string_new_utf8_lossy(struct GC *gc, const char *bytes, uint32_t len);
+
+bool string_equal(const ObjString *a, const ObjString *b);
+
+/* -- UTF-8 primitives, shared by string.c's own construction and vm.c's
+   GET_INDEX/GET_SLICE/ITER_NEW/json-repr handling for yapstring. Every
+   one of these trusts its input is well-formed UTF-8 (guaranteed by
+   construction: source files are UTF-8, and every operation that builds
+   a new ObjString -- concatenation, slicing, indexing -- only ever
+   combines or cuts at codepoint boundaries, so malformed UTF-8 can never
+   actually arise) but still never reads past `byteLen` even if it
+   somehow did, so a stray/truncated leading byte degrades to a 1-byte
+   "codepoint" rather than reading out of bounds. */
+
+/* Byte length (1-4) of the UTF-8 sequence starting at chars[offset],
+   clamped to byteLen. */
+uint32_t utf8_seq_len(const char *chars, uint32_t byteLen, uint32_t offset);
+/* Decodes the `seqLen`-byte UTF-8 sequence at chars[offset] into its
+   scalar codepoint value. */
+uint32_t utf8_decode_cp(const char *chars, uint32_t seqLen, uint32_t offset);
+uint32_t utf8_codepoint_count(const char *chars, uint32_t byteLen);
+/* Byte offset of the `codepointIdx`-th codepoint (0-based); byteLen if
+   codepointIdx == the string's own codepoint count (one-past-the-end, for
+   slice bounds). Caller ensures 0 <= codepointIdx <= codepoint count. */
+uint32_t utf8_byte_offset_of(const char *chars, uint32_t byteLen, uint32_t codepointIdx);
+/* Encodes one scalar codepoint into `out` (caller-owned, >= 4 bytes) as
+   UTF-8; returns the byte length written (1-4). Caller's responsibility
+   to ensure `cp` is a valid Unicode scalar value (chr_of's own job). */
+uint32_t utf8_encode_cp(uint32_t cp, char *out);
+
+#endif /* FUNNY_DA_STRING_H */

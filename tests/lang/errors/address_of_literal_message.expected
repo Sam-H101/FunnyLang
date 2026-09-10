@@ -1,0 +1,10 @@
+!DIAG
+💀💀💀 FUNNYLANG MOMENT 💀💀💀
+
+  ParserHadAStroke  ──  tests/lang/errors/address_of_literal_message.funny:1:9
+
+     1 │ yo p = &42
+       │         ^ this right here
+     2 │ 
+
+  `&` needs a place: a variable, arr[i], or obj.field. that's not one.

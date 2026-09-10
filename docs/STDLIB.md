@@ -20,6 +20,8 @@ No `gimme` needed — these are available everywhere.
 | `sheesh(x)` | Prints `x`'s `repr`-style form (quoted strings, etc.) with a newline; returns `x` unchanged, so it composes inline. |
 | `no_cap(cond, msg?)` | Assert: raises `SkillIssue` with `msg` (default `"assertion failed. couldn't be you."`) if `cond` is falsy. |
 | `ask(prompt?)` | Prints `prompt` (no newline) if given, reads and returns one line of stdin. |
+| `yell(...)` | Like `yap`, but to stderr: values space-separated, newline-terminated. The only way to write to stderr. |
+| `oops(flavor, message?, line?, col?)` | Builds an `error` value with a chosen flavor, ready to `chuck`. `flavor` must be one of `PLAN.md` §4.1's error names — the taxonomy is closed. Without a `line`, the `chuck` site is used. |
 | `dip(code?)` | Exits the process immediately with `code` (default 0). |
 | `the_args()` | The program's own extra CLI arguments (after `--`), as a `stash` of `yapstring`s. |
 | `combo(...fns)` | Composes functions left to right: `combo(f, g, h)` is `lowkey (x) => h(g(f(x)))`. |
@@ -28,6 +30,19 @@ No `gimme` needed — these are available everywhere.
 | `zip_em(a, b)` | Pairs up two `stash`es element-wise into a `stash` of 2-element `stash`es. |
 | `enumerate_em(a)` | A `stash` of `[index, value]` pairs for `a`. |
 | `deep_clone(x)` | A recursive copy of a `stash`/`groupchat` (nested ones included); other values pass through unchanged. |
+
+## `pointa` — pointers
+
+Not a `gimme`-able module — a `pointa` (produced by unary `&`, see
+[LANGUAGE.md](LANGUAGE.md#pointers-pointa)) is a runtime type with only these instance methods, no
+free-function form.
+
+| Method | Description |
+|---|---|
+| `p.deref()` | The method form of `*p` — reads through the pointer. |
+| `p.set(v)` | The method form of `*p = v` — writes through the pointer, returns `v`. |
+| `p.valid()` | `boolski`: would a read through `p` succeed right now? |
+| `p.where()` | The stash index / groupchat key / property name `p` addresses, or the variable name for a local, global, or upvalue pointer. |
 
 ## `mafs` — math
 
@@ -53,6 +68,7 @@ No `gimme` needed — these are available everywhere.
 | `mafs.factorial(n)` | `n!`. |
 | `mafs.is_float(x)` | Whether `x` is specifically a float value (as opposed to an int with the same magnitude — `what_is_it` calls both `"numba"`). |
 | `mafs.float_to_bits(x)` | The IEEE-754 binary64 bit pattern of `x`, as an unsigned integer. |
+| `mafs.bits_to_float(bits)` | The inverse: the float an unsigned 64-bit IEEE-754 pattern encodes. |
 | `mafs.skibidi_pi`, `mafs.e`, `mafs.phi`, `mafs.infinity`, `mafs.nan` | Constants: π, *e*, the golden ratio, `+inf`, `NaN`. |
 
 Also exposed as `numba` instance methods: `to_yap()`, `abs()`, `floor()`, `ceil()`, `round(digits?)`,
@@ -160,15 +176,19 @@ Free functions below; most are also `groupchat` instance methods.
 
 | Function | Description |
 |---|---|
-| `filez.slurp(path)` | Reads a whole text file as a `yapstring`. |
-| `filez.yeet_out(path, text)` | Writes `text` to `path`, overwriting it; returns the byte count. |
+| `filez.slurp(path)` | Reads a whole text file as a `yapstring`. Text mode: every `\r\n` and lone `\r` arrives as `\n`, on every platform. Use `read_bytes` for the bytes as they are. |
+| `filez.yeet_out(path, text)` | Writes `text` to `path`, overwriting it; returns the byte count. Writes exactly the bytes given — a `\n` stays a `\n` on every platform. |
 | `filez.append_to(path, text)` | Appends `text` to `path`; returns the byte count written. |
 | `filez.exists(path)` | Whether `path` exists. |
+| `filez.is_dir(path)` / `filez.is_file(path)` | Whether `path` is a directory / a regular file. Both are `cap` for a path that doesn't exist. |
 | `filez.obliterate(path)` | Deletes a file, or an empty directory. |
 | `filez.list_dir(path)` | Directory entries as a sorted `stash` of names. |
 | `filez.mkdir(path)` | Creates a directory (and any missing parents). |
 | `filez.read_bytes(path)` | Reads a whole file as a `stash` of ints `0`–`255`. |
 | `filez.write_bytes(path, bytes)` | Writes a `stash` of ints `0`–`255` to `path`; returns the byte count. |
+| `filez.append_bytes(path, bytes)` | Appends a `stash` of ints `0`–`255` to `path`; returns the byte count. |
+| `filez.make_executable(path)` | Marks `path` runnable (the executable bits on POSIX; a no-op on Windows). |
+| `filez.temp_file(prefix?)` | Creates an empty file in the OS temp directory and returns its path. Yours to `obliterate`. |
 | `filez.abs_path(path)` | The absolute, resolved form of `path`. |
 | `filez.join_path(...parts)` | Joins path components with the OS separator. |
 | `filez.dir_of(path)` / `filez.base_of(path)` / `filez.ext_of(path)` | The parent directory / filename / extension of `path`. |
@@ -194,6 +214,9 @@ platform info.
 | `computer.flex()` | Prints a summary of the OS, CPU count, RAM, and Python version. |
 | `computer.ram()` | Total system RAM, in bytes. |
 | `computer.yeet_to_void(x?)` | Accepts anything, does nothing, returns `ghost` — the `/dev/null` of functions. |
+| `computer.env(name, default?)` | An environment variable's value, or `default` (`ghost` if not given) when it is unset. |
+| `computer.exe_path()` | The path of the running executable — how `funny` finds its own sidecars. `ghost` if the OS won't say. |
+| `computer.readline(prompt?)` | Prints `prompt` (no newline) if given, then reads one line of stdin. Returns `ghost` at end of input — unlike `ask()`, which returns `""` for both that and an empty line. |
 | `computer.beep()` | Rings the terminal bell (`\a`). |
 | `computer.clear()` | Clears the terminal screen. |
 | `computer.uptime()` | Seconds since the FunnyLang process itself started. |
@@ -221,6 +244,9 @@ network at all.
 | `sus.fields_of(x)` | A squad instance's own fields as a `groupchat` (empty for anything else). |
 | `sus.is_a(x, type_name)` | Whether `what_is_it(x) == type_name`. |
 | `sus.stack_trace()` | The current call stack as a `stash` of `yapstring`s, from wherever it's called. |
+| `sus.run_bytecode(bytes, args?)` | Runs a compiled program in a fresh, isolated VM with stdout captured. Returns `{out, flavor, message, code}`. |
+| `sus.run_program(bytes, args?, label?)` | Runs a compiled program the way the top level does: output straight through, a full diagnostic on error. Returns `{code, ms}`. |
+| `sus.new_session()` / `sus.run_in(id, bytes, args?)` / `sus.close_session(id)` | A VM kept alive between runs — a REPL. `run_in` returns `{repr, flavor, message, code}`; `repr` is the last expression's rendering. |
 | `sus.dump(x)` | Prints `x`'s `repr`-style form and returns it unchanged (like `sheesh`, under a different name for reflection-flavored code). |
 
 Note: `sus` is also the `if` keyword. As a bare `gimme sus`, it's unambiguously the stdlib module

@@ -1,0 +1,4 @@
+yo arr = [1, 2, 3]
+yo p = &arr[2]
+arr.yoink()
+yap *p

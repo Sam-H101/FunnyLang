@@ -1,0 +1,70 @@
+// tests/test_serializer.py, through the real command line: compile a source
+// to `.funnyc`, disassemble both the source and the artifact, and require the
+// two to agree. That is the round-trip the pytest made against Python data
+// structures, except it goes through the shipped serializer and loader.
+//
+// The program below is chosen for its *constant pool*, not its behaviour: it
+// carries every tag PLAN.md §5.2 defines -- ghost, both booleans, small and
+// negative and arbitrarily large integers, floats including the infinities,
+// an empty string, a non-ASCII string, and a proto reference.
+gimme sus
+gimme filez
+gimme yapper
+
+flex bet cli(args) {
+    bounce sus.run_bytecode(sus.toolchain(), args)
+}
+
+deadass SRC = "yo g = ghost\n" +
+    "yo t = fax\n" +
+    "yo f = cap\n" +
+    "yo zero = 0\n" +
+    "yo neg = -1\n" +
+    "yo big = 100000000000000000000000000000000000000000000000000\n" +
+    "yo negbig = -100000000000000000000000000000000000000000000000000\n" +
+    "yo fzero = 0.0\n" +
+    "yo fneg = -3.5\n" +
+    "yo inf = 1.0e400\n" +
+    "yo ninf = -1.0e400\n" +
+    "yo empty = \"\"\n" +
+    "yo pizza = \"hello 🍕\"\n" +
+    "bet a_proto() { bounce 1 }\n" +
+    "yap a_proto()\n"
+
+yo base = filez.temp_file()
+yo src = base + ".funny"
+yo out = base + ".funnyc"
+filez.yeet_out(src, SRC)
+
+yo built = cli(["build", src, "-o", out])
+yap "build -> exit " + to_yap(built["code"])
+
+// The header line names the file, which differs between the two, so the
+// comparison starts after it. Everything below is opcodes and constants.
+flex bet body(text) {
+    yo lines = yapper.lines(text)
+    yo out = []
+    grind i from 1 to lines.how_thicc() {
+        out.yeet_in(lines[i])
+    }
+    bounce out.join("\n")
+}
+
+yo fromSource = cli(["xray", src])
+yo fromBytecode = cli(["xray", out])
+yap "disassembly survives the round trip: " + to_yap(body(fromSource["out"]) == body(fromBytecode["out"]))
+
+// Every constant, as the disassembler renders it out of the reloaded pool.
+grind line in yapper.lines(fromBytecode["out"]) {
+    sus (yapper.contains(line, "CONST")) {
+        yap yapper.trim(yapper.slice(line, yapper.index_of(line, ";")))
+    }
+}
+
+// And it still runs.
+yo ran = cli(["run", out])
+yap "ran -> exit " + to_yap(ran["code"]) + ", output " + yapper.trim(ran["out"])
+
+filez.obliterate(src)
+filez.obliterate(out)
+filez.obliterate(base)

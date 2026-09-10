@@ -1,0 +1,23 @@
+// Every binary operator's opcode, from tests/test_compiler.py's
+// `test_binary_op_maps_to_opcode` table plus the backslash floor-division
+// case. Operands are locals so constant folding cannot collapse them away.
+yo a = 1
+yo b = 2
+yap a + b
+yap a - b
+yap a * b
+yap a / b
+yap a % b
+yap a ** b
+yap a == b
+yap a != b
+yap a < b
+yap a <= b
+yap a > b
+yap a >= b
+yap a & b
+yap a | b
+yap a ^ b
+yap a << b
+yap a >> b
+yap a \ b

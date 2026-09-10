@@ -1,0 +1,194 @@
+// sus.run_bytecode: running compiled FunnyLang from FunnyLang. The
+// primitive `funny test` and `funny bootstrap --verify` are built on -- a
+// self-hosted toolchain has to be able to observe another program's stdout
+// and find out which error flavor, if any, escaped it.
+//
+// The bytecode here is assembled by hand rather than compiled, for two
+// reasons: a program under tests/native/programs/ is compiled as a single
+// unit, so it cannot import selfhost/compiler.funny; and hand-assembly
+// tests the primitive against PLAN.md §5.2's *frozen* format directly,
+// independent of whatever the compiler happens to emit today.
+
+gimme sus
+gimme yapper
+
+// -- §5.2 byte writers (the same shape as selfhost/prelude.funny's) -------
+
+bet w8(buf, v) {
+    buf.yeet_in(v & 0xFF)
+}
+
+bet w16(buf, v) {
+    w8(buf, v >> 8)
+    w8(buf, v)
+}
+
+bet w32(buf, v) {
+    w16(buf, v >> 16)
+    w16(buf, v)
+}
+
+// Every string in these programs is ASCII, so one byte per character.
+bet wstr(buf, s) {
+    w32(buf, s.how_thicc())
+    grind ch in s.chars() {
+        w8(buf, ch.code_at(0))
+    }
+}
+
+// consts: a stash of ["str", value] or ["int", value].
+// code: a stash of raw opcode bytes.
+bet assemble(consts, code) {
+    yo buf = []
+    grind b in [0x46, 0x55, 0x4E, 0x4E, 0x59, 0x00] { // "FUNNY\0"
+        buf.yeet_in(b)
+    }
+    w16(buf, 2)              // bytecode version (§5.1, frozen)
+    w16(buf, 1)              // flags: has_debug_info
+    wstr(buf, "<assembled>") // source name
+    w32(buf, consts.how_thicc())
+    grind c in consts {
+        sus (c[0] == "str") {
+            w8(buf, 4)       // TAG_STRING
+            wstr(buf, c[1])
+        } nah {
+            w8(buf, 2)       // TAG_INT: sign, byte length, big-endian magnitude
+            w8(buf, c[1] < 0 ? 1 : 0)
+            yo mag = c[1] < 0 ? -c[1] : c[1]
+            sus (mag == 0) {
+                w32(buf, 0)
+            } nah {
+                w32(buf, 1)
+                w8(buf, mag)
+            }
+        }
+    }
+    w32(buf, 1)              // one proto: the top-level script
+    wstr(buf, "<script>")
+    w8(buf, 0)               // arity
+    w8(buf, 0)               // default_count
+    w8(buf, 0)               // is_variadic
+    w8(buf, 0)               // upvalue_count
+    w16(buf, 16)             // max_stack -- generous; nothing here nests deep
+    w8(buf, 0)               // local_count
+    w32(buf, code.how_thicc())
+    buf.extend(code)
+    w32(buf, 0)              // no line entries: nothing renders a diagnostic
+    w32(buf, 0)              // entry_proto
+    bounce buf
+}
+
+// Opcode numbers, PLAN.md §5.1.
+deadass CONST = 1
+deadass GHOST_OP = 2
+deadass POP = 5
+deadass GET_GLOBAL = 10
+deadass DEF_GLOBAL = 12
+deadass GET_PROP = 16
+deadass CALL = 51
+deadass RETURN = 55
+deadass YAP_OP = 59
+deadass CHUCK_OP = 60
+deadass IMPORT = 66
+
+bet run(consts, code) {
+    bounce sus.run_bytecode(assemble(consts, code), [])
+}
+
+bet show(r) {
+    yap sheesh(r["out"]), r["flavor"], r["code"]
+}
+
+// -- a program that prints ------------------------------------------------
+// yap "hi"
+show(run([["str", "hi"]], [CONST, 0, 0, YAP_OP, 1, 1, GHOST_OP, RETURN]))
+
+// mumble "no"  mumble "newline"   (YAP with newline=0)
+show(run([["str", "no"], ["str", "newline"]],
+         [CONST, 0, 0, YAP_OP, 1, 0, CONST, 0, 1, YAP_OP, 1, 0, GHOST_OP, RETURN]))
+
+// A program that prints nothing at all.
+show(run([], [GHOST_OP, RETURN]))
+
+// -- an uncaught error gives back its flavor, not a diagnostic ------------
+// chuck "nope"
+show(run([["str", "nope"]], [CONST, 0, 0, CHUCK_OP]))
+
+// Output written *before* the error still comes back.
+// yap "before"  chuck "boom"
+show(run([["str", "before"], ["str", "boom"]],
+         [CONST, 0, 0, YAP_OP, 1, 1, CONST, 0, 1, CHUCK_OP]))
+
+// The message comes back too.
+yo r = run([["str", "with a message"]], [CONST, 0, 0, CHUCK_OP])
+yap r["message"]
+
+// -- dip(n) is a clean exit, not a failure --------------------------------
+// yap "bye"  dip(3)
+show(run([["str", "bye"], ["str", "dip"], ["int", 3]],
+         [CONST, 0, 0, YAP_OP, 1, 1, GET_GLOBAL, 0, 1, CONST, 0, 2, CALL, 1, POP, GHOST_OP, RETURN]))
+
+// dip(0) is still a clean exit.
+show(run([["str", "dip"], ["int", 0]],
+         [GET_GLOBAL, 0, 0, CONST, 0, 1, CALL, 1, POP, GHOST_OP, RETURN]))
+
+// -- computer.explode() maps to 69, the same as at top level --------------
+// gimme computer  computer.explode()
+show(run([["str", "computer"], ["str", "explode"]],
+         [IMPORT, 0, 0, 2, GET_PROP, 0, 1, CALL, 0, POP, GHOST_OP, RETURN]))
+
+// -- the child gets its own the_args() ------------------------------------
+yo argv_code = [GET_GLOBAL, 0, 0, CALL, 0, YAP_OP, 1, 1, GHOST_OP, RETURN]
+yo with_args = sus.run_bytecode(assemble([["str", "the_args"]], argv_code), ["one", "two"])
+yap sheesh(with_args["out"])
+yo no_args = sus.run_bytecode(assemble([["str", "the_args"]], argv_code), [])
+yap sheesh(no_args["out"])
+
+// -- isolation: the child's globals are its own ---------------------------
+yo shared = "caller's value"
+// yo shared = "child's value"  yap shared
+show(run([["str", "shared"], ["str", "child's value"]],
+         [CONST, 0, 1, DEF_GLOBAL, 0, 0, GET_GLOBAL, 0, 0, YAP_OP, 1, 1, GHOST_OP, RETURN]))
+yap shared
+
+// A child that errors leaves the caller entirely unharmed.
+show(run([["str", "still fine?"]], [CONST, 0, 0, CHUCK_OP]))
+yap shared
+
+// -- a malformed blob is reported, not a crash ----------------------------
+yo bad1 = sus.run_bytecode([1, 2, 3], [])
+yap bad1["flavor"], bad1["code"]
+yo bad2 = sus.run_bytecode([], [])
+yap bad2["flavor"], bad2["code"]
+
+// Right magic, truncated body.
+yo truncated = assemble([["str", "hi"]], [CONST, 0, 0, YAP_OP, 1, 1, GHOST_OP, RETURN]).slice(0, 12)
+yo bad3 = sus.run_bytecode(truncated, [])
+yap bad3["flavor"], bad3["code"]
+
+// `yo bad = ...` rather than a bare call: `sus` opens an if-statement, so a
+// statement that *starts* with `sus.` is a parse error in both
+// implementations -- a pre-existing collision between the keyword and the
+// module name, not something this milestone introduced.
+sketchy {
+    yo bad = sus.run_bytecode("not a stash", [])
+} my_bad (e) {
+    yap "caught: " + e.flavor
+}
+
+sketchy {
+    yo bad = sus.run_bytecode([1, "two", 3], [])
+} my_bad (e) {
+    yap "caught: " + e.flavor
+}
+
+sketchy {
+    yo bad = sus.run_bytecode([1, 999, 3], [])
+} my_bad (e) {
+    yap "caught: " + e.flavor
+}
+
+// -- the caller's own stdout is untouched throughout ----------------------
+// If capture were leaking, "hi" and "bye" would have appeared inline above
+// instead of only inside the sheesh()'d strings.
+yap "caller still owns stdout"

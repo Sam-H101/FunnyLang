@@ -1,0 +1,204 @@
+// selfhost/bundler.funny — PLAN.md §5.3's linked bundle, in FunnyLang
+// (NATIVE_PLAN.md N8 task 1). Replaces funnylang/modules.py's build_bundle
+// and funnylang/serializer.py's dump_funnypak, which were the last pieces of
+// Python needed to *build* anything — including this compiler's own
+// bootstrap bundle.
+//
+// A library, deliberately: nothing here runs on import, so `linker.funny`
+// (the CLI) and, later, `cli.funny` can both use it without one of them
+// triggering the other's argument handling.
+
+gimme filez
+gimme yapper
+gimme { new_buf, write_u16, write_u32, write_str } from "prelude.funny"
+gimme { parse_source } from "parser.funny"
+gimme { resolve_program, compile_program } from "compiler.funny"
+gimme { emit_funnyc, BYTECODE_VERSION } from "emitter.funny"
+
+// How far up the tree to look for a `funny_modules/` directory before
+// giving up. A guard against a filesystem where dir_of never reaches a
+// fixed point, not a real depth limit anyone will hit.
+deadass MAX_WALK_UP = 64
+
+// §3.8's resolution order for a quoted `gimme`:
+//   1. relative to the importing file's own directory
+//   2. ./funny_modules/, walking up from there
+// FUNNYPATH (step 2 of three in the Python resolver) is missing on purpose:
+// reading an environment variable isn't something the FunnyLang stdlib can
+// do, and inventing a stdlib function for it here would put the two
+// implementations out of step over something no bundled program has ever
+// used. Noted in NATIVE_PLAN.md §9 rather than quietly skipped.
+flex bet resolve_import(quoted, importing_abs) {
+    yo dir = filez.dir_of(importing_abs)
+    yo direct = filez.abs_path(filez.join_path(dir, quoted))
+    sus (filez.exists(direct)) {
+        bounce direct
+    }
+    yo d = dir
+    grind level from 0 to MAX_WALK_UP {
+        yo candidate = filez.abs_path(filez.join_path(filez.join_path(d, "funny_modules"), quoted))
+        sus (filez.exists(candidate)) {
+            bounce candidate
+        }
+        yo parent = filez.dir_of(d)
+        sus (parent == d) {
+            bail
+        }
+        d = parent
+    }
+    // `oops`, not a chucked string: a chucked string is always a SkillIssue,
+    // and this is an ImportSkillIssue in the reference -- which is what an
+    // `!ERROR ImportSkillIssue` golden reads. Message and roast copied from
+    // funnylang/modules.py's `resolve`, which does not mention the importing
+    // file; the position does that job.
+    chuck oops("ImportSkillIssue", "can't find '" + quoted + "'.", ghost, ghost,
+               {"roast": "can't find `" + quoted + "`. did you make it up?"})
+}
+
+// A module's key in the bundle: its path relative to the *entry* file's
+// directory. That is what a quoted `gimme` inside the bundle resolves
+// against at run time, with no filesystem involved by then.
+//
+// Both sides are separator-normalised first, and the key comes out with '/'.
+// Not cosmetic: on Windows `filez.abs_path` returns forward slashes (see
+// platform_abs_path) while `filez.dir_of` and `filez.join_path` return
+// backslashes, to match what pathlib renders. So the prefix test never
+// matched there and *every* module was keyed by its absolute path --
+// `F:/my_program_lang/tests/lang/errors/x.funny` instead of `x.funny`. Three
+// things follow from that, all bad: a bundle built on Windows is not
+// byte-identical to the same bundle built anywhere else, a `yeet`ed
+// executable leaks the builder's directory layout into every diagnostic, and
+// the keys stop matching `funnylang/modules.py`, which has always used
+// `Path.relative_to(...).as_posix()`. '/' is what the reference produces, so
+// '/' is what this produces.
+flex bet normalize_seps(p) {
+    bounce yapper.replace(p, "\\", "/")
+}
+
+flex bet canonical_name(abs_path, entry_dir) {
+    yo path = normalize_seps(abs_path)
+    yo prefix = normalize_seps(entry_dir) + "/"
+    sus (path.starts_with(prefix)) {
+        bounce path.slice(prefix.how_thicc(), path.how_thicc())
+    }
+    bounce path
+}
+
+// Every quoted (non-stdlib) `gimme` at a program's top level, including the
+// ones wrapped in `flex`.
+flex bet collect_imports(program) {
+    yo found = []
+    grind stmt in program["statements"] {
+        yo target = stmt
+        sus (stmt["node"] == "Export") {
+            target = stmt["decl"]
+        }
+        sus (target["node"] == "Import" fr target["is_stdlib"] == cap) {
+            found.yeet_in(target["source"])
+        }
+    }
+    bounce found
+}
+
+// A guard against a cyclic-but-undeduplicated walk, not a real module-count
+// limit: every module is compiled once, so the stack can only grow as far as
+// the import graph is wide plus deep.
+deadass MAX_BUNDLE_STEPS = 1000000
+
+// Walks the import graph from `entry_path`, compiling each module exactly
+// once. Returns { "names": [...], "units": [...], "entry": name } with names
+// and units index-aligned, in the order they were first reached.
+flex bet build_bundle(entry_path) {
+    yo entry_abs = filez.abs_path(entry_path)
+    yo entry_dir = filez.dir_of(entry_abs)
+    yo entry_canonical = canonical_name(entry_abs, entry_dir)
+
+    yo names = []
+    yo units = []
+
+    // Pre-order depth-first, matching funnylang/modules.py's `visit()`
+    // recursion exactly -- the bundle's module order is part of its bytes,
+    // so a differently-ordered walk would produce a different (if equally
+    // correct) file, and byte-identity against the Python bundler is what
+    // proves the two agree. Done with an explicit stack rather than
+    // recursion so a deep import chain can't hit the VM's frame limit.
+    //
+    // Each job carries the *unresolved* import plus the file that asked for
+    // it, and resolution happens when the job is popped. That keeps the
+    // order in which paths get resolved -- and so the order in which a bad
+    // import is reported -- identical to Python's too.
+    yo pending = [{"abs": entry_abs, "canonical": entry_canonical}]
+
+    grind guard from 0 to MAX_BUNDLE_STEPS {
+        sus (pending.how_thicc() == 0) {
+            bail
+        }
+        yo job = pending.yoink_at(pending.how_thicc() - 1)
+        yo abs_path = job["abs"]
+        yo canonical = job["canonical"]
+        sus (abs_path == ghost) {
+            abs_path = resolve_import(job["quoted"], job["from"])
+            canonical = canonical_name(abs_path, entry_dir)
+        }
+        sus (names.contains(canonical)) {
+            nvm
+        }
+        yo src = filez.slurp(abs_path)
+        // Two different names for two different jobs. The compiled *unit* is
+        // keyed by `canonical`, because that is what the loader resolves a
+        // quoted `gimme` against once there is no filesystem left. A front-end
+        // *error* gets a real path instead, because the diagnostic renderer
+        // opens it to show the caret line -- and a canonical key like
+        // `err.funny` does not resolve from wherever `funny` was run. The
+        // entry keeps the path the user typed, so its diagnostic reads back
+        // the way they wrote it.
+        // Separator-normalised, like the canonical keys just above and for the
+        // same reason: a diagnostic is compared byte for byte by the golden
+        // corpus, and `tests\lang\x.funny` on Windows against
+        // `tests/lang/x.funny` everywhere else would make every `!DIAG` golden
+        // platform-specific. It also means a diagnostic and a disassembly name
+        // a module the same way on every platform. Windows accepts '/' in
+        // every path API the renderer uses to find the source, so nothing is
+        // lost by saying it this way.
+        yo error_file = normalize_seps(abs_path)
+        sus (canonical == entry_canonical) {
+            error_file = normalize_seps(entry_path)
+        }
+        yo program = parse_source(src, error_file)
+        resolve_program(program, ghost, ghost, error_file)
+        yo unit = compile_program(program, fax)
+        names.yeet_in(canonical)
+        units.yeet_in(unit)
+        // Reversed, so that popping takes them in source order.
+        yo kids = collect_imports(program)
+        grind k from 0 to kids.how_thicc() {
+            yo quoted = kids[kids.how_thicc() - 1 - k]
+            pending.yeet_in({"abs": ghost, "canonical": ghost, "quoted": quoted, "from": abs_path})
+        }
+    }
+    bounce {"names": names, "units": units, "entry": entry_canonical}
+}
+
+// PLAN.md §5.3: "FUNNYPAK\0", u16 version, u32 module count, then per module
+// a length-prefixed name and a length-prefixed .funnyc blob, then the entry
+// name. Byte for byte what serializer.py's dump_funnypak writes.
+flex bet emit_funnypak(bundle) {
+    yo buf = new_buf()
+    grind b in [0x46, 0x55, 0x4E, 0x4E, 0x59, 0x50, 0x41, 0x4B, 0x00] { // "FUNNYPAK\x00"
+        buf.yeet_in(b)
+    }
+    write_u16(buf, BYTECODE_VERSION)
+    yo names = bundle["names"]
+    yo units = bundle["units"]
+    write_u32(buf, names.how_thicc())
+    grind i from 0 to names.how_thicc() {
+        write_str(buf, names[i])
+        // Each entry is a complete .funnyc, so the same emitter writes it --
+        // the bundle format adds framing, not a dialect.
+        yo blob = emit_funnyc(units[i], names[i])
+        write_u32(buf, blob.how_thicc())
+        buf.extend(blob)
+    }
+    write_str(buf, bundle["entry"])
+    bounce buf
+}

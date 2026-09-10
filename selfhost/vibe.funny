@@ -1,0 +1,228 @@
+// selfhost/vibe.funny — NATIVE_PLAN.md N8 task 5: `funny vibe`, the REPL,
+// in FunnyLang. A port of funnylang/cli.py's `cmd_vibe`.
+//
+// What makes a REPL different from every other subcommand is *persistence*:
+// `yo x = 1` on one line has to still be there on the next. That needs three
+// things the language did not have before this milestone — a VM that stays
+// alive between inputs (`sus.new_session`/`sus.run_in`), a resolver that can
+// be handed the names the previous input defined (`resolve_program`'s
+// optional `known_globals`/`const_globals`), and a compiler that leaves a
+// bare trailing expression's value for RETURN instead of popping it
+// (`compile_program`'s `repl_capture_last`).
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme yapper
+gimme sus
+gimme clock
+gimme computer
+gimme { tokenize } from "lexer.funny"
+gimme { parse_program } from "parser.funny"
+gimme { resolve_program, compile_program, BUILTIN_GLOBAL_NAMES, STDLIB_MODULE_NAMES } from "compiler.funny"
+gimme { emit_funnyc } from "emitter.funny"
+gimme { disassemble } from "disasm.funny"
+
+flex deadass VERSION = "2.0.0"
+
+flex deadass BANNER_LINES = [
+    "",
+    "   ███████╗██╗   ██╗███╗   ██╗███╗   ██╗██╗   ██╗",
+    "   ██╔════╝██║   ██║████╗  ██║████╗  ██║╚██╗ ██╔╝",
+    "   █████╗  ██║   ██║██╔██╗ ██║██╔██╗ ██║ ╚████╔╝",
+    "   ██╔══╝  ██║   ██║██║╚██╗██║██║╚██╗██║  ╚██╔╝",
+    "   ██║     ╚██████╔╝██║ ╚████║██║ ╚████║   ██║",
+    "   ╚═╝      ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝   ╚═╝",
+]
+
+flex deadass HELP_LINES = [
+    "funny vibe — the REPL.",
+    "  .help          show this",
+    "  .exit          leave (or Ctrl-D)",
+    "  .clear         reset the session (fresh globals)",
+    "  .xray <expr>   disassemble an expression",
+    "  .time <expr>   time how long an expression takes to run",
+    // cli.py's HELP_TEXT ends with a newline and is printed with `print()`,
+    // which adds another -- so a blank line follows the help.
+    "",
+]
+
+// A `{`/`(`/`[` still open at the end of the input means the user is
+// mid-construct and the prompt should keep going. A lex failure counts as
+// "keep going" too: an unterminated string is not yet an error, it is an
+// unfinished line. Same shape as cli.py's `_needs_continuation`.
+flex bet needs_continuation(text) {
+    yo toks = ghost
+    sketchy {
+        toks = tokenize(text)
+    } my_bad (e) {
+        bounce fax
+    }
+    yo depth = 0
+    grind t in toks {
+        yo kind = t["kind"]
+        sus (kind == "LPAREN" || kind == "LBRACKET" || kind == "LBRACE") {
+            depth += 1
+        } kinda_sus (kind == "RPAREN" || kind == "RBRACKET" || kind == "RBRACE") {
+            depth -= 1
+        }
+    }
+    bounce depth > 0
+}
+
+flex bet fresh_globals() {
+    yo names = BUILTIN_GLOBAL_NAMES.clone()
+    names.extend(STDLIB_MODULE_NAMES)
+    bounce names
+}
+
+// cli.py prints REPL diagnostics to *stdout*, not stderr, so this does too.
+//
+// KNOWN DIVERGENCE, logged in NATIVE_PLAN.md §9: the Python REPL renders the
+// full §4.2 diagnostic, source snippet and caret included, because it still
+// has the input text sitting next to the error. Reproducing that needs a
+// FunnyLang port of §4.2's renderer, which belongs with N6's renderer rather
+// than bolted onto the REPL -- so this prints the flavor, the message, and
+// the position when there is one.
+flex bet show_error(flavor, message, line, col) {
+    yo where = ""
+    sus (line != ghost && line > 0) {
+        where = " (line " + to_yap(line) + ", col " + to_yap(col) + ")"
+    }
+    yap "💀 " + flavor + where + ": " + message
+}
+
+flex bet xray_expr(text) {
+    sketchy {
+        // "<vibe>" is what the REPL already names its compiled unit, so an
+        // error from a typed line points at the same place the disassembly
+        // does. There is no file to read a snippet from, and the renderer
+        // skips the snippet when there is not -- which is right here.
+        yo program = parse_program(tokenize(text, "<vibe>"), "<vibe>")
+        resolve_program(program, fresh_globals(), [], "<vibe>")
+        yap disassemble(compile_program(program, fax))
+    } my_bad (e) {
+        show_error(e.flavor, e.message, e.line, e.col)
+    }
+}
+
+// The whole loop. `session`, `known` and `consts` together are the session:
+// the VM's globals, and the names the resolver has to already believe in.
+// Not `vibe`: that is a keyword (PLAN.md §3.3's `vibe` statement), so it
+// cannot be a function name.
+flex bet run_repl() {
+    grind line in BANNER_LINES {
+        yap line
+    }
+    yap "        FunnyLang v" + VERSION + " — it compiles. somehow."
+    yap ""
+    yap "type .help for help, .exit to leave."
+
+    yo session = sus.new_session()
+    yo known = fresh_globals()
+    yo consts = []
+    yo buffer_lines = []
+
+    bruh (fax) {
+        yo prompt = buffer_lines.how_thicc() == 0 ? "funny> " : ".....> "
+        // Not `ask`: that returns "" for both an empty line and end of
+        // input, and a REPL has to tell Ctrl-D from a blank line.
+        yo line = computer.readline(prompt)
+        sus (line == ghost) {
+            yap ""
+            bail
+        }
+
+        yo is_timing = cap
+        sus (buffer_lines.how_thicc() == 0) {
+            yo stripped = yapper.trim(line)
+            sus (stripped == ".exit" || stripped == ".quit") {
+                bail
+            }
+            sus (stripped == ".help") {
+                grind h in HELP_LINES {
+                    yap h
+                }
+                nvm
+            }
+            sus (stripped == ".clear") {
+                yo closed = sus.close_session(session)
+                session = sus.new_session()
+                known = fresh_globals()
+                consts = []
+                yap "session cleared."
+                nvm
+            }
+            sus (yapper.starts_with(stripped, ".xray ")) {
+                xray_expr(yapper.slice(stripped, 6))
+                nvm
+            }
+            sus (yapper.starts_with(stripped, ".time ")) {
+                line = yapper.slice(stripped, 6)
+                is_timing = fax
+            }
+        }
+
+        yo was_continuing = buffer_lines.how_thicc() > 0
+        buffer_lines.yeet_in(line)
+        yo buffer_text = buffer_lines.join("\n")
+        sus (yapper.trim(buffer_text) == "") {
+            buffer_lines = []
+            nvm
+        }
+        // A blank line while continuing forces an attempt instead of waiting
+        // forever -- some inputs (an unterminated single-line string, say)
+        // can never become balanced no matter how much more you add.
+        sus (!(yapper.trim(line) == "" && was_continuing)) {
+            sus (needs_continuation(buffer_text)) {
+                nvm
+            }
+        }
+        buffer_lines = []
+
+        yo blob = ghost
+        yo is_expr = cap
+        sketchy {
+            yo program = parse_program(tokenize(buffer_text, "<vibe>"), "<vibe>")
+            yo statements = program["statements"]
+            is_expr = statements.how_thicc() > 0 && statements.last()["node"] == "ExprStmt"
+            resolve_program(program, known, consts, "<vibe>")
+            blob = emit_funnyc(compile_program(program, fax, is_expr), "<vibe>")
+        } my_bad (e) {
+            show_error(e.flavor, e.message, e.line, e.col)
+            nvm
+        }
+
+        // stopwatch(), not now(): cli.py times this with perf_counter, and
+        // clock.now() is a wall-clock timestamp whose resolution is far too
+        // coarse for a single expression.
+        yo elapsed = clock.stopwatch()
+        yo result = sus.run_in(session, blob)
+        sus (is_timing) {
+            yap "ran in " + two_decimals(elapsed() * 1000.0) + "ms"
+        }
+        sus (result["flavor"] != ghost) {
+            show_error(result["flavor"], result["message"], ghost, ghost)
+            nvm
+        }
+        sus (is_expr) {
+            yap result["repr"]
+        }
+    }
+    bounce 0
+}
+
+// cli.py prints the timing with an f-string `:.2f`. `round(2)` gives the
+// right digits but not the right *shape* -- it renders 5.0 as "5.0" and 5 as
+// "5" where `:.2f` gives "5.00" -- so the fractional part is padded out.
+flex bet two_decimals(x) {
+    yo s = to_yap(x.round(2))
+    yo dot = yapper.index_of(s, ".")
+    sus (dot < 0) {
+        bounce s + ".00"
+    }
+    yo decimals = s.how_thicc() - dot - 1
+    grind i from decimals to 2 {
+        s = s + "0"
+    }
+    bounce s
+}

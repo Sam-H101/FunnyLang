@@ -1,0 +1,9 @@
+sketchy {
+    sketchy {
+        chuck "x"
+    } my_bad (e) {
+        chuck e
+    }
+} my_bad (e2) {
+    yap e2.flavor, e2.message
+}

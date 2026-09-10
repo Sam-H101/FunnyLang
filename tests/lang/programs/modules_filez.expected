@@ -1,0 +1,42 @@
+fax
+16
+hello, world! 你好
+3
+hello, world! 你好!!!
+["a.txt", "hello.txt", "z.txt"]
+6
+[0, 1, 2, 255, 128, 65]
+9
+cap
+["hi", "there", ""]
+11
+5
+["a", "b", "c"]
+fax
+cap
+cap
+fax
+cap
+cap
+caught: TypeVibeMismatch
+fax
+a/b
+.
+/a
+/
+c.txt
+b
+.gz
+
+
+a/b/c.txt
+a/b
+/root/b
+fax
+c.txt
+.txt
+z.md
+caught: SkillIssue
+caught: TypeVibeMismatch
+cap
+cap

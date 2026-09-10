@@ -37,6 +37,16 @@ flex deadass OPCODES = {
     "BUILD_GROUPCHAT": 57, "BUILD_STRING": 58, "YAP": 59, "CHUCK": 60,
     "TRY_PUSH": 61, "TRY_POP": 62, "SQUAD": 63, "METHOD": 64, "INHERIT": 65,
     "IMPORT": 66, "EXPORT": 67, "ITER_NEW": 68, "ITER_NEXT": 69, "HALT": 70,
+    // 71/72 are emitted by the relaxation pass in chunk_relax, for a function
+    // whose body outgrows a u16 jump offset. They were absent here for as
+    // long as this compiler had no such pass -- which meant it could not
+    // compile a function body over 64 KB of bytecode at all, where the
+    // reference could. 73-79 are pointers (PLAN.md §3.10, §16) -- selfhost
+    // must be able to *compile* them even though §8 forbids using them in
+    // its own source.
+    "JUMP_LONG": 71, "LOOP_LONG": 72,
+    "PTR_LOCAL": 73, "PTR_GLOBAL": 74, "PTR_UPVAL": 75, "PTR_INDEX": 76,
+    "PTR_PROP": 77, "DEREF": 78, "SET_DEREF": 79,
 }
 
 // Operand byte-widths, in order. CLOSURE is variable-width, special-cased.
@@ -52,11 +62,17 @@ flex deadass OPERAND_WIDTHS = {
     "LT": [], "LE": [], "GT": [], "GE": [], "IN": [], "JUMP": [2],
     "JUMP_IF_FALSE": [2], "JUMP_IF_TRUE": [2], "JUMP_IF_FALSE_KEEP": [2],
     "JUMP_IF_TRUE_KEEP": [2], "JUMP_IF_GHOST_KEEP": [2], "LOOP": [2],
+    // u32 offsets: the wide forms the relaxation pass emits. Needed here as
+    // well as in OPCODES because the disassembler decodes operands from this
+    // table, so `funny xray` on a relaxed function reads them correctly.
+    "JUMP_LONG": [4], "LOOP_LONG": [4],
     "CALL": [1], "INVOKE": [2, 1], "INVOKE_OG": [2, 1], "RETURN": [],
     "BUILD_STASH": [2], "BUILD_GROUPCHAT": [2], "BUILD_STRING": [2],
     "YAP": [1, 1], "CHUCK": [], "TRY_PUSH": [2, 2], "TRY_POP": [],
     "SQUAD": [2], "METHOD": [2], "INHERIT": [], "IMPORT": [2, 1],
     "EXPORT": [2], "ITER_NEW": [], "ITER_NEXT": [2], "HALT": [],
+    "PTR_LOCAL": [1, 2], "PTR_GLOBAL": [2], "PTR_UPVAL": [1, 2],
+    "PTR_INDEX": [], "PTR_PROP": [2], "DEREF": [], "SET_DEREF": [],
 }
 
 // -- const pool -----------------------------------------------------------
@@ -127,6 +143,11 @@ flex bet new_chunk(name, arity, default_count, is_variadic, pool) {
         "name": name, "arity": arity, "default_count": default_count,
         "is_variadic": is_variadic, "pool": pool, "code": [], "lines": [],
         "upvalue_count": 0, "local_count": 0, "stack_depth": 0, "max_stack": 0,
+        // Every jump and loop emitted, in emission order, for the relaxation
+        // pass in chunk_finish. `needs_relax` says whether any of them
+        // overflowed a u16 offset, so the common case pays nothing but the
+        // bookkeeping.
+        "jumps": [], "needs_relax": cap,
     }
 }
 
@@ -194,38 +215,269 @@ flex bet chunk_next_offset(ch) {
     bounce ch["code"].how_thicc()
 }
 
+// A conditional jump cannot simply grow a wider operand: the opcode carries
+// its own pop/keep semantics, so a wide version would be a different
+// instruction. The relaxation pass gives these a trampoline instead.
+flex deadass COND_JUMP_OPS = [
+    "JUMP_IF_FALSE", "JUMP_IF_TRUE", "JUMP_IF_FALSE_KEEP",
+    "JUMP_IF_TRUE_KEEP", "JUMP_IF_GHOST_KEEP",
+]
+
 flex bet chunk_emit_jump(ch, op_name, line, col) {
-    chunk_emit(ch, op_name, [0], line, col)
+    yo start = chunk_emit(ch, op_name, [0], line, col)
+    // `target` is filled in by chunk_patch_jump; a forward jump does not know
+    // where it lands until the body it skips has been emitted.
+    ch["jumps"].yeet_in({"pos": start, "op": op_name, "is_loop": cap, "target": ghost})
     bounce ch["code"].how_thicc() - 2
 }
 
 flex bet chunk_patch_jump(ch, site) {
-    yo offset = ch["code"].how_thicc() - (site + 2)
-    sus (offset < 0 || offset > 0xFFFF) {
-        chuck "your function is too long. seek help."
+    yo target = ch["code"].how_thicc()
+    yo pos = site - 1
+    grind i from 0 to ch["jumps"].how_thicc() {
+        yo j = ch["jumps"][ch["jumps"].how_thicc() - 1 - i]
+        sus (j["pos"] == pos) {
+            j["target"] = target
+            bail
+        }
     }
-    ch["code"][site] = (offset >> 8) & 0xFF
-    ch["code"][site + 1] = offset & 0xFF
+    yo offset = target - (site + 2)
+    sus (offset >= 0 fr offset <= 0xFFFF) {
+        ch["code"][site] = (offset >> 8) & 0xFF
+        ch["code"][site + 1] = offset & 0xFF
+        bounce ghost
+    }
+    // Too far for a u16. Leave a placeholder and let chunk_finish rewrite the
+    // whole instruction -- the offset is not knowable yet anyway, since
+    // widening any earlier jump moves this one.
+    ch["code"][site] = 0xFF
+    ch["code"][site + 1] = 0xFF
+    ch["needs_relax"] = fax
 }
 
 flex bet chunk_emit_loop(ch, loop_start, line, col) {
     chunk_mark_line(ch, line, col)
+    yo pos = ch["code"].how_thicc()
     ch["code"].yeet_in(OPCODES.get("LOOP"))
     yo offset = ch["code"].how_thicc() + 2 - loop_start
-    sus (offset < 0 || offset > 0xFFFF) {
-        chuck "your function is too long. seek help."
+    sus (offset >= 0 fr offset <= 0xFFFF) {
+        ch["code"].yeet_in((offset >> 8) & 0xFF)
+        ch["code"].yeet_in(offset & 0xFF)
+    } nah {
+        ch["code"].yeet_in(0xFF)
+        ch["code"].yeet_in(0xFF)
+        ch["needs_relax"] = fax
     }
-    ch["code"].yeet_in((offset >> 8) & 0xFF)
-    ch["code"].yeet_in(offset & 0xFF)
+    // A loop's target is known immediately: it is where the loop started.
+    ch["jumps"].yeet_in({"pos": pos, "op": "LOOP", "is_loop": fax, "target": loop_start})
+}
+
+// -- jump relaxation (PLAN.md §16) -----------------------------------------
+//
+// A port of funnylang/chunk.py's `_relax`, which the self-hosted compiler
+// never had: it chucked "your function is too long" instead, so a function
+// body over 64 KB of bytecode simply could not be compiled here. The pytest
+// suite covers 50,000-statement bodies; after N11 there is no reference left
+// to fall back to.
+//
+// Standard assembler-style fixed-point relaxation. An unconditional JUMP or
+// LOOP becomes JUMP_LONG / LOOP_LONG with a u32 offset (3 bytes -> 5). A
+// conditional keeps its opcode -- a wide version would be a different
+// instruction with different pop/keep semantics -- and gets a trampoline
+// instead (3 bytes -> 11):
+//
+//     COND_OP  +3   ; taken -> lands exactly on the JUMP_LONG below
+//     JUMP     +5   ; not taken -> skips it, into the body
+//     JUMP_LONG <target>
+//
+// Widening one jump moves every later one, which can push a second jump over
+// the limit, so the marking loop repeats until nothing changes.
+
+flex bet is_cond_jump(op) {
+    grind c in COND_JUMP_OPS {
+        sus (c == op) {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
+// Bytes this jump occupies once relaxed.
+flex bet relax_size_of(site, long) {
+    sus (!long) {
+        bounce 3
+    }
+    sus (is_cond_jump(site["op"])) {
+        bounce 11
+    }
+    bounce 5
+}
+
+// Running total of how much each jump *before* index i has grown, so an old
+// code offset can be mapped to its new one.
+flex bet relax_prefix(sites, is_long) {
+    yo cum = []
+    yo total = 0
+    grind i from 0 to sites.how_thicc() {
+        total += relax_size_of(sites[i], is_long[i]) - 3
+        cum.yeet_in(total)
+    }
+    bounce cum
+}
+
+// Where old offset `p` lands after the growth recorded in `cum`. The
+// reference uses bisect_right(starts, p - 3): every jump that *starts* at or
+// before p - 3 has finished before p, so its growth applies.
+flex bet relax_shift(starts, cum, p) {
+    yo lo = 0
+    yo hi = starts.how_thicc()
+    yo needle = p - 3
+    bruh (lo < hi) {
+        yo mid = (lo + hi) \ 2
+        sus (starts[mid] <= needle) {
+            lo = mid + 1
+        } nah {
+            hi = mid
+        }
+    }
+    sus (lo > 0) {
+        bounce p + cum[lo - 1]
+    }
+    bounce p
+}
+
+flex bet push_u16(out, value) {
+    out.yeet_in((value >> 8) & 0xFF)
+    out.yeet_in(value & 0xFF)
+}
+
+flex bet push_u32(out, value) {
+    out.yeet_in((value >> 24) & 0xFF)
+    out.yeet_in((value >> 16) & 0xFF)
+    out.yeet_in((value >> 8) & 0xFF)
+    out.yeet_in(value & 0xFF)
+}
+
+// Returns {"code": [...], "lines": [...]} with every over-long jump rewritten.
+flex bet chunk_relax(ch) {
+    // Emission order is already position order for `pos`, except that a
+    // nested function's jumps never mix in -- each chunk has its own list.
+    // Sorted anyway, because chunk_patch_jump fills targets out of order and
+    // the shift() binary search needs `starts` ascending.
+    yo sites = sort_by_pos(ch["jumps"])
+    yo starts = []
+    grind s in sites {
+        starts.yeet_in(s["pos"])
+    }
+    yo n = sites.how_thicc()
+    yo is_long = []
+    grind i from 0 to n {
+        is_long.yeet_in(cap)
+    }
+
+    bruh (fax) {
+        yo cum = relax_prefix(sites, is_long)
+        yo changed = cap
+        grind i from 0 to n {
+            sus (is_long[i]) {
+                nvm
+            }
+            yo s = sites[i]
+            yo new_pos = relax_shift(starts, cum, s["pos"])
+            yo new_target = relax_shift(starts, cum, s["target"])
+            yo instr_end = new_pos + 3
+            yo offset = s["is_loop"] ? instr_end - new_target : new_target - instr_end
+            sus (offset < 0 || offset > 0xFFFF) {
+                is_long[i] = fax
+                changed = fax
+            }
+        }
+        sus (!changed) {
+            bail
+        }
+    }
+
+    yo cum = relax_prefix(sites, is_long)
+    yo out = []
+    yo pos = 0
+    grind i from 0 to n {
+        yo s = sites[i]
+        grind b from pos to s["pos"] {
+            out.yeet_in(ch["code"][b])
+        }
+        yo new_pos = out.how_thicc()
+        yo new_target = relax_shift(starts, cum, s["target"])
+        sus (!is_long[i]) {
+            yo instr_end = new_pos + 3
+            yo offset = s["is_loop"] ? instr_end - new_target : new_target - instr_end
+            out.yeet_in(OPCODES.get(s["op"]))
+            push_u16(out, offset)
+        } kinda_sus (s["is_loop"]) {
+            out.yeet_in(OPCODES.get("LOOP_LONG"))
+            push_u32(out, (new_pos + 5) - new_target)
+        } kinda_sus (s["op"] == "JUMP") {
+            out.yeet_in(OPCODES.get("JUMP_LONG"))
+            push_u32(out, new_target - (new_pos + 5))
+        } nah {
+            // The trampoline: the conditional jumps over a 3-byte JUMP that
+            // in turn skips the JUMP_LONG carrying the real target.
+            out.yeet_in(OPCODES.get(s["op"]))
+            push_u16(out, 3)
+            out.yeet_in(OPCODES.get("JUMP"))
+            push_u16(out, 5)
+            out.yeet_in(OPCODES.get("JUMP_LONG"))
+            push_u32(out, new_target - (new_pos + 11))
+        }
+        pos = s["pos"] + 3
+    }
+    grind b from pos to ch["code"].how_thicc() {
+        out.yeet_in(ch["code"][b])
+    }
+
+    yo lines = []
+    grind e in ch["lines"] {
+        lines.yeet_in({"offset": relax_shift(starts, cum, e["offset"]), "line": e["line"], "col": e["col"]})
+    }
+    bounce {"code": out, "lines": lines}
+}
+
+// Insertion sort by "pos". The list is nearly sorted already (emission order
+// is position order), and a chunk has few jumps, so this beats hauling in a
+// general sort -- and `stash.sort_by` is not in the self-hosting subset.
+flex bet sort_by_pos(jumps) {
+    yo out = []
+    grind j in jumps {
+        out.yeet_in(j)
+    }
+    grind i from 1 to out.how_thicc() {
+        yo item = out[i]
+        yo k = i - 1
+        bruh (k >= 0 fr out[k]["pos"] > item["pos"]) {
+            out[k + 1] = out[k]
+            k -= 1
+        }
+        out[k + 1] = item
+    }
+    bounce out
 }
 
 flex bet chunk_finish(ch) {
+    // The relaxation pass only runs when something actually overflowed, so
+    // the overwhelmingly common case pays nothing beyond having recorded the
+    // jump sites.
+    yo code = ch["code"]
+    yo lines = ch["lines"]
+    sus (ch["needs_relax"]) {
+        yo relaxed = chunk_relax(ch)
+        code = relaxed["code"]
+        lines = relaxed["lines"]
+    }
     bounce {
         "name": ch["name"], "arity": ch["arity"],
         "default_count": ch["default_count"], "is_variadic": ch["is_variadic"],
         "upvalue_count": ch["upvalue_count"], "max_stack": ch["max_stack"],
-        "local_count": ch["local_count"], "code": ch["code"],
-        "lines": ch["lines"],
+        "local_count": ch["local_count"], "code": code,
+        "lines": lines,
     }
 }
 
@@ -239,7 +491,7 @@ flex bet chunk_finish(ch) {
 
 flex deadass BUILTIN_GLOBAL_NAMES = [
     "how_thicc", "what_is_it", "to_yap", "to_numba", "to_int", "sheesh",
-    "no_cap", "ask", "dip", "the_args", "combo", "identity",
+    "no_cap", "ask", "yell", "oops", "dip", "the_args", "combo", "identity",
     "range_stash", "zip_em", "enumerate_em", "deep_clone",
 ]
 
@@ -250,8 +502,24 @@ flex deadass STDLIB_MODULE_NAMES = [
 
 flex deadass MAX_LOCALS = 256
 
+// The resolver raises three different flavors, matching funnylang/
+// resolver.py exactly: WhoDis for a name it can't find, ImmutableVibes for
+// writing through a `deadass`, and ParserHadAStroke for every structural
+// complaint (a duplicate declaration, `bail` outside a loop, `me` outside a
+// squad). Before `oops` existed these were all one SkillIssue with the
+// intended name buried in the message, which is why an `!ERROR WhoDis`
+// golden could not pass under the self-hosted compiler.
+flex bet resolver_error_flavored(rs, flavor, line, col, message, extras = ghost) {
+    yo info = extras
+    sus (info == ghost) {
+        info = {}
+    }
+    info["file"] = rs["file"]
+    chuck oops(flavor, message, line, col, info)
+}
+
 flex bet resolver_error(rs, line, col, message) {
-    chuck "ResolverError at " + to_yap(line) + ":" + to_yap(col) + ": " + message
+    resolver_error_flavored(rs, "ParserHadAStroke", line, col, message)
 }
 
 flex bet discard_str(arr, value) {
@@ -390,6 +658,86 @@ flex bet resolve_upvalue(scope, name) {
     bounce ghost
 }
 
+// -- "did you mean" ---------------------------------------------------------
+//
+// A port of funnylang/errors.py's `levenshtein` and `suggest_name`, which the
+// self-hosted resolver simply did not have: every WhoDis came out with the
+// flavor's default roast and no hint, where the reference offers the closest
+// visible name. `tests/test_resolver.py::test_whodis_suggests_close_match`
+// checks for exactly that suggestion, and there was nothing here to check.
+//
+// Plain edit distance with a rolling row, and the same tie-break: `<` rather
+// than `<=`, so the *first* candidate at the best distance wins. Order
+// therefore matters and is the reference's -- innermost scope's locals first,
+// walking outwards, then the known globals.
+flex bet levenshtein(a, b) {
+    sus (a == b) {
+        bounce 0
+    }
+    sus (a == "") {
+        bounce b.how_thicc()
+    }
+    sus (b == "") {
+        bounce a.how_thicc()
+    }
+    yo bn = b.how_thicc()
+    yo prev = []
+    grind j from 0 to bn + 1 {
+        prev.yeet_in(j)
+    }
+    yo ac = a.chars()
+    yo bc = b.chars()
+    grind i from 1 to a.how_thicc() + 1 {
+        yo cur = [i]
+        grind j from 1 to bn + 1 {
+            yo cost = ac[i - 1] == bc[j - 1] ? 0 : 1
+            yo best = prev[j] + 1
+            sus (cur[j - 1] + 1 < best) {
+                best = cur[j - 1] + 1
+            }
+            sus (prev[j - 1] + cost < best) {
+                best = prev[j - 1] + cost
+            }
+            cur.yeet_in(best)
+        }
+        prev = cur
+    }
+    bounce prev[bn]
+}
+
+deadass MAX_SUGGEST_DISTANCE = 2
+
+flex bet suggest_name(name, candidates) {
+    yo best = ghost
+    yo best_dist = MAX_SUGGEST_DISTANCE + 1
+    grind cand in candidates {
+        sus (cand == name) {
+            nvm
+        }
+        yo d = levenshtein(name, cand)
+        sus (d < best_dist) {
+            best = cand
+            best_dist = d
+        }
+    }
+    bounce best
+}
+
+flex bet all_visible_names(rs) {
+    yo names = []
+    yo scope = rs["current"]
+    bruh (scope != ghost) {
+        grind local in scope["locals"] {
+            names.yeet_in(local["name"])
+        }
+        scope = scope["enclosing"]
+    }
+    grind g in rs["known_globals"] {
+        names.yeet_in(g)
+    }
+    bounce names
+}
+
 flex bet resolve_name(rs, name, line, col) {
     yo local_idx = resolve_local(rs["current"], name)
     sus (local_idx != ghost) {
@@ -403,7 +751,15 @@ flex bet resolve_name(rs, name, line, col) {
     sus (rs["known_globals"].contains(name)) {
         bounce {"kind": "global", "index": ghost, "name": name, "is_const": rs["const_globals"].contains(name)}
     }
-    resolver_error(rs, line, col, "'" + name + "' isn't defined anywhere i can see.")
+    yo hint = suggest_name(name, all_visible_names(rs))
+    yo roast = "`" + name + "` who? never heard of them."
+    yo hint_text = ghost
+    sus (hint != ghost) {
+        roast = roast + " did you mean `" + hint + "`?"
+        hint_text = "did you mean `" + hint + "`?"
+    }
+    resolver_error_flavored(rs, "WhoDis", line, col, "'" + name + "' isn't defined anywhere i can see.",
+                            {"roast": roast, "hint": hint_text})
 }
 
 flex bet in_method_context(rs) {
@@ -716,7 +1072,8 @@ flex bet rexpr_Assign(rs, node) {
     yo resolution = resolve_name(rs, target["name"], target["line"], target["col"])
     target["resolution"] = resolution
     sus (resolution["is_const"]) {
-        resolver_error(rs, node["line"], node["col"], "'" + target["name"] + "' is a deadass constant.")
+        resolver_error_flavored(rs, "ImmutableVibes", node["line"], node["col"], "'" + target["name"] + "' is a deadass constant.",
+                                {"roast": "`" + target["name"] + "` is deadass. it doesn't change. like your ex's opinion of you."})
     }
 }
 
@@ -728,6 +1085,42 @@ flex bet rexpr_Set(rs, node) {
 flex bet rexpr_SetIndex(rs, node) {
     resolve_expr(rs, node["obj"])
     resolve_expr(rs, node["index"])
+    resolve_expr(rs, node["value"])
+}
+
+flex bet rexpr_AddressOf(rs, node) {
+    // Parser already restricted "place" to Identifier/Index/Get.
+    yo place = node["place"]
+    sus (place["node"] == "Identifier") {
+        yo resolution = resolve_name(rs, place["name"], place["line"], place["col"])
+        place["resolution"] = resolution
+        sus (resolution["is_const"]) {
+            resolver_error_flavored(rs, "ImmutableVibes", node["line"], node["col"], "'" + place["name"] + "' is a deadass constant.",
+                                    {"roast": "`" + place["name"] + "` is deadass. it doesn't change. like your ex's opinion of you."})
+        }
+        sus (resolution["kind"] == "local") {
+            // Taking a pointer to a local boxes it via the identical
+            // machinery closures already use for captured locals: widen
+            // "captured" to "captured *or addressed*" (PLAN.md §3.10).
+            yo cs = rs["current"]["captured_slots"]
+            sus (!cs.contains(resolution["index"])) {
+                cs.yeet_in(resolution["index"])
+            }
+        }
+    } kinda_sus (place["node"] == "Index") {
+        resolve_expr(rs, place["obj"])
+        resolve_expr(rs, place["index"])
+    } kinda_sus (place["node"] == "Get") {
+        resolve_expr(rs, place["obj"])
+    }
+}
+
+flex bet rexpr_Deref(rs, node) {
+    resolve_expr(rs, node["ptr"])
+}
+
+flex bet rexpr_SetDeref(rs, node) {
+    resolve_expr(rs, node["ptr"])
     resolve_expr(rs, node["value"])
 }
 
@@ -802,6 +1195,7 @@ flex deadass REXPR_TABLE = {
     "Slice": rexpr_Slice, "Get": rexpr_Get, "SafeGet": rexpr_SafeGet,
     "StashLit": rexpr_StashLit, "GroupChatLit": rexpr_GroupChatLit,
     "Lambda": rexpr_Lambda, "Me": rexpr_Me, "Og": rexpr_Og,
+    "AddressOf": rexpr_AddressOf, "Deref": rexpr_Deref, "SetDeref": rexpr_SetDeref,
 }
 
 flex bet resolve_expr(rs, expr) {
@@ -825,9 +1219,22 @@ flex bet prepass_globals(rs, statements) {
     }
 }
 
-flex bet resolve_program(program) {
-    yo rs = {"known_globals": BUILTIN_GLOBAL_NAMES.clone(), "const_globals": [], "current": ghost}
-    rs["known_globals"].extend(STDLIB_MODULE_NAMES)
+// `known_globals`/`const_globals` are optional so that a REPL can hand back
+// the sets from the previous input -- funnylang/cli.py's `cmd_vibe` keeps
+// exactly these two and passes them into a fresh Resolver each time, which
+// is how `yo x = 1` on one line resolves on the next. They are mutated in
+// place, so the caller sees whatever this program added.
+flex bet resolve_program(program, known_globals = ghost, const_globals = ghost, file = ghost) {
+    yo names = known_globals
+    sus (names == ghost) {
+        names = BUILTIN_GLOBAL_NAMES.clone()
+        names.extend(STDLIB_MODULE_NAMES)
+    }
+    yo consts = const_globals
+    sus (consts == ghost) {
+        consts = []
+    }
+    yo rs = {"known_globals": names, "const_globals": consts, "current": ghost, "file": file}
     yo root = new_scope(ghost, fax, cap)
     rs["current"] = root
     prepass_globals(rs, program["statements"])
@@ -1439,6 +1846,57 @@ flex bet cexpr_Unary(cs, node) {
     c_emit(cs, UNOP_OPCODE.get(node["op"]), [], node["line"], node["col"])
 }
 
+flex bet cexpr_AddressOf(cs, node) {
+    yo place = node["place"]
+    sus (place["node"] == "Identifier") {
+        yo res = place["resolution"]
+        yo name_idx = const_str(cs, place["name"])
+        sus (res["kind"] == "local") {
+            c_emit(cs, "PTR_LOCAL", [res["index"], name_idx], node["line"], node["col"])
+        } kinda_sus (res["kind"] == "upvalue") {
+            c_emit(cs, "PTR_UPVAL", [res["index"], name_idx], node["line"], node["col"])
+        } nah {
+            c_emit(cs, "PTR_GLOBAL", [const_str(cs, res["name"])], node["line"], node["col"])
+        }
+        c_push(cs, 1)
+    } kinda_sus (place["node"] == "Index") {
+        compile_expr(cs, place["obj"])
+        compile_expr(cs, place["index"])
+        c_emit(cs, "PTR_INDEX", [], node["line"], node["col"])
+        c_pop(cs, 1)  // obj, index (2) -> pointa (1)
+    } kinda_sus (place["node"] == "Get") {
+        compile_expr(cs, place["obj"])
+        c_emit(cs, "PTR_PROP", [const_str(cs, place["name"])], node["line"], node["col"])
+        // obj (1) -> pointa (1): net zero, matches cexpr_Get
+    }
+}
+
+flex bet cexpr_Deref(cs, node) {
+    compile_expr(cs, node["ptr"])
+    c_emit(cs, "DEREF", [], node["line"], node["col"])
+    // pointa (1) -> value (1): net zero, matches cexpr_Get
+}
+
+flex bet cexpr_SetDeref(cs, node) {
+    compile_expr(cs, node["ptr"])  // [ptr]
+    sus (node["op"] == "=") {
+        compile_expr(cs, node["value"])  // [ptr, value]
+        c_emit(cs, "SET_DEREF", [], node["line"], node["col"])
+        c_pop(cs, 1)  // ptr, value (2) -> value (1)
+    } nah {
+        // `*p += 1` evaluates `p` exactly once (PLAN.md §3.10) -- DUP the
+        // single pointer value, same shape as cexpr_Set's compound branch.
+        c_emit(cs, "DUP", [], node["line"], node["col"])
+        c_push(cs, 1)  // [ptr, ptr]
+        c_emit(cs, "DEREF", [], node["line"], node["col"])  // [ptr, curval]
+        compile_expr(cs, node["value"])  // [ptr, curval, value]
+        c_emit(cs, BINOP_OPCODE.get(strip_last_char(node["op"])), [], node["line"], node["col"])
+        c_pop(cs, 1)  // curval, value (2) -> result (1): [ptr, result]
+        c_emit(cs, "SET_DEREF", [], node["line"], node["col"])
+        c_pop(cs, 1)  // ptr, result (2) -> result (1)
+    }
+}
+
 flex bet cexpr_Binary(cs, node) {
     compile_expr(cs, node["left"])
     compile_expr(cs, node["right"])
@@ -1680,6 +2138,7 @@ flex deadass CEXPR_TABLE = {
     "Slice": cexpr_Slice, "Get": cexpr_Get, "SafeGet": cexpr_SafeGet,
     "StashLit": cexpr_StashLit, "GroupChatLit": cexpr_GroupChatLit,
     "Lambda": cexpr_Lambda, "Me": cexpr_Me, "Og": cexpr_Og,
+    "AddressOf": cexpr_AddressOf, "Deref": cexpr_Deref, "SetDeref": cexpr_SetDeref,
 }
 
 flex bet compile_expr(cs, expr) {
@@ -1759,17 +2218,27 @@ flex bet compile_closure(cs, node, params, variadic, body_statements, name, line
 
 // -- compiler: top level --------------------------------------------------
 
-flex bet compile_program(program, fold_constants) {
+// `repl_capture_last`: if the program's last statement is a bare expression
+// statement, compile it to RETURN its value instead of POPping it -- funny
+// vibe's "last expression value auto-printed".
+flex bet compile_program(program, fold_constants, repl_capture_last = cap) {
     yo cs = {"pool": new_const_pool(), "protos": [], "stack": [], "fold_constants": fold_constants}
     yo func_info = program["func_info"]
     yo ch = new_chunk("<script>", 0, 0, cap, cs["pool"])
     ch["local_count"] = func_info["local_count"]
     cs["stack"].yeet_in({"chunk": ch, "func_info": func_info, "loops": []})
-    grind stmt in program["statements"] {
-        compile_stmt(cs, stmt)
+    yo statements = program["statements"]
+    yo capture = repl_capture_last && statements.how_thicc() > 0 && statements.last()["node"] == "ExprStmt"
+    yo n = capture ? statements.how_thicc() - 1 : statements.how_thicc()
+    grind i from 0 to n {
+        compile_stmt(cs, statements[i])
     }
-    c_emit(cs, "GHOST", [], ghost, ghost)
-    c_push(cs, 1)
+    sus (capture) {
+        compile_expr(cs, statements.last()["expr"])
+    } nah {
+        c_emit(cs, "GHOST", [], ghost, ghost)
+        c_push(cs, 1)
+    }
     c_emit(cs, "RETURN", [], ghost, ghost)
     c_pop(cs, 1)
     yo proto = chunk_finish(ch)
@@ -1780,8 +2249,11 @@ flex bet compile_program(program, fold_constants) {
 
 // -- public API: source text -> CompiledUnit-equivalent -------------------
 
-flex bet compile_source(src, fold_constants) {
-    yo program = parse_source(src)
-    resolve_program(program)
+// `file` is optional and threads straight through to every error the front
+// end can raise, so a diagnostic names the program being compiled rather
+// than the toolchain compiling it.
+flex bet compile_source(src, fold_constants, file = ghost) {
+    yo program = parse_source(src, file)
+    resolve_program(program, ghost, ghost, file)
     bounce compile_program(program, fold_constants)
 }

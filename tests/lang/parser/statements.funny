@@ -1,0 +1,78 @@
+// Every statement form tests/test_parser.py pins, as one program. `--ast`
+// only lexes and parses, so undefined names here are fine -- the shape of the
+// tree is the whole assertion.
+yo bare
+yo initialized = 10
+deadass PI = 3.14159
+
+bet greet(name, greeting = "yo") {
+    bounce name
+}
+bet sum_all(...rest) {
+    bounce rest
+}
+
+sus (x > 100) {
+    yap "big"
+} kinda_sus (x > 10) {
+    yap "medium"
+} nah {
+    yap "smol"
+}
+
+bruh (x > 0) {
+    x -= 1
+}
+
+grind i from 10 to 0 step -2 {
+    yap i
+}
+grind i from 0 to 10 {
+    yap i
+}
+grind item in ["a", "b"] {
+    yap item
+}
+
+bruh (fax) {
+    sus (x) { bail }
+    sus (y) { nvm }
+}
+
+bet bare_return() {
+    bounce
+}
+bet valued_return() {
+    bounce 1 + 2
+}
+
+sketchy {
+    chuck "oops"
+} my_bad (e) {
+    yap "caught:", e.message
+} regardless {
+    yap "cleanup"
+}
+
+chuck "you fumbled it"
+
+gimme "mathstuff.funny"
+gimme "./util/helpers.funny" as helpers
+gimme { double, TAU } from "mathstuff.funny"
+gimme mafs
+gimme rizz as luck
+
+flex bet add(a, b) {
+    bounce a + b
+}
+flex deadass TAU = 6.28318
+
+yap x, y, "three things"
+yeet "hi"
+mumble "no newline"
+vibe
+
+bet counter() {
+    yo n = 0
+    bounce lowkey () => { n += 1; bounce n }
+}

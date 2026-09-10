@@ -1,0 +1,4 @@
+// The other half of the pair: no !ARGS directive means no argv at all.
+// tests/test_stdlib.py::test_the_args_default_empty.
+yap the_args()
+yap how_thicc(the_args())

@@ -1,0 +1,165 @@
+// selfhost/xray.funny — NATIVE_PLAN.md N8 task 2: `funny xray`, in
+// FunnyLang. A byte-exact port of funnylang/cli.py's `cmd_xray`.
+//
+//     funny xray <file> [--tokens] [--ast] [--pak]
+//
+// A `.funnypak` (or `--pak`) is disassembled module by module; a `.funnyc`
+// is disassembled directly; anything else is treated as source and compiled
+// first. `--tokens` and `--ast` stop after the lexer and parser
+// respectively.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme filez
+gimme yapper
+gimme { tokenize } from "lexer.funny"
+gimme { parse_program } from "parser.funny"
+gimme { compile_source } from "compiler.funny"
+gimme { dump } from "astdump.funny"
+gimme { disassemble } from "disasm.funny"
+gimme { load_funnyc, load_funnypak } from "loader.funny"
+
+// -- Python's repr(), for `--tokens` ---------------------------------------
+// funnylang/tokens.py renders a Token with f-string `!r` conversions, so
+// matching its output means matching CPython's own `repr` for strings:
+// single quotes unless that would need escaping and double quotes wouldn't,
+// backslash escapes for the quote character and \\ \t \n \r, and a lowercase
+// \xNN for everything else below space plus DEL.
+//
+// KNOWN DIVERGENCE, logged in NATIVE_PLAN.md §9: CPython also escapes any
+// *non-ASCII* code point that `str.isprintable()` rejects (zero-width
+// spaces, soft hyphens, unassigned code points). Deciding that needs Unicode
+// general-category tables, which the language does not expose to a program;
+// non-ASCII is passed through literally here instead. Every printable
+// character -- the overwhelming majority of what appears in real source --
+// renders identically either way.
+flex bet py_repr_str(s) {
+    yo quote = "'"
+    sus (yapper.contains(s, "'") fr !yapper.contains(s, "\"")) {
+        quote = "\""
+    }
+    yo out = [quote]
+    grind ch in s.chars() {
+        yo cp = ch.code_at(0)
+        sus (ch == quote || ch == "\\") {
+            out.yeet_in("\\" + ch)
+        } kinda_sus (ch == "\t") {
+            out.yeet_in("\\t")
+        } kinda_sus (ch == "\n") {
+            out.yeet_in("\\n")
+        } kinda_sus (ch == "\r") {
+            out.yeet_in("\\r")
+        } kinda_sus (cp < 0x20 || cp == 0x7F) {
+            deadass HEX = "0123456789abcdef"
+            out.yeet_in("\\x" + HEX[(cp >> 4) & 0xF] + HEX[cp & 0xF])
+        } nah {
+            out.yeet_in(ch)
+        }
+    }
+    out.yeet_in(quote)
+    bounce out.join("")
+}
+
+flex bet py_repr(value) {
+    sus (what_is_it(value) == "yapstring") {
+        bounce py_repr_str(value)
+    }
+    sus (value == fax) {
+        bounce "True"
+    }
+    sus (value == cap) {
+        bounce "False"
+    }
+    bounce to_yap(value)
+}
+
+// A TEMPLATE token's value is the part list, which lexer.py builds out of
+// ("str", text) / ("tokens", [Token, ...]) *tuples*; this file's lexer uses
+// groupchats for them, so the repr is rebuilt rather than derived.
+flex bet template_parts_repr(parts) {
+    yo out = []
+    grind p in parts {
+        sus (p["kind"] == "str") {
+            out.yeet_in("('str', " + py_repr_str(p["text"]) + ")")
+        } nah {
+            yo toks = []
+            grind sub in p["tokens"] {
+                toks.yeet_in(token_repr(sub))
+            }
+            out.yeet_in("('tokens', [" + toks.join(", ") + "])")
+        }
+    }
+    bounce "[" + out.join(", ") + "]"
+}
+
+// tokens.py: Token(KIND, 'text'[ value], line:col) -- the value is omitted
+// entirely when it is None (ghost here).
+flex bet token_repr(t) {
+    yo v = ""
+    sus (t["kind"] == "TEMPLATE") {
+        v = " " + template_parts_repr(t["value"])
+    } kinda_sus (t["value"] != ghost) {
+        v = " " + py_repr(t["value"])
+    }
+    bounce "Token(" + t["kind"] + ", " + py_repr_str(t["text"]) + v + ", " + to_yap(t["line"]) + ":" + to_yap(t["col"]) + ")"
+}
+
+// -- the command -----------------------------------------------------------
+//
+// `xray_text` builds the report and returns it; `xray` prints it. The split
+// is not decoration: N11 turns most of the lexer, parser and compiler test
+// suite into `funny xray` goldens, and a golden needs the report as a
+// *value* it can compare, not as something that has already gone to stdout.
+// `selfhost/test.funny` imports `xray_text` directly for exactly that.
+//
+// Every line the old version `yap`ped is a `yeet_in` here, joined with "\n"
+// and given a trailing newline, so the text is byte-identical to what the
+// printing version produced.
+
+flex bet xray_pak_lines(path) {
+    yo bundle = load_funnypak(filez.read_bytes(path))
+    yo out = ["entry: " + bundle["entry"]]
+    grind i from 0 to bundle["names"].how_thicc() {
+        yo name = bundle["names"][i]
+        yo marker = ""
+        sus (name == bundle["entry"]) {
+            marker = " (entry)"
+        }
+        out.yeet_in("=== module: " + name + marker + " ===")
+        out.yeet_in(disassemble(bundle["units"][i]))
+    }
+    bounce out
+}
+
+flex bet xray_lines(path, want_tokens, want_ast, want_pak) {
+    sus (want_pak || yapper.ends_with(path, ".funnypak")) {
+        bounce xray_pak_lines(path)
+    }
+    sus (yapper.ends_with(path, ".funnyc")) {
+        bounce [disassemble(load_funnyc(filez.read_bytes(path)))]
+    }
+    yo src = filez.slurp(path)
+    sus (want_tokens) {
+        yo out = []
+        grind t in tokenize(src, path) {
+            out.yeet_in(token_repr(t))
+        }
+        bounce out
+    }
+    yo program = parse_program(tokenize(src, path), path)
+    sus (want_ast) {
+        bounce [dump(program)]
+    }
+    bounce [disassemble(compile_source(src, fax, path))]
+}
+
+flex bet xray_text(path, want_tokens, want_ast, want_pak) {
+    bounce xray_lines(path, want_tokens, want_ast, want_pak).join("\n") + "\n"
+}
+
+flex bet xray(path, want_tokens, want_ast, want_pak) {
+    grind line in xray_lines(path, want_tokens, want_ast, want_pak) {
+        yap line
+    }
+    bounce 0
+}

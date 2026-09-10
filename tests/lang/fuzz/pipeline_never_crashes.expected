@@ -1,0 +1,5 @@
+!NATIVE
+seed 12345
+soup: 1 compiled, 199 rejected, 200 total
+program: 2 compiled, 98 rejected, 100 total
+nothing escaped.

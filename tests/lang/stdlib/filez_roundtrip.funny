@@ -1,0 +1,10 @@
+// tests/test_stdlib.py used pytest's tmp_path; a golden asks the language
+// for its own scratch file so the test carries no absolute path and leaves
+// nothing behind.
+gimme filez
+yo p = filez.temp_file()
+filez.yeet_out(p, "hello")
+yap filez.slurp(p)
+yap filez.exists(p)
+filez.obliterate(p)
+yap filez.exists(p)

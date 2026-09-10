@@ -1,0 +1,57 @@
+yo g = {"x": 1, "y": 2}
+yap g
+yap g["x"]
+g["z"] = 3
+yap g
+yap g.how_thicc()
+
+yap g.keys()
+yap g.values()
+yap g.pairs()
+
+yap g.has("x")
+yap g.has("nope")
+yap "x" in g
+yap "nope" in g
+
+yap g.get("x")
+yap g.get("nope")
+yap g.get("nope", -1)
+
+g.set("w", 99)
+yap g
+
+yo removable = {"a": 1, "b": 2}
+removable.remove("a")
+yap removable
+
+yo m1 = {"a": 1, "b": 2}
+yo m2 = {"b": 20, "c": 30}
+m1.merge(m2)
+yap m1
+
+yo orig = {"k": 1}
+yo cloned = orig.clone()
+cloned.set("k", 2)
+yap orig
+yap cloned
+
+yo clr = {"a": 1, "b": 2}
+clr.clear()
+yap clr
+yap clr.how_thicc()
+
+yo selfref = {"self": ghost}
+selfref["self"] = selfref
+yap selfref
+
+yo empty_gc = {}
+yap empty_gc
+yap empty_gc.how_thicc()
+
+yo nested = {"list": [1, 2, 3], "inner": {"a": 1}}
+yap nested
+
+grind k in {"p": 1, "q": 2} {
+    yap k
+}

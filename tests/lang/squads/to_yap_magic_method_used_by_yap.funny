@@ -1,0 +1,3 @@
+squad V { spawn(n) { me.n = n }
+ bet to_yap() { bounce `V({me.n})` } }
+yap V(7)

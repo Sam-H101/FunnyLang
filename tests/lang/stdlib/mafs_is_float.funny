@@ -1,0 +1,5 @@
+gimme mafs
+yap mafs.is_float(5)
+yap mafs.is_float(5.0)
+yap mafs.is_float(-3.14)
+yap mafs.is_float(0)

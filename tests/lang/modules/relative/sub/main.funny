@@ -1,0 +1,2 @@
+gimme "helper.funny"
+yap helper.f()

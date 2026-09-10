@@ -1,0 +1,7 @@
+// A non-ASCII identifier. This did not lex until N11 task 3 generated the
+// Unicode category tables: `selfhost/lexer.funny` asks `yapper.is_letter`,
+// and the native one was `isalpha()` over bytes, so every letter outside
+// ASCII was "not a letter".
+yo 変数 = 1
+yo café = 2
+yo 中文 = 3

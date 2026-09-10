@@ -1,0 +1,10 @@
+!XRAY --tokens
+Token(YO, 'yo', 2:1)
+Token(IDENT, 'yolk' 'yolk', 2:4)
+Token(NEWLINE, '\n', 2:8)
+Token(YO, 'yo', 4:1)
+Token(IDENT, '🚀' '🚀', 4:4)
+Token(EQ, '=', 4:6)
+Token(INT, '1' 1, 4:8)
+Token(NEWLINE, '\n', 4:9)
+Token(EOF, '', 6:1)

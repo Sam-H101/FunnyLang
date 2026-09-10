@@ -1,0 +1,17 @@
+// The three try shapes and their protection counts. A catch body that throws
+// must still run `regardless` before the new error propagates, which is why
+// catch-plus-finally needs *two* TRY_PUSH/TRY_POP pairs; and a finally with
+// no catch still protects the body and re-chucks.
+sketchy {
+    chuck "a"
+} my_bad (e) {
+    chuck "b"
+} regardless {
+    yap "cleanup"
+}
+
+sketchy {
+    yap 1
+} regardless {
+    yap "cleanup"
+}

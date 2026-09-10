@@ -1,0 +1,2 @@
+gimme stash
+yap stash.group_by([1,2,3,4], lowkey (x) => x % 2)

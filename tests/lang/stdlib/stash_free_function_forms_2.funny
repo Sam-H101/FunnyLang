@@ -1,0 +1,4 @@
+gimme stash
+yo a = [1,2]
+stash.yeet_in(a, 3)
+yap a

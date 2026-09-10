@@ -1,0 +1,4 @@
+// An uncaught ComputerExploded is exit 69, not 1 -- PLAN.md's one special
+// exit code. tests/test_errors.py::test_computer_explode_exits_69.
+gimme computer
+computer.explode()

@@ -1,0 +1,12 @@
+squad Counter {
+    spawn() { me.n = 0 }
+    bet bump() {
+        me.n += 1
+        bounce me.n
+    }
+}
+yo counter = Counter()
+yo bump = counter.bump
+yap bump()
+yap bump()
+yap counter.n

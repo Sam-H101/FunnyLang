@@ -1,0 +1,11 @@
+grind i from 1 to 6 {
+    sus (i % 15 == 0) {
+        yap "FizzBuzz"
+    } kinda_sus (i % 3 == 0) {
+        yap "Fizz"
+    } kinda_sus (i % 5 == 0) {
+        yap "Buzz"
+    } nah {
+        yap i
+    }
+}

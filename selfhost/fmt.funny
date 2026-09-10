@@ -1,0 +1,392 @@
+// selfhost/fmt.funny — NATIVE_PLAN.md N8 task 3: `funny fmt`, in FunnyLang.
+// A byte-exact port of funnylang/formatter.py: an AST pretty-printer, 4-space
+// indent, `{` on the same line, spaces around binary operators.
+//
+// The comment-dropping limitation is ported, not fixed. It is inherent to
+// formatting from an AST that never recorded comments, and fixing it means
+// changing what the *parser* retains -- which would make this formatter
+// disagree with funnylang/formatter.py, the thing it has to match byte for
+// byte. Reasoned about at length in NATIVE_PLAN.md §9.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme filez
+gimme yapper
+gimme { lit_of } from "astdump.funny"
+gimme { parse_source } from "parser.funny"
+
+flex deadass INDENT = "    "
+
+flex bet new_fmt() {
+    bounce {"lines": []}
+}
+
+flex bet repeat_indent(depth) {
+    yo out = []
+    grind i from 0 to depth {
+        out.yeet_in(INDENT)
+    }
+    bounce out.join("")
+}
+
+// A nested block-bodied lambda formats its own body starting at a relative
+// depth of 0; every physical line it produced (including its own closing
+// brace) still needs this call's depth added on top so it nests correctly
+// inside whatever statement embeds it.
+flex bet emit(f, depth, text) {
+    sus (text == "") {
+        f["lines"].yeet_in("")
+        bounce ghost
+    }
+    yo pad = repeat_indent(depth)
+    grind line in yapper.split(text, "\n") {
+        sus (line == "") {
+            f["lines"].yeet_in("")
+        } nah {
+            f["lines"].yeet_in(pad + line)
+        }
+    }
+}
+
+// formatter.py appends to `self.lines[-1]` to keep `} kinda_sus (...) {` on
+// one physical line; same here.
+flex bet append_to_last(f, text) {
+    yo lines = f["lines"]
+    lines[lines.how_thicc() - 1] = lines.last() + text
+}
+
+flex bet fmt_stmts(f, statements, depth) {
+    grind s in statements {
+        fmt_stmt(f, s, depth)
+    }
+}
+
+flex bet fmt_block(f, block, depth, prefix) {
+    sus (prefix != "") {
+        emit(f, depth, prefix + "{")
+    } nah {
+        emit(f, depth, "{")
+    }
+    fmt_stmts(f, block["statements"], depth + 1)
+    emit(f, depth, "}")
+}
+
+flex bet fmt_params(params, variadic) {
+    yo parts = []
+    grind p in params {
+        sus (p["default"] == ghost) {
+            parts.yeet_in(p["name"])
+        } nah {
+            parts.yeet_in(p["name"] + " = " + fmt_expr(p["default"]))
+        }
+    }
+    sus (variadic != ghost) {
+        parts.yeet_in("..." + variadic)
+    }
+    bounce parts.join(", ")
+}
+
+// -- statements -------------------------------------------------------------
+
+flex bet fmt_stmt(f, node, depth) {
+    yo kind = node["node"]
+    sus (kind == "VarDecl") {
+        sus (node["initializer"] == ghost) {
+            emit(f, depth, "yo " + node["name"])
+        } nah {
+            emit(f, depth, "yo " + node["name"] + " = " + fmt_expr(node["initializer"]))
+        }
+        bounce ghost
+    }
+    sus (kind == "ConstDecl") {
+        emit(f, depth, "deadass " + node["name"] + " = " + fmt_expr(node["initializer"]))
+        bounce ghost
+    }
+    sus (kind == "FuncDecl") {
+        fmt_block(f, node["body"], depth, "bet " + node["name"] + "(" + fmt_params(node["params"], node["variadic"]) + ") ")
+        bounce ghost
+    }
+    sus (kind == "Block") {
+        fmt_block(f, node, depth, "")
+        bounce ghost
+    }
+    sus (kind == "If") {
+        fmt_block(f, node["then_branch"], depth, "sus (" + fmt_expr(node["cond"]) + ") ")
+        grind e in node["elif_branches"] {
+            append_to_last(f, " kinda_sus (" + fmt_expr(e["cond"]) + ") {")
+            fmt_stmts(f, e["block"]["statements"], depth + 1)
+            emit(f, depth, "}")
+        }
+        sus (node["else_branch"] != ghost) {
+            append_to_last(f, " nah {")
+            fmt_stmts(f, node["else_branch"]["statements"], depth + 1)
+            emit(f, depth, "}")
+        }
+        bounce ghost
+    }
+    sus (kind == "While") {
+        fmt_block(f, node["body"], depth, "bruh (" + fmt_expr(node["cond"]) + ") ")
+        bounce ghost
+    }
+    sus (kind == "ForRange") {
+        // Not `step`: that is a keyword (`grind i from a to b step c`), so
+        // it cannot be a variable name.
+        yo step_part = ""
+        sus (node["step"] != ghost) {
+            step_part = " step " + fmt_expr(node["step"])
+        }
+        fmt_block(f, node["body"], depth, "grind " + node["var"] + " from " + fmt_expr(node["start"]) + " to " + fmt_expr(node["stop"]) + step_part + " ")
+        bounce ghost
+    }
+    sus (kind == "ForEach") {
+        fmt_block(f, node["body"], depth, "grind " + node["var"] + " in " + fmt_expr(node["iterable"]) + " ")
+        bounce ghost
+    }
+    sus (kind == "Return") {
+        sus (node["value"] == ghost) {
+            emit(f, depth, "bounce")
+        } nah {
+            emit(f, depth, "bounce " + fmt_expr(node["value"]))
+        }
+        bounce ghost
+    }
+    sus (kind == "Break") {
+        emit(f, depth, "bail")
+        bounce ghost
+    }
+    sus (kind == "Continue") {
+        emit(f, depth, "nvm")
+        bounce ghost
+    }
+    sus (kind == "Try") {
+        fmt_block(f, node["body"], depth, "sketchy ")
+        sus (node["catch_body"] != ghost) {
+            append_to_last(f, " my_bad (" + node["catch_var"] + ") {")
+            fmt_stmts(f, node["catch_body"]["statements"], depth + 1)
+            emit(f, depth, "}")
+        }
+        sus (node["finally_body"] != ghost) {
+            append_to_last(f, " regardless {")
+            fmt_stmts(f, node["finally_body"]["statements"], depth + 1)
+            emit(f, depth, "}")
+        }
+        bounce ghost
+    }
+    sus (kind == "Chuck") {
+        emit(f, depth, "chuck " + fmt_expr(node["value"]))
+        bounce ghost
+    }
+    sus (kind == "Import") {
+        sus (node["names"] != ghost) {
+            emit(f, depth, "gimme { " + node["names"].join(", ") + " } from \"" + node["source"] + "\"")
+            bounce ghost
+        }
+        yo alias = ""
+        sus (node["alias"] != ghost) {
+            alias = " as " + node["alias"]
+        }
+        sus (node["is_stdlib"]) {
+            emit(f, depth, "gimme " + node["source"] + alias)
+        } nah {
+            emit(f, depth, "gimme \"" + node["source"] + "\"" + alias)
+        }
+        bounce ghost
+    }
+    sus (kind == "Export") {
+        // formatter.py rewrites the first line the inner statement produced,
+        // slicing off its indent and putting `flex ` in front -- so a
+        // multi-line declaration keeps the rest of its lines untouched.
+        yo before = f["lines"].how_thicc()
+        fmt_stmt(f, node["decl"], depth)
+        yo pad = repeat_indent(depth)
+        yo first = f["lines"][before]
+        f["lines"][before] = pad + "flex " + yapper.slice(first, pad.how_thicc())
+        bounce ghost
+    }
+    sus (kind == "Yap") {
+        yo kw = node["newline"] ? "yap" : "mumble"
+        yo args = []
+        grind a in node["args"] {
+            args.yeet_in(fmt_expr(a))
+        }
+        yo joined = args.join(", ")
+        sus (joined == "") {
+            emit(f, depth, kw)
+        } nah {
+            emit(f, depth, kw + " " + joined)
+        }
+        bounce ghost
+    }
+    sus (kind == "ExprStmt") {
+        emit(f, depth, fmt_expr(node["expr"]))
+        bounce ghost
+    }
+    sus (kind == "VibeStmt") {
+        emit(f, depth, "vibe")
+        bounce ghost
+    }
+    sus (kind == "SquadDecl") {
+        yo sup = ""
+        sus (node["superclass"] != ghost) {
+            sup = " inherits " + node["superclass"]
+        }
+        emit(f, depth, "squad " + node["name"] + sup + " {")
+        sus (node["spawn"] != ghost) {
+            yo sp = node["spawn"]
+            emit(f, depth + 1, "spawn(" + fmt_params(sp["params"], sp["variadic"]) + ") {")
+            fmt_stmts(f, sp["body"]["statements"], depth + 2)
+            emit(f, depth + 1, "}")
+        }
+        grind m in node["methods"] {
+            emit(f, depth + 1, "bet " + m["name"] + "(" + fmt_params(m["params"], m["variadic"]) + ") {")
+            fmt_stmts(f, m["body"]["statements"], depth + 2)
+            emit(f, depth + 1, "}")
+        }
+        emit(f, depth, "}")
+        bounce ghost
+    }
+    chuck "formatter: no case for " + kind
+}
+
+// -- expressions ------------------------------------------------------------
+
+flex bet fmt_expr(node) {
+    yo kind = node["node"]
+    sus (kind == "Literal") {
+        bounce lit_of(node["value"])
+    }
+    sus (kind == "TemplateString") {
+        yo parts = []
+        grind p in node["parts"] {
+            sus (p["kind"] == "str") {
+                parts.yeet_in(p["value"])
+            } nah {
+                parts.yeet_in("{" + fmt_expr(p["value"]) + "}")
+            }
+        }
+        bounce "`" + parts.join("") + "`"
+    }
+    sus (kind == "Identifier") {
+        bounce node["name"]
+    }
+    sus (kind == "Unary") {
+        bounce node["op"] + fmt_expr(node["operand"])
+    }
+    sus (kind == "AddressOf") {
+        bounce "&" + fmt_expr(node["place"])
+    }
+    sus (kind == "Deref") {
+        bounce "*" + fmt_expr(node["ptr"])
+    }
+    sus (kind == "SetDeref") {
+        bounce "*" + fmt_expr(node["ptr"]) + " " + node["op"] + " " + fmt_expr(node["value"])
+    }
+    sus (kind == "Binary" || kind == "Logical") {
+        bounce fmt_expr(node["left"]) + " " + node["op"] + " " + fmt_expr(node["right"])
+    }
+    sus (kind == "Coalesce") {
+        bounce fmt_expr(node["left"]) + " ?? " + fmt_expr(node["right"])
+    }
+    sus (kind == "Pipe") {
+        bounce fmt_expr(node["left"]) + " |> " + fmt_expr(node["right"])
+    }
+    sus (kind == "Ternary") {
+        bounce fmt_expr(node["cond"]) + " ? " + fmt_expr(node["then_expr"]) + " : " + fmt_expr(node["else_expr"])
+    }
+    sus (kind == "Assign") {
+        bounce node["target"]["name"] + " " + node["op"] + " " + fmt_expr(node["value"])
+    }
+    sus (kind == "Set") {
+        bounce fmt_expr(node["obj"]) + "." + node["name"] + " " + node["op"] + " " + fmt_expr(node["value"])
+    }
+    sus (kind == "SetIndex") {
+        bounce fmt_expr(node["obj"]) + "[" + fmt_expr(node["index"]) + "] " + node["op"] + " " + fmt_expr(node["value"])
+    }
+    sus (kind == "Call") {
+        yo args = []
+        grind a in node["args"] {
+            args.yeet_in(fmt_expr(a))
+        }
+        bounce fmt_expr(node["callee"]) + "(" + args.join(", ") + ")"
+    }
+    sus (kind == "Index") {
+        bounce fmt_expr(node["obj"]) + "[" + fmt_expr(node["index"]) + "]"
+    }
+    sus (kind == "Slice") {
+        yo start = node["start"] != ghost ? fmt_expr(node["start"]) : ""
+        yo stop = node["stop"] != ghost ? fmt_expr(node["stop"]) : ""
+        sus (node["step"] != ghost) {
+            bounce fmt_expr(node["obj"]) + "[" + start + ":" + stop + ":" + fmt_expr(node["step"]) + "]"
+        }
+        bounce fmt_expr(node["obj"]) + "[" + start + ":" + stop + "]"
+    }
+    sus (kind == "Get") {
+        bounce fmt_expr(node["obj"]) + "." + node["name"]
+    }
+    sus (kind == "SafeGet") {
+        bounce fmt_expr(node["obj"]) + "?." + node["name"]
+    }
+    sus (kind == "StashLit") {
+        yo elems = []
+        grind e in node["elements"] {
+            elems.yeet_in(fmt_expr(e))
+        }
+        bounce "[" + elems.join(", ") + "]"
+    }
+    sus (kind == "GroupChatLit") {
+        yo pairs = []
+        grind pr in node["pairs"] {
+            pairs.yeet_in(fmt_expr(pr["key"]) + ": " + fmt_expr(pr["value"]))
+        }
+        bounce "{" + pairs.join(", ") + "}"
+    }
+    sus (kind == "Lambda") {
+        yo params = fmt_params(node["params"], node["variadic"])
+        sus (node["is_expr_body"]) {
+            bounce "lowkey (" + params + ") => " + fmt_expr(node["body"])
+        }
+        yo inner = new_fmt()
+        fmt_stmts(inner, node["body"]["statements"], 1)
+        bounce "lowkey (" + params + ") {\n" + inner["lines"].join("\n") + "\n}"
+    }
+    sus (kind == "Me") {
+        bounce "me"
+    }
+    sus (kind == "Og") {
+        bounce "og"
+    }
+    chuck "formatter: no case for " + kind
+}
+
+flex bet format_program(program) {
+    yo f = new_fmt()
+    fmt_stmts(f, program["statements"], 0)
+    yo text = f["lines"].join("\n")
+    sus (text == "") {
+        bounce ""
+    }
+    bounce text + "\n"
+}
+
+// -- the command ------------------------------------------------------------
+// The file half of `funny fmt`, here rather than in the CLI so cli.funny can
+// call it without compiling fmtcli.funny at run time (N10 task 1).
+
+flex bet run_fmt(path, check) {
+    yo text = filez.slurp(path)
+    yo formatted = format_program(parse_source(text, path))
+
+    sus (check) {
+        sus (formatted == text) {
+            bounce 0
+        }
+        // cli.py writes this one to stderr; `yell` is the stdlib's stderr print.
+        yell(path + " isn't formatted. run 'funny fmt " + path + "'.")
+        bounce 1
+    }
+    sus (formatted != text) {
+        filez.yeet_out(path, formatted)
+        yap "formatted " + path + "."
+    }
+    bounce 0
+}

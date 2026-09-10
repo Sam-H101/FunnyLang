@@ -1,0 +1,92 @@
+yap how_thicc([1, 2, 3])
+yap how_thicc({"a": 1, "b": 2})
+yap how_thicc("héllo")
+yap how_thicc("")
+
+squad Bag {
+    spawn() { me.items = [] }
+    bet how_thicc() { bounce me.items.how_thicc() }
+    bet add(x) { me.items.yeet_in(x) }
+}
+yo b = Bag()
+b.add(1)
+b.add(2)
+yap how_thicc(b)
+
+yap what_is_it(5)
+yap what_is_it(5.0)
+yap what_is_it("hi")
+yap what_is_it(fax)
+yap what_is_it(ghost)
+yap what_is_it([1])
+yap what_is_it({"a": 1})
+
+yap to_yap(5)
+yap to_yap("already a string")
+yap to_yap([1, 2, 3])
+yap to_yap(fax)
+
+yap to_numba("42")
+yap to_numba("  42  ")
+yap to_numba("3.14")
+yap to_numba("0x1A")
+yap to_numba("0b101")
+yap to_numba(42)
+yap to_numba(fax)
+yap to_numba("99999999999999999999999999999999")
+
+yap to_int(5.9)
+yap to_int("5.9")
+yap to_int(fax)
+yap to_int(5)
+
+sheesh(5)
+sheesh("hi\nthere")
+sheesh([1, "two", 3])
+
+yo assertion_ok = no_cap(fax)
+yap assertion_ok
+
+sketchy {
+    no_cap(cap, "custom message")
+} my_bad (e) {
+    yap "caught:", e.flavor, e.message
+}
+
+sketchy {
+    no_cap(cap)
+} my_bad (e) {
+    yap "caught:", e.message
+}
+
+yap identity(42)
+yap identity("hi")
+
+yo doubler = lowkey (x) => { bounce x * 2 }
+yo add_one = lowkey (x) => { bounce x + 1 }
+yo pipeline = combo(doubler, add_one)
+yap pipeline(5)
+yo triple_combo = combo(doubler, doubler, add_one)
+yap triple_combo(3)
+yo empty_combo = combo()
+yap empty_combo(9)
+
+yap range_stash(5)
+yap range_stash(2, 5)
+yap range_stash(0, 10, 2)
+yap range_stash(10, 0, -2)
+yap range_stash(0, 1, 0.25)
+
+yo za = [1, 2, 3]
+yo zb = ["a", "b", "c", "d"]
+yap zip_em(za, zb)
+yap enumerate_em(zb)
+
+yo original = [1, [2, 3], {"k": "v"}]
+yo cloned = deep_clone(original)
+cloned[1].yeet_in(99)
+cloned[2].set("k", "changed")
+yap original
+yap cloned
+
+yap the_args()

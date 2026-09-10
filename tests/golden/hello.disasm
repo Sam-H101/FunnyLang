@@ -1,7 +1,0 @@
-== <script> (entry) (arity 0) ==
-0000  line 1  CONST         0    ; "yo sup world"
-0003          DEF_GLOBAL    1    ; "greeting"
-0006  line 2  GET_GLOBAL    1    ; "greeting"
-0009          YAP           1 1
-0012          GHOST
-0013          RETURN

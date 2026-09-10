@@ -1,0 +1,51 @@
+!XRAY
+== <script> (entry) (arity 0) ==
+0000  line 5  CONST         0    ; 1
+0003          DEF_GLOBAL    1    ; "x"
+0006  line 6  GET_GLOBAL    1    ; "x"
+0009          NEG
+0010          YAP           1 1
+0013  line 7  GET_GLOBAL    1    ; "x"
+0016          NOT
+0017          YAP           1 1
+0020  line 8  GET_GLOBAL    1    ; "x"
+0023          BNOT
+0024          YAP           1 1
+0027  line 9  FAX
+0028          DEF_GLOBAL    2    ; "t"
+0031  line 10 CAP
+0032          DEF_GLOBAL    3    ; "f"
+0035  line 11 GET_GLOBAL    2    ; "t"
+0038          JUMP_IF_FALSE_KEEP4
+0041          POP
+0042          GET_GLOBAL    3    ; "f"
+0045          YAP           1 1
+0048  line 12 GET_GLOBAL    2    ; "t"
+0051          JUMP_IF_TRUE_KEEP4
+0054          POP
+0055          GET_GLOBAL    3    ; "f"
+0058          YAP           1 1
+0061  line 13 GHOST
+0062          DEF_GLOBAL    4    ; "g"
+0065  line 14 GET_GLOBAL    4    ; "g"
+0068          JUMP_IF_GHOST_KEEP3
+0071          JUMP          4
+0074          POP
+0075          CONST         5    ; 5
+0078          YAP           1 1
+0081  line 15 GET_GLOBAL    4    ; "g"
+0084          GET_PROP_SAFE 1    ; "x"
+0087          YAP           1 1
+0090  line 16 GET_GLOBAL    4    ; "g"
+0093          JUMP_IF_GHOST_KEEP4
+0096          INVOKE        1 0    ; "x"
+0100          YAP           1 1
+0103  line 17 GET_GLOBAL    2    ; "t"
+0106          JUMP_IF_FALSE 6
+0109          CONST         0    ; 1
+0112          JUMP          3
+0115          CONST         6    ; 2
+0118          YAP           1 1
+0121          GHOST
+0122          RETURN
+

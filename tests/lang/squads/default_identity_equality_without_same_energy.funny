@@ -1,0 +1,5 @@
+squad P { spawn() { } }
+yo a = P()
+yo b = P()
+yap a same_energy a
+yap a same_energy b

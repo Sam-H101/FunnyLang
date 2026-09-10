@@ -1,0 +1,2 @@
+bet greet(name, greeting = "yo") { bounce greeting }
+yap greet("sam")

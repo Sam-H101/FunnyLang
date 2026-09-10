@@ -1,0 +1,14 @@
+before
+caught: custom error
+flavor: SkillIssue
+after
+div error flavor: MathAintMathin
+20.0
+-1
+[caught zero!]
+try body
+finally runs even without an error
+from try
+inner finally
+outer caught: from finally
+1

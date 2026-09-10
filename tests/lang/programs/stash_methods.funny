@@ -1,0 +1,109 @@
+yo a = [1, 2, 3]
+yap a
+yap a[0]
+yap a[-1]
+a[1] = 99
+yap a
+yap a.how_thicc()
+
+yo b = [10, 20, 30, 40, 50]
+yap b[1:3]
+yap b[:2]
+yap b[2:]
+yap b[::-1]
+yap b[::2]
+yap b[1:4:2]
+
+yo c = [1, 2] + [3, 4]
+yap c
+yo d = [1, 2] * 3
+yap d
+yo e = 2 * [7, 8]
+yap e
+
+yap [1, 2, 3] == [1, 2, 3]
+yap [1, 2, 3] == [1, 2, 4]
+yap [1, [2, 3]] == [1, [2, 3]]
+yap 2 in [1, 2, 3]
+yap 9 in [1, 2, 3]
+
+yo s = [5, 3, 1, 4, 2]
+yap s.how_thicc()
+s.yeet_in(6)
+yap s
+yap s.yoink()
+yap s
+yap s.yoink_at(0)
+yap s
+s.insert(0, 99)
+yap s
+yap s.contains(99)
+yap s.contains(1234)
+yap s.index_of(3)
+yap s.index_of(1234)
+yap s.slice(1, 3)
+s.reverse()
+yap s
+
+yo unsorted = [5, 3, 1, 4, 2]
+unsorted.sort()
+yap unsorted
+
+yo bynum = [3, 1, 2]
+bynum.sort(lowkey (x, y) => { bounce y - x })
+yap bynum
+
+yo mixed = ["banana", "apple", "cherry"]
+mixed.sort()
+yap mixed
+
+yap [1, 2, 3].join(", ")
+yap ["a", "b", "c"].join("-")
+
+yap [1, 2, 3].glow_up(lowkey (x) => { bounce x * 10 })
+yap [1, 2, 3, 4, 5, 6].vibe_check(lowkey (x) => { bounce x % 2 == 0 })
+yap [1, 2, 3, 4].squish(lowkey (acc, x) => { bounce acc + x })
+yap [1, 2, 3, 4].squish(lowkey (acc, x) => { bounce acc + x }, 100)
+yap [1, 2, 3].any(lowkey (x) => { bounce x > 2 })
+yap [1, 2, 3].any(lowkey (x) => { bounce x > 20 })
+yap [1, 2, 3].all(lowkey (x) => { bounce x > 0 })
+yap [1, 2, 3].all(lowkey (x) => { bounce x > 2 })
+
+yo fl = [1, 2, 3]
+yap fl.first()
+yap fl.last()
+yo empty = []
+yap empty.first()
+yap empty.last()
+
+yo original = [1, 2, 3]
+yo cloned = original.clone()
+cloned.yeet_in(4)
+yap original
+yap cloned
+
+yo clr = [1, 2, 3]
+clr.clear()
+yap clr
+yap clr.how_thicc()
+
+yo ext = [1, 2]
+ext.extend([3, 4, 5])
+yap ext
+
+yo selfref = [1, 2]
+selfref.yeet_in(selfref)
+yap selfref
+
+yo strs = ["a\"b", "line1\nline2"]
+yap strs
+
+bet apply(fn, v) {
+    bounce fn(v)
+}
+yo doubler = lowkey (x) => { bounce x * 2 }
+yap apply(doubler, 21)
+
+grind n in [10, 20, 30] {
+    yap n
+}

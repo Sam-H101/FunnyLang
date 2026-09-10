@@ -1,12 +1,23 @@
 .claude/
-__pycache__/
-*.pyc
 build/
-dist/
-*.egg-info/
-.pytest_cache/
+# No Python entries here on purpose (NATIVE_PLAN.md N11). __pycache__/,
+# *.pyc, .pytest_cache/, *.egg-info/ and dist/ used to be listed; ignoring
+# them now would quietly hide the exact thing CI checks for, which is that
+# this repository contains no `.py` file at all.
 *.funnyc
 *.funnypak
+# The bootstrap bundles are *not* checked in any more: since NATIVE_PLAN.md
+# N10 task 1 the toolchain is compiled into the binary as native/
+# toolchain_blob.c, which is the checked-in generated artifact instead (and
+# is a .c file, so nothing here excludes it). These are intermediates on the
+# way to regenerating it -- see bootstrap/STAGE0.md.
 *.exe
-.coverage
-htmlcov/
+
+# native/ build output (build.sh / build.bat -- NATIVE_PLAN.md N0/N7):
+# the CLI, and the runtime stub `funny yeet` appends programs to.
+/funny
+/funnyrt
+*.obj
+*.pdb
+*.ilk
+*.o

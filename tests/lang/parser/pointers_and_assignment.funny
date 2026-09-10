@@ -1,0 +1,14 @@
+// PLAN.md §3.10: `&` is address-of and `*` is deref in prefix position, and
+// `**pp` is two derefs rather than the STAR_STAR token. Chained assignment
+// is right-associative. tests/test_parser.py pinned all of these.
+yo x = 1
+yo p = &x
+yo v = *p
+yo pp = &p
+yo vv = **pp
+yo arr = [1, 2]
+yo ap = &arr[0]
+yo obj = {"field": 1}
+yo fp = &obj.field
+yo pw = 2 ** 3
+x = v = 1

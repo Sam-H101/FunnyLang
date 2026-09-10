@@ -98,8 +98,12 @@ flex bet is_dec_digit(ch) {
 
 // -- state / low-level helpers -----------------------------------------
 
-flex bet new_state(text) {
-    bounce {"text": text, "n": text.how_thicc(), "pos": 0, "line": 1, "col": 1}
+// `file` is carried for the same reason parser.funny carries one: an
+// `oops(...)` with no file renders as coming from whatever unit happened to
+// be running, and loses its caret line because the renderer has no source
+// to quote.
+flex bet new_state(text, file = ghost) {
+    bounce {"text": text, "n": text.how_thicc(), "pos": 0, "line": 1, "col": 1, "file": file}
 }
 
 flex bet st_peek(st, offset) {
@@ -141,8 +145,19 @@ flex bet make_token(kind, text, value, line, col, start, end) {
     bounce {"kind": kind, "text": text, "value": value, "line": line, "col": col, "start": start, "end": end}
 }
 
-flex bet lexer_error(st, start_line, start_col, message) {
-    chuck "LexerSaidNah at " + to_yap(start_line) + ":" + to_yap(start_col) + ": " + message
+// `oops` (NATIVE_PLAN.md N8) is what lets this carry the *real* flavor
+// rather than encoding it into a SkillIssue's message: `chuck "text"` can
+// only ever raise a SkillIssue, and an `!ERROR LexerSaidNah` golden checks
+// the flavor.
+// The optional `roast` matters more than it looks: in funny mode the
+// diagnostic body IS the roast, not the message, so an error without one
+// renders with the LexerSaidNah default ("what even IS that character") no
+// matter what actually went wrong. funnylang/lexer.py overrides it on the
+// seven errors where the default would be misleading -- an unterminated
+// string is not an unrecognised character -- and those seven are copied here
+// verbatim.
+flex bet lexer_error(st, start_line, start_col, message, roast = ghost) {
+    chuck oops("LexerSaidNah", message, start_line, start_col, {"file": st["file"], "roast": roast})
 }
 
 // -- comments -------------------------------------------------------------
@@ -158,7 +173,7 @@ flex bet skip_block_comment(st, start_line, start_col) {
     yo depth = 1
     bruh (depth > 0) {
         sus (st["pos"] >= st["n"]) {
-            lexer_error(st, start_line, start_col, "you opened a /* comment and never closed it.")
+            lexer_error(st, start_line, start_col, "you opened a /* comment and never closed it.", "an unclosed /* comment. i'm still waiting.")
         }
         sus (st_cur(st) == "/" && st_peek(st, 1) == "*") {
             depth += 1
@@ -307,7 +322,8 @@ flex bet scan_escape(st, start_line, start_col) {
         }
         bounce yapper.chr_of(radix_str_to_int(hex_digits, 16))
     }
-    lexer_error(st, bs_line, bs_col, "'\\" + ch + "' isn't an escape sequence i recognize.")
+    lexer_error(st, bs_line, bs_col, "'\\" + ch + "' isn't an escape sequence i recognize.",
+                "'\\" + ch + "' isn't a real escape. i'm not doing this.")
 }
 
 flex bet scan_string(st, quote) {
@@ -321,7 +337,7 @@ flex bet scan_string(st, quote) {
     yo chars = []
     bruh (fax) {
         sus (st["pos"] >= st["n"]) {
-            lexer_error(st, start_line, start_col, "this string never closes.")
+            lexer_error(st, start_line, start_col, "this string never closes.", "you opened a string and just... left it open. rude.")
         }
         yo ch = st_cur(st)
         sus (ch == quote) {
@@ -329,7 +345,7 @@ flex bet scan_string(st, quote) {
             bail
         }
         sus (ch == "\r" || ch == "\n") {
-            lexer_error(st, start_line, start_col, "this string hits a newline before it closes.")
+            lexer_error(st, start_line, start_col, "this string hits a newline before it closes.", "strings don't just end whenever they feel like it. use \\n or a triple-quote.")
         }
         sus (ch == "\\") {
             chars.yeet_in(scan_escape(st, start_line, start_col))
@@ -347,7 +363,7 @@ flex bet scan_triple_string(st, quote, start, start_line, start_col) {
     yo chars = []
     bruh (fax) {
         sus (st["pos"] >= st["n"]) {
-            lexer_error(st, start_line, start_col, "this triple-quoted string never closes.")
+            lexer_error(st, start_line, start_col, "this triple-quoted string never closes.", "you opened a \"\"\" and never gave it a matching \"\"\". i'm stuck in here forever.")
         }
         sus (slice_text(st, st["pos"], st["pos"] + 3) == quote + quote + quote) {
             st_advance_n(st, 3)
@@ -376,7 +392,7 @@ flex bet scan_template(st) {
     yo literal = []
     bruh (fax) {
         sus (st["pos"] >= st["n"]) {
-            lexer_error(st, start_line, start_col, "this template string never closes.")
+            lexer_error(st, start_line, start_col, "this template string never closes.", "you opened a ` template and never closed it. it's still vibing, unterminated.")
         }
         yo ch = st_cur(st)
         sus (ch == "`") {
@@ -408,16 +424,23 @@ flex bet scan_template(st) {
 flex bet consume_template_expr(st, template_line, template_col) {
     yo result = []
     yo depth = 1
+    // lexer.py gives the synthesized EOF the span of the *last token
+    // consumed* (the closing brace, normally) rather than wherever the
+    // scanner has since moved to -- a one-column difference that nothing
+    // cross-checked until `funny xray --tokens` started printing these
+    // nested tokens in full.
+    yo last = ghost
     bruh (fax) {
         yo tok = next_token(st)
         sus (tok["kind"] == "EOF") {
-            lexer_error(st, template_line, template_col, "a `{...}` substitution in this template never closes.")
+            lexer_error(st, template_line, template_col, "a `{...}` substitution in this template never closes.", "that { in your template string is still waiting on its }.")
         }
         sus (tok["kind"] == "LBRACE") {
             depth += 1
         } kinda_sus (tok["kind"] == "RBRACE") {
             depth -= 1
             sus (depth == 0) {
+                last = tok
                 bail
             }
         }
@@ -425,8 +448,13 @@ flex bet consume_template_expr(st, template_line, template_col) {
             nvm
         }
         result.yeet_in(tok)
+        last = tok
     }
-    result.yeet_in(make_token("EOF", "", ghost, st["line"], st["col"], st["pos"], st["pos"]))
+    sus (last == ghost) {
+        result.yeet_in(make_token("EOF", "", ghost, st["line"], st["col"], st["pos"], st["pos"]))
+    } nah {
+        result.yeet_in(make_token("EOF", "", ghost, last["line"], last["col"], last["start"], last["end"]))
+    }
     bounce result
 }
 
@@ -536,8 +564,8 @@ flex bet next_token(st) {
 
 // -- public API ---------------------------------------------------------
 
-flex bet tokenize(text) {
-    yo st = new_state(text)
+flex bet tokenize(text, file = ghost) {
+    yo st = new_state(text, file)
     yo tokens = []
     bruh (fax) {
         yo tok = next_token(st)

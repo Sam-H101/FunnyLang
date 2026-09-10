@@ -1,0 +1,2 @@
+bet boom() { chuck "should not run" }
+yap fax || boom()

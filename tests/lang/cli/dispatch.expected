@@ -1,0 +1,29 @@
+!NATIVE
+run hello -> exit 0
+yo sup world
+
+run fizzbuzz head -> exit 0
+1
+2
+Fizz
+4
+Buzz
+
+no subcommand -> exit 0
+FunnyLang (native) -- it compiles. somehow.
+usage: funny [--serious] [--no-color] [--time] [--vibes] [run] <file> [args...]
+       funny build <file> -o <out>
+       funny yeet <file.funny> [-o <out>]
+       funny xray <file> [--tokens] [--ast] [--pak]
+       funny fmt <file> [--check]
+       funny test <dir>
+       funny vibe
+  <file> may be .funny (compiled on the spot), .funnyc, or .funnypak.
+
+unknown -> exit 1
+dip -> exit 3
+before
+
+uncaught -> exit 1
+stdout was empty: fax
+diagnostic in err: fax

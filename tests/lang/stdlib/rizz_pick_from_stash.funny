@@ -1,0 +1,4 @@
+gimme rizz
+rizz.seed(1)
+yo x = rizz.pick(["a","b","c"])
+yap x same_energy "a" || x same_energy "b" || x same_energy "c"

@@ -1,0 +1,2 @@
+!XRAY --ast
+(program (yo x 1) (yo p (& x)) (yo v (* p)) (yo pp (& p)) (yo vv (* (* pp))) (yo arr (stash 1 2)) (yo ap (& (index arr 0))) (yo obj (groupchat ("field" 1))) (yo fp (& (get obj field))) (yo pw (** 2 3)) (= x (= v 1)))

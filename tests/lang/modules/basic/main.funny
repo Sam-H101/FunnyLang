@@ -1,0 +1,2 @@
+gimme "lib.funny"
+yap lib.f()

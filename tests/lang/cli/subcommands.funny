@@ -1,0 +1,51 @@
+// The rest of what tests/test_cli.py drove as a subprocess: build then run
+// the artifact, xray's three modes, and fmt's --check.
+gimme sus
+gimme filez
+gimme yapper
+
+// Helpers first: a top-level `flex bet` is not visible before its own
+// declaration, so using one above where it is written is a WhoDis.
+flex bet cli(args) {
+    bounce sus.run_bytecode(sus.toolchain(), args)
+}
+
+flex bet starts(text, prefix) {
+    bounce yapper.starts_with(text, prefix)
+}
+
+flex bet first_line(text) {
+    yo i = yapper.index_of(text, "\n")
+    sus (i < 0) {
+        bounce text
+    }
+    bounce yapper.slice(text, 0, i)
+}
+
+deadass SRC = "tests/lang/cli/fizz_head.funny"
+
+// build produces a .funnyc, and running it gives the same output as running
+// the source -- which is the whole point of having a bytecode format.
+yo out = filez.temp_file()
+yo built = cli(["build", SRC, "-o", out])
+yap "build -> exit " + to_yap(built["code"])
+yo direct = cli(["run", SRC])
+yo viaBytecode = cli(["run", out])
+yap "bytecode matches source: " + to_yap(direct["out"] == viaBytecode["out"])
+yap "artifact exists: " + to_yap(filez.exists(out))
+filez.obliterate(out)
+
+// xray stops after whichever phase you name.
+yo toks = cli(["xray", SRC, "--tokens"])
+yap "first token: " + first_line(toks["out"])
+yo ast = cli(["xray", SRC, "--ast"])
+yap "ast starts with (program: " + to_yap(starts(ast["out"], "(program"))
+yo dis = cli(["xray", SRC])
+yap "disasm starts with header: " + to_yap(starts(dis["out"], "== <script>"))
+
+// fmt --check reports whether the file is already formatted and must not
+// rewrite it either way. The corpus is formatted, so exit 0.
+yo before = filez.slurp(SRC)
+yo checked = cli(["fmt", SRC, "--check"])
+yap "fmt --check -> exit " + to_yap(checked["code"])
+yap "fmt --check left the file alone: " + to_yap(filez.slurp(SRC) == before)

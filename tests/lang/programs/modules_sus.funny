@@ -1,0 +1,44 @@
+gimme sus
+
+squad Dog {
+    spawn(name, age) { me.name = name; me.age = age }
+}
+
+yo d = Dog("Rex", 3)
+yap sus.type_of(d)
+yap sus.type_of(42)
+yap sus.type_of(3.5)
+yap sus.type_of("hi")
+yap sus.type_of(fax)
+yap sus.type_of(ghost)
+yap sus.type_of([1, 2])
+yap sus.type_of({"a": 1})
+
+yap sus.fields_of(d)
+yap sus.fields_of(42)
+yap sus.fields_of("nope")
+
+yap sus.is_a(d, "Dog")
+yap sus.is_a(d, "Cat")
+yap sus.is_a(42, "numba")
+yap sus.is_a(42, 42)
+yap sus.is_a("x", ghost)
+
+bet inner() {
+    bounce sus.stack_trace()
+}
+bet outer() {
+    bounce inner()
+}
+yo trace = outer()
+yap trace.how_thicc() >= 3
+yap trace[0].contains("inner()")
+yap trace[1].contains("outer()")
+yap trace[2].contains("<the big one>")
+
+yo dumped1 = sus.dump(d)
+yo dumped2 = sus.dump([1, "two", fax, ghost])
+yo dumped3 = sus.dump("hello")
+yo dumped4 = sus.dump({"x": 1, "y": [1, 2]})
+yo dumped5 = sus.dump(42)
+yo dumped6 = sus.dump(3.5)

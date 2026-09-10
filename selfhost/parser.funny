@@ -65,8 +65,14 @@ flex deadass MAX_ERRORS = 5
 
 // -- token-stream primitives -----------------------------------------
 
-flex bet new_parser(tokens) {
-    bounce {"tokens": tokens, "pos": 0, "errors": []}
+// `file` rides along so every error this parser raises can name the source
+// it is about. Without it an `oops(...)` carries no file at all, and the
+// diagnostic renderer falls back to whatever unit happened to be running --
+// which meant a parse error in your program rendered as coming from
+// `cli.funny`, and lost its caret line, because the renderer could not find
+// a source to quote.
+flex bet new_parser(tokens, file = ghost) {
+    bounce {"tokens": tokens, "pos": 0, "errors": [], "file": file}
 }
 
 flex bet p_peek(ps, offset) {
@@ -98,7 +104,7 @@ flex bet p_match(ps, kind) {
 }
 
 flex bet parser_error(ps, tok, message) {
-    chuck "ParserHadAStroke at " + to_yap(tok["line"]) + ":" + to_yap(tok["col"]) + ": " + message
+    chuck oops("ParserHadAStroke", message, tok["line"], tok["col"], {"file": ps["file"]})
 }
 
 flex bet p_expect(ps, kind, message) {
@@ -174,7 +180,16 @@ flex bet p_parse_statement_list(ps, end_kind) {
                 statements.yeet_in(stmt)
             }
         } my_bad (exc) {
-            ps["errors"].yeet_in(exc.message)
+            // Position kept alongside the message: parse_program reports the
+            // *first* error's flavor and position, the way parser.py's
+            // ParseErrorBundle exposes `errors[0]`.
+            // The error *object*, not a copy of its fields. PLAN.md §3.9's
+            // readable field set is flavor/message/line/col/file/trace/
+            // payload -- `roast` and `hint` are not in it, so a copy loses
+            // them, and reading `exc.roast` to keep them raises WhoDis.
+            // Holding the error itself keeps everything and lets the single-
+            // error case re-raise exactly what was thrown.
+            ps["errors"].yeet_in({"exc": exc, "message": exc.message})
             p_synchronize(ps, end_kind)
         }
         p_skip_stmt_seps(ps)
@@ -184,11 +199,36 @@ flex bet p_parse_statement_list(ps, end_kind) {
 
 // -- top level ------------------------------------------------------
 
-flex bet parse_program(tokens) {
-    yo ps = new_parser(tokens)
+flex bet parse_program(tokens, file = ghost) {
+    yo ps = new_parser(tokens, file)
     yo statements = p_parse_statement_list(ps, "EOF")
     sus (ps["errors"].how_thicc() > 0) {
-        chuck ps["errors"].join("; ")
+        yo first = ps["errors"][0]["exc"]
+        // One error re-raises unchanged, so its roast, hint and position
+        // survive exactly as the site that raised it wrote them -- which is
+        // the overwhelmingly common case and the one a diagnostic golden
+        // compares against the reference.
+        sus (ps["errors"].how_thicc() == 1) {
+            chuck first
+        }
+        // Several: the first is the error, and the rest ride in its payload.
+        // PLAN.md §4.2 asks for up to five syntax errors to be reported, and
+        // an error value can only be one error -- so the CLI renders the
+        // first, then whatever is in here. Collapsing them into one joined
+        // message, which is what this used to do, showed a user with seven
+        // syntax errors exactly one of them.
+        // The payload holds *all* of them, first included, and the CLI
+        // renders each rather than rendering the carrier -- so the carrier's
+        // own roast never shows and does not need to be recovered (it could
+        // not be: §3.9 makes `roast` unreadable from FunnyLang). Its flavor
+        // and position still matter, because anything that catches by flavor
+        // sees the first error, the way ParseErrorBundle exposes errors[0].
+        yo all_errors = []
+        grind e in ps["errors"] {
+            all_errors.yeet_in(e["exc"])
+        }
+        chuck oops(first.flavor, first.message, first.line, first.col,
+                   {"file": file, "payload": all_errors})
     }
     bounce {"node": "Program", "statements": statements, "line": 1, "col": 1}
 }
@@ -585,7 +625,16 @@ flex bet make_assign(ps, target, op, value) {
     sus (target["node"] == "Index") {
         bounce {"node": "SetIndex", "obj": target["obj"], "index": target["index"], "op": op, "value": value, "line": target["line"], "col": target["col"]}
     }
-    chuck "ParserHadAStroke at " + to_yap(target["line"]) + ":" + to_yap(target["col"]) + ": that's not something you can assign to."
+    sus (target["node"] == "Deref") {
+        bounce {"node": "SetDeref", "ptr": target["ptr"], "op": op, "value": value, "line": target["line"], "col": target["col"]}
+    }
+    // `oops`, not a chucked string: chucking a plain string gets the default
+    // SkillIssue flavor, and this error is a ParserHadAStroke in the
+    // reference. Spelling the flavor into the message text was never the same
+    // thing -- an `!ERROR ParserHadAStroke` golden reads the flavor, not the
+    // message, and so does anything else that catches by flavor.
+    chuck oops("ParserHadAStroke", "that's not something you can assign to.", target["line"], target["col"],
+               {"file": ps["file"], "roast": "you can't assign to that. that's not a place."})
 }
 
 flex bet parse_ternary(ps) {
@@ -647,8 +696,45 @@ flex bet parse_power(ps) {
     bounce base
 }
 
+flex bet p_check_place(ps, place) {
+    // PLAN.md §3.10: `&` only ever addresses a local/global/upvalue name
+    // (Identifier), a stash element or groupchat key (Index), or a squad
+    // instance field (Get). Anything else designates no place.
+    sus (place["node"] == "Identifier" || place["node"] == "Index" || place["node"] == "Get") {
+        bounce ghost
+    }
+    // Message text copied from funnylang/parser.py verbatim, em-dash and
+    // parenthesised examples included: a diagnostic golden compares the
+    // rendered text, so "close enough" is a failing test.
+    // The roast is funnylang/parser.py's own, for the single error in that
+    // file that overrides the ParserHadAStroke default. A diagnostic golden
+    // compares the rendered text, and in funny mode the rendered text is the
+    // roast rather than the message.
+    chuck oops("ParserHadAStroke", "'&' can't take the address of that — only a variable, an index (arr[i]), or a property (obj.field) is a place.", place["line"], place["col"], {"file": ps["file"], "roast": "`&` needs a place: a variable, arr[i], or obj.field. that's not one."})
+}
+
 flex bet parse_unary(ps) {
     yo tok = p_peek(ps, 0)
+    sus (tok["kind"] == "AMP") {
+        p_advance(ps)
+        yo place = parse_unary(ps)
+        p_check_place(ps, place)
+        bounce {"node": "AddressOf", "place": place, "line": tok["line"], "col": tok["col"]}
+    }
+    sus (tok["kind"] == "STAR_STAR") {
+        // The lexer already maximal-munched '**' (otherwise exponentiation,
+        // see parse_power). In prefix position it can only be two nested
+        // derefs -- '**pp', PLAN.md §3.10's pointer-to-pointer composition.
+        p_advance(ps)
+        yo operand = parse_unary(ps)
+        yo inner = {"node": "Deref", "ptr": operand, "line": tok["line"], "col": tok["col"]}
+        bounce {"node": "Deref", "ptr": inner, "line": tok["line"], "col": tok["col"]}
+    }
+    sus (tok["kind"] == "STAR") {
+        p_advance(ps)
+        yo operand = parse_unary(ps)
+        bounce {"node": "Deref", "ptr": operand, "line": tok["line"], "col": tok["col"]}
+    }
     sus (UNARY_OPS.has(tok["kind"])) {
         p_advance(ps)
         yo operand = parse_unary(ps)
@@ -868,6 +954,6 @@ flex bet parse_primary(ps) {
 
 // -- public API ---------------------------------------------------------
 
-flex bet parse_source(src) {
-    bounce parse_program(tokenize(src))
+flex bet parse_source(src, file = ghost) {
+    bounce parse_program(tokenize(src, file), file)
 }

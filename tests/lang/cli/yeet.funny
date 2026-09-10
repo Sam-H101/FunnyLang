@@ -1,0 +1,76 @@
+// tests/test_packager.py, as far as a golden can honestly go.
+//
+// `funny yeet` produces a native executable: the runtime stub with the
+// program's bundle appended, plus a trailer (PLAN.md §5.4). *Running* that
+// executable needs to start a process, which FunnyLang cannot do and should
+// not learn to do for its own tests -- so what is checked here is everything
+// up to that point, and it is the part that can actually be wrong: that the
+// trailer is well-formed, that the payload is the right bundle, and that the
+// payload runs and produces the right output.
+//
+// The one thing left over -- "the .exe still works after being moved" -- is a
+// property of the OS loader rather than of this code, and release.yml runs
+// the real artifact on three platforms.
+gimme sus
+gimme filez
+gimme yapper
+
+flex bet cli(args) {
+    bounce sus.run_bytecode(sus.toolchain(), args)
+}
+
+// Newlines are hard to see in a golden; one line with separators is not.
+flex bet one_line(text) {
+    bounce yapper.replace(yapper.trim(text), "\n", " | ")
+}
+
+yo base = filez.temp_file()
+yo src = base + ".funny"
+filez.yeet_out(src, "yap \"yeeted\"\nyap 1 + 1\n")
+
+// -o into a directory that does not exist yet: yeet creates it rather than
+// failing, which was the M13 packager fix.
+yo outDir = base + "_dir"
+yo out = outDir + "/hello"
+yo r = cli(["yeet", src, "-o", out])
+yap "yeet -> exit " + to_yap(r["code"])
+yap "output exists: " + to_yap(filez.exists(out))
+
+sus (filez.exists(out)) {
+    yo bytes = filez.read_bytes(out)
+    yo n = bytes.how_thicc()
+
+    // Trailer: the 9-byte magic, then the payload length as u64 big-endian.
+    // The magic comes *first* -- PLAN.md §5.4's diagram has it the other way
+    // round, and the code is what ships.
+    yo magicAt = n - 17
+    yo gotMagic = []
+    grind i from 0 to 9 {
+        gotMagic.yeet_in(yapper.chr_of(bytes[magicAt + i]))
+    }
+    yap "trailer magic: " + gotMagic.join("")
+
+    yo len = 0
+    grind i from 0 to 8 {
+        len = len * 256 + bytes[n - 8 + i]
+    }
+    yap "payload length is sane: " + to_yap(len > 0 fr len < n - 17)
+
+    // The payload is a bundle, and running it must produce what running the
+    // source produces -- that is the whole contract of yeeting.
+    yo payload = []
+    grind i from 0 to len {
+        payload.yeet_in(bytes[magicAt - len + i])
+    }
+    yo ran = sus.run_bytecode(payload, [])
+    yap "payload runs -> flavor " + to_yap(ran["flavor"]) + ", code " + to_yap(ran["code"])
+    yap "payload output: " + one_line(ran["out"])
+
+    yo direct = cli(["run", src])
+    yap "matches running the source: " + to_yap(ran["out"] == direct["out"])
+
+    filez.obliterate(out)
+}
+
+filez.obliterate(src)
+filez.obliterate(base)

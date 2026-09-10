@@ -1,0 +1,12 @@
+!XRAY --tokens
+Token(STRING, '"hi"' 'hi', 1:1)
+Token(NEWLINE, '\n', 1:5)
+Token(STRING, "'hi'" 'hi', 2:1)
+Token(NEWLINE, '\n', 2:5)
+Token(STRING, '"""multi\nline"""' 'multi\nline', 3:1)
+Token(NEWLINE, '\n', 4:8)
+Token(STRING, '"\\n\\t\\r\\\\\\"\\\'\\0"' '\n\t\r\\"\'\x00', 5:1)
+Token(NEWLINE, '\n', 5:17)
+Token(STRING, '"\\u{1F480}"' '💀', 6:1)
+Token(NEWLINE, '\n', 6:12)
+Token(EOF, '', 7:1)

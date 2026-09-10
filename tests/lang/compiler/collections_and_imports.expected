@@ -1,0 +1,87 @@
+!XRAY
+== bet add (arity 2) ==
+0000  line 13 GET_LOCAL     0
+0002          GET_LOCAL     1
+0004          ADD
+0005          RETURN
+0006          GHOST
+0007          RETURN
+
+== bet bump (arity 1) ==
+0000  line 25 GET_LOCAL     0
+0002          DUP
+0003          GET_PROP      14    ; "n"
+0006          CONST         4    ; 1
+0009          ADD
+0010          SET_PROP      14    ; "n"
+0013          POP
+0014  line 24 GHOST
+0015          RETURN
+
+== <script> (entry) (arity 0) ==
+0000  line 4  IMPORT        0 2
+0004          DEF_GLOBAL    0    ; "mafs"
+0007  line 5  IMPORT        1 1
+0011          DUP
+0012          GET_PROP      2    ; "double"
+0015          DEF_GLOBAL    2    ; "double"
+0018          DUP
+0019          GET_PROP      3    ; "TAU"
+0022          DEF_GLOBAL    3    ; "TAU"
+0025          POP
+0026  line 7  CONST         4    ; 1
+0029          CONST         5    ; 2
+0032          CONST         6    ; 3
+0035          BUILD_STASH   3
+0038          YAP           1 1
+0041  line 8  CONST         7    ; "a"
+0044          CONST         4    ; 1
+0047          BUILD_GROUPCHAT1
+0050          YAP           1 1
+0053  line 10 CONST         8    ; "sam"
+0056          DEF_GLOBAL    9    ; "name"
+0059  line 11 CONST         10    ; "hi "
+0062          GET_GLOBAL    9    ; "name"
+0065          BUILD_STRING  2
+0068          YAP           1 1
+0071  line 13 CLOSURE       11    ; proto #0
+0074          DEF_GLOBAL    12    ; "add"
+0077  line 15 GET_GLOBAL    12    ; "add"
+0080          CONST         4    ; 1
+0083          CONST         5    ; 2
+0086          CALL          2
+0088          YAP           1 1
+0091  line 17 CONST         4    ; 1
+0094          CONST         5    ; 2
+0097          CONST         6    ; 3
+0100          BUILD_STASH   3
+0103          DEF_GLOBAL    7    ; "a"
+0106  line 18 GET_GLOBAL    7    ; "a"
+0109          CONST         13    ; 0
+0112          GET_INDEX
+0113          YAP           1 1
+0116  line 19 GET_GLOBAL    7    ; "a"
+0119          CONST         4    ; 1
+0122          CONST         5    ; 2
+0125          GHOST
+0126          GET_SLICE
+0127          YAP           1 1
+0130  line 20 GET_GLOBAL    7    ; "a"
+0133          CONST         13    ; 0
+0136          GET_LOCAL     1
+0138          GET_LOCAL     2
+0140          GET_INDEX
+0141          CONST         4    ; 1
+0144          ADD
+0145          SET_INDEX
+0146          POP
+0147  line 24 CLOSURE       15    ; proto #1
+0150          DEF_GLOBAL    16    ; "bump"
+0153  line 28 CONST         6    ; 3
+0156          DEF_GLOBAL    17    ; "PI"
+0159          GET_GLOBAL    17    ; "PI"
+0162          EXPORT        17    ; "PI"
+0165          POP
+0166          GHOST
+0167          RETURN
+

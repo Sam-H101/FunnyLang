@@ -1,0 +1,15 @@
+!NATIVE
+build -> exit 0
+disassembly survives the round trip: fax
+; 1
+; 0
+; -1
+; 100000000000000000000000000000000000000000000000000
+; -100000000000000000000000000000000000000000000000000
+; 0.0
+; -3.5
+; infinity
+; -infinity
+; ""
+; "hello \ud83c\udf55"
+ran -> exit 0, output 1

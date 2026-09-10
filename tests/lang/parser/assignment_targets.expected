@@ -1,0 +1,2 @@
+!XRAY --ast
+(program (yo x 1) (yo arr (stash 1 2)) (yo obj (groupchat ("name" 0))) (yo p (& x)) (= x 1) (= (get obj name) 1) (= (index arr 0) 1) (+= x 1) (= (* p) 1) (+= (* p) 1) (yo cmp (== (& (index arr 0)) (& (index arr 1)))) (yo both (&& x (& x))))

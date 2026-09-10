@@ -1,0 +1,27 @@
+// selfhost/fmtcli.funny — NATIVE_PLAN.md N8 task 3's CLI half: `funny fmt`,
+// a byte-exact port of funnylang/cli.py's `cmd_fmt`.
+//
+//     funny fmt <file> [--check]
+//
+// Thin on purpose: all the work is in fmt.funny, which cli.funny imports
+// directly rather than compiling this file at run time (N10 task 1).
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme { run_fmt } from "fmt.funny"
+
+yo args = the_args()
+yo path = ghost
+yo check = cap
+grind a in args {
+    sus (a == "--check") {
+        check = fax
+    } kinda_sus (path == ghost) {
+        path = a
+    }
+}
+sus (path == ghost) {
+    yap "usage: fmt <file> [--check]"
+    dip(1)
+}
+dip(run_fmt(path, check))

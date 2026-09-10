@@ -1,0 +1,5 @@
+gimme mafs
+yap mafs.float_to_bits(1.0)
+yap mafs.float_to_bits(-1.0)
+yap mafs.float_to_bits(0.0)
+yap mafs.float_to_bits(3.14)

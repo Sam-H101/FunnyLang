@@ -1,0 +1,5 @@
+// dip(n) is a clean exit with code n -- the output before it still counts,
+// and it is not an error. tests/test_stdlib.py::test_dip_exits.
+yap "before"
+dip(3)
+yap "after"

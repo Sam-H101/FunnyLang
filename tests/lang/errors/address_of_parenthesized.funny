@@ -1,0 +1,3 @@
+yo a = 1
+yo b = 2
+yo p = &(a + b)

@@ -1,0 +1,81 @@
+!XRAY
+== <script> (entry) (arity 0) ==
+0000  line 4  CONST         0    ; 1
+0003          DEF_GLOBAL    1    ; "a"
+0006  line 5  CONST         2    ; 2
+0009          DEF_GLOBAL    3    ; "b"
+0012  line 6  GET_GLOBAL    1    ; "a"
+0015          GET_GLOBAL    3    ; "b"
+0018          ADD
+0019          YAP           1 1
+0022  line 7  GET_GLOBAL    1    ; "a"
+0025          GET_GLOBAL    3    ; "b"
+0028          SUB
+0029          YAP           1 1
+0032  line 8  GET_GLOBAL    1    ; "a"
+0035          GET_GLOBAL    3    ; "b"
+0038          MUL
+0039          YAP           1 1
+0042  line 9  GET_GLOBAL    1    ; "a"
+0045          GET_GLOBAL    3    ; "b"
+0048          DIV
+0049          YAP           1 1
+0052  line 10 GET_GLOBAL    1    ; "a"
+0055          GET_GLOBAL    3    ; "b"
+0058          MOD
+0059          YAP           1 1
+0062  line 11 GET_GLOBAL    1    ; "a"
+0065          GET_GLOBAL    3    ; "b"
+0068          POW
+0069          YAP           1 1
+0072  line 12 GET_GLOBAL    1    ; "a"
+0075          GET_GLOBAL    3    ; "b"
+0078          EQ
+0079          YAP           1 1
+0082  line 13 GET_GLOBAL    1    ; "a"
+0085          GET_GLOBAL    3    ; "b"
+0088          NEQ
+0089          YAP           1 1
+0092  line 14 GET_GLOBAL    1    ; "a"
+0095          GET_GLOBAL    3    ; "b"
+0098          LT
+0099          YAP           1 1
+0102  line 15 GET_GLOBAL    1    ; "a"
+0105          GET_GLOBAL    3    ; "b"
+0108          LE
+0109          YAP           1 1
+0112  line 16 GET_GLOBAL    1    ; "a"
+0115          GET_GLOBAL    3    ; "b"
+0118          GT
+0119          YAP           1 1
+0122  line 17 GET_GLOBAL    1    ; "a"
+0125          GET_GLOBAL    3    ; "b"
+0128          GE
+0129          YAP           1 1
+0132  line 18 GET_GLOBAL    1    ; "a"
+0135          GET_GLOBAL    3    ; "b"
+0138          BAND
+0139          YAP           1 1
+0142  line 19 GET_GLOBAL    1    ; "a"
+0145          GET_GLOBAL    3    ; "b"
+0148          BOR
+0149          YAP           1 1
+0152  line 20 GET_GLOBAL    1    ; "a"
+0155          GET_GLOBAL    3    ; "b"
+0158          BXOR
+0159          YAP           1 1
+0162  line 21 GET_GLOBAL    1    ; "a"
+0165          GET_GLOBAL    3    ; "b"
+0168          SHL
+0169          YAP           1 1
+0172  line 22 GET_GLOBAL    1    ; "a"
+0175          GET_GLOBAL    3    ; "b"
+0178          SHR
+0179          YAP           1 1
+0182  line 23 GET_GLOBAL    1    ; "a"
+0185          GET_GLOBAL    3    ; "b"
+0188          IDIV
+0189          YAP           1 1
+0192          GHOST
+0193          RETURN
+
