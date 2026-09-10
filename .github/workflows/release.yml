@@ -28,6 +28,10 @@ permissions:
 jobs:
   build:
     name: build (${{ matrix.target }})
+    # Execution ceiling only: a job waiting for a runner is not "running" yet,
+    # so this does nothing for a queue. It is here for a step that genuinely
+    # sticks, which would otherwise run to the six-hour default.
+    timeout-minutes: 45
     # A workflow_run firing for a *failed* ci run must not produce a release;
     # every other trigger (a tag, a manual dispatch) always should.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
@@ -41,7 +45,13 @@ jobs:
           # against 2.39 and refuse to start on Debian 12.
           - { os: ubuntu-22.04,     target: linux-x86_64,  asset: funny-linux-x86_64,    stub: funnyrt-linux-x86_64 }
           - { os: ubuntu-22.04-arm, target: linux-aarch64, asset: funny-linux-aarch64,   stub: funnyrt-linux-aarch64 }
-          - { os: macos-13,         target: macos-x86_64,  asset: funny-macos-x86_64,    stub: funnyrt-macos-x86_64 }
+          # Intel macOS on `macos-15-intel`, not `macos-13`: GitHub is retiring
+          # the macOS 13 image, and a retired or saturated label does not fail
+          # fast -- the job queues until GitHub's 24-hour limit, which looks
+          # exactly like a hang. If this label is ever wrong the job fails
+          # immediately with "no runner matching labels", which is at least a
+          # signal you can act on.
+          - { os: macos-15-intel,   target: macos-x86_64,  asset: funny-macos-x86_64,    stub: funnyrt-macos-x86_64 }
           - { os: macos-14,         target: macos-aarch64, asset: funny-macos-aarch64,   stub: funnyrt-macos-aarch64 }
           - { os: windows-latest,   target: windows-x86_64, asset: funny-windows-x86_64.exe, stub: funnyrt-windows-x86_64.exe }
 
@@ -175,6 +185,7 @@ jobs:
     name: publish
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     outputs:
@@ -260,6 +271,7 @@ jobs:
   verify-published:
     name: verify-published (${{ matrix.os }})
     needs: publish
+    timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read

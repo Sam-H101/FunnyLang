@@ -3026,3 +3026,21 @@ gets an entry explaining what changed and why.
 
   **Every job also gained a `timeout-minutes`.** The failure being fixed is "sat for hours", and a
   job that cannot say when it has gone wrong will do it again for some other reason.
+
+- **The Intel macOS release build queued rather than hung.** It sat for twenty minutes waiting for a
+  `macos-13` runner. GitHub has been retiring the macOS 13 (Intel) image, and a retired or saturated
+  label does not fail fast — the job simply waits, up to GitHub's 24-hour queue limit, which looks
+  exactly like a hang from the outside. Moved to `macos-15-intel`, the Intel image that succeeded it.
+  If that label is ever wrong the job fails immediately with "no runner matching labels", which is a
+  signal rather than a silence.
+
+  **`timeout-minutes` was not the fix, and saying so matters more than adding it.** It starts counting
+  when a job *begins running*; a job waiting for a runner has not begun. It was added to every job in
+  both workflows anyway — six of them — because a genuinely stuck step currently runs to the six-hour
+  default, and a release workflow's whole value is being trustworthy unattended. Worth being precise
+  that this addresses a different failure than the one observed.
+
+  **Deliberately not changed:** `publish` still `needs: build`, so an unavailable runner blocks the
+  entire release rather than quietly shipping four artifacts where §8 promises five. Blocked and loud
+  beats published and wrong. The asset name is untouched too — `funny-macos-x86_64` is what
+  `install.sh` looks for, and which runner produced it is not the installer's business.
