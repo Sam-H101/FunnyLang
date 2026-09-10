@@ -26,6 +26,27 @@ yap n
 yo readBack = filez.read_bytes(bytesFile)
 yap readBack
 
+// slurp is text mode: universal newlines, so a CRLF (or lone-CR) file reads
+// back with plain "\n" line endings on every platform. write_bytes puts the
+// exact bytes down so this is the same file everywhere, not a fixture whose
+// line endings depend on how the repo was checked out. read_bytes is the
+// escape hatch for anyone who wants the bytes as they really are.
+yo crlfFile = filez.join_path(dir, "crlf.txt")
+filez.write_bytes(crlfFile, [104, 105, 13, 10, 116, 104, 101, 114, 101, 13, 10])
+yo crlfText = filez.slurp(crlfFile)
+yap crlfText.how_thicc()
+yap crlfText.contains("\r")
+yap crlfText.split("\n")
+yap filez.read_bytes(crlfFile).how_thicc()
+
+yo crFile = filez.join_path(dir, "cr.txt")
+filez.write_bytes(crFile, [97, 13, 98, 13, 99])
+yo crText = filez.slurp(crFile)
+yap crText.how_thicc()
+yap crText.split("\n")
+filez.obliterate(crlfFile)
+filez.obliterate(crFile)
+
 yo abs1 = filez.abs_path(f1)
 yap abs1.contains("hello.txt")
 

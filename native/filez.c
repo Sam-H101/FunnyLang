@@ -179,6 +179,22 @@ static Value m_slurp(VM *vm, Value *a, int argc) {
         io_fail(vm, "slurp", path, errbuf);
         return GHOST_VAL;
     }
+    /* Text mode, matching funnylang/stdlib/filez.py's Path.read_text():
+       universal newlines, so every "\r\n" and every lone "\r" arrives as
+       "\n" and a CRLF file reads identically on every platform. Done here
+       rather than in platform.c because this is text-format semantics, not
+       an OS difference -- a CRLF file is a CRLF file on Linux too.
+       `filez.read_bytes` is the way to get the bytes as they are. */
+    size_t out = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] == '\r') {
+            data[out++] = '\n';
+            if (i + 1 < len && data[i + 1] == '\n') i++;
+        } else {
+            data[out++] = data[i];
+        }
+    }
+    len = out;
     Value result = OBJ_VAL(string_new(&vm->gc, (const char *)data, (uint32_t)len));
     free(data);
     return result;

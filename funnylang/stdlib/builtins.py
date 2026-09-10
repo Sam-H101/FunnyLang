@@ -73,6 +73,20 @@ def _sheesh(vm, args):
     return x
 
 
+def _yell(vm, args):
+    """`yap`, but to stderr — space-separated, newline-terminated, values
+    rendered exactly as `yap` renders them. Added for NATIVE_PLAN.md N8: the
+    self-hosted CLI has to put a diagnostic on stderr (`fmt --check`'s
+    "isn't formatted", say) and nothing in the language could reach stderr
+    at all. `yap`/`mumble` are statements with their own opcodes, so this is
+    a plain builtin rather than a third keyword."""
+    import sys
+
+    sys.stderr.write(" ".join(to_display(a, vm) for a in args) + "\n")
+    sys.stderr.flush()
+    return GHOST
+
+
 def _no_cap(vm, args):
     cond = args[0]
     msg = args[1] if len(args) > 1 else "assertion failed. couldn't be you."
@@ -179,6 +193,7 @@ def build_globals() -> dict:
         "sheesh": _nf("sheesh", _sheesh, 1),
         "no_cap": _nf("no_cap", _no_cap, 1, 2),
         "ask": _nf("ask", _ask, 0, 1),
+        "yell": _nf("yell", _yell, 0, 255),
         "dip": _nf("dip", _dip, 0, 1),
         "the_args": _nf("the_args", _the_args, 0),
         "combo": _nf("combo", _combo, 0, 255),

@@ -222,6 +222,26 @@ static Value m_ask(VM *vm, Value *a, int argc) {
     return OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)len));
 }
 
+/* `yap`, but to stderr -- space-separated, newline-terminated, values
+   rendered exactly as OP_YAP renders them. Added for NATIVE_PLAN.md N8: the
+   self-hosted CLI has to put a diagnostic on stderr and nothing in the
+   language could reach stderr at all. `yap`/`mumble` are statements with
+   their own opcodes, so this is a plain builtin rather than a third keyword.
+   stderr directly rather than vm->out: this is the one thing in the language
+   that is *defined* as not being the program's output stream. */
+static Value m_yell(VM *vm, Value *a, int argc) {
+    for (int i = 0; i < argc; i++) {
+        if (i > 0) fputc(' ', stderr);
+        size_t len;
+        char *disp = vm_value_to_display_len(vm, a[i], &len);
+        fwrite(disp, 1, len, stderr);
+        free(disp);
+    }
+    fputc('\n', stderr);
+    fflush(stderr);
+    return GHOST_VAL;
+}
+
 static Value m_dip(VM *vm, Value *a, int argc) {
     int64_t code = 0;
     if (argc > 0 && !IS_GHOST(a[0])) code = IS_BOOL(a[0]) ? (AS_BOOL(a[0]) ? 1 : 0) : AS_INT(a[0]);
@@ -405,6 +425,7 @@ static const BuiltinEntry BUILTIN_TABLE[] = {
     {"sheesh", m_sheesh, 1, 1},
     {"no_cap", m_no_cap, 1, 2},
     {"ask", m_ask, 0, 1},
+    {"yell", m_yell, 0, 255},
     {"dip", m_dip, 0, 1},
     {"the_args", m_the_args, 0, 0},
     {"combo", m_combo, 0, 255},

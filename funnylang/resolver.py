@@ -28,7 +28,7 @@ from .errors import ImmutableVibes, ParserHadAStroke, WhoDis, suggest_name
 BUILTIN_GLOBAL_NAMES: frozenset[str] = frozenset(
     {
         "how_thicc", "what_is_it", "to_yap", "to_numba", "to_int", "sheesh",
-        "no_cap", "ask", "dip", "the_args", "combo", "identity",
+        "no_cap", "ask", "yell", "dip", "the_args", "combo", "identity",
         "range_stash", "zip_em", "enumerate_em", "deep_clone",
     }
 )

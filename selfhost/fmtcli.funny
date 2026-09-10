@@ -1,0 +1,46 @@
+// selfhost/fmtcli.funny — NATIVE_PLAN.md N8 task 3's CLI half: `funny fmt`,
+// a byte-exact port of funnylang/cli.py's `cmd_fmt`.
+//
+//     funny fmt <file> [--check]
+//
+// Thin on purpose, like linker.funny over bundler.funny: N8 task 6's
+// cli.funny dispatches to `format_program` directly, so nothing here is
+// load-bearing beyond argv and the file write.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme filez
+gimme { parse_source } from "parser.funny"
+gimme { format_program } from "fmt.funny"
+
+yo args = the_args()
+yo path = ghost
+yo check = cap
+grind a in args {
+    sus (a == "--check") {
+        check = fax
+    } kinda_sus (path == ghost) {
+        path = a
+    }
+}
+sus (path == ghost) {
+    yap "usage: fmt <file> [--check]"
+    dip(1)
+}
+
+yo text = filez.slurp(path)
+yo formatted = format_program(parse_source(text))
+
+sus (check) {
+    sus (formatted == text) {
+        dip(0)
+    }
+    // cli.py writes this one to stderr; `yell` is the stdlib's stderr print.
+    yell(path + " isn't formatted. run 'funny fmt " + path + "'.")
+    dip(1)
+}
+sus (formatted != text) {
+    filez.yeet_out(path, formatted)
+    yap "formatted " + path + "."
+}
+dip(0)

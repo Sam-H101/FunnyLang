@@ -20,6 +20,7 @@ No `gimme` needed — these are available everywhere.
 | `sheesh(x)` | Prints `x`'s `repr`-style form (quoted strings, etc.) with a newline; returns `x` unchanged, so it composes inline. |
 | `no_cap(cond, msg?)` | Assert: raises `SkillIssue` with `msg` (default `"assertion failed. couldn't be you."`) if `cond` is falsy. |
 | `ask(prompt?)` | Prints `prompt` (no newline) if given, reads and returns one line of stdin. |
+| `yell(...)` | Like `yap`, but to stderr: values space-separated, newline-terminated. The only way to write to stderr. |
 | `dip(code?)` | Exits the process immediately with `code` (default 0). |
 | `the_args()` | The program's own extra CLI arguments (after `--`), as a `stash` of `yapstring`s. |
 | `combo(...fns)` | Composes functions left to right: `combo(f, g, h)` is `lowkey (x) => h(g(f(x)))`. |
@@ -174,8 +175,8 @@ Free functions below; most are also `groupchat` instance methods.
 
 | Function | Description |
 |---|---|
-| `filez.slurp(path)` | Reads a whole text file as a `yapstring`. |
-| `filez.yeet_out(path, text)` | Writes `text` to `path`, overwriting it; returns the byte count. |
+| `filez.slurp(path)` | Reads a whole text file as a `yapstring`. Text mode: every `\r\n` and lone `\r` arrives as `\n`, on every platform. Use `read_bytes` for the bytes as they are. |
+| `filez.yeet_out(path, text)` | Writes `text` to `path`, overwriting it; returns the byte count. Writes exactly the bytes given — a `\n` stays a `\n` on every platform. |
 | `filez.append_to(path, text)` | Appends `text` to `path`; returns the byte count written. |
 | `filez.exists(path)` | Whether `path` exists. |
 | `filez.obliterate(path)` | Deletes a file, or an empty directory. |

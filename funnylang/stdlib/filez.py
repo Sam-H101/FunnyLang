@@ -35,7 +35,16 @@ def _slurp(vm, a):
 def _yeet_out(vm, a):
     path = _path_str(a[0], "yeet_out")
     text = a[1]
-    _io_wrap("yeet_out", path, lambda: Path(path).write_text(text, encoding="utf-8"))
+
+    def _do():
+        # newline="" so a "\n" stays a "\n": the default would rewrite it to
+        # os.linesep, making the bytes on disk depend on which OS wrote them.
+        # `slurp` translates on the way *in* (universal newlines) precisely
+        # so that reading is platform-independent; writing has to be too.
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+
+    _io_wrap("yeet_out", path, _do)
     return len(text)
 
 
@@ -44,7 +53,7 @@ def _append_to(vm, a):
     text = a[1]
 
     def _do():
-        with open(path, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8", newline="") as f:
             f.write(text)
 
     _io_wrap("append_to", path, _do)

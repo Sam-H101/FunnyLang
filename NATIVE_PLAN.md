@@ -1828,3 +1828,45 @@ gets an entry explaining what changed and why.
   `selfhost/prelude.funny` both changed. Full suite green; MSVC `/W4 /WX` clean, with `xray` output
   byte-identical on Windows too.
 
+- **N8 task 3 · `funny fmt`, in FunnyLang.** `selfhost/fmt.funny` ports `funnylang/formatter.py` and
+  `selfhost/fmtcli.funny` ports `cli.py`'s `cmd_fmt`.
+  **DECISION · the comment-dropping limitation is ported, not fixed.** The plan offers either. It is
+  inherent to formatting from an AST that never recorded comments, so fixing it means changing what
+  the *parser* retains — and this formatter's whole acceptance criterion is producing the same bytes
+  as `funnylang/formatter.py`, which would no longer be possible. Comment preservation is a real
+  feature worth having; it belongs in a change that moves both implementations together, not in a
+  port whose job is to be indistinguishable from what it replaces.
+  `tests/native/test_native_fmt.py::test_comments_are_dropped_like_the_python_formatter` pins it
+  deliberately, so a future change that starts preserving comments breaks loudly rather than drifting
+  apart quietly.
+  **ADDITION · `yell(...)`.** `cmd_fmt --check` prints "isn't formatted" to **stderr** and exits 1 —
+  and nothing in the language could write to stderr at all. `yap`/`mumble` are statements with their
+  own opcodes, so a third keyword would mean lexer, parser, compiler, opcode-table and bytecode
+  changes in both implementations; a plain builtin costs a table entry each. `yell` is `yap`'s stderr
+  counterpart: values space-separated, newline-terminated, rendered identically. Four places had to
+  learn the name — both stdlibs and both resolvers' `BUILTIN_GLOBAL_NAMES` (an unknown global is a
+  *compile-time* `WhoDis`, which is how the omission announced itself). Documented in
+  `docs/STDLIB.md`, covered by `tests/native/test_native_yell.py`, which compares **both** streams
+  across both VMs — the rest of the differential suite compares only stdout, and which stream the
+  bytes land on is the entire point of this builtin.
+  **Fixed · `filez.slurp` newline translation, and `filez.yeet_out`'s inverse.** Found while checking
+  `fmt --check` against a CRLF file: `filez.py`'s `Path.read_text()` does universal-newline
+  translation on every platform, while the native `slurp` returned raw bytes — so the same CRLF file
+  was 17 characters natively and 15 in Python, and `fmt --check` disagreed about whether it was
+  formatted. The native `slurp` now translates too (in `filez.c`, not `platform.c`: a CRLF file is a
+  CRLF file on Linux as well, so this is text-format semantics, not an OS difference), with
+  `read_bytes` as the escape hatch for the bytes as they are. The write direction had the mirror-image
+  problem in the *other* implementation: `Path.write_text()` rewrites `\n` to `os.linesep`, so Python
+  would have written CRLF on Windows where the native runtime writes LF. Fixed by passing
+  `newline=""` in `filez.py` — a language's file-write primitive should put down the bytes it was
+  given, and reading is already platform-independent, so writing has to be too. Both directions are
+  now covered in `tests/native/programs/modules_filez.funny`, using `write_bytes` to lay down the
+  CRLF fixture so the test does not depend on how the repository was checked out.
+  Verified: `selfhost/fmtcli.funny` on the C VM vs `funnylang.formatter` across `tests/lang/` +
+  `examples/` + `selfhost/` — **0 mismatches out of 106 files**, plus 24 tests in
+  `tests/native/test_native_fmt.py` covering idempotence, `--check`'s exit code and stream, the
+  "formatted X." announcement only when something changed, and an end-to-end run of both CLIs over
+  the same messy file. `bootstrap/funnyc.funnypak` regenerated (`selfhost/compiler.funny` gained
+  `yell`). Full suite 1242 passed; MSVC `/W4 /WX` clean, with `fmt --check` on a CRLF file and
+  `fmt`'s output bytes both matching the Python CLI on Windows.
+
