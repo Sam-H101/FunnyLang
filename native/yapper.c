@@ -10,6 +10,7 @@
 #include "modules.h"
 #include "stash.h"
 #include "da_string.h"
+#include "unicode_tbl.h"
 
 static char *dup_cstr(const char *s) {
     size_t n = strlen(s) + 1;
@@ -124,29 +125,45 @@ static Value m_join(VM *vm, Value *a, int argc) {
     return OBJ_VAL(r);
 }
 
-/* -- ASCII-only case conversion (see yapper.h's own AGENT CHOICE note) --- */
+/* -- case conversion, over the generated Unicode tables ------------------ */
 
-static Value ascii_case_map(VM *vm, Value strVal, const char *fnName, bool toUpper) {
+/* Code point by code point, not byte by byte: `toupper` on a UTF-8 lead byte
+   is meaningless, and mapping each byte of `é` independently corrupts it.
+   The simple (one-to-one) case mapping can change a character's encoded
+   length -- U+00FF ÿ uppercases to U+0178 Ÿ, two bytes to two, but
+   U+0131 ı lowercases within the BMP and U+A64B ꙋ does not -- so the output
+   is built into a grown buffer rather than assumed to be the same size.
+
+   Four bytes of headroom per code point is the most UTF-8 ever needs, so one
+   allocation of 4 x codepointCount can never overflow and there is no
+   reallocation path to get wrong. */
+static Value case_map(VM *vm, Value strVal, const char *fnName, bool toUpper) {
     if (!check_str(vm, strVal, fnName)) return GHOST_VAL;
     ObjString *s = AS_STRING(strVal);
-    char *buf = (char *)malloc(s->byteLen > 0 ? s->byteLen : 1);
-    for (uint32_t i = 0; i < s->byteLen; i++) {
-        unsigned char c = (unsigned char)s->chars[i];
-        buf[i] = (char)(toUpper ? toupper(c) : tolower(c));
+    size_t cap = (size_t)s->codepointCount * 4 + 1;
+    char *buf = (char *)malloc(cap);
+    size_t out = 0;
+    uint32_t bi = 0;
+    while (bi < s->byteLen) {
+        uint32_t seqLen = utf8_seq_len(s->chars, s->byteLen, bi);
+        uint32_t cp = utf8_decode_cp(s->chars, seqLen, bi);
+        uint32_t mapped = toUpper ? unicode_to_upper(cp) : unicode_to_lower(cp);
+        out += utf8_encode_cp(mapped, buf + out);
+        bi += seqLen;
     }
-    ObjString *r = string_new(&vm->gc, buf, s->byteLen);
+    ObjString *r = string_new(&vm->gc, buf, (uint32_t)out);
     free(buf);
     return OBJ_VAL(r);
 }
 
 static Value m_scream(VM *vm, Value *a, int argc) {
     (void)argc;
-    return ascii_case_map(vm, a[0], "SCREAM", true);
+    return case_map(vm, a[0], "SCREAM", true);
 }
 
 static Value m_whisper(VM *vm, Value *a, int argc) {
     (void)argc;
-    return ascii_case_map(vm, a[0], "whisper", false);
+    return case_map(vm, a[0], "whisper", false);
 }
 
 /* -- trim ----------------------------------------------------------------- */
@@ -504,7 +521,7 @@ static Value m_format(VM *vm, Value *a, int argc) {
     return OBJ_VAL(r);
 }
 
-/* -- is_numba / is_letter / is_alnum (ASCII-only, see yapper.h) ---------- */
+/* -- is_numba / is_letter / is_alnum ------------------------------------- */
 
 static Value m_is_numba(VM *vm, Value *a, int argc) {
     (void)argc;
@@ -526,13 +543,18 @@ static Value m_is_numba(VM *vm, Value *a, int argc) {
     return BOOL_VAL(ok);
 }
 
+/* Per code point, against the generated category tables -- `isalpha` over
+   bytes said `cap` for every non-ASCII letter, which is where `yo 変数 = 1`
+   failed to lex: the lexer's identifier rule goes through here. */
 static Value m_is_letter(VM *vm, Value *a, int argc) {
     (void)argc;
     if (!check_str(vm, a[0], "is_letter")) return GHOST_VAL;
     ObjString *s = AS_STRING(a[0]);
     if (s->byteLen == 0) return BOOL_VAL(false);
-    for (uint32_t i = 0; i < s->byteLen; i++) {
-        if (!isalpha((unsigned char)s->chars[i])) return BOOL_VAL(false);
+    for (uint32_t bi = 0; bi < s->byteLen;) {
+        uint32_t seqLen = utf8_seq_len(s->chars, s->byteLen, bi);
+        if (!unicode_is_letter(utf8_decode_cp(s->chars, seqLen, bi))) return BOOL_VAL(false);
+        bi += seqLen;
     }
     return BOOL_VAL(true);
 }
@@ -542,8 +564,10 @@ static Value m_is_alnum(VM *vm, Value *a, int argc) {
     if (!check_str(vm, a[0], "is_alnum")) return GHOST_VAL;
     ObjString *s = AS_STRING(a[0]);
     if (s->byteLen == 0) return BOOL_VAL(false);
-    for (uint32_t i = 0; i < s->byteLen; i++) {
-        if (!isalnum((unsigned char)s->chars[i])) return BOOL_VAL(false);
+    for (uint32_t bi = 0; bi < s->byteLen;) {
+        uint32_t seqLen = utf8_seq_len(s->chars, s->byteLen, bi);
+        if (!unicode_is_alnum(utf8_decode_cp(s->chars, seqLen, bi))) return BOOL_VAL(false);
+        bi += seqLen;
     }
     return BOOL_VAL(true);
 }
@@ -577,48 +601,54 @@ static Value m_words(VM *vm, Value *a, int argc) {
     return m_split(vm, a, argc); /* str.split() with no args == splitting on whitespace, same as _words */
 }
 
-/* -- title_case / sarcasm_case (ASCII-only, see yapper.h) --------------- */
+/* -- title_case / sarcasm_case ------------------------------------------- */
 
 static Value m_title_case(VM *vm, Value *a, int argc) {
     (void)argc;
     if (!check_str(vm, a[0], "title_case")) return GHOST_VAL;
     ObjString *s = AS_STRING(a[0]);
-    char *buf = (char *)malloc(s->byteLen > 0 ? s->byteLen : 1);
+    size_t cap = (size_t)s->codepointCount * 4 + 1;
+    char *buf = (char *)malloc(cap);
+    size_t out = 0;
     bool prevWasAlpha = false;
-    for (uint32_t i = 0; i < s->byteLen; i++) {
-        unsigned char c = (unsigned char)s->chars[i];
-        if (isalpha(c)) {
-            buf[i] = (char)(prevWasAlpha ? tolower(c) : toupper(c));
+    uint32_t bi = 0;
+    while (bi < s->byteLen) {
+        uint32_t seqLen = utf8_seq_len(s->chars, s->byteLen, bi);
+        uint32_t cp = utf8_decode_cp(s->chars, seqLen, bi);
+        if (unicode_is_letter(cp)) {
+            out += utf8_encode_cp(prevWasAlpha ? unicode_to_lower(cp) : unicode_to_upper(cp), buf + out);
             prevWasAlpha = true;
         } else {
-            buf[i] = (char)c;
+            out += utf8_encode_cp(cp, buf + out);
             prevWasAlpha = false;
         }
+        bi += seqLen;
     }
-    ObjString *r = string_new(&vm->gc, buf, s->byteLen);
+    ObjString *r = string_new(&vm->gc, buf, (uint32_t)out);
     free(buf);
     return OBJ_VAL(r);
 }
 
+/* Alternating case by *code point* index, which it already was -- the change
+   here is that a multi-byte code point now gets cased instead of copied
+   through untouched. */
 static Value m_sarcasm_case(VM *vm, Value *a, int argc) {
     (void)argc;
     if (!check_str(vm, a[0], "sarcasm_case")) return GHOST_VAL;
     ObjString *s = AS_STRING(a[0]);
-    char *buf = (char *)malloc(s->byteLen > 0 ? s->byteLen : 1);
+    size_t cap = (size_t)s->codepointCount * 4 + 1;
+    char *buf = (char *)malloc(cap);
+    size_t out = 0;
     uint32_t bi = 0;
     int64_t cpIndex = 0;
     while (bi < s->byteLen) {
         uint32_t seqLen = utf8_seq_len(s->chars, s->byteLen, bi);
-        if (seqLen == 1) {
-            unsigned char c = (unsigned char)s->chars[bi];
-            buf[bi] = (char)((cpIndex % 2) ? toupper(c) : tolower(c));
-        } else {
-            memcpy(buf + bi, s->chars + bi, seqLen);
-        }
+        uint32_t cp = utf8_decode_cp(s->chars, seqLen, bi);
+        out += utf8_encode_cp((cpIndex % 2) ? unicode_to_upper(cp) : unicode_to_lower(cp), buf + out);
         bi += seqLen;
         cpIndex++;
     }
-    ObjString *r = string_new(&vm->gc, buf, s->byteLen);
+    ObjString *r = string_new(&vm->gc, buf, (uint32_t)out);
     free(buf);
     return OBJ_VAL(r);
 }

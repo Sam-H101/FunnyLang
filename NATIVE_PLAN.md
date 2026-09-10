@@ -2463,3 +2463,49 @@ gets an entry explaining what changed and why.
   **Eleven `isinstance(err, Flavor)` tests in `test_vm.py` needed nothing at all** — `err_div_zero`,
   `err_type_mismatch`, `err_wrong_arity_too_few` and the rest already exist in `tests/lang/`, one
   per flavor. Checked name by name rather than assumed.
+
+- **N11 task 3 · `tools/gen_unicode.funny` and `native/unicode_tbl.c`, written rather than ported.**
+  The task said "port `tools/gen_unicode.py`". There was no such file, and no `unicode_tbl.c` either:
+  §4's tree lists both, `native/yapper.h` cites the table as the reason its classification is
+  ASCII-only, and the work was deferred N4 → N5 → never. `tools/` held exactly one file,
+  `bin2c.funny`. So this is a new generator and a new table, not a translation.
+
+  **What it cost, in visible behaviour:** `yapper.is_letter("中")` answered `cap` where the
+  reference answers `fax`; `yapper.SCREAM("héllo")` returned `héllo` unchanged; and `yo 変数 = 1`
+  was a `LexerSaidNah`, because `selfhost/lexer.funny`'s identifier rule goes through
+  `yapper.is_letter`. FunnyLang accepted CJK identifiers under Python and rejected them natively.
+  **Nothing in the 1,313-test suite caught any of it** — that suite runs the Python implementation —
+  and nothing in `tests/native/programs/` classified a non-ASCII character either. It surfaced only
+  when a golden asked.
+
+  **The generator downloads UnicodeData.txt over HTTPS** and emits the tables. That is legitimate for
+  a generator: it runs on a maintainer's machine, its output is checked in, and a build still needs
+  nothing but a C compiler. It accepts a local path too, and records the canonical URL in the
+  generated header either way rather than the path of somebody's scratch file.
+
+  **Scope, chosen deliberately.** `unicode_is_letter` is general category L*, which is exactly what
+  `str.isalpha()` accepts; `unicode_is_alnum` adds Nd/Nl/No, exactly `str.isalnum()`. Case mapping is
+  the **simple** one-code-point-to-one mapping from fields 12 and 13. Full case mapping
+  (SpecialCasing.txt, where `ß` uppercases to `SS`) is **not** represented: it cannot be a code-point
+  map, nothing in the corpus needs it, and a partial version that quietly differs from the reference
+  is worse than a stated absence. Written down in `native/unicode_tbl.h`, not just here.
+
+  **Shape:** sorted range arrays, binary-searched — 684 letter ranges, 146 numeric, 694 upper runs,
+  678 lower. A flat `0x110000`-entry table would be 1.1 MB against a 2 MB binary ceiling; Unicode
+  assigns categories in blocks, so ranges hold the same information in 54 KB of source and **33 KB of
+  binary** (657 KB total, from 624 KB). The lookups live in a separate hand-written `native/unicode.c`
+  because `unicode_tbl.c` gets overwritten whole and nothing hand-written may live in it.
+
+  **Two bugs found while building it, both mine, both worth the note:**
+  - `parse_hex("")` returned `0` rather than `ghost`, so the ~39,000 characters with *no* case
+    mapping each got a "mapping to U+0000" with a unique delta. Run compression collapsed to nothing:
+    39,724 runs instead of 694. The symptom was a suspiciously large table, not a wrong answer.
+  - `utf8_decode_cp`'s second parameter is the **sequence** length, not the buffer length. Passing
+    `bi + seqLen` made it read a one-byte `i` as the lead of a two-byte sequence, so `SCREAM("hi")`
+    returned `HⱿ`. It failed loudly and immediately, which is the good case; the same mistake in a
+    bounds check would not have.
+
+  `yapper.h`'s AGENT CHOICE is rewritten rather than deleted — the shape of a gap that no test could
+  see is worth keeping on the page. Verified: 273/273 goldens on Linux and Windows, all 90
+  `tests/lang/stdlib/` goldens **also pass on the Python VM**, `tests/native` 248 passed, bootstrap
+  fixed point byte-identical at the same size on both platforms, MSVC `/W4 /WX` clean.
