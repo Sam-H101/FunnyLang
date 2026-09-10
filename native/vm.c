@@ -566,6 +566,9 @@ void vm_init(VM *vm) {
     vm->programArgs = GHOST_VAL;
 
     vm->unit = NULL;
+    vm->pak = NULL;
+    vm->pakModuleCache = GHOST_VAL;
+    vm->currentModuleName = NULL;
     vm->out = NULL;
     vm->currentFrameIndex = -1;
     vm->currentInstrStart = 0;
@@ -609,6 +612,18 @@ static void mark_vm_roots(GC *gc, void *userdata) {
             gc_mark_value(gc, vm->unit->consts[i].value);
         }
     }
+    /* Same again for every module in a bundle: `vm->unit` is only whichever
+       one is executing right now, but a closure from an already-imported
+       module can still be called later and CONST-push out of its own
+       pool. */
+    if (vm->pak != NULL) {
+        for (uint32_t m = 0; m < vm->pak->moduleCount; m++) {
+            CompiledUnit *u = vm->pak->modules[m].unit;
+            if (u == NULL) continue;
+            for (uint32_t i = 0; i < u->constCount; i++) gc_mark_value(gc, u->consts[i].value);
+        }
+    }
+    gc_mark_value(gc, vm->pakModuleCache);
 }
 
 /* -- stack ---------------------------------------------------------------- */
@@ -2303,7 +2318,7 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
         vm->currentFrameIndex = vm->frameCount - 1;
         Frame *frame = current_frame(vm);
         const uint8_t *code = frame->closure->proto->code;
-        ConstEntry *consts = vm->unit->consts;
+        ConstEntry *consts = frame->closure->unit->consts;
         vm->currentInstrStart = frame->ip;
         uint8_t op = code[frame->ip++];
 
@@ -2621,7 +2636,7 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                 uint16_t constIdx = read_u16(code, frame->ip);
                 frame->ip += 2;
                 uint32_t protoIdx = consts[constIdx].protoRef;
-                FunctionProto *proto = &vm->unit->protos[protoIdx];
+                FunctionProto *proto = &frame->closure->unit->protos[protoIdx];
                 ObjUpvalue *upvalues[256];
                 for (int i = 0; i < proto->upvalueCount; i++) {
                     uint8_t isLocal = code[frame->ip];
@@ -2630,7 +2645,8 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                     upvalues[i] = isLocal ? capture_upvalue(vm, frame->slotBase + uvIdx) : frame->closure->upvalues[uvIdx];
                 }
                 ObjClosure *c = closure_new(&vm->gc, proto, upvalues, proto->upvalueCount,
-                                            frame->closure->moduleGlobals, frame->closure->moduleExports);
+                                            frame->closure->moduleGlobals, frame->closure->moduleExports,
+                                            frame->closure->unit);
                 push(vm, OBJ_VAL(c));
                 break;
             }
@@ -2959,12 +2975,62 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
     Value freshGlobals = OBJ_VAL(groupchat_new(&vm->gc, NULL, 0));
     Value freshExports = OBJ_VAL(groupchat_new(&vm->gc, NULL, 0));
     FunctionProto *entryProto = &unit->protos[unit->entryProto];
-    ObjClosure *entryClosure = closure_new(&vm->gc, entryProto, NULL, 0, freshGlobals, freshExports);
+    ObjClosure *entryClosure = closure_new(&vm->gc, entryProto, NULL, 0, freshGlobals, freshExports, unit);
     push_frame(vm, entryClosure, 0);
 
     VmResult result = vm_execute(vm, 0, NULL);
     if (result == VM_ERROR) vm->uncaughtError = vm->pendingError;
     return result;
+}
+
+Value vm_run_module(VM *vm, CompiledUnit *unit, const char *moduleName) {
+    /* funnylang/vm.py's run_module: fresh namespaces, run the top level
+       once, hand back a Module of whatever it flexed. The `vm->unit` swap
+       is that function's own `self.source` swap -- it makes errors raised
+       inside the imported module report *its* path, not the importer's. */
+    Value freshGlobals = OBJ_VAL(groupchat_new(&vm->gc, NULL, 0));
+    gc_push_temp(&vm->gc, freshGlobals);
+    Value freshExports = OBJ_VAL(groupchat_new(&vm->gc, NULL, 0));
+    gc_push_temp(&vm->gc, freshExports);
+    FunctionProto *entryProto = &unit->protos[unit->entryProto];
+    ObjClosure *entryClosure = closure_new(&vm->gc, entryProto, NULL, 0, freshGlobals, freshExports, unit);
+    gc_push_temp(&vm->gc, OBJ_VAL(entryClosure));
+
+    CompiledUnit *priorUnit = vm->unit;
+    const char *priorModule = vm->currentModuleName;
+    vm->unit = unit;
+    vm->currentModuleName = moduleName;
+    vm_call_value(vm, OBJ_VAL(entryClosure), NULL, 0);
+    vm->unit = priorUnit;
+    vm->currentModuleName = priorModule;
+
+    Value result = GHOST_VAL;
+    if (!vm->hadError) {
+        ObjString *name = string_new(&vm->gc, moduleName, (uint32_t)strlen(moduleName));
+        gc_push_temp(&vm->gc, OBJ_VAL(name));
+        result = OBJ_VAL(module_new(&vm->gc, name, freshExports));
+        gc_pop_temp(&vm->gc);
+    }
+    gc_pop_temp(&vm->gc);
+    gc_pop_temp(&vm->gc);
+    gc_pop_temp(&vm->gc);
+    return result;
+}
+
+VmResult vm_run_pak(VM *vm, CompiledPak *pak, FILE *out) {
+    CompiledUnit *entry = chunk_pak_find(pak, pak->entryName);
+    if (entry == NULL) {
+        fprintf(stderr, "this bundle names '%s' as its entry, but doesn't contain it.\n", pak->entryName);
+        return VM_ERROR;
+    }
+    vm->pak = pak;
+    vm->pakModuleCache = OBJ_VAL(groupchat_new(&vm->gc, NULL, 0));
+    vm->currentModuleName = pak->entryName;
+    /* The entry runs through the ordinary path, so it gets the same fresh
+       namespaces and the same error handling as a lone .funnyc; the only
+       difference is that `pak` is now set, which is what makes a quoted
+       `gimme` resolve instead of failing. */
+    return vm_run(vm, entry, out);
 }
 
 Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {

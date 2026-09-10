@@ -1476,6 +1476,49 @@ gets an entry explaining what changed and why.
   box-drawing confirmed intact in a real console). 92 native tests green including under
   `FUNNY_GC_STRESS=1`; the N5 acceptance corpus still 71/71 and 7/7 after updating its own scraper,
   which had been reading the flavour out of the old one-line stderr format.
+
+- **Self-hosting on the C VM — FunnyLang now compiles FunnyLang with no Python in the loop.** Taken
+  ahead of the rest of N7 deliberately (user's call, asked at the boundary): N7's own first task is
+  `funny run` on a `.funny` file, which needs exactly this, so building the CLI first would have meant
+  building it around a hole.
+  The C VM loads `selfhost/` — the compiler that was already written in FunnyLang during the Python-era
+  milestones — as a §5.3 bundle, runs it to compile a `.funny` file to bytecode, and runs the result.
+  Python's only remaining role is *linking* the bundle, a dev-time step of the same kind as
+  `tools/gen_unicode.py` regenerating a checked-in table.
+  **The load-bearing fix was not the bundle format, it was where constants live.** `chunk.c` gaining a
+  `.funnypak` reader was the easy half. The real problem: `vm->unit` was a single global "the compiled
+  unit", and `CONST`/`OP_CLOSURE` indexed straight into it — fine while exactly one unit is ever live,
+  wrong the moment a call crosses from one bundled module into another (`compile_source`, imported
+  from `compiler.funny`, runs with the *importer's* const pool still selected). `funnylang/vm.py`
+  doesn't have this bug because its `Closure` carries `const_pool`/`protos` itself, so the port now
+  does the same: `ObjClosure` gained a `unit`, inherited by every closure `OP_CLOSURE` creates exactly
+  like `moduleGlobals`/`moduleExports` already were. `vm->unit` survives, but demoted to precisely what
+  Python's `self.source` is — "which module is executing", swapped around an import so errors and
+  stack traces name the right file. The GC roots every bundled module's pool, not just the entry's,
+  since a closure from an already-imported module can still be called much later.
+  Imports resolve the way `funnylang/modules.py`'s own pak loader resolves them: relative to the
+  importing module's canonical bundle name, normalised, then cached so a module runs once however many
+  times it is imported. Modes 0 and 1 (`gimme "x.funny"` and `gimme { a } from "x.funny"`) share one
+  path, since mode 1 is just a `GET_PROP` per name afterwards. With no bundle loaded a quoted `gimme`
+  still raises the same `WhoDis` as before rather than half-working — resolving one from source would
+  need a compiler, and this runtime doesn't have one.
+  **Results.** 62 of 64 corpus programs compile *and* run correctly through this path with zero
+  Python; the two that don't are `variadics.funny` and `defaults_with_variadic.funny`, the
+  pre-existing native gap the N5 acceptance corpus already skips (`vm.c`'s CALL opcode still says
+  "variadic functions aren't supported natively yet") — nothing to do with self-hosting, and now the
+  single remaining language gap between the two VMs. Verified on Linux (gcc and clang) and native
+  Windows (MSVC).
+  New tests: `tests/native/test_native_selfhost.py` (8 tests) — the C VM compiling and running a
+  program end to end, six corpus programs compiled natively and diffed against their goldens, and the
+  strongest one: the C VM and the Python VM each run the *same* FunnyLang compiler over the same input
+  and must produce **byte-identical bytecode**, so any divergence in how the two VMs execute anything
+  at all surfaces as different bytes rather than as a program that happens to print the right thing.
+  Not done here, and deliberately: `bootstrap/funnyc.funnypak` is *not* checked in yet. §4 lists it as
+  a checked-in artifact but hands the provenance/staleness policy to N9, and a generated binary in the
+  tree without that policy is how stale bootstrap artifacts happen — the test links its own from
+  `selfhost/` instead. Wiring `funny run foo.funny` into one command is likewise left to N7, since
+  §4's layout has the toolchain bundle eventually *embedded* in the binary (`toolchain_blob.c`, N10)
+  rather than found on disk, and inventing a disk-search scheme now would just be something to delete.
   **Found a language-grammar quirk while writing the test, not a bug in either VM:** `sus` is itself
   a reserved statement-leading keyword (FunnyLang's own conditional, "sus (cond) { }"), so
   `sus.dump(x)` as a bare statement fails to parse on *both* VMs identically — confirmed by checking

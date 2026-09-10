@@ -60,10 +60,18 @@ typedef struct ObjClosureStruct {
        in one module shares one pair of namespaces by reference. */
     Value moduleGlobals;
     Value moduleExports;
+    /* The compiled unit this closure's code indexes into, for constants
+       and nested protos. Carried per closure rather than per VM because a
+       .funnypak run has several units live at once and a call can cross
+       from one module into another mid-execution -- exactly why
+       funnylang/vm.py's own Closure carries `const_pool`/`protos` instead
+       of reading them off the VM. Inherited unchanged by every closure
+       OP_CLOSURE builds, same as the two namespaces above. */
+    CompiledUnit *unit;
 } ObjClosure;
 
 ObjClosure *closure_new(GC *gc, FunctionProto *proto, ObjUpvalue **upvalues, int upvalueCount,
-                         Value moduleGlobals, Value moduleExports);
+                         Value moduleGlobals, Value moduleExports, CompiledUnit *unit);
 
 /* -- call frames ------------------------------------------------------- */
 

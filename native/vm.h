@@ -114,7 +114,29 @@ struct VM {
        [])` default. */
     Value programArgs;
 
-    CompiledUnit *unit; /* borrowed; caller keeps it alive */
+    /* The module currently executing, borrowed -- swapped by vm_run_module
+       for the duration of an import and restored afterwards, so error
+       positions and stack traces name the file the code actually came
+       from. Directly analogous to funnylang/vm.py's own `self.source`
+       swap; note it is *not* where constants come from (those hang off
+       each closure's own unit, since a call can cross module boundaries
+       mid-execution). */
+    CompiledUnit *unit;
+
+    /* PLAN.md §5.3's linked bundle, when one is being run: the modules a
+       quoted `gimme "other.funny"` can resolve against, plus the
+       already-run ones. Both NULL/ghost for a plain .funnyc run, which is
+       what makes a file import fail there with WhoDis instead of
+       half-working. */
+    CompiledPak *pak; /* borrowed; the embedder keeps it alive */
+    Value pakModuleCache; /* canonical name -> Module, so each runs once */
+    /* The *logical bundle name* of the module currently executing, which a
+       relative `gimme "../x.funny"` resolves against. Deliberately not the
+       unit's own sourceName: the bundler's keys are what imports are
+       written against, and funnylang/modules.py's loader resolves against
+       exactly this (its CanonicalSource(target)), not the original file
+       path a module happened to be compiled from. */
+    const char *currentModuleName;
 
     FILE *out; /* where YAP writes */
 
@@ -154,6 +176,17 @@ void vm_destroy(VM *vm);
    VM_ERROR if the program raised past its outermost frame; see
    vm->uncaughtError. */
 VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out);
+
+/* Runs a bundle: sets up `pak`, then runs its entry module. Everything the
+   entry imports resolves against the bundle rather than the filesystem, so
+   a .funnypak is self-contained by construction. */
+VmResult vm_run_pak(VM *vm, CompiledPak *pak, FILE *out);
+
+/* Runs one module's top-level code once, in its own fresh namespace, and
+   returns a Module of whatever it `flex`ed -- funnylang/vm.py's own
+   run_module. On error returns GHOST_VAL with vm->hadError set, same
+   convention as every other VM-internal helper that can raise. */
+Value vm_run_module(VM *vm, CompiledUnit *unit, const char *moduleName);
 
 /* Calls any callable Value (an ObjClosure or an ObjBoundNative) with
    `argc` args and returns its result -- for native methods that need to

@@ -93,17 +93,26 @@ int main(int argc, char **argv) {
     }
     vm.programArgs = OBJ_VAL(programArgs);
 
+    /* Which loader to use comes from the file's own magic, not its
+       extension -- a bundle renamed to .funnyc still runs, and a caller
+       (the yeet stub, later) that only has bytes doesn't have to guess. */
     char *err = NULL;
-    CompiledUnit *unit = chunk_load_funnyc(data, len, &vm.gc, &err);
+    CompiledUnit *unit = NULL;
+    CompiledPak *pak = NULL;
+    if (chunk_is_funnypak(data, len)) {
+        pak = chunk_load_funnypak(data, len, &vm.gc, &err);
+    } else {
+        unit = chunk_load_funnyc(data, len, &vm.gc, &err);
+    }
     free(data);
-    if (!unit) {
+    if (!unit && !pak) {
         fprintf(stderr, "%s\n", err);
         free(err);
         vm_destroy(&vm);
         return 1;
     }
 
-    VmResult result = vm_run(&vm, unit, stdout);
+    VmResult result = pak ? vm_run_pak(&vm, pak, stdout) : vm_run(&vm, unit, stdout);
     int exitCode = 0;
     if (result == VM_ERROR) {
         int64_t systemExitCode;
@@ -124,7 +133,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    chunk_free_unit(unit);
+    if (pak) chunk_free_pak(pak);
+    else chunk_free_unit(unit);
     vm_destroy(&vm);
     return exitCode;
 }

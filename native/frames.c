@@ -38,7 +38,7 @@ void upvalue_close(ObjUpvalue *uv) {
 }
 
 ObjClosure *closure_new(GC *gc, FunctionProto *proto, ObjUpvalue **upvalues, int upvalueCount,
-                         Value moduleGlobals, Value moduleExports) {
+                         Value moduleGlobals, Value moduleExports, CompiledUnit *unit) {
     ObjClosure *c = (ObjClosure *)malloc(sizeof(ObjClosure));
     c->obj.type = OBJ_CLOSURE;
     c->obj.marked = false;
@@ -53,6 +53,7 @@ ObjClosure *closure_new(GC *gc, FunctionProto *proto, ObjUpvalue **upvalues, int
         c->upvalues = NULL;
     }
     c->homeSquad = NULL;
+    c->unit = unit;
     c->moduleGlobals = moduleGlobals;
     c->moduleExports = moduleExports;
     gc_track(gc, (Obj *)c, sizeof(ObjClosure));

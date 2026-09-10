@@ -254,6 +254,91 @@ void chunk_free_unit(CompiledUnit *unit) {
     free(unit);
 }
 
+/* -- PLAN.md §5.3, the linked bundle ------------------------------------
+   "FUNNYPAK\0", u16 version, u32 module count, then per module a length-
+   prefixed name and a length-prefixed .funnyc blob, then the entry name --
+   funnylang/serializer.py's dump_funnypak field for field. */
+
+#define PAK_MAGIC_LEN 9
+static const uint8_t MAGIC_FUNNYPAK[PAK_MAGIC_LEN] = {'F', 'U', 'N', 'N', 'Y', 'P', 'A', 'K', 0};
+
+bool chunk_is_funnypak(const uint8_t *data, size_t len) {
+    return len >= PAK_MAGIC_LEN && memcmp(data, MAGIC_FUNNYPAK, PAK_MAGIC_LEN) == 0;
+}
+
+CompiledPak *chunk_load_funnypak(const uint8_t *data, size_t len, GC *gc, char **err) {
+    *err = NULL;
+    Reader r = {data, len, 0, false};
+
+    const uint8_t *magic = r_raw(&r, PAK_MAGIC_LEN);
+    if (r.truncated || memcmp(magic, MAGIC_FUNNYPAK, PAK_MAGIC_LEN) != 0) {
+        *err = dup_str("this isn't a .funnypak file.");
+        return NULL;
+    }
+    uint16_t version = r_u16(&r);
+    if (version != BYTECODE_VERSION) {
+        *err = fmt_error("bytecode version %u != %d.", version, BYTECODE_VERSION);
+        return NULL;
+    }
+
+    CompiledPak *pak = (CompiledPak *)calloc(1, sizeof(CompiledPak));
+    pak->moduleCount = r_u32(&r);
+    if (r.truncated) {
+        *err = dup_str("truncated .funnypak: no module count.");
+        chunk_free_pak(pak);
+        return NULL;
+    }
+    pak->modules = (PakModule *)calloc(pak->moduleCount ? pak->moduleCount : 1, sizeof(PakModule));
+    for (uint32_t i = 0; i < pak->moduleCount; i++) {
+        uint32_t nameLen;
+        pak->modules[i].name = r_str(&r, &nameLen);
+        uint32_t blobLen = r_u32(&r);
+        const uint8_t *blob = r_raw(&r, blobLen);
+        if (r.truncated || !blob) {
+            *err = fmt_error("truncated .funnypak: module %u is cut short.", i);
+            chunk_free_pak(pak);
+            return NULL;
+        }
+        /* Each entry is a complete .funnyc, so the existing loader reads
+           it unchanged -- the bundle format adds framing, not a dialect. */
+        char *innerErr = NULL;
+        pak->modules[i].unit = chunk_load_funnyc(blob, blobLen, gc, &innerErr);
+        if (!pak->modules[i].unit) {
+            *err = fmt_error("in bundled module '%s': %s", pak->modules[i].name ? pak->modules[i].name : "?",
+                              innerErr ? innerErr : "unreadable.");
+            free(innerErr);
+            chunk_free_pak(pak);
+            return NULL;
+        }
+    }
+    uint32_t entryLen;
+    pak->entryName = r_str(&r, &entryLen);
+    if (r.truncated || !pak->entryName) {
+        *err = dup_str("truncated .funnypak: no entry module name.");
+        chunk_free_pak(pak);
+        return NULL;
+    }
+    return pak;
+}
+
+void chunk_free_pak(CompiledPak *pak) {
+    if (!pak) return;
+    for (uint32_t i = 0; i < pak->moduleCount; i++) {
+        free(pak->modules[i].name);
+        chunk_free_unit(pak->modules[i].unit);
+    }
+    free(pak->modules);
+    free(pak->entryName);
+    free(pak);
+}
+
+CompiledUnit *chunk_pak_find(const CompiledPak *pak, const char *name) {
+    for (uint32_t i = 0; i < pak->moduleCount; i++) {
+        if (pak->modules[i].name && strcmp(pak->modules[i].name, name) == 0) return pak->modules[i].unit;
+    }
+    return NULL;
+}
+
 void chunk_line_for_offset(const FunctionProto *proto, uint32_t offset, uint32_t *lineOut, uint32_t *colOut) {
     uint32_t line = 0, col = 0;
     for (uint32_t i = 0; i < proto->lineCount; i++) {
