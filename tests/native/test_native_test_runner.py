@@ -14,6 +14,7 @@ for instead of burying the name in a `SkillIssue`).
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -43,10 +44,21 @@ def _native(binary: Path, pak: Path, target: str, cwd: Path = ROOT):
 
 
 def _python(target: str, cwd: Path = ROOT):
-    return subprocess.run(
+    """PYTHONPATH is set explicitly because several of these run with `cwd`
+    somewhere else entirely, and `python -m funnylang` otherwise only resolves
+    when the repo root *is* the working directory or the package happens to be
+    pip-installed. CI's `native` job installs only pytest, so without this the
+    oracle silently produces nothing and every comparison below is against an
+    empty string — which is exactly how this was found."""
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")]))}
+    result = subprocess.run(
         [sys.executable, "-m", "funnylang", "test", target],
-        capture_output=True, text=True, encoding="utf-8", cwd=cwd, timeout=900,
+        capture_output=True, text=True, encoding="utf-8", cwd=cwd, timeout=900, env=env,
     )
+    assert "No module named" not in result.stderr, (
+        f"the Python oracle could not be imported, so there is nothing to compare against:\n{result.stderr}"
+    )
+    return result
 
 
 @pytest.mark.parametrize("target", ["tests/lang", "examples", "."])
