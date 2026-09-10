@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "diag.h"
 
@@ -23,6 +24,23 @@ typedef struct {
        compile phase, where the failure being reported is in the *user's*
        source and the compiler's own stack trace is noise. */
     const char *errorLabel;
+    /* Where the program's `yap` goes. NULL means stdout, which is what
+       `main.c` wants and what this always did.
+
+       It exists because runs nest. `sus.run_program` is how the self-hosted
+       CLI runs a user's program, and it used to send that program's output
+       to the real stdout unconditionally -- so when the *CLI itself* was
+       running inside a captured child VM (which is how a `.funny` test drives
+       the command line), the user program's output escaped the capture and
+       landed in the test runner's own stdout. Passing the calling VM's stream
+       makes the nesting behave: at the top level that stream *is* stdout, so
+       nothing changes, and inside a capture the output is captured. */
+    FILE *out;
+    /* Where an uncaught error's diagnostic and the program's own `yell` go.
+       NULL means stderr. Same reason as `out`: a nested run needs to send its
+       diagnostics wherever its caller's do, or a captured child leaks them
+       into the parent's stderr. */
+    FILE *err;
 } RunnerOptions;
 
 /* Runs already-compiled bytes -- a `.funnyc` or a `.funnypak`, told apart

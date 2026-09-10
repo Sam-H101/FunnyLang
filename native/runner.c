@@ -26,6 +26,9 @@ int funny_run_bytecode(const uint8_t *data, size_t len, char **programArgs, int 
     }
     vm.programArgs = OBJ_VAL(args);
 
+    FILE *errOut = opts.err != NULL ? opts.err : stderr;
+    vm.err = errOut;
+
     char *err = NULL;
     CompiledUnit *unit = NULL;
     CompiledPak *pak = NULL;
@@ -35,14 +38,15 @@ int funny_run_bytecode(const uint8_t *data, size_t len, char **programArgs, int 
         unit = chunk_load_funnyc(data, len, &vm.gc, &err);
     }
     if (!unit && !pak) {
-        fprintf(stderr, "%s\n", err);
+        fprintf(errOut, "%s\n", err);
         free(err);
         vm_destroy(&vm);
         return 1;
     }
 
     double startRun = platform_monotonic_seconds();
-    VmResult result = pak ? vm_run_pak(&vm, pak, stdout) : vm_run(&vm, unit, stdout);
+    FILE *out = opts.out != NULL ? opts.out : stdout;
+    VmResult result = pak ? vm_run_pak(&vm, pak, out) : vm_run(&vm, unit, out);
     if (runMsOut) *runMsOut = (platform_monotonic_seconds() - startRun) * 1000.0;
 
     int exitCode = 0;
@@ -64,10 +68,10 @@ int funny_run_bytecode(const uint8_t *data, size_t len, char **programArgs, int 
                    Full §4.2 diagnostics for source errors need the compiler
                    itself to report them properly -- N8's job, not something
                    to fake from out here. */
-                fprintf(stderr, "%s\n  %s\n", opts.errorLabel, e->message->chars);
+                fprintf(errOut, "%s\n  %s\n", opts.errorLabel, e->message->chars);
                 exitCode = 1;
             } else {
-                diag_render_error(stderr, e, opts.diag);
+                diag_render_error(errOut, e, opts.diag);
                 /* computer.explode()'s ComputerExploded is an ordinary
                    catchable FunnyError everywhere else (sketchy/my_bad
                    catches it like any other) -- exit 69 is purely a

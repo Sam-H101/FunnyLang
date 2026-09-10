@@ -26,6 +26,7 @@
 #include "diag.h"
 #include "platform.h"
 #include "runner.h"
+#include "sus.h"
 #include "toolchain_blob.h"
 
 /* Kept in step with selfhost/cli.funny's own VERSION/BYTECODE_VERSION by
@@ -95,7 +96,16 @@ int main(int argc, char **argv) {
     uint8_t *owned = load_cli_override(&cliLen);
     if (owned != NULL) cliBytes = owned;
 
-    RunnerOptions opts = {diag, NULL};
+    /* Hand the same bytes to the runtime, so `sus.toolchain()` can return
+       them: that is what lets a `.funny` test drive the command line through
+       sus.run_bytecode instead of spawning a process, which the language has
+       no way to do and should not grow a way to do just for its own tests.
+       Registered rather than referenced from sus.c, because stub_main.c links
+       neither this file nor toolchain_blob.c -- a yeeted executable carries a
+       program and no compiler, and `sus.toolchain()` is `ghost` there. */
+    sus_set_toolchain(cliBytes, cliLen);
+
+    RunnerOptions opts = {diag, NULL, NULL, NULL};
     int status = funny_run_bytecode(cliBytes, cliLen, argv + 1, argc - 1, opts, NULL);
     free(owned);
     return status;

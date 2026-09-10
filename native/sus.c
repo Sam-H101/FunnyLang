@@ -106,6 +106,41 @@ static Value m_render_diag(VM *vm, Value *a, int argc) {
     return out;
 }
 
+/* -- the embedded toolchain ------------------------------------------------
+ *
+ * `sus.toolchain()` is what makes the command line testable from inside the
+ * language. `tests/test_cli.py` drove the CLI as a subprocess, and there is
+ * no process-spawn primitive here -- deliberately, and adding one to test the
+ * CLI would be a large new capability bought for a small reason. But
+ * `sus.run_bytecode` already runs a bundle in an isolated VM with argv and
+ * captured stdout and an exit code, which is exactly a CLI invocation; the
+ * only missing piece was getting hold of the toolchain's own bytes. This
+ * hands them over.
+ *
+ * Same bytes `main.c` runs, so a golden written against it tests the shipped
+ * dispatch rather than a re-linked copy of it.
+ */
+static const uint8_t *g_toolchain = NULL;
+static size_t g_toolchainLen = 0;
+
+void sus_set_toolchain(const uint8_t *bytes, size_t len) {
+    g_toolchain = bytes;
+    g_toolchainLen = len;
+}
+
+static Value m_toolchain(VM *vm, Value *a, int argc) {
+    (void)a;
+    (void)argc;
+    if (g_toolchain == NULL) return GHOST_VAL;
+    ObjStash *out = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    for (size_t i = 0; i < g_toolchainLen; i++) {
+        stash_push(&vm->gc, out, INT_VAL(g_toolchain[i]));
+    }
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
+}
+
 static Value m_type_of(VM *vm, Value *a, int argc) {
     (void)argc;
     const char *name = vm_type_name(a[0]);
@@ -238,6 +273,12 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
     VM child;
     vm_init(&child);
     builtins_install(&child);
+    /* The child's `yell` and its uncaught-error diagnostic go here rather
+       than to the caller's stderr. Without it a CLI driven from a test
+       reports every rejected program straight into the test runner's own
+       output -- which is how the fuzz golden was found to be unreadable. */
+    FILE *errCapture = tmpfile();
+    if (errCapture != NULL) child.err = errCapture;
     ObjStash *args = stash_new(&child.gc, NULL, 0);
     for (int i = 0; i < childArgc; i++) {
         stash_push(&child.gc, args, OBJ_VAL(string_new(&child.gc, childArgv[i], (uint32_t)strlen(childArgv[i]))));
@@ -261,6 +302,8 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
     char *message = NULL;
     char *diagText = NULL;
     size_t diagLen = 0;
+    char *errText = NULL;
+    size_t errLen = 0;
     int64_t exitCode = 0;
 
     if (!unit && !pak) {
@@ -297,6 +340,20 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
         }
     }
 
+    if (errCapture != NULL) {
+        fflush(errCapture);
+        long end = ftell(errCapture);
+        if (end > 0) {
+            errLen = (size_t)end;
+            errText = (char *)malloc(errLen + 1);
+            rewind(errCapture);
+            errLen = fread(errText, 1, errLen, errCapture);
+            errText[errLen] = '\0';
+        }
+        fclose(errCapture);
+        child.err = stderr;
+    }
+
     if (pak) chunk_free_pak(pak);
     else if (unit) chunk_free_unit(unit);
     vm_destroy(&child);
@@ -315,6 +372,8 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
                   message != NULL ? OBJ_VAL(string_new(&vm->gc, message, (uint32_t)strlen(message))) : GHOST_VAL);
     groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "diag", 4)),
                   diagText != NULL ? OBJ_VAL(string_new(&vm->gc, diagText, (uint32_t)diagLen)) : GHOST_VAL);
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "err", 3)),
+                  OBJ_VAL(string_new(&vm->gc, errText != NULL ? errText : "", (uint32_t)errLen)));
     groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "code", 4)), INT_VAL(exitCode));
     gc_pop_temp(&vm->gc);
 
@@ -322,6 +381,7 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
     free(flavor);
     free(message);
     free(diagText);
+    free(errText);
     free(sourceRoot);
     return OBJ_VAL(out);
 }
@@ -407,6 +467,12 @@ static Value m_run_program(VM *vm, Value *a, int argc) {
     double runMs = 0.0;
     RunnerOptions opts;
     opts.diag = diag_default_options();
+    /* The *caller's* stream, not stdout. At the top level that is stdout and
+       nothing changes; inside a captured child VM it is the capture, so a
+       CLI driven from a test does not spray the user program's output into
+       the test runner's own. */
+    opts.out = vm->out;
+    opts.err = vm->err;
     opts.errorLabel = label;
     fflush(vm->out); /* the child writes to the real stdout; keep the order right */
     int status = funny_run_bytecode(data, len, childArgv, childArgc, opts, &runMs);
@@ -551,6 +617,7 @@ static const SusEntry SUS_FUNCTIONS[] = {
     {"dump", m_dump, 1, 1},
     {"run_bytecode", m_run_bytecode, 1, 3},
     {"render_diag", m_render_diag, 1, 2},
+    {"toolchain", m_toolchain, 0, 0},
     {"run_program", m_run_program, 1, 3},
     {"new_session", m_new_session, 0, 0},
     {"run_in", m_run_in, 2, 3},

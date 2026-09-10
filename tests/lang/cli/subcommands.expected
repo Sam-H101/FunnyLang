@@ -1,0 +1,9 @@
+!NATIVE
+build -> exit 0
+bytecode matches source: fax
+artifact exists: fax
+first token: Token(GRIND, 'grind', 1:1)
+ast starts with (program: fax
+disasm starts with header: fax
+fmt --check -> exit 0
+fmt --check left the file alone: fax

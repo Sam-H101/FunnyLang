@@ -2560,3 +2560,43 @@ gets an entry explaining what changed and why.
   syntax-error test now asserts that equality directly instead of grepping for a summary line whose
   premise has changed. 275/275 goldens on Linux and Windows, `tests/native` 248 passed, bootstrap
   fixed point byte-identical on both.
+
+- **N11 · CLI goldens and a seeded fuzzer, the other two mechanisms the owner chose.** Both needed
+  the same thing first, and it turned out to be a real bug rather than test plumbing.
+
+  **`sus.toolchain()`.** `tests/test_cli.py` drove the CLI as a subprocess 34 times. There is no
+  process-spawn primitive in FunnyLang, and adding one to test the CLI would be a large new
+  capability bought for a small reason — so the goldens go the other way. `sus.run_bytecode` already
+  runs a bundle in an isolated VM with argv, captured stdout and an exit code, which *is* a CLI
+  invocation; the only missing piece was getting hold of the toolchain's bytes. `main.c` registers
+  them (`sus_set_toolchain`) rather than sus.c referencing `toolchain_blob` directly, because
+  `stub_main.c` links neither — a `yeet`ed executable carries a program and no compiler, and
+  `sus.toolchain()` is `ghost` there. The goldens therefore exercise **the shipped dispatch**, not a
+  re-linked copy of it.
+
+  **Runs nest, and both streams leaked.** `sus.run_program` sent the user program's output to the
+  real stdout unconditionally, so a CLI driven from inside a captured child VM sprayed it into the
+  test runner's own output. Same for `yell` and the uncaught-error diagnostic, which went to the real
+  stderr. `RunnerOptions` now carries `out` and `err`, the VM carries an `err` stream beside its
+  `out`, and `sus.run_bytecode` captures both and returns the second as `err`. At the top level those
+  *are* stdout and stderr, so nothing changed for anyone running a program normally — but a child's
+  diagnostics no longer escape the thing that is supposed to be isolating it. Found because the fuzz
+  golden printed 300 diagnostics into `funny test`'s output and was unreadable.
+
+  **The fuzzer's seed is fixed and printed.** A fuzzer you cannot re-run is a bug report you cannot
+  act on. `rizz` is xoshiro256** seeded through splitmix64 — deterministic and identical on every
+  platform — so this is a golden rather than a coin flip. 200 token soups and 100 grammar-aware
+  programs, about 2.4 s, against the pytest version's 2000 and 500 through an in-process compiler:
+  each case here goes through the real command line at ~6 ms, and that is what sets the counts. The
+  assertion is the pytest one restated — a clean rejection is fine, garbage *should* be rejected, and
+  anything else is the bug — which concretely means exit 0 or 1 with no error escaping the CLI. The
+  offending source is printed on failure, so a failure is actionable without re-running anything.
+
+  **`!NATIVE`, a seventh directive.** These three goldens cannot pass under the Python runner: they
+  ask for an embedded toolchain the reference has no equivalent of. Marking them at the golden is
+  better than a directory exclusion in the differential fixture — the reason lives where the reason
+  applies. The runner records nothing for it; `tests/native/test_native_test_runner.py` reads it when
+  staging the shared corpus.
+
+  Verified: 278/278 on Linux and Windows, `tests/native` 248 passed, bootstrap fixed point
+  byte-identical at the same size on both, MSVC `/W4 /WX` clean.

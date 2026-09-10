@@ -87,6 +87,8 @@ int main(int argc, char **argv) {
     RunnerOptions opts;
     opts.diag = diag_default_options();
     opts.errorLabel = NULL;
+    opts.out = NULL; /* stdout/stderr: a yeeted program is the top level */
+    opts.err = NULL;
 
     /* The diagnostic flags still apply to a shipped program's own errors;
        everything else on the command line belongs to the program. */

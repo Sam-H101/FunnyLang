@@ -618,6 +618,7 @@ void vm_init(VM *vm) {
     vm->pakModuleCache = GHOST_VAL;
     vm->currentModuleName = NULL;
     vm->out = NULL;
+    vm->err = stderr;
     vm->currentFrameIndex = -1;
     vm->currentInstrStart = 0;
     vm->hadError = false;
@@ -3205,7 +3206,7 @@ Value vm_run_module(VM *vm, CompiledUnit *unit, const char *moduleName) {
 VmResult vm_run_pak(VM *vm, CompiledPak *pak, FILE *out) {
     CompiledUnit *entry = chunk_pak_find(pak, pak->entryName);
     if (entry == NULL) {
-        fprintf(stderr, "this bundle names '%s' as its entry, but doesn't contain it.\n", pak->entryName);
+        fprintf(vm->err, "this bundle names '%s' as its entry, but doesn't contain it.\n", pak->entryName);
         return VM_ERROR;
     }
     vm->pak = pak;

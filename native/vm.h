@@ -139,6 +139,12 @@ struct VM {
     const char *currentModuleName;
 
     FILE *out; /* where YAP writes */
+    /* Where `yell` writes, and where an uncaught error's diagnostic is
+       rendered. stderr for a top-level program, and a capture for a
+       child VM: `sus.run_bytecode` is meant to isolate the program it
+       runs, and a child's diagnostics landing in the parent's stderr is
+       the same leak stdout used to have. Never NULL after vm_init. */
+    FILE *err;
 
     /* Where the dispatch loop currently is, refreshed at the top of every
        iteration -- vm_throw() (callable from deep inside an arithmetic

@@ -74,7 +74,7 @@ def _python(target: str, cwd: Path = ROOT):
 # differential still has to mean something, so it runs over the subset both
 # can express, staged into a tmp tree that preserves the layout -- which keeps
 # the walk-order property this test is also checking.
-NATIVE_ONLY_DIRECTIVES = ("!ARGS", "!EXIT", "!DIAG", "!XRAY", "!STDOUT")
+NATIVE_ONLY_DIRECTIVES = ("!ARGS", "!EXIT", "!DIAG", "!XRAY", "!STDOUT", "!NATIVE")
 
 
 def _is_shared_golden(expected: Path) -> bool:

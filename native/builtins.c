@@ -303,18 +303,22 @@ static Value m_oops(VM *vm, Value *a, int argc) {
    self-hosted CLI has to put a diagnostic on stderr and nothing in the
    language could reach stderr at all. `yap`/`mumble` are statements with
    their own opcodes, so this is a plain builtin rather than a third keyword.
-   stderr directly rather than vm->out: this is the one thing in the language
-   that is *defined* as not being the program's output stream. */
+   `vm->err`, not `vm->out`: this is the one thing in the language that is
+   *defined* as not being the program's output stream. It is `vm->err`
+   rather than a bare `stderr` so a child VM's diagnostics can be captured;
+   otherwise a `.funny` test that drives the command line sprays the CLI's
+   error reporting into the test runner's own stderr. For a top-level
+   program `vm->err` *is* stderr, so nothing changes there. */
 static Value m_yell(VM *vm, Value *a, int argc) {
     for (int i = 0; i < argc; i++) {
-        if (i > 0) fputc(' ', stderr);
+        if (i > 0) fputc(' ', vm->err);
         size_t len;
         char *disp = vm_value_to_display_len(vm, a[i], &len);
-        fwrite(disp, 1, len, stderr);
+        fwrite(disp, 1, len, vm->err);
         free(disp);
     }
-    fputc('\n', stderr);
-    fflush(stderr);
+    fputc('\n', vm->err);
+    fflush(vm->err);
     return GHOST_VAL;
 }
 

@@ -95,6 +95,7 @@ flex bet find_pairs(dir_path) {
 //     !DIAG serious           ... serious mode
 //     !XRAY --tokens          body is `funny xray --tokens` output; not run
 //     !STDOUT                 body starts here (only needed if it begins "!")
+//     !NATIVE                 needs something only this runtime has
 //
 // An unrecognised directive fails the test rather than being treated as body
 // text. The alternative -- quietly comparing against a line the author meant
@@ -139,6 +140,13 @@ flex bet parse_directives(golden) {
             spec["xray"] = rest
         } kinda_sus (name == "!STDOUT") {
             // Nothing to record: its whole job is to end the block.
+        } kinda_sus (name == "!NATIVE") {
+            // Also nothing to record *here*. It is a note to the reader and
+            // to tests/native/test_native_test_runner.py, which stages a copy
+            // of the corpus for the Python runner to be compared against and
+            // has to leave out the goldens it cannot possibly pass. The CLI
+            // and fuzz goldens use `sus.toolchain()`, which is the embedded
+            // bundle in this binary; the reference has no such thing.
         } nah {
             spec["bad"] = "unknown directive " + name
             bounce spec
