@@ -1,0 +1,50 @@
+squad Tag {
+    spawn(name) { me.name = name }
+    bet to_yap() { bounce me.name }
+}
+yo tags = [Tag("a"), Tag("b")]
+yap tags
+
+squad Counter {
+    spawn() { me.n = 0 }
+    bet bump() { me.n += 1; bounce me }
+}
+yo c = Counter()
+c.bump().bump().bump()
+yap c.n
+
+squad Shadow {
+    spawn() { me.greet = lowkey () => { bounce "shadowed" } }
+    bet greet() { bounce "method" }
+}
+yo sh = Shadow()
+yap sh.greet()
+
+squad Point {
+    spawn(x, y) { me.x = x; me.y = y }
+    bet same_energy(other) { bounce me.x == other.x fr me.y == other.y }
+}
+yo p1 = [Point(1, 2)]
+yo p2 = [Point(1, 2)]
+yo p3 = [Point(9, 9)]
+yap p1 == p2
+yap p1 == p3
+
+squad Base {
+    bet whoami() { bounce "Base" }
+    bet describe() { bounce "I am " + me.whoami() }
+}
+squad Mid inherits Base {
+    bet whoami() { bounce "Mid" }
+}
+squad Leaf inherits Mid {
+    bet whoami() { bounce "Leaf" }
+    bet describe_up() { bounce og.describe() }
+}
+yo leaf = Leaf()
+yap leaf.describe()
+yap leaf.describe_up()
+
+squad NoSpawn { bet hi() { bounce "hi" } }
+yo ns = NoSpawn(1, 2, 3)
+yap ns.hi()

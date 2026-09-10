@@ -105,30 +105,36 @@ machine with no OpenSSL installed. Certificate verification is mandatory and has
    nothing from it may be handed to the caller — strings are copied out, values never cross.
 
 `FUNNY_GC_STRESS=1` collects on every allocation. It is slow and it is the fastest way to find a
-missing root; the whole differential suite runs under it in CI.
+missing root; the corpus runs under it in CI.
 
 ## Testing
 
 ```console
-$ python3 -m pytest tests/native/     # differential: both VMs, byte-for-byte
-$ FUNNY_GC_STRESS=1 python3 -m pytest tests/native/
-$ ./funny test tests/lang             # the golden corpus, no Python at all
+$ ./funny test tests/lang             # the golden corpus
+$ ./funny test tests/slow             # the ones that take seconds each
 $ ./funny bootstrap --verify          # the self-hosting fixed point
+$ FUNNY_GC_STRESS=1 ./funny test tests/lang
 ```
 
-The differential suite compiles a program with both implementations, runs it through both VMs and
-diffs stdout byte for byte. There are no hand-written expected-output files in it: the expected
-side is rendered live, so a golden can never drift out of date. The exceptions — randomness,
-timing, hardware-dependent output, live network — are tested on their properties instead, and each
-one says so where it is skipped.
+Everything needed to test this runtime is in the artifact it builds. A test is a `.funny` file and
+a `.expected` beside it; `funny test` compiles and runs each in an isolated VM and compares stdout
+byte for byte. `.expected` directives cover what plain stdout cannot — `!ERROR` for a flavor,
+`!ARGS` and `!EXIT`, `!DIAG` for a rendered diagnostic, `!XRAY` for a token dump, parse tree or
+disassembly. `tests/lang/*/README.md` explains each area and records what is deliberately not
+covered.
 
-`tests/lang/` is the other half: `.funny`/`.expected` pairs run by `funny test`, needing no Python
-at all. That corpus is what survives the Python implementation's removal.
+There used to be a differential suite that compiled every program with both this runtime and a
+Python reference and diffed the two. It is gone with the reference. While it existed, it was used
+to check every golden that replaced it: the plain and `!ERROR` pairs were run through the Python VM,
+and every `!XRAY` golden was diffed byte for byte against `funnylang.lexer`, `dump_ast` and
+`disasm.disassemble`. Nothing in the corpus was captured from this runtime's own output and blessed.
+That ordering — grow the corpus while the oracle is still there, then delete the oracle — is why
+N11 was the last milestone rather than the first.
 
 ## Porting to a new platform
 
 1. Add the `#ifdef` branch to `platform.c`. Nothing else should need touching.
-2. `./build.sh && ./funny test tests/lang && ./funny bootstrap --verify`.
+2. `./build.sh && ./funny test tests/lang && ./funny test tests/slow && ./funny bootstrap --verify`.
 3. `platform_executable_path` is only used to find `funnyrt` for `funny yeet`; if it cannot be
    implemented, everything else still works and `FUNNY_STUB` covers that one case.
 

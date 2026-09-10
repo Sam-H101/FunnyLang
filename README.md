@@ -263,32 +263,38 @@ Full reference, generated from the actual function registry so it can't drift:
 
 ## Development
 
-There are two test suites, and they are different in kind.
-
-**The golden corpus** needs nothing but the binary you just built:
+The tests need nothing but the binary you just built.
 
 ```console
-$ ./funny test tests/lang
+$ ./funny test tests/lang     # the golden corpus
+$ ./funny test tests/slow     # the same, for the ones that take seconds each
 $ ./funny test examples
-$ ./funny bootstrap --verify
+$ ./funny bootstrap --verify  # the compiler reproduces itself, byte for byte
 ```
 
-**The differential suite** compiles each program with both the C and the Python implementations,
-runs it through both VMs, and diffs stdout byte for byte. It needs Python and `pytest`:
+A test is a `.funny` file and a `.expected` file beside it. `funny test` compiles and runs each one
+in an isolated VM and compares stdout byte for byte. A `.expected` may open with directives when
+plain stdout is not the point:
 
-```console
-$ python -m pytest -q
-$ FUNNY_GC_STRESS=1 python -m pytest tests/native/ -q
-```
+| directive | what it asserts |
+|---|---|
+| `!ERROR SkillIssue` | that flavor escapes, at compile time or run time |
+| `!ARGS a b "two words"` | argv for the program |
+| `!EXIT 3` | the exit code |
+| `!DIAG` / `!DIAG serious` | the rendered diagnostic, caret line and all |
+| `!XRAY --tokens` | the token dump; the file is analysed, not run |
+| `!XRAY --ast` | the parse tree |
+| `!XRAY` | the disassembly |
 
-Use `python -m pytest` rather than bare `pytest` — several tests shell out to `python -m
-funnylang`, and the `-m` form is what puts the repo root on `sys.path`.
-
-The Python implementation in `funnylang/` is a reference oracle, not the product. It is what the C
-runtime is checked against, and it is on its way out: see NATIVE_PLAN.md's N11.
+There used to be a second suite: a 1,313-test `pytest` run that compiled every program with both the
+C runtime and a Python reference implementation and diffed the results. That reference is gone, and
+so is the suite — v2.0.0's whole point is that this repository contains no Python at all. What the
+corpus lost in having an oracle it gained in coverage: it grew from 76 pairs to 324 while the port
+was still there to check each one against.
 
 Every push and pull request builds `native/` with gcc, clang and MSVC across Windows, Linux and
-macOS, runs the differential suite (plain and under `FUNNY_GC_STRESS`), and — the job that matters
-most — builds and exercises the whole toolchain in a container with **no Python installed and every
-`.py` file deleted from the checkout**. See
+macOS and runs all of the above on each, plus the corpus under ASan/UBSan and under
+`FUNNY_GC_STRESS`. One job does it in a container with a C compiler and **nothing else installed —
+no Python, no pip, no interpreter of any kind** — which is what makes "needs nothing installed" a
+fact about the artifact rather than a claim in a README. See
 [.github/workflows/ci.yml](.github/workflows/ci.yml).

@@ -2804,3 +2804,41 @@ gets an entry explaining what changed and why.
   Unicode ships a release — neither of which is a fault in this repository.
 
   `release.yml` needed no changes at all: it has been Python-free since N9.
+
+- **N11 · the differential corpus, kept.** `tests/native/programs/` was 53 programs and **no**
+  `.expected` files: the differential suite rendered the expected side live from the Python VM on
+  every run, which is why it could never drift, and equally why deleting Python would have deleted
+  the corpus outright — 53 programs covering arithmetic, bitwise ops, comparisons, control flow,
+  closures, deep recursion, scoping, squads, pointers, bignums, every stdlib module, error flavors
+  and GC stress, with nothing left to say what they should print.
+
+  So the expected side was captured from the **reference**, once, on the last day it existed: each
+  program run twice through the Python VM and kept only if it agreed with itself, since a program
+  that disagrees with itself was never a golden candidate. All 53 agreed. They live in
+  `tests/lang/programs/` and the provenance is the point — these files say what the *reference*
+  printed, not what the implementation under test prints.
+
+  One dropped and one line changed, both recorded in that directory's README:
+  `modules_internet.funny` depends on `FUNNY_NO_NET` and on whether the host can reach the network,
+  so it is not a golden in any environment; and `cli_primitives.funny` asserted that
+  `computer.env("PATH")` is set, which is a fact about the ambient environment rather than about the
+  language — and false under the `env -i` run the `no-python` job does. The half that matters, a name
+  nothing sets reading back as `ghost`, stays.
+
+  **375 goldens.**
+
+- **N11 task 6 · the docs.** `README.md`'s testing section described two suites and told the reader to
+  `pip install` and run `pytest`; it now describes one, documents the `.expected` directive table,
+  and says plainly what happened to the other — including that the corpus grew from 76 pairs to 375
+  *while the oracle was still there to check each one against*, which is the whole argument for N11
+  being last. `docs/NATIVE.md` likewise.
+
+  `PLAN.md` is not rewritten, and deliberately. It is the document that built FunnyLang 1.x and it
+  describes a Python toolchain throughout; rewriting 37 mentions would destroy the record of how the
+  first implementation was built for no gain. It gets a framing block at the top instead, saying what
+  no longer exists, what is still current (**§3–§6 are the language and format specification, and the
+  C runtime implements them unchanged**), and that where the document and the code disagree about a
+  format the code wins — with §5.4's reversed `yeet` trailer diagram named as the known case.
+  `bootstrap/STAGE0.md` loses its "while the Python implementation still exists" escape hatch and
+  gains the real recovery procedure: check out the last commit whose blob works, build it, compile
+  the current `selfhost/` with it, and let `bootstrap --verify` prove the fixed point.

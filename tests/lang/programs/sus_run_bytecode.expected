@@ -1,0 +1,56 @@
+"hi\n"
+hi
+ ghost 0
+"nonewline"
+nonewline ghost 0
+""
+ ghost 0
+""
+ SkillIssue 1
+"before\n"
+before
+ SkillIssue 1
+with a message
+"bye\n"
+bye
+ ghost 3
+""
+ ghost 0
+"\n                  _.-^^---....,,--\n              _--                  --_\n             <                        >)\n             |                         |\n              \\._                   _./\n                 ```--. . , ; .--'''\n                       | |   |\n                    .-=||  | |=-.\n                    `-=#$%&%$#=-'\n                       | ;  :|\n              _____.,-#%&$@%#&#~,._____\n\n  \ud83c\udf44 KERNEL PANIC: user was cringe\n  computer.explode() called on purpose. couldn't be you.\n  it's over. exit code 69.\n"
+
+                  _.-^^---....,,--
+              _--                  --_
+             <                        >)
+             |                         |
+              \._                   _./
+                 ```--. . , ; .--'''
+                       | |   |
+                    .-=||  | |=-.
+                    `-=#$%&%$#=-'
+                       | ;  :|
+              _____.,-#%&$@%#&#~,._____
+
+  🍄 KERNEL PANIC: user was cringe
+  computer.explode() called on purpose. couldn't be you.
+  it's over. exit code 69.
+ ComputerExploded 69
+"[\"one\", \"two\"]\n"
+["one", "two"]
+
+"[]\n"
+[]
+
+"child's value\n"
+child's value
+ ghost 0
+caller's value
+""
+ SkillIssue 1
+caller's value
+BytecodeVersionMismatch 1
+BytecodeVersionMismatch 1
+BytecodeVersionMismatch 1
+caught: TypeVibeMismatch
+caught: TypeVibeMismatch
+caught: TypeVibeMismatch
+caller still owns stdout

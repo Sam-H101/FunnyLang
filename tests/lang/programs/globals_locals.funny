@@ -1,0 +1,21 @@
+yo g = 10
+yap g
+g = g + 1
+yap g
+
+sus (fax) {
+    yo local_var = 99
+    yap local_var
+    local_var = local_var - 1
+    yap local_var
+}
+
+yo shadow = 1
+sus (fax) {
+    yo shadow = 2
+    yap shadow
+}
+yap shadow
+
+deadass PI = 3
+yap PI

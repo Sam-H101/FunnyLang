@@ -1,0 +1,49 @@
+3
+2
+5
+0
+2
+numba
+numba
+yapstring
+boolski
+ghost
+stash
+groupchat
+5
+already a string
+[1, 2, 3]
+fax
+42
+42
+3.14
+26
+5
+42
+1
+99999999999999999999999999999999
+5
+5
+1
+5
+5
+"hi\nthere"
+[1, "two", 3]
+ghost
+caught: SkillIssue custom message
+caught: assertion failed. couldn't be you.
+42
+hi
+11
+13
+9
+[0, 1, 2, 3, 4]
+[2, 3, 4]
+[0, 2, 4, 6, 8]
+[10, 8, 6, 4, 2]
+[0, 0.25, 0.5, 0.75]
+[[1, "a"], [2, "b"], [3, "c"]]
+[[0, "a"], [1, "b"], [2, "c"], [3, "d"]]
+[1, [2, 3], {"k": "v"}]
+[1, [2, 3, 99], {"k": "changed"}]
+[]

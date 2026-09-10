@@ -50,9 +50,15 @@ produce byte-identical output — so a regeneration that changes nothing produce
 > normal way a self-hosted toolchain updates itself, and `funny bootstrap --verify` is what proves
 > the result is a fixed point rather than drifting.
 
-While the Python implementation still exists, the equivalent first step is
-`python3 -m funnylang build selfhost/cli.funny -o bootstrap/cli.funnypak`. That is the only thing
-it is still needed for here, and NATIVE_PLAN.md N11 removes it.
+There is no other way in, and there does not need to be one. The blob in `native/toolchain_blob.c`
+is checked in, so a fresh clone builds a working `funny` with nothing but a C compiler, and that
+`funny` is what regenerates the next blob. The Python implementation used to be the alternative
+first step; NATIVE_PLAN.md N11 deleted it.
+
+If the blob is ever lost *and* no released binary is available, the recovery is the same one any
+self-hosted toolchain has: check out the last commit whose blob still works, build it, and use that
+`funny` to compile the current `selfhost/`. `funny bootstrap --verify` then proves the result is a
+fixed point rather than something that merely runs.
 
 ## Iterating without regenerating
 

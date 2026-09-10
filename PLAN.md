@@ -1,9 +1,29 @@
 # FunnyLang — Build Plan
 
+> ## This is a historical document
+>
+> This is the plan that built FunnyLang 1.x, and it describes a toolchain **written in Python**:
+> `funnylang/` as the compiler and VM, `pytest` as the test suite, `pyproject.toml` as the way to
+> install it. **None of that exists any more.** `NATIVE_PLAN.md` replaced the runtime with C
+> (`native/`), the rest of the toolchain with FunnyLang (`selfhost/`), and the test suite with a
+> golden corpus (`tests/lang/`); its milestone N11 deleted the Python implementation entirely. The
+> repository now contains no `.py` file at all, and CI proves it in a container with no interpreter
+> installed.
+>
+> What is still current here, and why it is kept: **§3–§6 are the language and format
+> specification** — the grammar, the error flavors, the opcode numbers, the `.funnyc`/`.funnypak`
+> layouts — and the C runtime implements them unchanged. Read those sections as the spec they are.
+> Read everything else as a record of how the first implementation was built, including the parts
+> about Python, milestones M0–M15, and the acceptance commands, none of which will run today.
+>
+> Where this document and the code disagree about a *format*, the code is authoritative and
+> `NATIVE_PLAN.md` §9 says so — the `yeet` trailer in §5.4 is the known example, whose diagram has
+> the magic and the length the wrong way round.
+
 > **Audience:** an executing coding agent (Sonnet) working autonomously in `f:\my_program_lang`.
 > **Deliverable:** a complete, self-hosting, bytecode-compiled programming language called **FunnyLang**,
 > shipped as a native executable toolchain, where `hello.funny` compiles to `hello.exe` (or `hello` on Linux/macOS).
-> **Host language for stage 1:** Python 3.12+.
+> **Host language for stage 1:** Python 3.12+ *(historical — see the note above)*.
 
 ---
 

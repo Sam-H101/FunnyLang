@@ -1,0 +1,49 @@
+// A FunnyLang string may contain NUL bytes -- `"\0"` is a real escape, and
+// selfhost/lexer.funny's own SIMPLE_ESCAPES table holds one, which is how
+// this was found: the self-hosted compiler running on the C VM emitted an
+// empty string where the Python one emitted "\0". Every operation that
+// turns a value back into text is a place a C implementation can silently
+// truncate at the first NUL, so each of them is exercised here.
+
+yo z = "a\0b"
+
+yap z
+yap z.how_thicc()
+
+// Nested, a string renders through repr, which escapes the NUL -- so these
+// two are about matching the escape, not preserving the raw byte.
+yap [z]
+yap {"k": z}
+yap sheesh(z)
+
+// to_yap and template interpolation both build a new string from a display.
+yap to_yap(z).how_thicc()
+yap `tmpl {z} end`
+yap ("pre" + z + "post").how_thicc()
+
+// join, from both sides: a stash of strings, and yapper's own module-level
+// version (which routes items through the display path).
+yap [z, "c"].join("-").how_thicc()
+yap [z, z].join(z).how_thicc()
+
+gimme yapper
+yap yapper.join("-", [z, "c"]).how_thicc()
+yap yapper.format("{} and {}", z, z).how_thicc()
+
+// Byte-level string methods: the NUL is ordinary content to all of them.
+yap yapper.split(z, "\0").how_thicc()
+yap yapper.replace(z, "\0", "!")
+yap yapper.contains(z, "\0")
+yap yapper.index_of(z, "\0")
+yap yapper.reverse(z).how_thicc()
+yap yapper.slice(z, 0, 2).how_thicc()
+yap yapper.chars(z).how_thicc()
+yap yapper.ord_of("\0")
+
+// A round trip through chars() and back is the exact shape scan_string in
+// selfhost/lexer.funny uses to build a literal's value.
+yo parts = []
+grind ch in yapper.chars(z) {
+    parts.yeet_in(ch)
+}
+yap parts.join("").how_thicc()

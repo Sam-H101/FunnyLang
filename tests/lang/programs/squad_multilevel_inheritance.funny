@@ -1,0 +1,18 @@
+squad A {
+    spawn() { me.tag = "A" }
+    bet chain() { bounce me.tag }
+}
+squad B inherits A {
+    spawn() {
+        og.spawn()
+        me.tag = me.tag + "B"
+    }
+}
+squad C inherits B {
+    spawn() {
+        og.spawn()
+        me.tag = me.tag + "C"
+    }
+}
+yo c = C()
+yap c.chain()
