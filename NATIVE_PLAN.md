@@ -1357,6 +1357,68 @@ gets an entry explaining what changed and why.
   **Lesson for future platform.c work (N5b's HTTPS backends especially): check every `build.*` script
   in the repo root before writing "no build exists for platform X yet," not just the one already
   open.**
+
+- **N5b complete (Linux and Windows verified on real hardware; macOS written but unrun) · HTTPS over
+  OS-native TLS.** `internet.*` now reaches `https://` for real, with certificate verification on and
+  no way to turn it off, exactly as §3.1 specifies. No bundled crypto, no third-party dependency, and
+  `build.sh`/`build.bat` still take no new build-time library.
+  **The shape of it:** rather than a second HTTP implementation per platform, TLS is a *transport*
+  swap. A connection is now `HttpConn { socket, optional TLS session }`, and the entire HTTP/1.1
+  layer above it — request building, status/header parsing, chunked decoding, redirect-following —
+  reads and writes through `conn_send`/`conn_recv` and never learns which of the two it got. So
+  `http://` and `https://` run the same code, and the only per-platform surface is a four-function
+  backend (`tls_start`/`tls_read`/`tls_write`/`tls_finish`).
+  - **Linux/BSD: OpenSSL, `dlopen`'d at run time** (§3.1's own design), never linked. Thirteen
+    symbols resolved through function pointers with no OpenSSL header included anywhere — the four
+    ABI constants that needs (`SSL_VERIFY_PEER`, the SNI ctrl code, `X509_V_OK`) are spelled out
+    instead. `SSL_set_tlsext_host_name` is a macro over `SSL_ctrl`, so a header-free build has to
+    call `SSL_ctrl` directly. Verification is `SSL_CTX_set_default_verify_paths` (system trust
+    store) + `SSL_VERIFY_PEER` (handshake fails on a bad chain) + `SSL_get_verify_result` +
+    **`SSL_set1_host`**, which §3.1's symbol list doesn't mention but which matters: without it a
+    certificate that chains to a real CA but was issued for a completely different domain is
+    accepted, and chain-verified-but-not-hostname-verified is the classic way TLS code is quietly
+    broken.
+  - **Windows: WinHTTP**, which per §3.1 runs the whole request — TLS, redirect-following and the
+    system proxy are the OS's job. Plain `http://` deliberately stays on the shared socket path, so
+    the behaviour the differential suite actually exercises is the same code everywhere; only
+    `https://` diverges. The WinHTTP path reuses the socket path's own `parse_response_head` on
+    `WINHTTP_QUERY_RAW_HEADERS_CRLF` (that blob already ends in the blank line the parser looks
+    for), so header handling isn't duplicated either. The https check happens per redirect hop
+    rather than once up front, so an `http://` → `https://` redirect hands over mid-chain instead of
+    failing.
+  - **macOS: Secure Transport** (`SSLCreateContext`/`SSLSetIOFuncs`/`SSLHandshake`/`SSLRead`), the
+    transport-only shape, so it reuses the same HTTP layer as the OpenSSL path rather than being a
+    third implementation. Verification is on by *default* here — Secure Transport evaluates the
+    chain during the handshake unless `kSSLSessionOptionBreakOnServerAuth` is set, and it never is;
+    `SSLSetPeerDomainName` covers both SNI and the hostname check. Deprecated since 10.15 (the
+    replacement, Network.framework, is dispatch/async-only and unusable from this blocking path), so
+    the deprecation warning is suppressed locally or `-Werror` would reject the file on macOS.
+    **AGENT CHOICE / caveat, stated plainly: this is the one backend that has not been compiled or
+    run**, because there is no Mac in this environment — unlike the Windows branch, which the
+    previous entry's correction made sure was checked against real `cl.exe` rather than assumed. It
+    is written against the documented API and is structurally identical to the OpenSSL backend that
+    *is* verified, but it needs one run on real hardware before N5b's "all three OSes" line can
+    honestly be ticked.
+  Verified (Linux, gcc and clang, ASan/UBSan clean; Windows, MSVC `/W4 /WX`), against each of N5b's
+  four acceptance criteria in turn: a live `https://example.com/` fetch returns 200 with a real body
+  and **byte-identical output to the Python reference** on both OSes; `expired`, `self-signed`,
+  `wrong.host` and `untrusted-root` badssl.com hosts are all rejected while the good control returns
+  200 — identical to what urllib does; `FUNNY_NO_NET=1` still refuses before any backend loads; and
+  with every `libssl` bind-mounted away inside a throwaway namespace (`build/n4/no_openssl_check.sh`,
+  standing in for "a Linux container with no OpenSSL"), the binary still runs, plain `http://` still
+  works, and `https://` fails with the library named — `"https needs OpenSSL, and none could be
+  loaded here (tried libssl.so.3, libssl.so.1.1, libssl.so)."` That last message needed one small
+  interface change: `PlatformHttpResponse` grew a `failReason`, since every other failure is
+  supposed to collapse into Python's generic "the internet said no" and this one must not.
+  `internet.speed_test()` also works for the first time as a side effect — it hardcodes an
+  `https://example.com/` URL, so it could only ever fail before this milestone.
+  New tests: `tests/native/test_native_network.py` (5 tests, marked `network`, skipped under
+  `FUNNY_NO_NET=1`, deselectable with `-m "not network"`). Adding them meant the differential suite
+  could no longer set `FUNNY_NO_NET=1` by assigning `os.environ` at import time — that would have
+  reached across and silently skipped the entire new gate — so it now does it per test through
+  `monkeypatch`, and the shared `native_binary` fixture moved to a new `tests/native/conftest.py`.
+  Full suite after all of it: 52 native tests (47 differential + 5 network) green, including under
+  `FUNNY_GC_STRESS=1`, plus the N5 acceptance corpus unchanged.
   **Found a language-grammar quirk while writing the test, not a bug in either VM:** `sus` is itself
   a reserved statement-leading keyword (FunnyLang's own conditional, "sus (cond) { }"), so
   `sus.dump(x)` as a bare statement fails to parse on *both* VMs identically — confirmed by checking

@@ -25,7 +25,9 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <winhttp.h>
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "winhttp.lib")
 typedef SOCKET SockFd;
 #define SOCK_INVALID INVALID_SOCKET
 #else
@@ -40,6 +42,12 @@ typedef SOCKET SockFd;
 #include <unistd.h>
 typedef int SockFd;
 #define SOCK_INVALID (-1)
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#include <Security/SecureTransport.h>
+#else
+#include <dlfcn.h>
+#endif
 #endif
 
 #include <ctype.h>
@@ -659,6 +667,304 @@ static long sock_recv(SockFd fd, char *buf, size_t len) { return (long)recv(fd, 
 
 #endif
 
+/* -- TLS (NATIVE_PLAN.md N5b / §3.1) ------------------------------------
+   An open connection is a socket plus an optional TLS session layered on
+   top of it. Everything above this layer -- the HTTP/1.1 request/response
+   cycle, chunked decoding, redirect-following -- reads and writes through
+   conn_send/conn_recv and never learns which of the two it got, so
+   http:// and https:// share one implementation rather than two.
+
+   Certificate verification is on unconditionally on every backend, and
+   there is deliberately no way to turn it off: §3.1's "silently accepting
+   bad certificates is the kind of joke that stops being funny". */
+
+typedef struct {
+    SockFd fd;
+    void *tls; /* backend-specific session handle; NULL for plain http */
+} HttpConn;
+
+/* tls_start returns false on any failure. It only writes to `reason` for
+   the one failure the caller must *name* rather than collapse into the
+   generic "the internet said no": this machine has no usable TLS library
+   at all. A handshake or certificate rejection leaves `reason` empty --
+   §3.1 wants those to read as an ordinary network refusal. */
+static bool tls_start(HttpConn *conn, const char *hostname, char *reason, size_t reasonLen);
+static long tls_read(HttpConn *conn, char *buf, size_t len);
+static long tls_write(HttpConn *conn, const char *buf, size_t len);
+static void tls_finish(HttpConn *conn);
+
+#if defined(_WIN32)
+
+/* Windows never reaches these: https:// is handled end to end by WinHTTP
+   (winhttp_request, further down), which does TLS, redirect-following and
+   the system proxy itself, so http_once only ever runs plain http here. */
+static bool tls_start(HttpConn *conn, const char *hostname, char *reason, size_t reasonLen) {
+    (void)conn;
+    (void)hostname;
+    snprintf(reason, reasonLen, "https on Windows goes through WinHTTP, not this path.");
+    return false;
+}
+static long tls_read(HttpConn *conn, char *buf, size_t len) {
+    (void)conn;
+    (void)buf;
+    (void)len;
+    return -1;
+}
+static long tls_write(HttpConn *conn, const char *buf, size_t len) {
+    (void)conn;
+    (void)buf;
+    (void)len;
+    return -1;
+}
+static void tls_finish(HttpConn *conn) { (void)conn; }
+
+#elif defined(__APPLE__)
+
+/* macOS: Secure Transport, part of Security.framework -- the OS *is* the
+   dependency, so there's no bundled crypto and the system trust store and
+   its settings apply automatically. Deprecated since 10.15 but still the
+   only synchronous, C-callable TLS API on the platform (Network.
+   framework's replacement is dispatch/async-only, which this blocking
+   request path can't use), hence the local deprecation suppression --
+   -Werror would otherwise reject the whole file on macOS. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+static OSStatus st_sock_read(SSLConnectionRef c, void *data, size_t *dataLength) {
+    int fd = (int)(intptr_t)c;
+    size_t want = *dataLength, got = 0;
+    while (got < want) {
+        ssize_t n = recv(fd, (char *)data + got, want - got, 0);
+        if (n > 0) {
+            got += (size_t)n;
+            continue;
+        }
+        *dataLength = got;
+        if (n == 0) return errSSLClosedGraceful;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return errSSLWouldBlock;
+        return errSSLInternal;
+    }
+    *dataLength = got;
+    return noErr;
+}
+
+static OSStatus st_sock_write(SSLConnectionRef c, const void *data, size_t *dataLength) {
+    int fd = (int)(intptr_t)c;
+    size_t want = *dataLength, sent = 0;
+    while (sent < want) {
+        ssize_t n = send(fd, (const char *)data + sent, want - sent, 0);
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        *dataLength = sent;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return errSSLWouldBlock;
+        return errSSLInternal;
+    }
+    *dataLength = sent;
+    return noErr;
+}
+
+static bool tls_start(HttpConn *conn, const char *hostname, char *reason, size_t reasonLen) {
+    (void)reason;
+    (void)reasonLen; /* Security.framework ships with the OS: never missing */
+    SSLContextRef ctx = SSLCreateContext(NULL, kSSLClientSide, kSSLStreamType);
+    if (!ctx) return false;
+    if (SSLSetIOFuncs(ctx, st_sock_read, st_sock_write) != noErr ||
+        SSLSetConnection(ctx, (SSLConnectionRef)(intptr_t)conn->fd) != noErr ||
+        /* Both SNI and the name checked against the certificate: a chain
+           that's valid for some *other* host must not be accepted. */
+        SSLSetPeerDomainName(ctx, hostname, strlen(hostname)) != noErr) {
+        CFRelease(ctx);
+        return false;
+    }
+    OSStatus status;
+    do {
+        status = SSLHandshake(ctx);
+    } while (status == errSSLWouldBlock);
+    /* Left at its default, Secure Transport evaluates the server's trust
+       chain during the handshake and fails here on a bad one -- the
+       verification opt-out (kSSLSessionOptionBreakOnServerAuth) is simply
+       never set. */
+    if (status != noErr) {
+        CFRelease(ctx);
+        return false;
+    }
+    conn->tls = ctx;
+    return true;
+}
+
+static long tls_read(HttpConn *conn, char *buf, size_t len) {
+    size_t processed = 0;
+    OSStatus status = SSLRead((SSLContextRef)conn->tls, buf, len, &processed);
+    if (processed > 0) return (long)processed;
+    return (status == errSSLClosedGraceful) ? 0 : -1;
+}
+
+static long tls_write(HttpConn *conn, const char *buf, size_t len) {
+    size_t processed = 0;
+    OSStatus status = SSLWrite((SSLContextRef)conn->tls, buf, len, &processed);
+    if (processed > 0) return (long)processed;
+    return status == noErr ? 0 : -1;
+}
+
+static void tls_finish(HttpConn *conn) {
+    if (!conn->tls) return;
+    SSLClose((SSLContextRef)conn->tls);
+    CFRelease((SSLContextRef)conn->tls);
+    conn->tls = NULL;
+}
+
+#pragma clang diagnostic pop
+
+#else
+
+/* Linux/BSD: OpenSSL, resolved at *run* time through dlopen rather than
+   linked at build time (§3.1) -- which is what keeps the "one C compiler,
+   zero dependencies" build promise: this binary still compiles, links and
+   runs on a machine with no OpenSSL anywhere, it just can't do https
+   there, and says so. Nothing below includes an OpenSSL header; the four
+   constants are ABI values, unchanged across every 1.1.0/3.x release. */
+
+#define FUNNY_SSL_VERIFY_PEER 0x01
+#define FUNNY_SSL_CTRL_SET_TLSEXT_HOSTNAME 55
+#define FUNNY_TLSEXT_NAMETYPE_host_name 0
+#define FUNNY_X509_V_OK 0
+
+typedef struct funny_ssl_st FunnySSL;
+typedef struct funny_ssl_ctx_st FunnySSLCtx;
+typedef struct funny_ssl_method_st FunnySSLMethod;
+
+static struct {
+    bool tried;
+    void *handle;
+    FunnySSLCtx *ctx;
+    const FunnySSLMethod *(*TLS_client_method)(void);
+    FunnySSLCtx *(*SSL_CTX_new)(const FunnySSLMethod *);
+    int (*SSL_CTX_set_default_verify_paths)(FunnySSLCtx *);
+    FunnySSL *(*SSL_new)(FunnySSLCtx *);
+    void (*SSL_free)(FunnySSL *);
+    int (*SSL_set_fd)(FunnySSL *, int);
+    int (*SSL_connect)(FunnySSL *);
+    int (*SSL_read)(FunnySSL *, void *, int);
+    int (*SSL_write)(FunnySSL *, const void *, int);
+    int (*SSL_shutdown)(FunnySSL *);
+    long (*SSL_get_verify_result)(const FunnySSL *);
+    long (*SSL_ctrl)(FunnySSL *, int, long, void *);
+    void (*SSL_set_verify)(FunnySSL *, int, void *);
+    int (*SSL_set1_host)(FunnySSL *, const char *); /* OpenSSL 1.1.0+; optional */
+} g_ssl;
+
+static const char *const OPENSSL_SONAMES[] = {"libssl.so.3", "libssl.so.1.1", "libssl.so"};
+#define OPENSSL_SONAME_COUNT (int)(sizeof(OPENSSL_SONAMES) / sizeof(OPENSSL_SONAMES[0]))
+#define NO_OPENSSL_MSG \
+    "https needs OpenSSL, and none could be loaded here (tried libssl.so.3, libssl.so.1.1, libssl.so)."
+
+static bool ensure_openssl(char *reason, size_t reasonLen) {
+    if (!g_ssl.tried) {
+        g_ssl.tried = true;
+        for (int i = 0; i < OPENSSL_SONAME_COUNT && !g_ssl.handle; i++) {
+            g_ssl.handle = dlopen(OPENSSL_SONAMES[i], RTLD_LAZY | RTLD_LOCAL);
+        }
+        if (g_ssl.handle) {
+            void *h = g_ssl.handle;
+            g_ssl.TLS_client_method = (const FunnySSLMethod *(*)(void))dlsym(h, "TLS_client_method");
+            g_ssl.SSL_CTX_new = (FunnySSLCtx * (*)(const FunnySSLMethod *)) dlsym(h, "SSL_CTX_new");
+            g_ssl.SSL_CTX_set_default_verify_paths =
+                (int (*)(FunnySSLCtx *))dlsym(h, "SSL_CTX_set_default_verify_paths");
+            g_ssl.SSL_new = (FunnySSL * (*)(FunnySSLCtx *)) dlsym(h, "SSL_new");
+            g_ssl.SSL_free = (void (*)(FunnySSL *))dlsym(h, "SSL_free");
+            g_ssl.SSL_set_fd = (int (*)(FunnySSL *, int))dlsym(h, "SSL_set_fd");
+            g_ssl.SSL_connect = (int (*)(FunnySSL *))dlsym(h, "SSL_connect");
+            g_ssl.SSL_read = (int (*)(FunnySSL *, void *, int))dlsym(h, "SSL_read");
+            g_ssl.SSL_write = (int (*)(FunnySSL *, const void *, int))dlsym(h, "SSL_write");
+            g_ssl.SSL_shutdown = (int (*)(FunnySSL *))dlsym(h, "SSL_shutdown");
+            g_ssl.SSL_get_verify_result = (long (*)(const FunnySSL *))dlsym(h, "SSL_get_verify_result");
+            g_ssl.SSL_ctrl = (long (*)(FunnySSL *, int, long, void *))dlsym(h, "SSL_ctrl");
+            g_ssl.SSL_set_verify = (void (*)(FunnySSL *, int, void *))dlsym(h, "SSL_set_verify");
+            g_ssl.SSL_set1_host = (int (*)(FunnySSL *, const char *))dlsym(h, "SSL_set1_host");
+            bool complete = g_ssl.TLS_client_method && g_ssl.SSL_CTX_new && g_ssl.SSL_CTX_set_default_verify_paths &&
+                            g_ssl.SSL_new && g_ssl.SSL_free && g_ssl.SSL_set_fd && g_ssl.SSL_connect &&
+                            g_ssl.SSL_read && g_ssl.SSL_write && g_ssl.SSL_shutdown && g_ssl.SSL_get_verify_result &&
+                            g_ssl.SSL_ctrl && g_ssl.SSL_set_verify;
+            if (!complete) {
+                dlclose(h);
+                g_ssl.handle = NULL;
+            }
+        }
+    }
+    if (!g_ssl.handle) {
+        snprintf(reason, reasonLen, "%s", NO_OPENSSL_MSG);
+        return false;
+    }
+    return true;
+}
+
+static bool tls_start(HttpConn *conn, const char *hostname, char *reason, size_t reasonLen) {
+    if (!ensure_openssl(reason, reasonLen)) return false;
+    if (!g_ssl.ctx) {
+        const FunnySSLMethod *method = g_ssl.TLS_client_method();
+        if (!method) return false;
+        g_ssl.ctx = g_ssl.SSL_CTX_new(method);
+        if (!g_ssl.ctx) return false;
+        /* The system trust store. Verification is not optional here and
+           there is no flag to disable it (§3.1). */
+        g_ssl.SSL_CTX_set_default_verify_paths(g_ssl.ctx);
+    }
+    FunnySSL *ssl = g_ssl.SSL_new(g_ssl.ctx);
+    if (!ssl) return false;
+    char host[256];
+    snprintf(host, sizeof(host), "%s", hostname);
+    /* SNI. SSL_set_tlsext_host_name() is a macro over SSL_ctrl(), so a
+       header-free dlsym build has to spell the control code out. */
+    g_ssl.SSL_ctrl(ssl, FUNNY_SSL_CTRL_SET_TLSEXT_HOSTNAME, FUNNY_TLSEXT_NAMETYPE_host_name, host);
+    /* Hostname verification on top of chain verification: without
+       SSL_set1_host, a certificate that chains to a real CA but was issued
+       for some entirely different domain would be accepted. */
+    if (g_ssl.SSL_set1_host) g_ssl.SSL_set1_host(ssl, host);
+    g_ssl.SSL_set_verify(ssl, FUNNY_SSL_VERIFY_PEER, NULL);
+    g_ssl.SSL_set_fd(ssl, (int)conn->fd);
+    if (g_ssl.SSL_connect(ssl) != 1 || g_ssl.SSL_get_verify_result(ssl) != FUNNY_X509_V_OK) {
+        g_ssl.SSL_free(ssl);
+        return false;
+    }
+    conn->tls = ssl;
+    return true;
+}
+
+static long tls_read(HttpConn *conn, char *buf, size_t len) {
+    int n = len > (size_t)INT_MAX ? INT_MAX : (int)len;
+    return (long)g_ssl.SSL_read((FunnySSL *)conn->tls, buf, n);
+}
+
+static long tls_write(HttpConn *conn, const char *buf, size_t len) {
+    int n = len > (size_t)INT_MAX ? INT_MAX : (int)len;
+    return (long)g_ssl.SSL_write((FunnySSL *)conn->tls, buf, n);
+}
+
+static void tls_finish(HttpConn *conn) {
+    if (!conn->tls) return;
+    g_ssl.SSL_shutdown((FunnySSL *)conn->tls);
+    g_ssl.SSL_free((FunnySSL *)conn->tls);
+    conn->tls = NULL;
+}
+
+#endif
+
+static long conn_send(HttpConn *conn, const char *buf, size_t len) {
+    return conn->tls ? tls_write(conn, buf, len) : sock_send(conn->fd, buf, len);
+}
+
+static long conn_recv(HttpConn *conn, char *buf, size_t len) {
+    return conn->tls ? tls_read(conn, buf, len) : sock_recv(conn->fd, buf, len);
+}
+
+static void conn_close(HttpConn *conn) {
+    tls_finish(conn);
+    if (conn->fd != SOCK_INVALID) sock_close(conn->fd);
+    conn->fd = SOCK_INVALID;
+}
+
 typedef struct {
     char *data;
     size_t len;
@@ -767,12 +1073,12 @@ static SockFd connect_with_timeout(const char *host, int port, int timeoutMs) {
    absolute platform_monotonic_seconds() time). Returns false on timeout,
    error, or a clean EOF (0 bytes read) -- callers distinguish "EOF" from
    "error" by checking how much of the response they'd already parsed. */
-static bool recv_some(SockFd fd, ByteBuf *buf, double deadline) {
+static bool recv_some(HttpConn *conn, ByteBuf *buf, double deadline) {
     double now = platform_monotonic_seconds();
     if (now >= deadline) return false;
-    sock_set_recv_timeout(fd, (int)((deadline - now) * 1000.0));
+    sock_set_recv_timeout(conn->fd, (int)((deadline - now) * 1000.0));
     char tmp[8192];
-    long n = sock_recv(fd, tmp, sizeof(tmp));
+    long n = conn_recv(conn, tmp, sizeof(tmp));
     if (n <= 0) return false;
     bb_append(buf, tmp, (size_t)n);
     return true;
@@ -906,11 +1212,32 @@ static void free_response_head(ParsedResponseHead *h) {
    shared across the whole redirect chain, matching "timeoutMs bounds the
    connect phase and the overall remaining read budget together". */
 static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttpHeader *reqHeaders, int reqHeaderCount,
-                       const char *body, size_t bodyLen, double deadline, ParsedResponseHead *outHead, ByteBuf *outBody) {
+                       const char *body, size_t bodyLen, double deadline, ParsedResponseHead *outHead, ByteBuf *outBody,
+                       char *failReason, size_t failReasonLen) {
     double now = platform_monotonic_seconds();
     if (now >= deadline) return false;
     SockFd fd = connect_with_timeout(u->host, u->port, (int)((deadline - now) * 1000.0));
     if (fd == SOCK_INVALID) return false;
+
+    HttpConn conn;
+    conn.fd = fd;
+    conn.tls = NULL;
+    if (strcmp(u->scheme, "https") == 0) {
+        /* Bound the handshake's own reads by the same deadline -- without
+           this a connected-but-silent peer would hang the whole request,
+           since the socket is blocking and recv_some hasn't set its
+           per-read timeout yet. */
+        double beforeHandshake = platform_monotonic_seconds();
+        if (beforeHandshake >= deadline) {
+            sock_close(fd);
+            return false;
+        }
+        sock_set_recv_timeout(fd, (int)((deadline - beforeHandshake) * 1000.0));
+        if (!tls_start(&conn, u->host, failReason, failReasonLen)) {
+            sock_close(fd);
+            return false;
+        }
+    }
 
     ByteBuf req;
     memset(&req, 0, sizeof(req));
@@ -943,7 +1270,7 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
             sendOk = false;
             break;
         }
-        long w = sock_send(fd, req.data + sent, req.len - sent);
+        long w = conn_send(&conn, req.data + sent, req.len - sent);
         if (w <= 0) {
             sendOk = false;
             break;
@@ -952,7 +1279,7 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
     }
     bb_free(&req);
     if (!sendOk) {
-        sock_close(fd);
+        conn_close(&conn);
         return false;
     }
 
@@ -963,9 +1290,9 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
     bool haveHead = false;
     while (!haveHead) {
         if (!parse_response_head(&raw, &head)) {
-            if (!recv_some(fd, &raw, deadline)) {
+            if (!recv_some(&conn, &raw, deadline)) {
                 bb_free(&raw);
-                sock_close(fd);
+                conn_close(&conn);
                 return false;
             }
             continue;
@@ -981,7 +1308,7 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
     if (head.chunked) {
         while (!decode_chunked(bodyStart, bodyAvail, &outBuf)) {
             outBuf.len = 0; /* decode_chunked restarts from scratch each call */
-            if (!recv_some(fd, &raw, deadline)) {
+            if (!recv_some(&conn, &raw, deadline)) {
                 bodyOk = false;
                 break;
             }
@@ -990,21 +1317,21 @@ static bool http_once(const char *method, const ParsedUrl *u, const PlatformHttp
         }
     } else if (head.contentLength >= 0) {
         while (bodyAvail < (size_t)head.contentLength) {
-            if (!recv_some(fd, &raw, deadline)) break; /* short read tolerated below EOF */
+            if (!recv_some(&conn, &raw, deadline)) break; /* short read tolerated below EOF */
             bodyStart = raw.data + head.headerBlockLen;
             bodyAvail = raw.len - head.headerBlockLen;
         }
         bb_append(&outBuf, bodyStart, bodyAvail < (size_t)head.contentLength ? bodyAvail : (size_t)head.contentLength);
     } else {
         bb_append(&outBuf, bodyStart, bodyAvail);
-        while (recv_some(fd, &raw, deadline)) {
+        while (recv_some(&conn, &raw, deadline)) {
             bodyStart = raw.data + head.headerBlockLen;
             bodyAvail = raw.len - head.headerBlockLen;
             outBuf.len = 0;
             bb_append(&outBuf, bodyStart, bodyAvail);
         }
     }
-    sock_close(fd);
+    conn_close(&conn);
     bb_free(&raw);
     if (!bodyOk) {
         bb_free(&outBuf);
@@ -1024,6 +1351,137 @@ static bool url_join_location(const ParsedUrl *base, const char *location, Parse
     return parse_url(location, out);
 }
 
+#ifdef _WIN32
+
+static wchar_t *utf8_to_wide(const char *s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
+    if (!w || MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n) <= 0) {
+        free(w);
+        return NULL;
+    }
+    return w;
+}
+
+static char *wide_to_utf8(const wchar_t *w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    if (n <= 0) return NULL;
+    char *s = (char *)malloc((size_t)n);
+    if (!s || WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL) <= 0) {
+        free(s);
+        return NULL;
+    }
+    return s;
+}
+
+/* Windows https://: WinHTTP runs the entire request -- TLS against the
+   system trust store (verification on, with no option here that turns it
+   off), redirect-following and the system proxy are all the OS's job
+   rather than this file's, exactly as NATIVE_PLAN.md §3.1 intends.
+   Plain http:// deliberately stays on the shared raw-socket path, so the
+   behaviour the differential suite actually exercises is the same code on
+   every platform. */
+static void winhttp_request(const char *method, const ParsedUrl *u, const PlatformHttpHeader *headers,
+                             int headerCount, const char *body, size_t bodyLen, int timeoutMs,
+                             PlatformHttpResponse *out) {
+    HINTERNET session = NULL, connection = NULL, request = NULL;
+    wchar_t *wheaders = NULL;
+    wchar_t *whost = utf8_to_wide(u->host);
+    wchar_t *wpath = utf8_to_wide(u->path);
+    wchar_t *wmethod = utf8_to_wide(method);
+    if (!whost || !wpath || !wmethod) goto cleanup;
+
+    session = WinHttpOpen(L"FunnyLang/2.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                           WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) goto cleanup;
+    WinHttpSetTimeouts(session, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
+    connection = WinHttpConnect(session, whost, (INTERNET_PORT)u->port, 0);
+    if (!connection) goto cleanup;
+    request = WinHttpOpenRequest(connection, wmethod, wpath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                  WINHTTP_FLAG_SECURE);
+    if (!request) goto cleanup;
+
+    for (int i = 0; i < headerCount; i++) {
+        char headerLine[4096];
+        snprintf(headerLine, sizeof(headerLine), "%s: %s\r\n", headers[i].name, headers[i].value);
+        wchar_t *wline = utf8_to_wide(headerLine);
+        if (!wline) continue;
+        WinHttpAddRequestHeaders(request, wline, (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+        free(wline);
+    }
+
+    if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, (LPVOID)(void *)body, (DWORD)bodyLen,
+                             (DWORD)bodyLen, 0))
+        goto cleanup;
+    if (!WinHttpReceiveResponse(request, NULL)) goto cleanup;
+
+    DWORD status = 0, statusSize = sizeof(status);
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                              WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX))
+        goto cleanup;
+
+    /* The raw header block already ends with the blank line
+       parse_response_head looks for, so the socket path's own parser
+       handles it unchanged. */
+    DWORD headerBytes = 0;
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX, NULL, &headerBytes,
+                        WINHTTP_NO_HEADER_INDEX);
+    if (headerBytes > 0) {
+        wheaders = (wchar_t *)malloc(headerBytes + sizeof(wchar_t));
+        if (wheaders && WinHttpQueryHeaders(request, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX,
+                                             wheaders, &headerBytes, WINHTTP_NO_HEADER_INDEX)) {
+            char *utf8Headers = wide_to_utf8(wheaders);
+            if (utf8Headers) {
+                ByteBuf hb;
+                memset(&hb, 0, sizeof(hb));
+                bb_append(&hb, utf8Headers, strlen(utf8Headers));
+                ParsedResponseHead head;
+                memset(&head, 0, sizeof(head));
+                if (parse_response_head(&hb, &head)) {
+                    out->headers = head.headers;
+                    out->headerCount = head.headerCount;
+                    free(head.location);
+                }
+                bb_free(&hb);
+                free(utf8Headers);
+            }
+        }
+    }
+
+    ByteBuf bodyBuf;
+    memset(&bodyBuf, 0, sizeof(bodyBuf));
+    for (;;) {
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(request, &available) || available == 0) break;
+        char *chunk = (char *)malloc(available);
+        if (!chunk) break;
+        DWORD got = 0;
+        if (!WinHttpReadData(request, chunk, available, &got) || got == 0) {
+            free(chunk);
+            break;
+        }
+        bb_append(&bodyBuf, chunk, got);
+        free(chunk);
+    }
+
+    out->ok = true;
+    out->status = (int)status;
+    out->body = bodyBuf.data;
+    out->bodyLen = bodyBuf.len;
+
+cleanup:
+    free(wheaders);
+    free(whost);
+    free(wpath);
+    free(wmethod);
+    if (request) WinHttpCloseHandle(request);
+    if (connection) WinHttpCloseHandle(connection);
+    if (session) WinHttpCloseHandle(session);
+}
+
+#endif /* _WIN32 */
+
 PlatformHttpResponse platform_http_request(const char *method, const char *url, const PlatformHttpHeader *headers,
                                             int headerCount, const char *body, size_t bodyLen, int timeoutMs) {
     PlatformHttpResponse result;
@@ -1031,7 +1489,7 @@ PlatformHttpResponse platform_http_request(const char *method, const char *url, 
 
     ParsedUrl u;
     if (!parse_url(url, &u)) return result;
-    if (strcmp(u.scheme, "http") != 0) return result; /* https:// -- N5b's job */
+    if (strcmp(u.scheme, "http") != 0 && strcmp(u.scheme, "https") != 0) return result;
 
     double deadline = platform_monotonic_seconds() + (double)timeoutMs / 1000.0;
     const char *curMethod = method;
@@ -1039,9 +1497,18 @@ PlatformHttpResponse platform_http_request(const char *method, const char *url, 
     size_t curBodyLen = bodyLen;
 
     for (int hop = 0; hop < 10; hop++) {
+#ifdef _WIN32
+        /* Checked per hop, not just up front, so an http:// -> https://
+           redirect hands off to WinHTTP too instead of failing. */
+        if (strcmp(u.scheme, "https") == 0) {
+            winhttp_request(curMethod, &u, headers, headerCount, curBody, curBodyLen, timeoutMs, &result);
+            return result;
+        }
+#endif
         ParsedResponseHead head;
         ByteBuf respBody;
-        if (!http_once(curMethod, &u, headers, headerCount, curBody, curBodyLen, deadline, &head, &respBody)) {
+        if (!http_once(curMethod, &u, headers, headerCount, curBody, curBodyLen, deadline, &head, &respBody,
+                        result.failReason, sizeof(result.failReason))) {
             return result;
         }
         bool isRedirect = (head.status == 301 || head.status == 302 || head.status == 303 || head.status == 307 ||
@@ -1051,7 +1518,7 @@ PlatformHttpResponse platform_http_request(const char *method, const char *url, 
             bool joined = url_join_location(&u, head.location, &next);
             free_response_head(&head);
             bb_free(&respBody);
-            if (!joined || strcmp(next.scheme, "http") != 0) return result;
+            if (!joined || (strcmp(next.scheme, "http") != 0 && strcmp(next.scheme, "https") != 0)) return result;
             u = next;
             if (head.status == 301 || head.status == 302 || head.status == 303) {
                 curMethod = "GET";

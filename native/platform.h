@@ -126,12 +126,24 @@ typedef struct {
     size_t bodyLen;
     PlatformHttpHeader *headers;
     int headerCount;
+    /* Empty for every ordinary failure (the caller then raises the same
+       generic "the internet said no" SkillIssue Python always raises).
+       Non-empty only when a failure needs naming rather than collapsing:
+       today that is exactly the "this machine has no TLS library" case,
+       which NATIVE_PLAN.md §3.1 requires be "a clean SkillIssue naming
+       the missing library, never a crash" -- a diagnostic Python's own
+       urllib can never produce, so nothing differential-tests it. */
+    char failReason[256];
 } PlatformHttpResponse;
 
-/* A full HTTP/1.1 request/response cycle over a raw socket -- plain HTTP
-   only (NATIVE_PLAN.md N5 task 5: "the plain-HTTP path only; HTTPS is
-   N5b's job"). An https:// url fails immediately with ok=false and no
-   socket touched at all, never a silent downgrade to plain HTTP.
+/* A full HTTP/1.1 request/response cycle -- `http://` over a raw socket,
+   `https://` over the OS's own TLS (NATIVE_PLAN.md N5b §3.1: dlopen'd
+   OpenSSL on Linux/BSD, WinHTTP on Windows, Security.framework on macOS;
+   no bundled crypto, no third-party dependency, and certificate
+   verification unconditionally on with no verify=false escape hatch).
+   A machine with no TLS backend at all still builds and runs; `https://`
+   there fails with `failReason` set rather than crashing or silently
+   downgrading to plain HTTP.
    Follows up to 10 redirects (a Location header on 301/302/303/307/308;
    301/302/303 switch to GET and drop the body, 307/308 preserve both,
    matching ordinary browser/urllib redirect behavior; a relative
@@ -140,12 +152,13 @@ typedef struct {
    Length`, and falls back to read-until-EOF when neither header is
    present. `timeoutMs` bounds the connect phase and the overall
    remaining read budget together, not each independently.
-   On any failure (network error, malformed response, too many
-   redirects, a non-http scheme, a relative Location) returns ok=false
-   with every other field zeroed -- the caller always raises the same
-   generic "the internet said no" SkillIssue for any failure, exactly
-   matching funnylang/stdlib/internet.py's own single _no_net_error()
-   catch-all around every possible urllib/socket exception. */
+   On any failure (network error, TLS handshake or certificate
+   rejection, malformed response, too many redirects, an unknown scheme,
+   a relative Location) returns ok=false with every other field zeroed --
+   the caller raises the same generic "the internet said no" SkillIssue,
+   exactly matching funnylang/stdlib/internet.py's own single
+   _no_net_error() catch-all around every possible urllib/socket
+   exception, unless `failReason` says otherwise. */
 PlatformHttpResponse platform_http_request(const char *method, const char *url,
                                             const PlatformHttpHeader *headers, int headerCount,
                                             const char *body, size_t bodyLen, int timeoutMs);

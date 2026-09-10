@@ -21,7 +21,6 @@ toolchain, runs the result through both VMs, and diffs stdout.
 from __future__ import annotations
 
 import io
-import os
 import subprocess
 from pathlib import Path
 
@@ -36,36 +35,21 @@ from funnylang.source import SourceFile
 from funnylang.stdlib import install_stdlib
 from funnylang.vm import VM
 
-ROOT = Path(__file__).resolve().parent.parent.parent
 PROGRAMS_DIR = Path(__file__).resolve().parent / "programs"
 PROGRAMS = sorted(PROGRAMS_DIR.glob("*.funny"))
+
 
 # `internet` (N5 task 5) is the one module that can touch the real network.
 # No program under programs/ exercises live network I/O -- same policy
 # tests/test_stdlib.py's own internet tests already follow, always under
-# FUNNY_NO_NET=1 -- so this is set unconditionally for the whole
-# differential suite. `_native_run`'s subprocess inherits it automatically
-# (no `env=` override there), so one line covers both VMs.
-os.environ["FUNNY_NO_NET"] = "1"
-
-
-@pytest.fixture(scope="session")
-def native_binary(tmp_path_factory):
-    out = tmp_path_factory.mktemp("native_build") / "funny_native_test"
-    srcs = sorted(str(p) for p in (ROOT / "native").glob("*.c"))
-    cc = os.environ.get("CC", "cc")  # e.g. `CC=clang python3 -m pytest ...`
-    cmd = [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(out), *srcs, "-lm"]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-    except OSError as exc:
-        # `cc` not found at all (e.g. windows-latest CI runners have no C
-        # compiler on PATH without an explicit setup step, unlike the
-        # `native` ci.yml job) -- FileNotFoundError, not a nonzero exit, so
-        # this needs its own catch alongside the compile-failure case below.
-        pytest.skip(f"no C compiler on PATH: {exc}")
-    if result.returncode != 0:
-        pytest.skip(f"no C toolchain available to build the native binary:\n{result.stdout}\n{result.stderr}")
-    return out
+# FUNNY_NO_NET=1 -- so every program here runs with it set. Done per test
+# through monkeypatch rather than by assigning os.environ at import time,
+# so it's restored afterwards and can't reach into the *other* suite in
+# this directory, N5b's live-HTTPS gate, which needs the real value.
+# `_native_run`'s subprocess inherits it either way (no `env=` override).
+@pytest.fixture(autouse=True)
+def _network_disabled(monkeypatch):
+    monkeypatch.setenv("FUNNY_NO_NET", "1")
 
 
 def _python_run(path: Path) -> str:

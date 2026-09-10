@@ -36,5 +36,23 @@ fi
 # after the sources on the link line (GNU ld resolves libraries left to
 # right against what's already been seen). Harmless where it's not needed
 # (macOS's libSystem already has these symbols; passing -lm is a no-op).
-echo "+ $CC ${FLAGS[*]} -o $OUT ${SRCS[*]} -lm"
-"$CC" "${FLAGS[@]}" -o "$OUT" "${SRCS[@]}" -lm
+#
+# The rest is N5b's TLS (NATIVE_PLAN.md §3.1), and is the only
+# platform-conditional part of this script:
+#   -ldl                  Linux/BSD: platform.c dlopen()s OpenSSL at run
+#                         time rather than linking it, so the binary still
+#                         builds and runs on a machine with no OpenSSL at
+#                         all. (glibc >= 2.34 folded dlopen into libc and
+#                         ships -ldl as an empty stub, so this stays
+#                         harmless on new distros while keeping old ones
+#                         working.) There is no -ldl on macOS.
+#   -framework Security   macOS: Secure Transport, part of the OS. No
+#   -framework CoreFoundation                dlopen, no third-party dependency.
+LIBS=(-lm)
+case "$(uname -s)" in
+    Darwin) LIBS+=(-framework Security -framework CoreFoundation) ;;
+    *) LIBS+=(-ldl) ;;
+esac
+
+echo "+ $CC ${FLAGS[*]} -o $OUT ${SRCS[*]} ${LIBS[*]}"
+"$CC" "${FLAGS[@]}" -o "$OUT" "${SRCS[@]}" "${LIBS[@]}"

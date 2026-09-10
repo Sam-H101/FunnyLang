@@ -30,6 +30,16 @@ static const char *string_arg(VM *vm, Value v, const char *fnName) {
     return AS_STRING(v)->chars;
 }
 
+/* Every network failure collapses to Python's own generic NET_SAID_NO --
+   except the one platform.c is allowed to name: a machine with no TLS
+   library at all, which NATIVE_PLAN.md §3.1 requires be reported as "a
+   clean SkillIssue naming the missing library" rather than hidden behind
+   the generic text. Nothing differential-tests that branch (urllib always
+   has ssl, so Python can't produce it). */
+static void throw_net_error(VM *vm, const PlatformHttpResponse *resp) {
+    vm_throw_native(vm, "SkillIssue", "%s", resp->failReason[0] ? resp->failReason : NET_SAID_NO);
+}
+
 static double value_as_double(Value v) {
     if (IS_FLOAT(v)) return AS_FLOAT(v);
     if (IS_INT(v)) return (double)AS_INT(v);
@@ -94,7 +104,7 @@ static Value m_go_brrrr(VM *vm, Value *a, int argc) {
     PlatformHttpResponse resp =
         platform_http_request(method, url, reqHeaders, reqHeaderCount, bodyBytes, bodyLen, timeoutMs);
     if (!resp.ok) {
-        vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
+        throw_net_error(vm, &resp);
         return GHOST_VAL;
     }
 
@@ -142,7 +152,7 @@ static Value m_download(VM *vm, Value *a, int argc) {
     if (!path) return GHOST_VAL;
     PlatformHttpResponse resp = platform_http_request("GET", url, NULL, 0, NULL, 0, DEFAULT_TIMEOUT_MS);
     if (!resp.ok) {
-        vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
+        throw_net_error(vm, &resp);
         return GHOST_VAL;
     }
     char errbuf[256];
@@ -167,7 +177,7 @@ static Value m_speed_test(VM *vm, Value *a, int argc) {
     PlatformHttpResponse resp =
         platform_http_request("GET", "https://example.com/", NULL, 0, NULL, 0, DEFAULT_TIMEOUT_MS);
     if (!resp.ok) {
-        vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
+        throw_net_error(vm, &resp);
         return GHOST_VAL;
     }
     double elapsed = platform_monotonic_seconds() - start;
