@@ -1513,6 +1513,27 @@ gets an entry explaining what changed and why.
   strongest one: the C VM and the Python VM each run the *same* FunnyLang compiler over the same input
   and must produce **byte-identical bytecode**, so any divergence in how the two VMs execute anything
   at all surfaces as different bytes rather than as a program that happens to print the right thing.
+- **Variadics — the corpus is 64/64, and the last language gap between the two VMs is closed.**
+  `vm.c`'s arity check had been rejecting every variadic outright ("variadic functions aren't
+  supported natively yet") since N3. Binding them is what
+  `funnylang/vm.py`'s `_push_closure_frame` does in three lines: take the first `arity` arguments as
+  the named parameters (padding with ghost so the closure's own default-expression bytecode still
+  fires), collect everything past them into a Stash, and make that Stash the slot right after. Note
+  `arity` counts only the *named* parameters, so for a variadic there is no such thing as too many
+  arguments -- only too few, and the arity message says "at least N" accordingly.
+  The part worth being careful about wasn't the binding rule, it was that **five separate places in
+  the C VM push a frame** -- a plain call, a bound-method value, `INVOKE` on an instance, a callback
+  re-entering from native code, and construction -- each with its own hand-rolled ghost-padding loop.
+  Fixing only the obvious one would have left variadic methods and variadic `spawn` quietly broken, so
+  all five now share one `bind_args_in_place`, and the new differential program
+  (`variadics_all_call_paths.funny`) deliberately exercises each path plus the too-few-arguments
+  error, rather than just re-testing what the two existing goldens already covered.
+  Result: `tests/lang/variadics.funny` and `defaults_with_variadic.funny` pass, the N5 acceptance
+  corpus goes from 71/71-with-2-skipped to **73/73 with the variadic skips deleted**, and the
+  zero-Python self-hosted corpus check goes **64 of 64** -- every program compiled by the self-hosted
+  compiler on the C VM and run on the C VM, matching its golden. Verified on Linux (gcc and clang,
+  ASan/UBSan) and native Windows (MSVC).
+
   Not done here, and deliberately: `bootstrap/funnyc.funnypak` is *not* checked in yet. §4 lists it as
   a checked-in artifact but hands the provenance/staleness policy to N9, and a generated binary in the
   tree without that policy is how stale bootstrap artifacts happen — the test links its own from

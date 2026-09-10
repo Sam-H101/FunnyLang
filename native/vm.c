@@ -1424,29 +1424,47 @@ static Value vm_compare(VM *vm, CmpOp op, Value a, Value b) {
 static bool closure_arity_ok(VM *vm, FunctionProto *proto, int argc) {
     int arity = proto->arity;
     int minRequired = arity - proto->defaultCount;
-    if (proto->isVariadic) {
-        /* The "...rest" parameter needs a real Stash to bind -- Stash
-           exists as of this milestone, but wiring variadic binding
-           through is separate follow-up work, not yet done. Reject
-           cleanly rather than silently mishandling it. */
-        vm_throw(vm, "SkillIssue", "variadic functions aren't supported natively yet.");
-        return false;
-    }
-    if (argc > arity || argc < minRequired) {
-        const char *wantStr;
+    /* `arity` counts only the *named* parameters; a variadic's "...rest"
+       is one further slot after them, so extra arguments are never too
+       many -- only too few is an error. */
+    bool tooMany = !proto->isVariadic && argc > arity;
+    if (tooMany || argc < minRequired) {
         char wantBuf[32];
-        int want = arity - proto->defaultCount;
-        if (proto->defaultCount) {
-            snprintf(wantBuf, sizeof wantBuf, "at least %d", want);
-            wantStr = wantBuf;
+        if (proto->defaultCount || proto->isVariadic) {
+            snprintf(wantBuf, sizeof wantBuf, "at least %d", minRequired);
         } else {
-            snprintf(wantBuf, sizeof wantBuf, "%d", want);
-            wantStr = wantBuf;
+            snprintf(wantBuf, sizeof wantBuf, "%d", minRequired);
         }
-        vm_throw_wrong_homies(vm, proto->name, wantStr, argc);
+        vm_throw_wrong_homies(vm, proto->name, wantBuf, argc);
         return false;
     }
     return true;
+}
+
+/* Lays out `argc` arguments already sitting at [argStart, argStart+argc)
+   as `proto`'s parameter slots, in place, leaving the stack holding
+   exactly what the frame expects:
+     - missing defaulted arguments become ghost, which the closure's own
+       bytecode then overwrites with the real default expression
+       (compiler.py's _emit_param_defaults);
+     - for a variadic, everything past the named parameters is collected
+       into a Stash that becomes the slot right after them.
+   funnylang/vm.py's `fixed + [rest]` in _push_closure_frame, spelled as a
+   stack edit rather than a list build. Call only after closure_arity_ok
+   has passed, so argc is already known to be legal. */
+static void bind_args_in_place(VM *vm, FunctionProto *proto, int argStart, int argc) {
+    int arity = proto->arity;
+    if (proto->isVariadic) {
+        int extra = argc > arity ? argc - arity : 0;
+        /* Built before the stack is truncated, while those arguments are
+           still on it and therefore still GC roots. */
+        ObjStash *rest = stash_new(&vm->gc, extra > 0 ? &vm->stack[argStart + arity] : NULL, extra);
+        vm->stackCount = argStart + (argc < arity ? argc : arity);
+        for (int i = argc; i < arity; i++) push(vm, GHOST_VAL);
+        push(vm, OBJ_VAL(rest));
+        return;
+    }
+    for (int i = argc; i < arity; i++) push(vm, GHOST_VAL);
 }
 
 /* Calls an ObjBoundNative's underlying C function. `argStart` is where its
@@ -1602,9 +1620,8 @@ static void do_call(VM *vm, int argc) {
             return;
         }
         if (!closure_arity_ok(vm, bm->method->proto, argc + 1)) return;
-        int arity = bm->method->proto->arity;
         vm->stack[argStart - 1] = bm->receiver;
-        for (int i = argc + 1; i < arity; i++) push(vm, GHOST_VAL);
+        bind_args_in_place(vm, bm->method->proto, argStart - 1, argc + 1);
         push_frame(vm, bm->method, argStart - 1);
         return;
     }
@@ -1618,16 +1635,12 @@ static void do_call(VM *vm, int argc) {
     }
     ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
     if (!closure_arity_ok(vm, closure->proto, argc)) return;
-    int arity = closure->proto->arity;
-    /* Pad missing (defaulted) args with ghost, matching funnylang/vm.py --
-       the closure's own bytecode fills in the actual default expressions
-       (compiler.py's _emit_param_defaults: "if this slot is still ghost,
-       evaluate the default"). Padding first, then shifting everything
-       (real args *and* padding) left by one slot, overwrites the callee
+    /* Bind first, then shift everything (real args, padding and any
+       variadic rest-Stash alike) left by one slot, overwriting the callee
        slot in place instead of popping the callee+args and re-pushing a
        fresh copy the way funnylang/vm.py does -- same end state, one
        array move instead of a pop/extend pair. */
-    for (int i = argc; i < arity; i++) push(vm, GHOST_VAL);
+    bind_args_in_place(vm, closure->proto, argStart, argc);
     memmove(&vm->stack[argStart - 1], &vm->stack[argStart], (size_t)(vm->stackCount - argStart) * sizeof(Value));
     vm->stackCount--; /* the callee slot is now the first arg slot */
     push_frame(vm, closure, argStart - 1);
@@ -1645,9 +1658,8 @@ static void invoke_bound_closure(VM *vm, Value me, ObjClosure *method, int argc,
         return;
     }
     if (!closure_arity_ok(vm, method->proto, argc + 1)) return;
-    int arity = method->proto->arity;
     vm->stack[argStart - 1] = me;
-    for (int i = argc + 1; i < arity; i++) push(vm, GHOST_VAL);
+    bind_args_in_place(vm, method->proto, argStart - 1, argc + 1);
     push_frame(vm, method, argStart - 1);
 }
 
@@ -1726,8 +1738,7 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
                     return;
                 }
                 if (!closure_arity_ok(vm, method->proto, argc)) return;
-                int arity = method->proto->arity;
-                for (int i = argc; i < arity; i++) push(vm, GHOST_VAL);
+                bind_args_in_place(vm, method->proto, argStart, argc);
                 memmove(&vm->stack[argStart - 1], &vm->stack[argStart], (size_t)(vm->stackCount - argStart) * sizeof(Value));
                 vm->stackCount--;
                 push_frame(vm, method, argStart - 1);
@@ -3074,11 +3085,10 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
             return GHOST_VAL;
         }
         if (!closure_arity_ok(vm, closure->proto, argc)) return GHOST_VAL;
-        int arity = closure->proto->arity;
         int baseFrameCount = vm->frameCount;
         int slotBase = vm->stackCount;
         for (int i = 0; i < argc; i++) push(vm, args[i]);
-        for (int i = argc; i < arity; i++) push(vm, GHOST_VAL);
+        bind_args_in_place(vm, closure->proto, slotBase, argc);
         push_frame(vm, closure, slotBase);
         Value result;
         vm_execute(vm, baseFrameCount, &result); /* VM_ERROR: vm->hadError stays set for the caller to notice */
