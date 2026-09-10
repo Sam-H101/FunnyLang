@@ -71,8 +71,9 @@ entire toolchain above it is FunnyLang. Building FunnyLang needs a C compiler an
 - Bytecode format unchanged: `BYTECODE_VERSION` is still 2, and `.funnyc`/`.funnypak` files from
   1.1.0 run unmodified.
 - `funny <file>` with no subcommand is a new shorthand for `funny run <file>`.
-- The binary now needs `bootstrap/cli.funnypak` and `bootstrap/funnyc.funnypak` beside it.
-  `funny --version` deliberately works without them.
+- `funny` is self-contained: the whole toolchain is compiled into it as a byte array, so there is
+  nothing to ship beside the binary. `FUNNY_CLI` points at a `.funnypak` to use instead, which is
+  the development loop. `funny yeet` still needs `funnyrt` on disk, since it copies it.
 - `pip install -e .` still works and still gives you the Python implementation, which remains as a
   differential-testing oracle. It is not the product any more, and `NATIVE_PLAN.md` N11 removes it.
 

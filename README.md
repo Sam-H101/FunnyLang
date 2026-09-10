@@ -42,8 +42,39 @@ Buzz
 
 ## Install
 
-Build it from source. You need a C compiler and nothing else — no Python, no build system, no
-package manager, no third-party library.
+### Download
+
+One file. Nothing to install alongside it, no runtime, no interpreter.
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/Sam-H101/FunnyLang/master/install.sh | sh
+```
+
+```powershell
+> irm https://raw.githubusercontent.com/Sam-H101/FunnyLang/master/install.ps1 | iex
+```
+
+Both scripts verify the download's SHA-256 against the release's own `SHA256SUMS` and refuse to
+install on a mismatch. Or grab a binary yourself from
+[Releases](https://github.com/Sam-H101/FunnyLang/releases):
+
+| Platform | File |
+|---|---|
+| Linux x86-64 | `funny-linux-x86_64` |
+| Linux ARM64 | `funny-linux-aarch64` |
+| macOS Apple Silicon | `funny-macos-aarch64` |
+| macOS Intel | `funny-macos-x86_64` |
+| Windows x86-64 | `funny-windows-x86_64.exe` |
+
+`chmod +x` it on Linux/macOS and you're done. Each release also ships `funnyrt-*`, the runtime stub
+— you only need it if you want `funny yeet`. The Linux builds target glibc 2.35, so they run on
+Debian 12 and anything newer; CI checks that on an actual Debian 12 container before a release is
+allowed to stand.
+
+### Build from source
+
+For contributors, or any platform without a prebuilt binary. You need a C compiler and nothing else
+— no Python, no build system, no package manager, no third-party library.
 
 ```console
 $ git clone https://github.com/Sam-H101/FunnyLang
@@ -54,12 +85,10 @@ yo sup world
 ```
 
 That produces two binaries: `funny` (the command line) and `funnyrt` (the runtime stub `funny
-yeet` copies to make standalone programs). Both are a few hundred KB. `build.sh` honours `CC`, so
-`CC=clang ./build.sh` works.
+yeet` copies to make standalone programs). `build.sh` honours `CC`, so `CC=clang ./build.sh` works.
 
-The binary loads two bundles from `bootstrap/` next to it — the compiler and the command line,
-both of which are themselves FunnyLang. Keep them together, or point `FUNNY_TOOLCHAIN` and
-`FUNNY_CLI` at them.
+`funny` is self-contained — the entire toolchain, compiler included, is compiled into it. Nothing
+needs to ship beside it. Keep `funnyrt` around only if you want `funny yeet`.
 
 See [docs/NATIVE.md](docs/NATIVE.md) for the runtime's layout, the platform boundary, and the GC
 contract.

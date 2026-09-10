@@ -25,7 +25,7 @@ from funnylang.modules import build_bundle
 from funnylang.serializer import dump_funnypak
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-TEST_ENTRY = ROOT / "selfhost" / "test.funny"
+TEST_ENTRY = ROOT / "selfhost" / "testcli.funny"  # the CLI wrapper; test.funny is a library
 
 
 @pytest.fixture(scope="session")

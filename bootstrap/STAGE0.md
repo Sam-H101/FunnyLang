@@ -1,54 +1,78 @@
-# `bootstrap/` — the two checked-in bundles
+# `native/toolchain_blob.c` — the checked-in toolchain
 
-## What they are
+## What it is
 
-- **`funnyc.funnypak`** — the FunnyLang compiler in `selfhost/` (lexer, parser, compiler, emitter,
-  itself written in FunnyLang), compiled to bytecode and linked into one PLAN.md §5.3 bundle.
-- **`cli.funnypak`** — the FunnyLang command line in `selfhost/cli.funny` (argument parsing and
-  every subcommand), linked the same way.
+The whole FunnyLang toolchain — lexer, parser, resolver, compiler, `.funnyc` emitter, `.funnypak`
+linker, disassembler, formatter, test runner, REPL and command line, all of it written in FunnyLang
+and living in `selfhost/` — compiled to bytecode, linked into one PLAN.md §5.3 bundle, and turned
+into a C byte array by `tools/bin2c.funny`.
 
-They are checked in on purpose, and they are the only generated binaries in the tree that are.
-Everything else here is either source or reproducible from source by a C compiler alone.
+It is the only generated artifact checked into this repository. Everything else here is either
+source or reproducible from source by a C compiler alone.
 
-## Why they have to exist
+## Why it has to exist
 
-**`funnyc.funnypak`**: to compile a `.funny` file you need a compiler. The compiler is written in
-FunnyLang. Something has to break that circle, and this file is it: with a C compiler you build
-`funny`, `funny` loads this bundle, and from there FunnyLang can compile itself — no Python involved
-at any point. Without it, a fresh clone could build the runtime but could not compile a single
-program with it.
+Two reasons, and they are different.
 
-**`cli.funnypak`**: since NATIVE_PLAN.md N8 task 6, `native/main.c` is a *loader* — it sets up the
-console, reads the two diagnostic flags, and hands argv to this bundle. Every subcommand (`run`,
-`build`, `yeet`, `xray`, `fmt`, `test`, `vibe`) is FunnyLang, which is the point of the milestone.
-The consequence is that the binary does nothing without this file, so it has to ship with it.
-`funny --version` is deliberately answered by the C loader itself, so the one command someone runs
-when their install is broken works even when this bundle is missing.
+**The circle.** To compile a `.funny` file you need a compiler, and the compiler is written in
+FunnyLang. Something has to break that circle. This file is it: with a C compiler you build
+`funny`, and `funny` already contains the compiler, so from there FunnyLang compiles itself with no
+Python involved at any point. Without it a fresh clone could build the runtime but could not
+compile a single program with it.
 
-N10 embeds both into the binary as a byte array (`native/toolchain_blob.c`), at which point they
-stop being sidecars — but they stay checked in, because that generated array is built from them.
+**The single file.** `native/main.c` is a loader: it sets up the console, reads the two diagnostic
+flags, and hands the embedded bundle argv. Every subcommand — `run`, `build`, `yeet`, `xray`,
+`fmt`, `test`, `vibe`, `bootstrap` — is FunnyLang. Compiling the bundle *into* the binary is what
+makes the shipped artifact one downloadable file with nothing beside it, which is NATIVE_PLAN.md
+N10's whole point. It also means the toolchain can never get out of step with the executable that
+runs it.
 
-## How to regenerate them
+`funny --version` is answered by the C loader itself, so the one command someone runs when an
+install looks broken works even if everything above it is broken.
 
-```sh
-python3 -m funnylang build selfhost/funnyc.funny -o bootstrap/funnyc.funnypak
-python3 -m funnylang build selfhost/cli.funny    -o bootstrap/cli.funnypak
+## How to regenerate it
+
+Two steps: link the bundle, then embed it. Both use `funny` itself.
+
+```console
+$ funny build selfhost/cli.funny -o bootstrap/cli.funnypak
+$ funny tools/bin2c.funny -- bootstrap/cli.funnypak native/toolchain_blob.c toolchain_blob
+$ ./build.sh
 ```
+
+`bootstrap/cli.funnypak` is an intermediate and is deliberately *not* checked in — it is
+regenerated on the way through and gitignored.
 
 Regenerate whenever anything under `selfhost/` changes. Linking is deterministic — the same sources
 produce byte-identical output — so a regeneration that changes nothing produces no diff.
 
-> These steps still use the Python implementation, which is close to the last thing it is needed
-> for. `selfhost/linker.funny` (N8 task 1) already relinks both correctly, so once the checked-in
-> bundles are known-good the instruction becomes
-> `funny build selfhost/cli.funny -o bootstrap/cli.funnypak` and Python drops out entirely.
+> The `funny` doing the regenerating is the one you built from the *previous* blob. That is the
+> normal way a self-hosted toolchain updates itself, and `funny bootstrap --verify` is what proves
+> the result is a fixed point rather than drifting.
+
+While the Python implementation still exists, the equivalent first step is
+`python3 -m funnylang build selfhost/cli.funny -o bootstrap/cli.funnypak`. That is the only thing
+it is still needed for here, and NATIVE_PLAN.md N11 removes it.
+
+## Iterating without regenerating
+
+Setting `FUNNY_CLI` to a `.funnypak` replaces the embedded toolchain for that run:
+
+```console
+$ funny build selfhost/cli.funny -o /tmp/cli.funnypak
+$ FUNNY_CLI=/tmp/cli.funnypak funny run examples/hello.funny
+```
+
+That is the development loop — no `bin2c`, no C recompile. It is deliberately an explicit
+environment variable and *not* a search of the filesystem: a shipped binary's behaviour should
+never depend on what happens to be sitting next to it.
 
 ## Staleness policy
 
-`tests/native/test_native_selfhost.py::test_checked_in_bootstrap_is_not_stale` and
-`::test_checked_in_cli_is_not_stale` relink each bundle from `selfhost/` and compare it byte for
-byte against the checked-in file. Editing `selfhost/` without regenerating fails those tests, so a
-stale bootstrap cannot reach `main` quietly.
+`tests/native/test_native_selfhost.py::test_checked_in_toolchain_blob_is_not_stale` relinks
+`selfhost/`, parses the byte array back out of `native/toolchain_blob.c`, and compares them byte
+for byte. Editing `selfhost/` without regenerating fails that test, so a stale toolchain cannot
+reach `master` quietly.
 
 That check is the whole policy. It is deliberately mechanical: a checked-in build artifact is only
 safe while something automatically notices when it stops matching its sources.

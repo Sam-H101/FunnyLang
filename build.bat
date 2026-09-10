@@ -15,7 +15,7 @@ rem (the yeet runtime stub, NATIVE_PLAN.md N7 task 2) -- so each binary gets
 rem every other source plus exactly one of them.
 set SRCS=
 for %%f in (native\*.c) do (
-    if /I not "%%~nxf"=="main.c" if /I not "%%~nxf"=="stub_main.c" set SRCS=!SRCS! %%f
+    if /I not "%%~nxf"=="main.c" if /I not "%%~nxf"=="stub_main.c" if /I not "%%~nxf"=="toolchain_blob.c" set SRCS=!SRCS! %%f
 )
 if exist native\stdlib (
     for %%f in (native\stdlib\*.c) do set SRCS=!SRCS! %%f
@@ -44,8 +44,8 @@ rem steps write main.obj-alongside-everything into the same place and the
 rem second one picks up the first one's objects.
 if not exist build\obj\cli mkdir build\obj\cli
 if not exist build\obj\stub mkdir build\obj\stub
-echo + cl %FLAGS% /Fe:funny.exe %SRCS% native\main.c
-cl %FLAGS% /Fo:build\obj\cli\ /Fe:funny.exe %SRCS% native\main.c
+echo + cl %FLAGS% /Fe:funny.exe %SRCS% native\main.c native\toolchain_blob.c
+cl %FLAGS% /Fo:build\obj\cli\ /Fe:funny.exe %SRCS% native\main.c native\toolchain_blob.c
 if errorlevel 1 exit /b 1
 
 echo + cl %FLAGS% /Fe:funnyrt.exe %SRCS% native\stub_main.c

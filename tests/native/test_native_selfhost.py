@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -79,48 +80,41 @@ def test_natively_compiled_corpus_matches_its_golden(name, native_binary, selfho
     assert _native_run(native_binary, out) == expected
 
 
-def test_checked_in_bootstrap_is_not_stale(selfhost_pak):
-    """`bootstrap/funnyc.funnypak` is the one generated binary in the tree,
-    and it is what lets a machine with only a C compiler compile FunnyLang.
-    A checked-in artifact is only safe while something notices when it stops
-    matching its sources -- linking is deterministic, so this is just a byte
-    comparison. See bootstrap/STAGE0.md for how to regenerate it."""
-    checked_in = ROOT / "bootstrap" / "funnyc.funnypak"
-    assert checked_in.exists(), "bootstrap/funnyc.funnypak is missing; see bootstrap/STAGE0.md"
-    assert checked_in.read_bytes() == selfhost_pak.read_bytes(), (
-        "bootstrap/funnyc.funnypak is stale -- selfhost/ changed without it being regenerated. "
-        "Run: python3 -m funnylang build selfhost/funnyc.funny -o bootstrap/funnyc.funnypak"
-    )
-
-
-def test_checked_in_cli_is_not_stale():
-    """`bootstrap/cli.funnypak` is the other checked-in bundle, and since N8
-    task 6 the binary does nothing without it: `native/main.c` is a loader
-    and every subcommand lives in selfhost/cli.funny. Same policy as the
-    compiler bundle -- linking is deterministic, so this is a byte
-    comparison. See bootstrap/STAGE0.md."""
+def test_checked_in_toolchain_blob_is_not_stale():
+    """`native/toolchain_blob.c` is the one generated artifact in the tree,
+    and since N10 task 1 it is what makes the binary work at all: the whole
+    toolchain, compiled in as a byte array. A checked-in artifact is only
+    safe while something notices when it stops matching its sources --
+    linking is deterministic, so this is a byte comparison against a fresh
+    link of `selfhost/`. See bootstrap/STAGE0.md to regenerate it."""
     from funnylang.modules import build_bundle
     from funnylang.serializer import dump_funnypak
 
-    checked_in = ROOT / "bootstrap" / "cli.funnypak"
-    assert checked_in.exists(), "bootstrap/cli.funnypak is missing; see bootstrap/STAGE0.md"
+    blob_c = ROOT / "native" / "toolchain_blob.c"
+    assert blob_c.exists(), "native/toolchain_blob.c is missing; see bootstrap/STAGE0.md"
+    text = blob_c.read_text(encoding="utf-8")
+
+    declared = int(re.search(r"toolchain_blob_len = (\d+)u;", text).group(1))
+    body = text[text.index("toolchain_blob[] = {") + len("toolchain_blob[] = {"):text.rindex("};")]
+    embedded = bytes(int(n) for n in body.split(",") if n.strip())
+    assert len(embedded) == declared, "the array and its declared length disagree"
+
     units, entry_canonical = build_bundle(str(ROOT / "selfhost" / "cli.funny"))
-    assert checked_in.read_bytes() == dump_funnypak(units, entry_canonical), (
-        "bootstrap/cli.funnypak is stale -- selfhost/ changed without it being regenerated. "
-        "Run: python3 -m funnylang build selfhost/cli.funny -o bootstrap/cli.funnypak"
+    assert embedded == dump_funnypak(units, entry_canonical), (
+        "native/toolchain_blob.c is stale -- selfhost/ changed without it being regenerated. "
+        "Run: funny build selfhost/cli.funny -o bootstrap/cli.funnypak && "
+        "funny tools/bin2c.funny -- bootstrap/cli.funnypak native/toolchain_blob.c toolchain_blob"
     )
 
 
 def test_cli_runs_a_source_file_in_one_command(native_binary, tmp_path):
-    """`funny foo.funny` -- compile and run, no Python, one command. Uses the
-    checked-in bootstrap bundle the way a user would, via FUNNY_TOOLCHAIN so
-    the test doesn't depend on where the binary happens to sit."""
+    """`funny foo.funny` -- compile and run, no Python, one command. Since
+    N10 task 1 the toolchain is embedded in the binary, so this needs nothing
+    set up at all: the binary on its own is the whole install."""
     source = tmp_path / "hello.funny"
     source.write_text('yap "hi from source"\n', encoding="utf-8")
-    env = dict(os.environ)
-    env["FUNNY_TOOLCHAIN"] = str(ROOT / "bootstrap" / "funnyc.funnypak")
     result = subprocess.run(
-        [str(native_binary), str(source)], capture_output=True, text=True, timeout=300, env=env
+        [str(native_binary), str(source)], capture_output=True, text=True, timeout=300, cwd=tmp_path
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "hi from source\n"
@@ -131,10 +125,8 @@ def test_cli_reports_a_source_error_without_compiler_internals(native_binary, tm
     stack trace through the compiler's own source."""
     source = tmp_path / "bad.funny"
     source.write_text('yap "unclosed\n', encoding="utf-8")
-    env = dict(os.environ)
-    env["FUNNY_TOOLCHAIN"] = str(ROOT / "bootstrap" / "funnyc.funnypak")
     result = subprocess.run(
-        [str(native_binary), str(source)], capture_output=True, text=True, timeout=300, env=env
+        [str(native_binary), str(source)], capture_output=True, text=True, timeout=300, cwd=tmp_path
     )
     assert result.returncode == 1
     assert "couldn't compile" in result.stderr

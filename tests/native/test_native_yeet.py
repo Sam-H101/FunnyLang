@@ -27,7 +27,9 @@ ONE_MB = 1024 * 1024
 
 def _yeet(native_binary, stub, source: Path, out: Path, env_extra=None):
     env = dict(os.environ)
-    env["FUNNY_TOOLCHAIN"] = str(ROOT / "bootstrap" / "funnyc.funnypak")
+    # No FUNNY_TOOLCHAIN: since N10 task 1 the compiler is embedded in the
+    # binary. FUNNY_STUB is still needed — `funny yeet` copies `funnyrt` off
+    # disk, and a binary cannot contain a copy of a binary containing it.
     env["FUNNY_STUB"] = str(stub)
     if env_extra:
         env.update(env_extra)

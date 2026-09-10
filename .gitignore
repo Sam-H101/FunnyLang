@@ -7,12 +7,11 @@ dist/
 .pytest_cache/
 *.funnyc
 *.funnypak
-# ...except the bootstrap compiler (NATIVE_PLAN.md §4 lists it as checked
-# in). It is what lets a machine with only a C compiler build `funny` and
-# then compile FunnyLang, with no Python anywhere; see bootstrap/STAGE0.md
-# for its provenance and the staleness check that keeps it honest.
-!bootstrap/funnyc.funnypak
-!bootstrap/cli.funnypak
+# The bootstrap bundles are *not* checked in any more: since NATIVE_PLAN.md
+# N10 task 1 the toolchain is compiled into the binary as native/
+# toolchain_blob.c, which is the checked-in generated artifact instead (and
+# is a .c file, so nothing here excludes it). These are intermediates on the
+# way to regenerating it -- see bootstrap/STAGE0.md.
 *.exe
 .coverage
 htmlcov/

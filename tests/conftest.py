@@ -45,10 +45,42 @@ def native_binary(tmp_path_factory):
     `native` ci.yml job.
     """
     out = tmp_path_factory.mktemp("native_build") / "funny_native_test"
+
+    # NATIVE_PLAN.md N10 task 1: the toolchain is compiled *into* the binary
+    # as a byte array. The checked-in native/toolchain_blob.c is whatever was
+    # last generated; a test must never be run against a stale one, so this
+    # links selfhost/ fresh and generates its own blob to build with.
+    from funnylang.modules import build_bundle
+    from funnylang.serializer import dump_funnypak
+
+    units, entry_canonical = build_bundle(str(_REPO_ROOT / "selfhost" / "cli.funny"))
+    blob = dump_funnypak(units, entry_canonical)
+    # The header goes beside the generated .c so its quoted #include resolves
+    # relative to the including file. Emphatically *not* `-I native`: that
+    # directory holds a `string.h` of FunnyLang's own, and putting it on the
+    # include path makes `#include <string.h>` find it instead of the C
+    # standard one, which fails in a spectacularly confusing way.
+    blob_c = out.parent / "toolchain_blob.c"
+    (out.parent / "toolchain_blob.h").write_text(
+        (_REPO_ROOT / "native" / "toolchain_blob.h").read_text(encoding="utf-8"),
+        encoding="utf-8", newline="",
+    )
+    rows = "\n    ".join(
+        ",".join(str(b) for b in blob[i:i + 24]) + "," for i in range(0, len(blob), 24)
+    )
+    blob_c.write_text(
+        '#include "toolchain_blob.h"\n\n'
+        f"const unsigned int toolchain_blob_len = {len(blob)}u;\n\n"
+        f"const unsigned char toolchain_blob[] = {{\n    {rows}\n}};\n",
+        encoding="utf-8", newline="",
+    )
+
     # native/ has two entry points; this fixture builds the CLI one, so
-    # stub_main.c is left out or the link fails on a duplicate main().
-    # (`native_stub_binary` below builds the other.)
-    srcs = sorted(str(p) for p in (_REPO_ROOT / "native").glob("*.c") if p.name != "stub_main.c")
+    # stub_main.c is left out or the link fails on a duplicate main(). The
+    # checked-in blob is swapped for the freshly generated one above.
+    srcs = sorted(str(p) for p in (_REPO_ROOT / "native").glob("*.c")
+                  if p.name not in ("stub_main.c", "toolchain_blob.c"))
+    srcs.append(str(blob_c))
     cc = os.environ.get("CC", "cc")  # e.g. `CC=clang python3 -m pytest ...`
     cmd = [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(out), *srcs, "-lm"]
     # N5b: platform.c dlopen()s OpenSSL on Linux/BSD and uses Security.framework
@@ -64,20 +96,6 @@ def native_binary(tmp_path_factory):
     if result.returncode != 0:
         pytest.skip(f"no C toolchain available to build the native binary:\n{result.stdout}\n{result.stderr}")
 
-    # NATIVE_PLAN.md N8 task 6: `funny` is now a loader — every subcommand
-    # lives in selfhost/cli.funny, and the binary finds that bundle *beside
-    # itself*. This fixture builds into a temp directory, so the sidecars
-    # have to come along. Built fresh from selfhost/ rather than copied out
-    # of bootstrap/, so a test never runs against a stale checked-in bundle.
-    from funnylang.modules import build_bundle
-    from funnylang.serializer import dump_funnypak
-
-    sidecars = out.parent / "bootstrap"
-    sidecars.mkdir(exist_ok=True)
-    for entry, name in ((_REPO_ROOT / "selfhost" / "cli.funny", "cli.funnypak"),
-                        (_REPO_ROOT / "selfhost" / "funnyc.funny", "funnyc.funnypak")):
-        units, entry_canonical = build_bundle(str(entry))
-        (sidecars / name).write_bytes(dump_funnypak(units, entry_canonical))
     return out
 
 
@@ -87,7 +105,8 @@ def native_stub_binary(tmp_path_factory):
     entered through stub_main.c instead of main.c, so it carries no compiler
     -- a shipped executable only ever runs already-compiled bytecode."""
     out = tmp_path_factory.mktemp("native_stub") / "funnyrt"
-    srcs = sorted(str(p) for p in (_REPO_ROOT / "native").glob("*.c") if p.name != "main.c")
+    srcs = sorted(str(p) for p in (_REPO_ROOT / "native").glob("*.c")
+                if p.name not in ("main.c", "toolchain_blob.c"))
     cc = os.environ.get("CC", "cc")
     cmd = [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(out), *srcs, "-lm"]
     if platform.system() == "Darwin":

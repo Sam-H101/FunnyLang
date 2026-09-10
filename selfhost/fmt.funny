@@ -10,8 +10,10 @@
 //
 // Restricted to the self-hosting subset (PLAN.md §8).
 
+gimme filez
 gimme yapper
 gimme { lit_of } from "astdump.funny"
+gimme { parse_source } from "parser.funny"
 
 flex deadass INDENT = "    "
 
@@ -364,4 +366,27 @@ flex bet format_program(program) {
         bounce ""
     }
     bounce text + "\n"
+}
+
+// -- the command ------------------------------------------------------------
+// The file half of `funny fmt`, here rather than in the CLI so cli.funny can
+// call it without compiling fmtcli.funny at run time (N10 task 1).
+
+flex bet run_fmt(path, check) {
+    yo text = filez.slurp(path)
+    yo formatted = format_program(parse_source(text))
+
+    sus (check) {
+        sus (formatted == text) {
+            bounce 0
+        }
+        // cli.py writes this one to stderr; `yell` is the stdlib's stderr print.
+        yell(path + " isn't formatted. run 'funny fmt " + path + "'.")
+        bounce 1
+    }
+    sus (formatted != text) {
+        filez.yeet_out(path, formatted)
+        yap "formatted " + path + "."
+    }
+    bounce 0
 }

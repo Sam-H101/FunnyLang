@@ -1,0 +1,10 @@
+// selfhost/vibecli.funny — NATIVE_PLAN.md N10 task 1: the standalone CLI over
+// vibe.funny, so the tool stays runnable on its own
+// (`funny selfhost/vibecli.funny -- ...`) while `cli.funny` imports the
+// library directly rather than compiling this file at run time.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme { run_repl } from "vibe.funny"
+
+dip(run_repl())

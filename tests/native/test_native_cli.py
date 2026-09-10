@@ -10,6 +10,7 @@ to the Python CLI's — so most of these run both and diff.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -144,10 +145,14 @@ def test_global_flags_do_not_reach_the_program(native_binary, tmp_path):
     assert result.stdout == '["kept"]\n'
 
 
-def test_version_works_without_the_cli_bundle(native_binary, tmp_path, monkeypatch):
+def test_version_works_even_with_a_broken_toolchain(native_binary, tmp_path):
     """`--version` is answered by the C loader on purpose: it is the one
     command someone runs when their install is broken, so it must not depend
-    on the bundle that might be what's broken."""
+    on the toolchain that might be what's broken.
+
+    Since N10 task 1 the toolchain is compiled *into* the binary, so the only
+    way to break it is to point FUNNY_CLI at something unreadable — which is
+    also the one thing that used to be a missing-sidecar error."""
     import os
 
     env = {**os.environ, "FUNNY_CLI": str(tmp_path / "nope.funnypak")}
@@ -157,7 +162,28 @@ def test_version_works_without_the_cli_bundle(native_binary, tmp_path, monkeypat
 
     broken = _native(native_binary, "run", "examples/hello.funny", env=env)
     assert broken.returncode == 1
-    assert "can't find the CLI bundle" in broken.stderr
+    assert "FUNNY_CLI is set to" in broken.stderr
+    assert "couldn't be read" in broken.stderr
+
+
+def test_the_embedded_toolchain_needs_nothing_beside_it(native_binary, tmp_path):
+    """N10 task 1's actual acceptance: the binary alone. Copied somewhere
+    with no `bootstrap/`, no `selfhost/` and nothing else, it still compiles
+    and runs a program."""
+    import shutil
+
+    solo = tmp_path / ("funny.exe" if os.name == "nt" else "funny")
+    shutil.copy2(native_binary, solo)
+    solo.chmod(0o755)
+    (tmp_path / "hi.funny").write_text('yap "solo"\n', encoding="utf-8", newline="")
+
+    for d in ("bootstrap", "selfhost", "funnylang"):
+        assert not (tmp_path / d).exists()
+
+    result = subprocess.run([str(solo), "run", "hi.funny"], capture_output=True, text=True,
+                            encoding="utf-8", cwd=tmp_path, timeout=300)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "solo\n"
 
 
 def test_the_version_string_matches_the_one_in_the_cli(native_binary):

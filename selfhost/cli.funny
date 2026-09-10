@@ -28,6 +28,15 @@ gimme clock
 gimme computer
 gimme { build_bundle, emit_funnypak } from "bundler.funny"
 gimme { emit_funnyc } from "emitter.funny"
+// The tools, as libraries. Imported rather than compiled at run time, so
+// they end up inside this bundle and a shipped binary needs nothing beside
+// it (NATIVE_PLAN.md N10 task 1). Each still has a thin `*cli.funny` for
+// running it standalone.
+gimme { xray } from "xray.funny"
+gimme { run_fmt } from "fmt.funny"
+gimme { run_tests } from "test.funny"
+gimme { run_repl } from "vibe.funny"
+gimme { bootstrap } from "bootstrap.funny"
 
 flex deadass VERSION = "2.0.0"
 flex deadass BYTECODE_VERSION = 2
@@ -44,10 +53,12 @@ flex bet quip(vibes, phase) {
     }
 }
 
-// -- finding our own sidecars ---------------------------------------------
-// Three steps, the same order main.c used before this file existed: an
-// explicit env override, then next to the running binary, then the current
-// directory. N10 embeds the toolchain in the binary and deletes step 2 and 3.
+// -- finding the yeet stub -------------------------------------------------
+// The *toolchain* is embedded in the binary as of N10 task 1, so nothing is
+// looked up for it any more. `funnyrt` still has to be found on disk: `funny
+// yeet` copies it, and a binary cannot contain a copy of a binary that
+// contains it. Three steps: an explicit env override, then next to the
+// running binary, then the working directory.
 
 flex bet find_beside_exe(name) {
     yo exe = computer.exe_path()
@@ -77,11 +88,6 @@ flex bet find_sidecar(env_name, relative_name, bare_name) {
         bounce bare_name
     }
     bounce ghost
-}
-
-flex bet find_toolchain() {
-    bounce find_sidecar("FUNNY_TOOLCHAIN", filez.join_path("bootstrap", "funnyc.funnypak"),
-                        filez.join_path("bootstrap", "funnyc.funnypak"))
 }
 
 flex bet stub_name() {
@@ -320,28 +326,30 @@ flex bet main() {
     yo tail = rest.slice(1, rest.how_thicc())
 
     sus (cmd == "vibe") {
-        bounce run_vibe()
+        bounce run_repl()
     }
     sus (cmd == "test") {
         sus (tail.how_thicc() < 1) {
             yell("funny test needs a directory.")
             bounce 1
         }
-        bounce run_tool("test.funny", tail)
+        bounce run_tests(tail[0])
     }
     sus (cmd == "fmt") {
-        sus (tail.how_thicc() < 1) {
+        yo fmt_path = first_non_flag(tail)
+        sus (fmt_path == ghost) {
             yell("funny fmt needs a file.")
             bounce 1
         }
-        bounce run_tool("fmtcli.funny", tail)
+        bounce run_fmt(fmt_path, has_flag(tail, "--check"))
     }
     sus (cmd == "xray") {
-        sus (tail.how_thicc() < 1) {
+        yo xray_path = first_non_flag(tail)
+        sus (xray_path == ghost) {
             yell("funny xray needs a file.")
             bounce 1
         }
-        bounce run_tool("xray.funny", tail)
+        bounce xray(xray_path, has_flag(tail, "--tokens"), has_flag(tail, "--ast"), has_flag(tail, "--pak"))
     }
     sus (cmd == "build") {
         bounce dispatch_build(tail, vibes)
@@ -358,7 +366,11 @@ flex bet main() {
         bounce cmd_yeet(tail[0], out, vibes)
     }
     sus (cmd == "bootstrap") {
-        bounce run_tool("bootstrapcli.funny", tail)
+        sus (!has_flag(tail, "--verify")) {
+            yell("funny bootstrap needs --verify.")
+            bounce 1
+        }
+        bounce bootstrap(has_flag(tail, "--keep"), has_flag(tail, "--diff"))
     }
 
     // No subcommand: `funny <file> [args...]`.
@@ -388,6 +400,26 @@ flex bet dispatch_build(tail, vibes) {
     bounce cmd_build(tail[0], out, vibes)
 }
 
+// A subcommand's own flags all start with "-", so the first argument that
+// does not is its file or directory.
+flex bet first_non_flag(args) {
+    grind a in args {
+        sus (!yapper.starts_with(a, "-")) {
+            bounce a
+        }
+    }
+    bounce ghost
+}
+
+flex bet has_flag(args, name) {
+    grind a in args {
+        sus (a == name) {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
 flex bet flag_value(args, short_name, long_name) {
     grind i from 0 to args.how_thicc() - 1 {
         sus (args[i] == short_name || args[i] == long_name) {
@@ -395,44 +427,6 @@ flex bet flag_value(args, short_name, long_name) {
         }
     }
     bounce ghost
-}
-
-// The tools that are their own programs (xray, fmt, test, vibe) are run as
-// programs: compiled from selfhost/ and handed their own argv. That keeps
-// each one usable on its own -- `funny selfhost/xray.funny -- file` still
-// works -- rather than turning them into libraries that only this file can
-// call. N10 embeds them all in one bundle, at which point this becomes a
-// lookup rather than a compile.
-flex bet tool_path(name) {
-    yo beside = find_beside_exe(filez.join_path("selfhost", name))
-    sus (beside != ghost) {
-        bounce beside
-    }
-    yo local = filez.join_path("selfhost", name)
-    sus (filez.exists(local)) {
-        bounce local
-    }
-    bounce ghost
-}
-
-flex bet run_tool(name, tool_args) {
-    yo path = tool_path(name)
-    sus (path == ghost) {
-        yell("can't find selfhost/" + name + ". run from a tree that has one.")
-        bounce 1
-    }
-    yo blob = ghost
-    sketchy {
-        blob = emit_funnypak(build_bundle(path))
-    } my_bad (e) {
-        yell("couldn't compile " + path + ": " + e.message)
-        bounce 1
-    }
-    bounce sus.run_program(blob, tool_args)["code"]
-}
-
-flex bet run_vibe() {
-    bounce run_tool("vibe.funny", [])
 }
 
 dip(main())

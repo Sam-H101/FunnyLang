@@ -24,7 +24,7 @@ from funnylang.modules import build_bundle
 from funnylang.serializer import dump_funnypak
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-VIBE_ENTRY = ROOT / "selfhost" / "vibe.funny"
+VIBE_ENTRY = ROOT / "selfhost" / "vibecli.funny"  # the CLI wrapper; vibe.funny is a library
 
 
 @pytest.fixture(scope="session")

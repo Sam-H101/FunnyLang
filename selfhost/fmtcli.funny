@@ -3,15 +3,12 @@
 //
 //     funny fmt <file> [--check]
 //
-// Thin on purpose, like linker.funny over bundler.funny: N8 task 6's
-// cli.funny dispatches to `format_program` directly, so nothing here is
-// load-bearing beyond argv and the file write.
+// Thin on purpose: all the work is in fmt.funny, which cli.funny imports
+// directly rather than compiling this file at run time (N10 task 1).
 //
 // Restricted to the self-hosting subset (PLAN.md §8).
 
-gimme filez
-gimme { parse_source } from "parser.funny"
-gimme { format_program } from "fmt.funny"
+gimme { run_fmt } from "fmt.funny"
 
 yo args = the_args()
 yo path = ghost
@@ -27,20 +24,4 @@ sus (path == ghost) {
     yap "usage: fmt <file> [--check]"
     dip(1)
 }
-
-yo text = filez.slurp(path)
-yo formatted = format_program(parse_source(text))
-
-sus (check) {
-    sus (formatted == text) {
-        dip(0)
-    }
-    // cli.py writes this one to stderr; `yell` is the stdlib's stderr print.
-    yell(path + " isn't formatted. run 'funny fmt " + path + "'.")
-    dip(1)
-}
-sus (formatted != text) {
-    filez.yeet_out(path, formatted)
-    yap "formatted " + path + "."
-}
-dip(0)
+dip(run_fmt(path, check))

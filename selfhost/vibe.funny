@@ -222,5 +222,3 @@ flex bet two_decimals(x) {
     }
     bounce s
 }
-
-dip(run_repl())

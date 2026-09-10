@@ -59,16 +59,19 @@ esac
 # every other source plus exactly one of them. The stub deliberately has no
 # compiler in it: a shipped executable only ever runs bytecode, which is why
 # a yeeted program is a couple of hundred KB rather than PyInstaller's 8 MB.
+# toolchain_blob.c is excluded from CORE and added to the `funny` link only:
+# funnyrt is a VM with no compiler in it, and linking 372KB it never
+# references would land directly in the size of every yeeted program.
 CORE=()
 for f in "${SRCS[@]}"; do
     case "$f" in
-        native/main.c | native/stub_main.c) ;;
+        native/main.c | native/stub_main.c | native/toolchain_blob.c) ;;
         *) CORE+=("$f") ;;
     esac
 done
 
-echo "+ $CC ${FLAGS[*]} -o $OUT ${CORE[*]} native/main.c ${LIBS[*]}"
-"$CC" "${FLAGS[@]}" -o "$OUT" "${CORE[@]}" native/main.c "${LIBS[@]}"
+echo "+ $CC ${FLAGS[*]} -o $OUT ${CORE[*]} native/main.c native/toolchain_blob.c ${LIBS[*]}"
+"$CC" "${FLAGS[@]}" -o "$OUT" "${CORE[@]}" native/main.c native/toolchain_blob.c "${LIBS[@]}"
 
 echo "+ $CC ${FLAGS[*]} -o funnyrt ${CORE[*]} native/stub_main.c ${LIBS[*]}"
 "$CC" "${FLAGS[@]}" -o funnyrt "${CORE[@]}" native/stub_main.c "${LIBS[@]}"

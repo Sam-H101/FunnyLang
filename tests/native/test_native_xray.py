@@ -22,7 +22,10 @@ from funnylang.modules import build_bundle
 from funnylang.serializer import dump_funnypak
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-XRAY_ENTRY = ROOT / "selfhost" / "xray.funny"
+# The `*cli.funny` wrapper, not the library: N10 task 1 split every tool
+# so cli.funny can import it rather than compiling it at run time, which
+# means `xray.funny` itself no longer has an entry point.
+XRAY_ENTRY = ROOT / "selfhost" / "xraycli.funny"
 
 # Chosen for coverage of what the disassembler has to render, not breadth:
 # closures with upvalues (the one variable-width opcode), pointers (the two

@@ -1,10 +1,10 @@
 name: ci
 
 on:
-  # No filter on push (deliberately): this must keep triggering on every
-  # ordinary branch push, same as before -- a bare `push:` already covers
-  # tag pushes too, which is all the release jobs below need (they gate
-  # themselves on `startsWith(github.ref, 'refs/tags/v')`).
+  # No filter on push (deliberately): every ordinary branch push runs the
+  # full suite. Releases moved to their own workflow (release.yml) when the
+  # PyInstaller path was replaced by the native build -- freezing CPython to
+  # ship a binary stopped making sense once the runtime stopped being Python.
   push:
   pull_request:
   workflow_dispatch:
@@ -341,104 +341,3 @@ jobs:
   # misleading "start writing FunnyLang" download. N10 replaces this whole
   # job wholesale once N1-N9 land and the C runtime can do the same job
   # without Python installed anywhere in the chain.
-  release-build:
-    name: release-build (${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: windows-x86_64
-            bin: funny.exe
-            asset: funny-windows-x86_64.exe
-          - os: ubuntu-latest
-            target: linux-x86_64
-            bin: funny
-            asset: funny-linux-x86_64
-          - os: macos-latest
-            target: macos-arm64
-            bin: funny
-            asset: funny-macos-arm64
-
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install the package + PyInstaller
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e . pyinstaller
-
-      # Every stdlib module is loaded dynamically by name (same reason
-      # packager.py's own PyInstaller invocation needs this), so PyInstaller's
-      # static import scan needs an explicit nudge per module.
-      - name: Freeze the funny CLI
-        run: |
-          mkdir -p dist-release
-          HIDDEN=()
-          for mod in mafs yapper stash groupchat rizz filez clock sus computer internet; do
-            HIDDEN+=(--hidden-import "funnylang.stdlib.$mod")
-          done
-          python -m PyInstaller --onefile --name funny --console --noconfirm \
-            --distpath dist-release "${HIDDEN[@]}" funnylang/__main__.py
-
-      # Proves this is a real, general-purpose toolchain, not just a binary
-      # that happens to print "hello" -- exactly N0's acceptance criterion.
-      - name: Smoke test
-        env:
-          FUNNY_NO_NET: "1"
-        run: |
-          chmod +x "dist-release/${{ matrix.bin }}"
-          "dist-release/${{ matrix.bin }}" --version
-          "dist-release/${{ matrix.bin }}" run examples/hello.funny
-          "dist-release/${{ matrix.bin }}" test examples
-
-      - name: Rename to the release asset name
-        run: mv "dist-release/${{ matrix.bin }}" "dist-release/${{ matrix.asset }}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.asset }}
-          path: dist-release/${{ matrix.asset }}
-          retention-days: 90
-
-  release-publish:
-    name: release-publish
-    needs: release-build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist-release
-          merge-multiple: true
-
-      - name: Checksums
-        working-directory: dist-release
-        run: sha256sum * > SHA256SUMS
-
-      - name: List what's about to be published
-        run: ls -la dist-release
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
-          files: dist-release/*
-          body: |
-            Interim release (NATIVE_PLAN.md N0 task 6): the full `funny` CLI, frozen with
-            PyInstaller. No native (C) runtime yet — that's N1-N9 — so these binaries bundle
-            CPython and run ~8 MB, but they need no Python installed to use. Download the one
-            for your OS, `chmod +x` it on Linux/macOS, and run `funny --version` to confirm it
-            works, then `funny run yourfile.funny`.

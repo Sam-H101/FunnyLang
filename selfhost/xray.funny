@@ -144,30 +144,3 @@ flex bet xray(path, want_tokens, want_ast, want_pak) {
     yap disassemble(compile_source(src, fax))
     bounce 0
 }
-
-// -- argv ------------------------------------------------------------------
-// Deliberately minimal: N8 task 6's cli.funny takes over parsing for every
-// subcommand at once, and a second full-featured parser here would only be
-// something that gets deleted.
-
-yo args = the_args()
-yo path = ghost
-yo want_tokens = cap
-yo want_ast = cap
-yo want_pak = cap
-grind a in args {
-    sus (a == "--tokens") {
-        want_tokens = fax
-    } kinda_sus (a == "--ast") {
-        want_ast = fax
-    } kinda_sus (a == "--pak") {
-        want_pak = fax
-    } kinda_sus (path == ghost) {
-        path = a
-    }
-}
-sus (path == ghost) {
-    yap "usage: xray <file> [--tokens] [--ast] [--pak]"
-    dip(1)
-}
-dip(xray(path, want_tokens, want_ast, want_pak))

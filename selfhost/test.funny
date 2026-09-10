@@ -180,10 +180,3 @@ flex bet run_tests(dir_path) {
     }
     bounce 1
 }
-
-yo args = the_args()
-sus (args.how_thicc() < 1) {
-    yap "usage: test <dir>"
-    dip(1)
-}
-dip(run_tests(args[0]))
