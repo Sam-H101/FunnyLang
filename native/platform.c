@@ -15,6 +15,20 @@
    it hid <math.h>'s M_PI/M_E for mafs.c. */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#ifdef __APPLE__
+/* ...and on Darwin, asking for POSIX *narrows* the namespace unless you also
+   ask for the BSD one. <sys/cdefs.h> reads:
+
+       _ANSI_SOURCE                          -> __DARWIN_C_ANSI
+       _POSIX_C_SOURCE && !_DARWIN_C_SOURCE  -> that POSIX level
+       otherwise                             -> __DARWIN_C_FULL
+
+   and the short type names u_int/u_char/u_short are declared only at
+   __DARWIN_C_FULL. <sys/sysctl.h> pulls in <sys/ucred.h> and <sys/proc.h>,
+   both written in terms of them, so without this the *SDK header* fails to
+   compile -- nothing in this file is even reached. */
+#define _DARWIN_C_SOURCE
+#endif
 #endif
 
 #include "platform.h"

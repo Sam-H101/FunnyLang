@@ -2910,9 +2910,15 @@ gets an entry explaining what changed and why.
   `./funny --version` immediately after proves the artifact still runs. A stripped-but-unsigned
   binary is exactly the kind of failure that gets misread as a crash in the program.
 
-  Note this does *not* apply to `funny yeet`, which appends its payload past the existing signature
-  blob rather than rewriting the Mach-O — and the macOS CI job has been yeeting and running the
-  result all along, so that path is already covered by evidence rather than by assumption.
+  **Correction to what this note first said.** It claimed `funny yeet` on macOS was "already covered
+  by evidence" because the macOS CI job yeets and runs the result. That reasoning does not hold: the
+  macOS job has never got past its *build* step, so nothing after it has ever run there. The old
+  Python `ci` job did yeet on macOS, but that was the PyInstaller path, not the native stub.
+
+  So the honest position is: **native `funny yeet` has never run on macOS.** Appending past the
+  signature blob is a different operation from stripping — it does not rewrite the Mach-O, and the
+  code directory covers a fixed extent — so it may well be fine. But that is an expectation, not a
+  result, and it is the most likely next thing to fail on that runner now the compile is fixed.
 
 - **The macOS matrix entry had never compiled.** Two glibc extensions to `sysconf` reached the
   shared POSIX branch of `platform.c`:
@@ -2951,3 +2957,36 @@ gets an entry explaining what changed and why.
   than the system's uptime. It compiles, and the golden only asserts `>= 0.0`, so nothing goes red.
   `kern.boottime` is the Darwin answer. Left alone deliberately rather than bundled into a build fix
   that has to be right.
+
+- **macOS, second error: the SDK header, not the code.** With `sysctlbyname` in place, the build got
+  one step further and failed inside `<sys/sysctl.h>` itself:
+
+  ```
+  sys/ucred.h:101: error: unknown type name 'u_int'
+  sys/proc.h:135:  error: unknown type name 'u_char'
+  ```
+
+  `<sys/sysctl.h>` pulls in `<sys/ucred.h>` and `<sys/proc.h>`, both written in terms of the BSD
+  short type names. Darwin's `<sys/cdefs.h>` picks a namespace level:
+
+  ```
+  _ANSI_SOURCE                          -> __DARWIN_C_ANSI
+  _POSIX_C_SOURCE && !_DARWIN_C_SOURCE  -> that POSIX level
+  otherwise                             -> __DARWIN_C_FULL
+  ```
+
+  and `u_int`/`u_char`/`u_short` exist only at `__DARWIN_C_FULL`. `platform.c` already defines
+  `_POSIX_C_SOURCE 200809L` — correctly, for `realpath` and friends — which lands it in the middle
+  branch. **Asking for POSIX on Darwin narrows the namespace unless you also ask for the BSD one.**
+  One more macro in the block that already existed.
+
+  This is where `__STRICT_ANSI__` really was the mechanism — the first guess. It just was not acting
+  on the `_SC_*` constants (which genuinely do not exist on Darwin); it was acting on the header that
+  the fix for those constants had to include. Two different failures, one after the other, in the
+  same six lines.
+
+  **And the local harness could never have caught it.** `build/n4/check_apple_branch.py` declares
+  `sysctlbyname` itself rather than including the SDK header, because there is no macOS SDK on this
+  machine — so it compiles the *code* in the Apple branch and never the *headers* that branch
+  includes. A harness that stubs a platform cannot test that platform's headers. Written into the
+  script rather than left to be rediscovered.
