@@ -213,8 +213,8 @@ native/
   gc.h/.c           mark-sweep, gray stack, temp roots, stress mode
   bignum.h/.c       arbitrary-precision integers + fixnum promotion
   numfmt.h/.c       shortest-round-trip float formatting (bignum-based, not literally Ryū — §9)
-  string.h/.c       an ObjString byte buffer as of N2 (built early -- §9); full UTF-8
-                    codepoint indexing/interning/Unicode methods are still N4's to add
+  da_string.h/.c    `yapstring`: an interned, UTF-8 ObjString. Named `da_string`, not
+                    `string`, so it can never shadow the C standard <string.h> — §9
   unicode_tbl.c     GENERATED — do not hand-edit (see tools/gen_unicode.funny)
   toolchain_blob.c  GENERATED — the linked toolchain .funnypak as a byte array (N10)
   table.c           insertion-ordered hash table (groupchat + globals + interning) -- globals
@@ -2221,9 +2221,16 @@ gets an entry explaining what changed and why.
   `native\toolchain_blob.c` written in a non-raw string put a literal **tab** into `build.bat`
   (`cl` then reported `Cannot open source file: 'oolchain_blob.c'`), and adding `-I native` so a
   generated file in a temp directory could find its header made `#include <string.h>` resolve to
-  FunnyLang's own `native/string.h`, failing across half the runtime. The second is worth
-  remembering as a rule: **never put `native/` on the include path** — copy the header next to the
-  generated file instead, so its quoted include resolves relative to the includer.
+  FunnyLang's own `native/string.h`, failing across half the runtime.
+  **The second is fixed at the source rather than documented, at the project owner's suggestion:
+  `native/string.{c,h}` is now `native/da_string.{c,h}`.** The first instinct was to write down a
+  rule — *never put `native/` on the include path* — but a rule that exists because a filename is
+  a trap is worse than not having the trap. `deadass` is already the language's own word, so
+  `da_string` is short, cannot collide with anything in the C standard library, and the header
+  says why it is called that so nobody tidies the name back. Verified by compiling the whole
+  runtime with `-I native` — the exact command that failed before, now clean. `native/error.h` is
+  the only other name shadowing anything (glibc's `<error.h>`), and that same build shows it is
+  harmless in practice: nothing in the runtime, or in any system header it pulls in, includes it.
   Sizes: `funny` 624KB (600KB stripped), `funnyrt` 251KB on Linux/gcc; 808KB and 446KB with MSVC.
   All comfortably inside task 4's 2MB ceiling. Verified: every subcommand still byte-identical to
   the Python CLI (0 mismatches), the no-Python sandbox green end to end including

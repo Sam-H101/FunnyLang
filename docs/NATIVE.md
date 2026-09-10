@@ -62,7 +62,7 @@ native/
   runner.c         load bytes -> run -> exit code, shared by both entry points
   vm.c             the dispatch loop, frames, closures, upvalues, try/catch
   gc.c             mark-and-sweep, with FUNNY_GC_STRESS for testing
-  value.c bignum.c string.c stash.c groupchat.c squad.c pointa.c iterator.c
+  value.c bignum.c da_string.c stash.c groupchat.c squad.c pointa.c iterator.c
   chunk.c          .funnyc / .funnypak loading
   error.c diag.c   error objects and PLAN.md §4.2's diagnostic renderer
   modules.c        stdlib registration and `gimme`
@@ -72,6 +72,10 @@ native/
 ```
 
 ## The platform boundary
+
+One naming note before the rule: the `yapstring` implementation is `da_string.{c,h}`, not
+`string.{c,h}`, so that putting `native/` on an include path cannot shadow the C standard
+`<string.h>`. It did exactly that once. The file says so itself.
 
 **`platform.c` is the only file in `native/` that may contain `#ifdef _WIN32`.** Everything else is
 portable C11. Filesystem access, timing, TTY detection, console setup, sockets, TLS, `dlopen`, the

@@ -10,7 +10,7 @@
 #include "modules.h"
 #include "platform.h"
 #include "stash.h"
-#include "string.h"
+#include "da_string.h"
 #include "vm.h"
 
 static const char *path_str(VM *vm, Value v, const char *fn_name) {

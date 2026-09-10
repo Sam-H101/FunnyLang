@@ -9,7 +9,7 @@
 #include "groupchat.h"
 #include "squad.h"
 #include "stash.h"
-#include "string.h"
+#include "da_string.h"
 #include "vm.h"
 
 /* -- combo() -------------------------------------------------------- */

@@ -12,7 +12,7 @@
 
 #include "bignum.h"
 #include "gc.h"
-#include "string.h"
+#include "da_string.h"
 
 #define MAGIC_LEN 6
 static const uint8_t MAGIC_FUNNYC[MAGIC_LEN] = {'F', 'U', 'N', 'N', 'Y', 0};

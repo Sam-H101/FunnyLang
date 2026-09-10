@@ -8,7 +8,7 @@
 #include "gc.h"
 #include "groupchat.h"
 #include "modules.h"
-#include "string.h"
+#include "da_string.h"
 #include "vm.h"
 
 /* M_PI/M_E are POSIX/BSD extensions to <math.h>, not standard C11 -- with

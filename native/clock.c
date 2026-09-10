@@ -7,7 +7,7 @@
 #include "groupchat.h"
 #include "modules.h"
 #include "platform.h"
-#include "string.h"
+#include "da_string.h"
 #include "vm.h"
 
 static Value m_now(VM *vm, Value *a, int argc) {

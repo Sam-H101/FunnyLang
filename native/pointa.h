@@ -22,7 +22,7 @@
 
 #include "frames.h"
 #include "object.h"
-#include "string.h"
+#include "da_string.h"
 #include "value.h"
 
 typedef enum {

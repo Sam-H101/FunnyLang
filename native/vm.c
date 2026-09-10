@@ -33,7 +33,7 @@
 #include "pointa.h"
 #include "squad.h"
 #include "stash.h"
-#include "string.h"
+#include "da_string.h"
 #include "yapper.h"
 
 #define IS_INT_LIKE(v) (IS_INT(v) || IS_BOOL(v))

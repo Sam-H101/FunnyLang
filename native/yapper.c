@@ -9,7 +9,7 @@
 #include "groupchat.h"
 #include "modules.h"
 #include "stash.h"
-#include "string.h"
+#include "da_string.h"
 
 static char *dup_cstr(const char *s) {
     size_t n = strlen(s) + 1;

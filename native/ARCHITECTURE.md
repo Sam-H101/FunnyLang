@@ -25,7 +25,7 @@ Every heap value (`yapstring`, `stash`, `groupchat`, `Closure`, `Squad`, `Instan
 upvalue cell, a `pointa`'s backing state, ...) is an `Obj` (`object.h`) with a common header: a type
 tag, a mark bit, a size, and an intrusive `next` pointer threading every live object into one
 all-objects list. `object.h` is header-only (a struct definition and the `ObjType` enum) — each
-concrete type's own file (`bignum.c`, and later `string.c`/`stash.c`/...) allocates itself with a
+concrete type's own file (`bignum.c`, and later `da_string.c`/`stash.c`/...) allocates itself with a
 plain `malloc`, independently of any GC, so it stays unit-testable on its own; `gc_track()`
 (`gc.c`) is the one place that actually appends a freshly-allocated object onto a `GC`'s
 all-objects list and starts counting it toward the heap-growth threshold. This split (allocate,

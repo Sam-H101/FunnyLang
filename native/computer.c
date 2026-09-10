@@ -8,7 +8,7 @@
 #include "groupchat.h"
 #include "modules.h"
 #include "platform.h"
-#include "string.h"
+#include "da_string.h"
 #include "vm.h"
 
 /* funnylang/stdlib/computer.py's own MUSHROOM_CLOUD raw string, verified

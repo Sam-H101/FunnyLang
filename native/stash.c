@@ -9,7 +9,7 @@
 #include "groupchat.h"
 #include "modules.h"
 #include "rizz.h"
-#include "string.h"
+#include "da_string.h"
 
 #define INITIAL_STASH_CAPACITY 4
 

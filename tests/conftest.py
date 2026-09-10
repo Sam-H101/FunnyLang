@@ -56,10 +56,10 @@ def native_binary(tmp_path_factory):
     units, entry_canonical = build_bundle(str(_REPO_ROOT / "selfhost" / "cli.funny"))
     blob = dump_funnypak(units, entry_canonical)
     # The header goes beside the generated .c so its quoted #include resolves
-    # relative to the including file. Emphatically *not* `-I native`: that
-    # directory holds a `string.h` of FunnyLang's own, and putting it on the
-    # include path makes `#include <string.h>` find it instead of the C
-    # standard one, which fails in a spectacularly confusing way.
+    # relative to the including file, rather than adding `-I native`. That is
+    # now merely tidier than the alternative; it used to be load-bearing,
+    # because native/ held a `string.h` that shadowed the C standard one. It
+    # is `da_string.h` these days for exactly that reason.
     blob_c = out.parent / "toolchain_blob.c"
     (out.parent / "toolchain_blob.h").write_text(
         (_REPO_ROOT / "native" / "toolchain_blob.h").read_text(encoding="utf-8"),

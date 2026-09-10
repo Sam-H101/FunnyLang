@@ -12,7 +12,7 @@
 #include "pointa.h"
 #include "squad.h"
 #include "stash.h"
-#include "string.h"
+#include "da_string.h"
 #include "vm.h"
 
 #define INITIAL_NEXT_GC (1024 * 1024) /* 1 MiB before the first collection */

@@ -10,7 +10,7 @@
 #include "groupchat.h"
 #include "modules.h"
 #include "stash.h"
-#include "string.h"
+#include "da_string.h"
 
 #define IS_INT_LIKE(v) (IS_INT(v) || IS_BOOL(v))
 

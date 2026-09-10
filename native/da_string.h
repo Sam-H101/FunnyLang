@@ -1,4 +1,4 @@
-/* native/string.h -- `yapstring`: immutable, UTF-8 (NATIVE_PLAN.md N4
+/* native/da_string.h -- `yapstring`: immutable, UTF-8 (NATIVE_PLAN.md N4
  * task 1). Built incrementally -- N2 first needed just *something* to hold
  * a string constant (`yap "hello"`) and a global's name (a plain byte
  * buffer, no codepoint awareness), and every indexing/slicing/iteration
@@ -20,8 +20,16 @@
  * correctness requirement; deferred until a milestone that actually needs
  * the memory savings.
  */
-#ifndef FUNNY_STRING_H
-#define FUNNY_STRING_H
+/* NAMED `da_string`, NOT `string`, ON PURPOSE. A `native/string.h` shares
+ * its name with the C standard `<string.h>`, so the moment `native/` lands
+ * on the include path -- which happened once, when a test fixture added
+ * `-I native` so a generated file could find its header -- every
+ * `#include <string.h>` in the runtime resolves to *this* file instead, and
+ * the build fails across half the tree in a way that reads like nonsense.
+ * `deadass` is already the language's own word; `da_string` is short, cannot
+ * collide, and the trap is gone rather than documented. Please leave it. */
+#ifndef FUNNY_DA_STRING_H
+#define FUNNY_DA_STRING_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -79,4 +87,4 @@ uint32_t utf8_byte_offset_of(const char *chars, uint32_t byteLen, uint32_t codep
    to ensure `cp` is a valid Unicode scalar value (chr_of's own job). */
 uint32_t utf8_encode_cp(uint32_t cp, char *out);
 
-#endif /* FUNNY_STRING_H */
+#endif /* FUNNY_DA_STRING_H */

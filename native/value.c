@@ -3,7 +3,7 @@
 #include "bignum.h"
 #include "groupchat.h"
 #include "stash.h"
-#include "string.h"
+#include "da_string.h"
 
 bool value_equal_narrow(Value a, Value b) {
     if (IS_GHOST(a) || IS_GHOST(b)) return IS_GHOST(a) && IS_GHOST(b);

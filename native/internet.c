@@ -10,7 +10,7 @@
 #include "modules.h"
 #include "platform.h"
 #include "stash.h"
-#include "string.h"
+#include "da_string.h"
 #include "vm.h"
 
 #define DEFAULT_TIMEOUT_MS 10000

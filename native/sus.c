@@ -14,7 +14,7 @@
 #include "modules.h"
 #include "squad.h"
 #include "stash.h"
-#include "string.h"
+#include "da_string.h"
 #include "value.h"
 #include "vm.h"
 

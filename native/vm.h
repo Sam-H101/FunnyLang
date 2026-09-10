@@ -14,7 +14,7 @@
 #include "chunk.h"
 #include "frames.h"
 #include "gc.h"
-#include "string.h"
+#include "da_string.h"
 #include "value.h"
 
 typedef struct {
