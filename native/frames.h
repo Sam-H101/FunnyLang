@@ -23,17 +23,24 @@
 #include "value.h"
 
 typedef struct VM VM; /* defined in vm.h; only a pointer is needed here */
+typedef struct Task Task; /* defined in task.h; same */
 typedef struct ObjSquad ObjSquad; /* defined in squad.h; only a pointer is needed here */
 
 typedef struct ObjUpvalue {
     Obj obj;
-    VM *vm;   /* for locating the live stack while open */
+    VM *vm; /* for locating the live stack while open */
+    /* Which task's stack `slot` indexes (ASYNC_PLAN.md A3). The running
+       task's stack is `vm->stack`; every other task's is its own array. An
+       upvalue captured by a task that is now suspended has to keep reading
+       the slot it captured, not the same index in whatever is running -- so
+       it remembers, and frames.c asks which case it is in. */
+    Task *task;
     int slot; /* absolute stack index while open */
     bool closed;
     Value closedValue;
 } ObjUpvalue;
 
-ObjUpvalue *upvalue_new(GC *gc, VM *vm, int slot);
+ObjUpvalue *upvalue_new(GC *gc, VM *vm, Task *task, int slot);
 Value upvalue_get(const ObjUpvalue *uv);
 void upvalue_set(ObjUpvalue *uv, Value v);
 void upvalue_close(ObjUpvalue *uv);

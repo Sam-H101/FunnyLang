@@ -320,7 +320,7 @@ signal available.
 - [ ] `async_ngl` and `await_fr` are out of `RESERVED_FUTURE` and do what their names say.
 - [x] `interns` runs real OS threads; a worker's crash or error surfaces in the parent as a normal
       FunnyLang error, never as a runtime abort. **(A1)**
-- [ ] The existing 376 goldens pass unchanged, under `FUNNY_GC_STRESS=50` and ASan.
+- [x] The existing 376 goldens pass unchanged, under `FUNNY_GC_STRESS=50` and ASan. **(A3)**
 - [ ] New goldens for every hazard in §3, not just every feature in §6.
 - [x] TSan clean on the worker tests. **(A1)**
 - [ ] `await_fr` inside a native callback raises a clear error naming the callback.
@@ -484,3 +484,41 @@ spec contradiction, and every wrong turn worth not repeating.
   time, an `otw` being refused at the worker boundary, and awaiting plain values. 383/383 on Linux
   (gcc) and Windows (MSVC `/W4 /WX`), 383/383 under `FUNNY_GC_STRESS=50`, and `tests/lang/interns`
   clean under ASan+UBSan and ThreadSanitizer.
+
+- **A3 · tasks in the VM. Done, and invisible.** `native/task.{h,c}`: a Task owns a `stack`, a
+  `frames` array, an open-upvalue array, and the position/error scalars that go with them. The VM
+  holds every task and knows which one is running. The entry program is task zero, created by
+  `vm_init`. No syntax, no new golden, no behaviour change: 383/383 unchanged, under
+  `FUNNY_GC_STRESS=50`, under ASan+UBSan over the *whole* corpus, on Linux and on Windows, with the
+  bootstrap fixed point still byte-identical.
+
+  **The running task's context stays in the VM's own fields; only suspended tasks keep a copy.**
+  The obvious design -- `VM` holds a `Task *current` and every access goes through it -- would have
+  meant rewriting several hundred `vm->stack` / `vm->frameCount` references through the dispatch
+  loop, which is the most correctness-critical code in the project, in exchange for nothing that a
+  pair of struct copies does not already give. A milestone whose entire acceptance criterion is
+  "nothing notices" should not be a thousand-line diff through the interpreter. Switching is
+  `task_save` on the way out and `task_restore` on the way in.
+
+  **The one place the choice shows is `ObjUpvalue`, and it is worth spelling out** because it is the
+  bug this design would otherwise have. An open upvalue holds an *absolute index into the stack*.
+  With one stack that was unambiguous; with several it is not, and a suspended task's upvalue reading
+  `vm->stack[slot]` would read whatever the *running* task happens to have at that index -- a silent
+  wrong answer, the worst class of defect §3.1 warns about. So an upvalue now remembers its task, and
+  `frames.c` reads `vm->stack` when that task is the running one (the Task's copy of the pointer is
+  stale then, because the array may have been realloc'd since the last switch) and the Task's array
+  otherwise. Six lines, one function, `live_stack`.
+
+  **Closing an upvalue on suspend was considered and rejected.** It looks like it would avoid the
+  problem entirely, and it does not: closing copies the value out of the stack, so a resumed task
+  writing that local through `SET_LOCAL` and a closure reading it through the upvalue would diverge.
+  The two must keep pointing at one cell.
+
+  **`task_mark` roots a suspended task's unit constants too**, not just its stack and frames. A task
+  suspended inside module A while module B runs has a next instruction that may `CONST`-push out of
+  A's pool, and `mark_vm_roots` only ever rooted `vm->unit` -- which by then is B's.
+
+  **`vm_task_retire` frees a finished task's arrays early** rather than waiting for `vm_destroy`. A
+  program that awaits ten thousand things should not hold ten thousand 256-slot stacks; the Task
+  itself survives, so a stale reference finds a `TASK_DONE` with nothing in it rather than freed
+  memory.

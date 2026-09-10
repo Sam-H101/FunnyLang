@@ -34,6 +34,7 @@
 #include "opcodes.h"
 #include "pointa.h"
 #include "squad.h"
+#include "task.h"
 #include "stash.h"
 #include "da_string.h"
 #include "yapper.h"
@@ -617,24 +618,24 @@ ObjNativeFn *native_fn_new(GC *gc, NativeMethodFn fn, const char *name, int minA
 
 /* -- setup / teardown ------------------------------------------------- */
 
-#define INITIAL_STACK_CAPACITY 256
 #define INITIAL_GLOBALS_CAPACITY 8
-#define INITIAL_FRAMES_CAPACITY 64
-#define INITIAL_OPEN_UPVALUES_CAPACITY 8
 
 void vm_init(VM *vm) {
     gc_init(&vm->gc);
-    vm->stackCapacity = INITIAL_STACK_CAPACITY;
-    vm->stack = (Value *)malloc((size_t)vm->stackCapacity * sizeof(Value));
-    vm->stackCount = 0;
 
-    vm->frameCapacity = INITIAL_FRAMES_CAPACITY;
-    vm->frames = (Frame *)malloc((size_t)vm->frameCapacity * sizeof(Frame));
-    vm->frameCount = 0;
-
-    vm->openUpvalueCapacity = INITIAL_OPEN_UPVALUES_CAPACITY;
-    vm->openUpvalues = (ObjUpvalue **)malloc((size_t)vm->openUpvalueCapacity * sizeof(ObjUpvalue *));
-    vm->openUpvalueCount = 0;
+    /* Task zero, the entry program. It allocates the stack and frames the VM
+       used to allocate for itself, and vm_task_switch hands them straight
+       over -- so from here on there is no such thing as "the VM's stack" that
+       is not some task's. */
+    vm->tasks = NULL;
+    vm->taskCount = 0;
+    vm->taskCapacity = 0;
+    vm->currentTask = NULL;
+    vm->nextTaskId = 0;
+    Task *entry = vm_task_spawn(vm);
+    task_restore(vm, entry);
+    entry->state = TASK_RUNNING;
+    vm->currentTask = entry;
 
     vm->builtinCapacity = INITIAL_GLOBALS_CAPACITY;
     vm->builtins = (GlobalEntry *)malloc((size_t)vm->builtinCapacity * sizeof(GlobalEntry));
@@ -664,6 +665,48 @@ void vm_init(VM *vm) {
     vm->ownedUnits = NULL;
     vm->ownedUnitCount = 0;
     vm->ownedUnitCapacity = 0;
+}
+
+/* -- tasks ---------------------------------------------------------------- */
+
+Task *vm_task_spawn(VM *vm) {
+    Task *t = task_new(vm->nextTaskId++);
+    if (vm->taskCount == vm->taskCapacity) {
+        vm->taskCapacity = vm->taskCapacity == 0 ? 4 : vm->taskCapacity * 2;
+        vm->tasks = (Task **)realloc(vm->tasks, (size_t)vm->taskCapacity * sizeof(Task *));
+    }
+    vm->tasks[vm->taskCount++] = t;
+    return t;
+}
+
+void vm_task_switch(VM *vm, Task *to) {
+    if (to == vm->currentTask) return;
+    if (vm->currentTask != NULL) {
+        task_save(vm, vm->currentTask);
+        if (vm->currentTask->state == TASK_RUNNING) vm->currentTask->state = TASK_READY;
+    }
+    task_restore(vm, to);
+    to->state = TASK_RUNNING;
+    vm->currentTask = to;
+}
+
+void vm_task_retire(VM *vm, Task *t) {
+    if (t == NULL || t == vm->currentTask || t->state != TASK_DONE) return;
+    for (int i = 0; i < t->frameCount; i++) frame_destroy(&t->frames[i]);
+    free(t->stack);
+    free(t->frames);
+    free(t->openUpvalues);
+    t->stack = NULL;
+    t->stackCount = 0;
+    t->stackCapacity = 0;
+    t->frames = NULL;
+    t->frameCount = 0;
+    t->frameCapacity = 0;
+    t->openUpvalues = NULL;
+    t->openUpvalueCount = 0;
+    t->openUpvalueCapacity = 0;
+    t->pendingError = GHOST_VAL;
+    t->unit = NULL;
 }
 
 /* -- the import-loading stack ---------------------------------------------
@@ -726,10 +769,19 @@ void vm_destroy(VM *vm) {
     vm->sessions = NULL;
     vm->sessionCount = 0;
     vm->sessionCapacity = 0;
-    free(vm->stack);
-    for (int i = 0; i < vm->frameCount; i++) frame_destroy(&vm->frames[i]);
-    free(vm->frames);
-    free(vm->openUpvalues);
+    /* Hand the running task's context back before anything is freed: from
+       here every array belongs to some Task, and task_free is what frees
+       them (frames included, with their handler stacks). */
+    if (vm->currentTask != NULL) task_save(vm, vm->currentTask);
+    for (int i = 0; i < vm->taskCount; i++) task_free(vm->tasks[i]);
+    free(vm->tasks);
+    vm->tasks = NULL;
+    vm->taskCount = 0;
+    vm->taskCapacity = 0;
+    vm->currentTask = NULL;
+    vm->stack = NULL;
+    vm->frames = NULL;
+    vm->openUpvalues = NULL;
     free(vm->builtins);
     /* After gc_destroy, not before: a closure still on the heap points into
        its unit, and the sweep must not run over freed protos. */
@@ -754,6 +806,17 @@ void vm_adopt_unit(VM *vm, CompiledUnit *unit) {
 
 static void mark_vm_roots(GC *gc, void *userdata) {
     VM *vm = (VM *)userdata;
+    /* Every suspended task, not just the running one (§3.2). The running
+       one's context is the VM's own fields, walked immediately below; a
+       suspended task's is in its Task, and anything only that task can reach
+       is invisible from here without this loop. Getting it wrong does not
+       fail a test -- it frees something a live task still owns, and shows up
+       later as an intermittent use-after-free in whichever task resumes
+       next. */
+    for (int i = 0; i < vm->taskCount; i++) {
+        Task *t = vm->tasks[i];
+        if (t != NULL && t != vm->currentTask) task_mark(gc, t);
+    }
     for (int i = 0; i < vm->stackCount; i++) gc_mark_value(gc, vm->stack[i]);
     for (int i = 0; i < vm->frameCount; i++) gc_mark_object(gc, (Obj *)vm->frames[i].closure);
     for (int i = 0; i < vm->openUpvalueCount; i++) gc_mark_object(gc, (Obj *)vm->openUpvalues[i]);
@@ -871,7 +934,7 @@ static ObjUpvalue *capture_upvalue(VM *vm, int slot) {
     for (int i = 0; i < vm->openUpvalueCount; i++) {
         if (!vm->openUpvalues[i]->closed && vm->openUpvalues[i]->slot == slot) return vm->openUpvalues[i];
     }
-    ObjUpvalue *uv = upvalue_new(&vm->gc, vm, slot);
+    ObjUpvalue *uv = upvalue_new(&vm->gc, vm, vm->currentTask, slot);
     if (vm->openUpvalueCount == vm->openUpvalueCapacity) {
         vm->openUpvalueCapacity *= 2;
         vm->openUpvalues = (ObjUpvalue **)realloc(vm->openUpvalues, (size_t)vm->openUpvalueCapacity * sizeof(ObjUpvalue *));

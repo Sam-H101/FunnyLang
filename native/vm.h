@@ -75,6 +75,11 @@ ObjNativeFn *native_fn_new(struct GC *gc, NativeMethodFn fn, const char *name, i
 struct VM {
     GC gc;
 
+    /* ASYNC_PLAN.md A3: these six, plus the open-upvalue array below and the
+       position/error scalars further down, are the *running task's* context.
+       Every other task's copy of them is saved in its own Task (task.h), and
+       switching is a pair of struct copies. task.h argues why the running
+       one stays here rather than behind a pointer. */
     Value *stack;
     int stackCount;
     int stackCapacity;
@@ -154,6 +159,16 @@ struct VM {
     int loadingCount;
     int loadingCapacity;
 
+    /* Every task in this VM, task zero (the entry program) first. The one
+       whose context is in the fields above is `currentTask`; the rest have
+       theirs saved. The collector walks all of them -- §3.2 names missing
+       that as the single most likely serious bug in the whole plan. */
+    struct Task **tasks;
+    int taskCount;
+    int taskCapacity;
+    struct Task *currentTask;
+    int nextTaskId;
+
     /* The `interns` worker this VM is running as, or NULL for a VM that is
        not one (the main program, a `sus` child, a REPL session). It is here
        rather than in thread-local storage because the VM already *is* the
@@ -229,6 +244,23 @@ void vm_adopt_unit(VM *vm, CompiledUnit *unit);
 
 void vm_init(VM *vm);
 void vm_destroy(VM *vm);
+
+/* -- tasks (ASYNC_PLAN.md A3) ---------------------------------------------
+ *
+ * A new task, registered with this VM and READY. It has its own empty stack
+ * and frames; putting something on them is the caller's job. */
+struct Task *vm_task_spawn(VM *vm);
+
+/* Makes `to` the running task: saves the current one's context into its Task
+   and restores `to`'s. A no-op if `to` is already running. The task going out
+   keeps whatever state it had set for itself (WAITING, DONE, ...) and is
+   marked READY only if it was still RUNNING. */
+void vm_task_switch(VM *vm, struct Task *to);
+
+/* Frees a finished task's arrays early rather than at vm_destroy. Safe only
+   once nothing can resume it: its state must be TASK_DONE and it must not be
+   the running task. */
+void vm_task_retire(VM *vm, struct Task *t);
 
 /* Runs unit->protos[unit->entryProto]. `unit` must outlive the call (its
    consts, in particular, are referenced directly, not copied). Returns
