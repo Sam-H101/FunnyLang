@@ -1,0 +1,130 @@
+# The native runtime
+
+FunnyLang's runtime is a C program. `native/` is a complete bytecode VM — values, garbage
+collector, arbitrary-precision integers, the whole standard library — and it is what runs when you
+type `funny`. The compiler, linker, formatter, disassembler, test runner, REPL and command line
+itself are FunnyLang, living in `selfhost/`, compiled to bytecode and executed by that VM.
+
+Building it needs a C compiler and nothing else. No Python, no build system, no package manager, no
+third-party library.
+
+## Building
+
+```console
+$ ./build.sh              # release  -> ./funny and ./funnyrt
+$ ./build.sh debug        # -O0 -g, ASan + UBSan
+```
+
+```console
+> build.bat               :: MSVC -> funny.exe and funnyrt.exe
+> build.bat debug         :: MSVC, ASan
+```
+
+`build.sh` honours `CC`, so `CC=clang ./build.sh` works. Both scripts are one compiler invocation
+per binary and take no arguments beyond the mode — there is deliberately no Makefile, no CMake and
+nothing to configure.
+
+Two binaries come out:
+
+| | |
+|---|---|
+| `funny` | the command line. Loads `bootstrap/cli.funnypak` and hands it your arguments. |
+| `funnyrt` | the *runtime stub*: a VM with no compiler in it. `funny yeet` copies this, appends your compiled program, and marks the result executable. That is why a yeeted program is a couple of hundred KB rather than 8 MB. |
+
+## What ships beside the binary
+
+`bootstrap/` holds two checked-in bundles, and the binary needs them:
+
+- **`funnyc.funnypak`** — the compiler. Breaks the circle: the compiler is written in FunnyLang, so
+  something has to compile the compiler.
+- **`cli.funnypak`** — the command line. `native/main.c` is a loader; every subcommand lives here.
+
+`funny --version` is answered by the C loader itself, so the one command you run when an install
+looks broken works even if these are missing. See [bootstrap/STAGE0.md](../bootstrap/STAGE0.md) for
+provenance and the staleness check that keeps them honest.
+
+## Layout
+
+```
+native/
+  main.c           the CLI loader (~120 lines; everything else is selfhost/cli.funny)
+  stub_main.c      the yeet runtime stub's entry point
+  runner.c         load bytes -> run -> exit code, shared by both entry points
+  vm.c             the dispatch loop, frames, closures, upvalues, try/catch
+  gc.c             mark-and-sweep, with FUNNY_GC_STRESS for testing
+  value.c bignum.c string.c stash.c groupchat.c squad.c pointa.c iterator.c
+  chunk.c          .funnyc / .funnypak loading
+  error.c diag.c   error objects and PLAN.md §4.2's diagnostic renderer
+  modules.c        stdlib registration and `gimme`
+  builtins.c mafs.c yapper.c filez.c clock.c rizz.c sus.c computer.c internet.c
+  numfmt.c         float formatting that matches Python's repr exactly
+  platform.c       *the only file allowed #ifdef _WIN32*
+```
+
+## The platform boundary
+
+**`platform.c` is the only file in `native/` that may contain `#ifdef _WIN32`.** Everything else is
+portable C11. Filesystem access, timing, TTY detection, console setup, sockets, TLS, `dlopen`, the
+executable's own path and temp files all go through `platform.h`.
+
+This is not a style preference. It is the thing that keeps a port to a new OS a matter of one file
+rather than a hunt through twenty, and it is checked by reading, so keep it true: if you find
+yourself wanting a conditional anywhere else, add a `platform_` function instead.
+
+TLS is the only place that touches an OS library: WinHTTP on Windows, `Security.framework` on
+macOS, and OpenSSL `dlopen`'d at run time on Linux/BSD — so the binary still builds and runs on a
+machine with no OpenSSL installed. Certificate verification is mandatory and has no opt-out.
+
+## The GC contract
+
+`gc.c` is a mark-and-sweep collector over every heap object. The rules a C function has to follow:
+
+1. **`gc_maybe_collect` is only called at the top of the dispatch loop** (`vm.c`). A plain C helper
+   cannot trigger a collection, which is why most native functions need no rooting at all.
+2. **Anything that allocates more than once while building a container must root the container**
+   with `gc_push_temp` / `gc_pop_temp`. Allocating the second object can collect the first.
+3. **Anything that calls back into FunnyLang** — a callback-taking `stash` method, an instance's
+   `to_yap` magic method — must root what it holds across the call, because that call runs the
+   dispatch loop and so can collect.
+4. **A heap's roots are the job of the collector that owns the heap.** This matters at a VM
+   boundary: `sus.run_bytecode` and `sus.run_in` create a *second* VM with its own heap, and
+   nothing from it may be handed to the caller — strings are copied out, values never cross.
+
+`FUNNY_GC_STRESS=1` collects on every allocation. It is slow and it is the fastest way to find a
+missing root; the whole differential suite runs under it in CI.
+
+## Testing
+
+```console
+$ python3 -m pytest tests/native/     # differential: both VMs, byte-for-byte
+$ FUNNY_GC_STRESS=1 python3 -m pytest tests/native/
+$ ./funny test tests/lang             # the golden corpus, no Python at all
+$ ./funny bootstrap --verify          # the self-hosting fixed point
+```
+
+The differential suite compiles a program with both implementations, runs it through both VMs and
+diffs stdout byte for byte. There are no hand-written expected-output files in it: the expected
+side is rendered live, so a golden can never drift out of date. The exceptions — randomness,
+timing, hardware-dependent output, live network — are tested on their properties instead, and each
+one says so where it is skipped.
+
+`tests/lang/` is the other half: `.funny`/`.expected` pairs run by `funny test`, needing no Python
+at all. That corpus is what survives the Python implementation's removal.
+
+## Porting to a new platform
+
+1. Add the `#ifdef` branch to `platform.c`. Nothing else should need touching.
+2. `./build.sh && ./funny test tests/lang && ./funny bootstrap --verify`.
+3. If `platform_executable_path` cannot be implemented, `funny` still works from a directory
+   containing `bootstrap/`, and `FUNNY_CLI`/`FUNNY_TOOLCHAIN`/`FUNNY_STUB` override the search.
+
+## Debugging
+
+| | |
+|---|---|
+| `funny xray file.funny` | disassemble. `--tokens`, `--ast`, `--pak` for the earlier stages. |
+| `FUNNY_GC_STRESS=1` | collect on every allocation. |
+| `FUNNY_SERIOUS=1` | plain diagnostics, no roasts — useful in logs. |
+| `FUNNY_NO_COLOR=1` | strip ANSI regardless of TTY detection. |
+| `./build.sh debug` | ASan + UBSan. |
+| `funny bootstrap --verify --keep --diff` | keep the stages, and disassemble the first divergent proto if they differ. |

@@ -143,9 +143,15 @@ def test_cli_reports_a_source_error_without_compiler_internals(native_binary, tm
 
 
 def test_cli_version_flag(native_binary):
+    """The version itself is read from funnylang/__init__.py rather than
+    hard-coded here: four places carry it, and a test that pins a literal is
+    the fifth thing to update on every bump. That the *four* implementations
+    agree is what `test_native_cli.py` checks."""
+    from funnylang import __version__
+
     result = subprocess.run([str(native_binary), "--version"], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0
-    assert result.stdout == "funny 1.1.0 (bytecode v2)\n"
+    assert result.stdout == f"funny {__version__} (bytecode v2)\n"
 
 
 def test_both_vms_run_the_compiler_to_the_same_bytecode(native_binary, selfhost_pak, tmp_path):

@@ -29,7 +29,7 @@ gimme computer
 gimme { build_bundle, emit_funnypak } from "bundler.funny"
 gimme { emit_funnyc } from "emitter.funny"
 
-flex deadass VERSION = "1.1.0"
+flex deadass VERSION = "2.0.0"
 flex deadass BYTECODE_VERSION = 2
 
 flex deadass VIBES_QUIPS = [

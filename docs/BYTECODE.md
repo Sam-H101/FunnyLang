@@ -256,13 +256,21 @@ instead. `funny run` picks the right loader by file content, not extension.
 
 ## Native executable layout
 
-`funny yeet` appends a linked `.funnypak` directly onto a frozen Python runtime stub binary:
+`funny yeet` appends a compiled program directly onto `funnyrt`, the runtime stub — a native
+binary that is the VM with no compiler in it, since a shipped executable only ever runs
+already-compiled bytecode:
 
 ```
-[ frozen runtime stub bytes ][ .funnypak bytes ][ payload_len u64 ][ b"FUNNYYEET" 9 bytes ]
+[ funnyrt bytes ][ payload bytes ][ b"FUNNYYEET" 9 bytes ][ payload_len u64 big-endian ]
 ```
 
-The trailer is exactly 17 bytes. At startup the stub reads its own file (`sys.executable`, since
-it's frozen), seeks to `filesize - 17`, checks the magic, reads `payload_len`, seeks back to
-`filesize - 17 - payload_len`, and loads the `.funnypak` from there — no temp files, no
-extraction.
+The trailer is exactly 17 bytes, **magic first**. (`PLAN.md` §5.4's diagram shows the length
+before the magic; the order above is what the packager actually writes and what the stub reads.
+Following the code, not the diagram.)
+
+At startup the stub finds its own file, seeks to `filesize - 17`, checks the magic, reads
+`payload_len`, seeks back to `filesize - 17 - payload_len`, and loads the payload from there — no
+temp files, no extraction. Running `funnyrt` itself, with nothing appended, says so and exits 2.
+
+The payload is a `.funnyc` for a single-file program and a `.funnypak` for one with imports; the
+stub tells them apart by magic, not by anything in the trailer.

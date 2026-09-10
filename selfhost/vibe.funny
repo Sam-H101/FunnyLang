@@ -22,7 +22,7 @@ gimme { resolve_program, compile_program, BUILTIN_GLOBAL_NAMES, STDLIB_MODULE_NA
 gimme { emit_funnyc } from "emitter.funny"
 gimme { disassemble } from "disasm.funny"
 
-flex deadass VERSION = "1.1.0"
+flex deadass VERSION = "2.0.0"
 
 flex deadass BANNER_LINES = [
     "",

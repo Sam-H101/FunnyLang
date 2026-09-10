@@ -2141,4 +2141,50 @@ gets an entry explaining what changed and why.
   Verified: 8 tests in `tests/native/test_native_bootstrap.py` — the fixed point, output shape
   against the Python CLI, `--verify` being required, `--keep` leaving all three stages behind and its
   absence leaving nothing, and three shapes of `--diff` report. Full suite 1313 passed.
+- **N9 tasks 3-7 · the no-Python proof, the CI matrix, the docs, and 2.0.0.**
+  **Task 3 — the job the plan calls "the single most important test in the document."** A new CI
+  job runs in a `debian:12` container with `gcc` and nothing else: it *asserts* no `python`,
+  `python3` or `pip` is on PATH, then **deletes every `.py` file and `funnylang/` from the
+  checkout**, then builds `native/` and exercises the entire toolchain — `--version`, a source file,
+  a multi-module program, `build` then run the bundle, `test` over `tests/lang` and `examples`,
+  `xray`, `fmt --check`, `yeet` and run the result, the REPL, and `bootstrap --verify`. Then it does
+  the load-bearing subset again under `env -i` with **no PATH at all**, which also rules out shelling
+  out to anything.
+  Proven locally first (`build/n4/no_python_check.sh`, same shape in a sandbox with no `.py` in it):
+  every step passes, `bootstrap --verify` included. The container job itself is written but
+  unverified locally — there is no Docker on this machine — so it is CI that will confirm the
+  `apt-get`/`checkout` half. Said plainly rather than claimed.
+  **Task 4 — the compiler dimension.** The `native` job built with whatever `cc` resolved to, which
+  meant clang-on-Linux was never exercised, and that is exactly where a `-Werror` difference shows
+  up. The matrix now names the compiler: `{windows, msvc}`, `{ubuntu, gcc}`, `{ubuntu, clang}`,
+  `{macos, clang}`. No `macos`+`gcc` entry, because on a GitHub macOS runner `gcc` is a shim for
+  Apple clang and would build the same code with the same compiler under a different name — said in
+  a comment rather than left as a silently redundant matrix row. Verified locally: `CC=clang
+  ./build.sh` is clean and all 248 native tests pass under it.
+  **Task 5 — docs.** New `docs/NATIVE.md`: building, the two binaries and what ships beside them,
+  the `native/` layout, **the platform boundary** (`platform.c` is the only file allowed
+  `#ifdef _WIN32`, and why that is a rule and not a preference), **the GC contract** as four
+  numbered rules including the one this milestone learned the hard way — *a heap's roots are the job
+  of the collector that owns the heap* — how to test, how to port, and the debugging switches.
+  `README.md`'s install section is now the C build. `docs/BYTECODE.md`'s yeet section said "frozen
+  Python runtime stub" and had the trailer bytes in the wrong order; it now describes `funnyrt` and
+  puts the magic first, matching the code. `docs/LANGUAGE.md`'s self-hosting section said only the
+  compiler was self-hosted; the whole toolchain is.
+  **Task 6 — 2.0.0.** Bumped in the four places that carry it (`funnylang/__init__.py`,
+  `native/main.c`, `selfhost/cli.funny`, `selfhost/vibe.funny`) plus `pyproject.toml`, and the test
+  that pinned a literal version string now reads it from `__init__.py` instead — a test that has to
+  be edited on every bump is a fifth copy of the version. `CHANGELOG.md` gets a full 2.0.0 section:
+  the runtime, the self-hosted toolchain, every language and stdlib addition, the six bugs fixed
+  along the way, and a compatibility note (bytecode format unchanged; `.funnyc`/`.funnypak` from
+  1.1.0 run unmodified; the binary now needs its two bundles beside it, and `--version` deliberately
+  works without them).
+  **Task 7 — the honesty pass.** `README.md`'s "what this isn't" said the VM is Python and is
+  frozen into every yeeted binary. That was true when written and is now false. Replaced with what
+  *is* true: the VM is not self-hosted and **cannot** be, because something has to execute bytecode
+  and a FunnyLang-hosted VM would need a VM to run it — the regress never bottoms out. What changed
+  in 2.0.0 is that the C runtime replaced the Python one, and a yeeted program went from 8 MB of
+  bundled CPython to a couple of hundred KB. The `funnylang/` package is described as what it now
+  is: a reference oracle on its way out, with a pointer to N11.
+  Verified: full suite 1313 passed at 2.0.0; every subcommand still byte-identical to the Python
+  CLI (0 mismatches); the no-Python sandbox green end to end.
 

@@ -350,14 +350,17 @@ Global flags (before or after the subcommand): `--serious`, `--no-color`, `--tim
 
 ## Self-hosting
 
-The FunnyLang *compiler* is self-hosted: a second, independent implementation of the lexer,
-parser, resolver, compiler, and `.funnyc` emitter, written in FunnyLang itself, lives in
-`selfhost/`. `funny bootstrap --verify` compiles that implementation with the Python compiler,
-then uses the result to compile itself twice more, and checks that the third and fourth
-generations are byte-for-byte identical — the classic "does the compiler compile itself"
-fixed-point test. The FunnyLang *virtual machine* is not self-hosted, and isn't meant to be:
-something has to actually execute bytecode, and that's Python, frozen into every `funny yeet`
-executable. See `selfhost/` and the self-hosting subset described in `PLAN.md` §8 for exactly
-which language features the self-hosted compiler's own source is restricted to (it can still
-*compile* the full language — squads, templates, everything — the restriction is only on how it's
-*written*).
+The whole FunnyLang *toolchain* is self-hosted. `selfhost/` holds the lexer, parser, resolver,
+compiler and `.funnyc` emitter, the `.funnypak` linker, the disassembler behind `funny xray`, the
+formatter, the test runner, the REPL, and the command line itself — all written in FunnyLang.
+`funny bootstrap --verify` links that toolchain, uses the result to link it again, and again, and
+checks the last two generations are byte-for-byte identical: the classic "does the compiler
+compile itself" fixed-point test.
+
+The FunnyLang *virtual machine* is not self-hosted, and cannot be: something has to actually
+execute bytecode, and that something is `native/`, a C program. A FunnyLang-hosted VM would need a
+VM to run it, and the regress never bottoms out.
+
+See `selfhost/` and the self-hosting subset described in `PLAN.md` §8 for exactly which language
+features the self-hosted toolchain's own source is restricted to (it can still *compile* the full
+language — squads, templates, everything — the restriction is only on how it's *written*).

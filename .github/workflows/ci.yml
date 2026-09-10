@@ -95,12 +95,25 @@ jobs:
     # clang-style flags) rather than going through build.bat's MSVC-specific
     # invocation, so it just skips itself there for now (see test_n2_
     # differential.py's own FileNotFoundError handling).
-    name: native (${{ matrix.os }})
+    name: native (${{ matrix.os }}, ${{ matrix.cc }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        # N9 task 4: both compilers on each POSIX runner, not just whatever
+        # `cc` resolves to -- gcc and clang disagree about enough warnings
+        # that -Werror only means something if both have seen the code.
+        include:
+          - { os: windows-latest, cc: msvc }
+          - { os: ubuntu-latest, cc: gcc }
+          - { os: ubuntu-latest, cc: clang }
+          # No macos+gcc entry: on a GitHub macOS runner `gcc` is a shim for
+          # Apple clang, so it would build the same code with the same
+          # compiler under a different name.
+          - { os: macos-latest, cc: clang }
+
+    env:
+      CC: ${{ matrix.cc }}
 
     steps:
       - uses: actions/checkout@v4
@@ -175,6 +188,102 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: funny.exe
+
+  no-python:
+    # NATIVE_PLAN.md N9 task 3 -- the single most important job here. A
+    # container with a C compiler and *nothing else*: no Python, no pip, no
+    # interpreter at all. If this passes, "FunnyLang needs no Python" is a
+    # fact about the artifact rather than a claim in a README.
+    #
+    # `funnylang/` and every other .py file is deleted from the checkout
+    # before anything runs, so an accidental dependency on the Python
+    # implementation fails loudly instead of quietly working on a machine
+    # that happens to have it.
+    name: no-python (debian, cc only)
+    runs-on: ubuntu-latest
+    container: debian:12
+
+    steps:
+      - name: Install a C compiler and nothing else
+        run: |
+          apt-get update
+          # git is for actions/checkout; on Debian it recommends perl, not
+          # python, and --no-install-recommends keeps even that out.
+          apt-get install -y --no-install-recommends gcc libc6-dev ca-certificates git
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v4
+
+      - name: Prove there is no Python here
+        run: |
+          set -eu
+          for exe in python python3 python3.11 python3.12 pip pip3; do
+            if command -v "$exe" >/dev/null 2>&1; then
+              echo "FAIL: $exe is on PATH -- this job is meaningless with an interpreter available"
+              exit 1
+            fi
+          done
+          echo "no python, no pip."
+
+      - name: Delete every .py file from the checkout
+        run: |
+          set -eu
+          find . -name '*.py' -delete
+          rm -rf funnylang
+          if find . -name '*.py' | grep -q .; then echo "FAIL: a .py survived"; exit 1; fi
+          echo "funnylang/ and every .py file are gone."
+
+      - name: Build from C source alone
+        run: ./build.sh
+
+      - name: funny --version
+        run: ./funny --version
+
+      - name: Run a source file
+        run: ./funny run examples/hello.funny
+
+      - name: Run a multi-module program
+        run: ./funny run examples/modules/main.funny
+
+      - name: Build a bundle, then run it
+        run: |
+          ./funny build examples/modules/main.funny -o built.funnypak
+          ./funny run built.funnypak
+
+      - name: The golden corpus
+        env:
+          FUNNY_NO_NET: "1"
+        run: |
+          ./funny test tests/lang
+          ./funny test examples
+
+      - name: xray and fmt
+        run: |
+          ./funny xray examples/hello.funny
+          ./funny xray examples/hello.funny --ast
+          ./funny fmt examples/fizzbuzz.funny --check
+
+      - name: Yeet a standalone binary, then run it
+        run: |
+          ./funny yeet examples/hello.funny -o hello_standalone
+          ./hello_standalone
+
+      # The REPL reads stdin, so it gets a scripted session rather than a tty.
+      - name: The REPL
+        run: printf 'yo x = 5\nx + 3\n.exit\n' | ./funny vibe
+
+      - name: The self-hosting fixed point
+        run: ./funny bootstrap --verify
+
+      # Belt and braces: rerun the whole sequence with an *empty environment*
+      # and no PATH at all, which also rules out shelling out to anything.
+      - name: Again, with no PATH at all
+        run: |
+          set -eu
+          env -i FUNNY_NO_NET=1 ./funny --version
+          env -i FUNNY_NO_NET=1 ./funny run examples/hello.funny
+          env -i FUNNY_NO_NET=1 ./funny test tests/lang
+          env -i FUNNY_NO_NET=1 ./funny bootstrap --verify
 
   package:
     name: package (${{ matrix.os }})

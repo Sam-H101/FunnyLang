@@ -7,11 +7,11 @@
    ██╔══╝  ██║   ██║██║╚██╗██║██║╚██╗██║  ╚██╔╝
    ██║     ╚██████╔╝██║ ╚████║██║ ╚████║   ██║
    ╚═╝      ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝   ╚═╝
-        FunnyLang v1.0.0 — it compiles. somehow.
+        FunnyLang v2.0.0 — it compiles. somehow.
 ```
 
 A bytecode-compiled programming language that refuses to take itself seriously — and, as of
-v1.0.0, compiles itself.
+v2.0.0, compiles itself, with a runtime that needs nothing installed.
 
 ```funny
 bet fizzbuzz(n) {
@@ -42,15 +42,27 @@ Buzz
 
 ## Install
 
-Requires Python 3.10 or newer, and nothing else — FunnyLang's runtime has zero third-party
-dependencies.
+Build it from source. You need a C compiler and nothing else — no Python, no build system, no
+package manager, no third-party library.
 
 ```console
-$ pip install -e .
+$ git clone https://github.com/Sam-H101/FunnyLang
+$ cd FunnyLang
+$ ./build.sh                      # or build.bat on Windows, with MSVC
+$ ./funny run examples/hello.funny
+yo sup world
 ```
 
-That puts a `funny` command on your PATH. You can also skip the install and run the package
-directly from a checkout with `python -m funnylang`, which is what the test suite does.
+That produces two binaries: `funny` (the command line) and `funnyrt` (the runtime stub `funny
+yeet` copies to make standalone programs). Both are a few hundred KB. `build.sh` honours `CC`, so
+`CC=clang ./build.sh` works.
+
+The binary loads two bundles from `bootstrap/` next to it — the compiler and the command line,
+both of which are themselves FunnyLang. Keep them together, or point `FUNNY_TOOLCHAIN` and
+`FUNNY_CLI` at them.
+
+See [docs/NATIVE.md](docs/NATIVE.md) for the runtime's layout, the platform boundary, and the GC
+contract.
 
 ## What this is
 
@@ -60,10 +72,12 @@ directly from a checkout with `python -m funnylang`, which is what the test suit
   inheritance classes, exceptions with try/catch/finally, a module system, arbitrary-precision
   integers, string interpolation, slicing — see [docs/LANGUAGE.md](docs/LANGUAGE.md) for the full
   reference.
-- Genuinely self-hosting: the *compiler* — lexer, parser, resolver, codegen, and `.funnyc` emitter
-  — has a second, independent implementation, written in FunnyLang itself, living in `selfhost/`.
-  `funny bootstrap --verify` compiles it with the Python compiler, then uses that output to compile
-  itself twice more, and checks that the third and fourth generations are byte-for-byte identical:
+- Genuinely self-hosting, and not only the compiler. Everything in `selfhost/` is FunnyLang:
+  lexer, parser, resolver, codegen, `.funnyc` emitter, the `.funnypak` linker, the disassembler,
+  the formatter, the test runner, the REPL, and the command line itself. `native/main.c` is a
+  loader — it finds the CLI bundle and hands it your arguments. `funny bootstrap --verify` links
+  that toolchain, uses the result to link it again, and again, and checks the last two generations
+  are byte-for-byte identical:
 
   ```console
   $ funny bootstrap --verify
@@ -71,24 +85,24 @@ directly from a checkout with `python -m funnylang`, which is what the test suit
   🥁 stage 3... compiled by stage 2.
   🥁 stage 4... compiled by stage 3.
 
-  stage3 and stage4 are byte-identical (1,005 bytes).
+  stage3 and stage4 are byte-identical (255,687 bytes).
   FunnyLang now compiles FunnyLang. we are so back. 🏆
   ```
-
-  It's cross-validated against the whole test suite too: the self-hosted compiler (running as
-  bytecode the Python compiler produced) compiles every program in `tests/lang/`, and its output
-  runs identically to what the Python compiler itself would have run.
-- Shippable: `funny yeet` freezes a program into a standalone native executable — no Python
-  installation required on the machine that runs it.
+- Shippable: `funny yeet` turns a program into a standalone executable by copying the runtime stub
+  and appending the compiled bytecode. A couple of hundred KB, nothing to install to run it.
 
 ## What this isn't
 
-- **The virtual machine is not self-hosted, and was never meant to be.** Something has to actually
-  execute bytecode, and that's Python, frozen into every `funny yeet` binary via PyInstaller. Only
-  the compiler — the part that turns `.funny` source into bytecode — has a FunnyLang
-  implementation. Claiming otherwise would be a real, not a funny, lie.
-- Not statically typed, not performance-tuned beyond "reasonable for a tree-walking-adjacent
-  bytecode VM," and not aiming to replace a real production language. It's a from-scratch language
+- **The virtual machine is not self-hosted, and cannot be.** Something has to actually execute
+  bytecode, and that something is `native/` — a C program. Everything *above* the VM is FunnyLang;
+  the VM itself is C and will stay C, because a FunnyLang-hosted VM would need a VM to run it and
+  the regress never bottoms out. Claiming otherwise would be a real, not a funny, lie.
+
+  What did change in v2.0.0: that C runtime replaced the Python one. Earlier versions ran on
+  CPython and `funny yeet` bundled an entire Python interpreter to produce an 8 MB executable.
+  Now the runtime is a few hundred KB and needs nothing installed.
+- Not statically typed, not performance-tuned beyond "reasonable for a straightforward bytecode
+  VM," and not aiming to replace a real production language. It's a from-scratch language
   implementation built as a complete, working system — a teaching-and-tinkering project, not a
   pitch for your next backend.
 - No package manager, no LSP, no debugger beyond what `funny xray` and the diagnostic renderer
@@ -207,25 +221,45 @@ Full reference, generated from the actual function registry so it can't drift:
 ## Documentation
 
 - [docs/LANGUAGE.md](docs/LANGUAGE.md) — the full language reference.
+- [docs/NATIVE.md](docs/NATIVE.md) — building the C runtime, the platform boundary, the GC
+  contract, and how to port it.
 - [docs/BYTECODE.md](docs/BYTECODE.md) — the opcode table, file formats, and a worked disassembly
   walkthrough.
 - [docs/STDLIB.md](docs/STDLIB.md) — every stdlib function.
 - [PLAN.md](PLAN.md) — the original specification and milestone-by-milestone build log, including
   every deviation from spec and why (§16).
+- [NATIVE_PLAN.md](NATIVE_PLAN.md) — the plan for the C runtime and the self-hosted toolchain, with
+  the same kind of build log in §9.
 - [CHANGELOG.md](CHANGELOG.md) — what's actually landed, milestone by milestone.
 
 ## Development
 
-The test suite is pure `pytest` and needs nothing but `pytest` itself (plus `pyinstaller` for the
-packaging and self-hosting tests, which skip cleanly without it):
+There are two test suites, and they are different in kind.
+
+**The golden corpus** needs nothing but the binary you just built:
+
+```console
+$ ./funny test tests/lang
+$ ./funny test examples
+$ ./funny bootstrap --verify
+```
+
+**The differential suite** compiles each program with both the C and the Python implementations,
+runs it through both VMs, and diffs stdout byte for byte. It needs Python and `pytest`:
 
 ```console
 $ python -m pytest -q
+$ FUNNY_GC_STRESS=1 python -m pytest tests/native/ -q
 ```
 
 Use `python -m pytest` rather than bare `pytest` — several tests shell out to `python -m
 funnylang`, and the `-m` form is what puts the repo root on `sys.path`.
 
-Every push and pull request runs the full suite across Windows, Linux, and macOS on Python
-3.10–3.12, verifies the self-hosting bootstrap, and freezes + runs a real executable — see
+The Python implementation in `funnylang/` is a reference oracle, not the product. It is what the C
+runtime is checked against, and it is on its way out: see NATIVE_PLAN.md's N11.
+
+Every push and pull request builds `native/` with gcc, clang and MSVC across Windows, Linux and
+macOS, runs the differential suite (plain and under `FUNNY_GC_STRESS`), and — the job that matters
+most — builds and exercises the whole toolchain in a container with **no Python installed and every
+`.py` file deleted from the checkout**. See
 [.github/workflows/ci.yml](.github/workflows/ci.yml).

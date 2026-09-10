@@ -26,7 +26,7 @@
    `tests/native/test_native_cli.py`, which reads both and compares them --
    two copies of a version string is exactly the kind of thing that drifts
    silently. */
-#define FUNNY_VERSION "1.1.0"
+#define FUNNY_VERSION "2.0.0"
 #define FUNNY_BYTECODE_VERSION 2
 
 static uint8_t *read_file(const char *path, size_t *outLen) {

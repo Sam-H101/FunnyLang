@@ -2,6 +2,80 @@
 
 All notable changes to FunnyLang are documented here.
 
+## [2.0.0] — 2026-09-10
+
+The runtime is no longer Python. `native/` is a complete bytecode VM written in C — values,
+garbage collector, arbitrary-precision integers, diagnostics, the whole standard library — and the
+entire toolchain above it is FunnyLang. Building FunnyLang needs a C compiler and nothing else.
+
+### The native runtime (`native/`)
+- A from-scratch bytecode VM in C11: tagged values, a mark-and-sweep GC (`FUNNY_GC_STRESS=1`
+  collects on every allocation), sign-magnitude arbitrary-precision integers, closures with real
+  upvalue capture, single-inheritance squads, try/catch/finally, pointers, and every one of the ten
+  stdlib modules. Float formatting matches Python's `repr` exactly, digit for digit.
+- **`platform.c` is the only file allowed `#ifdef _WIN32`.** Filesystem, timing, TTY, console,
+  sockets, TLS, `dlopen`, the executable's own path and temp files all route through
+  `platform.h` — so a port to a new OS is one file, not a hunt through twenty.
+- HTTPS uses the TLS each OS already ships: WinHTTP on Windows, `Security.framework` on macOS,
+  OpenSSL `dlopen`'d at run time on Linux/BSD, so the binary still builds and runs where OpenSSL
+  is absent. Certificate verification is mandatory and has no opt-out.
+- `PLAN.md` §4.2's diagnostics — source snippet, caret, roast, hint, stack trace — reimplemented in
+  C, byte-identical to the Python renderer.
+- Two binaries: `funny` (the command line) and `funnyrt` (a VM with no compiler in it). `funny
+  yeet` copies the stub, appends your compiled program and a 17-byte trailer, and marks it
+  executable — a couple of hundred KB, where the PyInstaller path produced 8 MB.
+
+### The toolchain is FunnyLang (`selfhost/`)
+- `bundler.funny`/`linker.funny` (the `.funnypak` linker), `loader.funny` (its inverse),
+  `disasm.funny` + `astdump.funny` + `xray.funny` (`funny xray`), `fmt.funny` + `fmtcli.funny`
+  (`funny fmt`), `test.funny` (`funny test`), `vibe.funny` (the REPL), `bootstrap.funny`
+  (`funny bootstrap --verify`), and `cli.funny` — argument parsing and every subcommand.
+- `native/main.c` is a **loader**: it sets up the console, reads `--serious`/`--no-color` (they
+  configure the runtime's own renderer, so they cannot live in the FunnyLang half), finds the CLI
+  bundle and hands it argv. 118 lines, about a third of them explaining why.
+- Every subcommand's output is byte-identical to the previous Python CLI's, checked by diffing
+  both over the whole corpus.
+
+### Language and standard library
+- `oops(flavor, message?, line?, col?)` builds an `error` value with a chosen flavor, so `chuck`
+  can raise something other than `SkillIssue`. The flavor set stays closed to `PLAN.md` §4.1's
+  taxonomy.
+- `yell(...)` — `yap` to stderr. The only way to write there.
+- `mafs.bits_to_float(bits)` — the inverse of `float_to_bits`.
+- `filez.is_dir` / `is_file` / `append_bytes` / `make_executable` / `temp_file`.
+- `computer.readline(prompt?)` (returns `ghost` at end of input, unlike `ask()`),
+  `computer.env(name, default?)`, `computer.exe_path()`.
+- `sus.run_bytecode` (a fresh isolated VM, stdout captured), `sus.run_program` (the way the top
+  level runs one), and `sus.new_session`/`run_in`/`close_session` (a VM kept alive between runs —
+  a REPL).
+- `filez.slurp` now does universal-newline translation on every platform, matching the reference;
+  `filez.yeet_out`/`append_to` write exactly the bytes given on every platform, matching nothing
+  but common sense.
+
+### Fixed
+- **NUL bytes were being truncated out of strings.** A FunnyLang string may contain them —
+  `selfhost/lexer.funny`'s own escape table holds one — but every display path measured the result
+  with `strlen()`, silently cutting the value short. Affected `yap`, template interpolation,
+  `to_yap`, `stash.join`, `yapper.join`, `yapper.format` and `ask`'s prompt.
+- **`filez.join_path` and `dir_of` were POSIX-shaped on Windows**, and `join_path` concatenated
+  where `pathlib` normalizes.
+- **Empty `stash`/`groupchat` were truthy**, where Python treats `[]`/`{}` as falsy.
+- **`what_is_it(e)` on a caught error** raised an uncatchable Python `TypeError`; it answers
+  `"error"` now, as the C VM always did.
+- **`funny test` was killed by a test that called `dip()`** — `SystemExit` propagated out of the
+  in-process runner and took the whole run with it.
+- **The self-hosted parser lost its error flavor** on a multi-error parse failure, and its
+  resolver could not raise `WhoDis`/`ImmutableVibes` at all.
+
+### Compatibility
+- Bytecode format unchanged: `BYTECODE_VERSION` is still 2, and `.funnyc`/`.funnypak` files from
+  1.1.0 run unmodified.
+- `funny <file>` with no subcommand is a new shorthand for `funny run <file>`.
+- The binary now needs `bootstrap/cli.funnypak` and `bootstrap/funnyc.funnypak` beside it.
+  `funny --version` deliberately works without them.
+- `pip install -e .` still works and still gives you the Python implementation, which remains as a
+  differential-testing oracle. It is not the product any more, and `NATIVE_PLAN.md` N11 removes it.
+
 ## [1.1.0] — 2026-09-09
 
 ### M15 — Pointers (`pointa`)
