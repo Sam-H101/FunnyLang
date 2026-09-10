@@ -573,6 +573,36 @@ int platform_cpu_count(void) {
 
 #endif
 
+/* -- console ------------------------------------------------------------ */
+
+#ifdef _WIN32
+
+bool platform_stdout_is_tty(void) { return _isatty(_fileno(stdout)) != 0; }
+
+void platform_console_init(void) {
+    /* The §4.2 renderer emits box-drawing characters and emoji as UTF-8
+       and colour as ANSI. Neither survives a default Windows console:
+       the output code page is whatever ANSI page the machine is set to,
+       and VT sequences are printed literally unless the mode bit is on.
+       Both failures are cosmetic-looking but would break N6's
+       byte-identical-stderr acceptance outright. */
+    SetConsoleOutputCP(CP_UTF8);
+    HANDLE handles[2] = {GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE)};
+    for (int i = 0; i < 2; i++) {
+        DWORD mode = 0;
+        if (handles[i] == INVALID_HANDLE_VALUE || !GetConsoleMode(handles[i], &mode)) continue;
+        SetConsoleMode(handles[i], mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    }
+}
+
+#else
+
+bool platform_stdout_is_tty(void) { return isatty(STDOUT_FILENO) != 0; }
+
+void platform_console_init(void) { /* UTF-8 and ANSI both already work */ }
+
+#endif
+
 /* -- networking ---------------------------------------------------------
    The socket primitives just below (ensure_winsock/sock_*) are the only
    platform-conditional pieces; every algorithm above them in the call

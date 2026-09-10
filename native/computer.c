@@ -112,7 +112,8 @@ static Value m_blue_screen(VM *vm, Value *a, int argc) {
     fputs("\x1b[44m\x1b[2J\x1b[H", vm->out);
     fputs("FUNNYLANG_FAULT_NOT_HANDLED\n", vm->out);
     fputs("\x1b[0m", vm->out);
-    vm_throw_native(vm, "SkillIssue", "computer.blue_screen() was called.");
+    vm_throw_native_roast(vm, "SkillIssue", "FUNNYLANG_FAULT_NOT_HANDLED",
+                           "computer.blue_screen() was called.");
     return GHOST_VAL;
 }
 

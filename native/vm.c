@@ -44,6 +44,9 @@
    wrapper -- both placed early, right after dup_str, since every other
    helper in this file wants them -- need to call it. */
 static void vm_throw(VM *vm, const char *flavor, const char *message);
+/* Same, but carrying N6's site-specific roast/hint (NULL for either means
+   "use the flavor's default"). */
+static void vm_throw_rich(VM *vm, const char *flavor, const char *roast, const char *hint, const char *message);
 
 static char *dup_str(const char *s) {
     size_t n = strlen(s) + 1;
@@ -382,6 +385,15 @@ void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...) {
     vm_throw(vm, flavor, buf);
 }
 
+void vm_throw_native_roast(VM *vm, const char *flavor, const char *roast, const char *fmt, ...) {
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof buf, fmt, args);
+    va_end(args);
+    vm_throw_rich(vm, flavor, roast, NULL, buf);
+}
+
 const char *vm_type_name(Value v) { return type_name_of(v); }
 char *vm_value_to_display(VM *vm, Value v) { return value_to_display(vm, v); }
 
@@ -407,7 +419,7 @@ char *vm_value_to_repr(VM *vm, Value v) {
 
 void vm_request_exit(VM *vm, int64_t code) {
     if (vm->hadError) return; /* first error at this position wins, same rule vm_throw uses */
-    ObjError *e = error_new(&vm->gc, SYSTEM_EXIT_FLAVOR, "", 0, 0, "", INT_VAL(code), NULL, 0);
+    ObjError *e = error_new(&vm->gc, SYSTEM_EXIT_FLAVOR, "", NULL, NULL, 0, 0, "", INT_VAL(code), NULL, 0);
     vm->pendingError = OBJ_VAL(e);
     vm->hadError = true;
 }
@@ -735,17 +747,26 @@ Value vm_stack_trace_stash(VM *vm) {
    (currentFrameIndex/currentInstrStart, refreshed at the top of every
    dispatch iteration) and sets it pending. Safe to call from deep inside
    an arithmetic helper -- see vm.h's own note on why those fields exist. */
-static void vm_throw(VM *vm, const char *flavor, const char *message) {
+/* N6: `roast`/`hint` NULL means "no site-specific text" -- error_new then
+   falls back to PLAN.md §4.1's per-flavor default roast, and to no hint,
+   exactly as funnylang/errors.py's FunnyError.__init__ does. Most throw
+   sites want precisely that and keep calling vm_throw/vm_throw_fmt. */
+static void vm_throw_rich(VM *vm, const char *flavor, const char *roast, const char *hint, const char *message) {
     if (vm->hadError) return; /* first error at this position wins */
     Frame *f = &vm->frames[vm->currentFrameIndex];
     uint32_t line, col;
     chunk_line_for_offset(f->closure->proto, vm->currentInstrStart, &line, &col);
     int traceCount;
     char **trace = build_trace(vm, &traceCount);
-    ObjError *e = error_new(&vm->gc, flavor, message, line, col, vm->unit->sourceName, GHOST_VAL, trace, traceCount);
+    ObjError *e = error_new(&vm->gc, flavor, message, roast, hint, line, col, vm->unit->sourceName, GHOST_VAL, trace,
+                             traceCount);
     free_trace(trace, traceCount);
     vm->pendingError = OBJ_VAL(e);
     vm->hadError = true;
+}
+
+static void vm_throw(VM *vm, const char *flavor, const char *message) {
+    vm_throw_rich(vm, flavor, NULL, NULL, message);
 }
 
 static void vm_throw_fmt(VM *vm, const char *flavor, const char *fmt, ...) {
@@ -755,6 +776,73 @@ static void vm_throw_fmt(VM *vm, const char *flavor, const char *fmt, ...) {
     vsnprintf(buf, sizeof buf, fmt, args);
     va_end(args);
     vm_throw(vm, flavor, buf);
+}
+
+/* Like vm_throw_fmt, but with PLAN.md §4.1's site-specific roast (and,
+   for the one case §4.2 calls out by name, a fix hint). Only the throw
+   sites whose Python counterpart passes `roast=`/`hint=` use this. */
+static void vm_throw_roast(VM *vm, const char *flavor, const char *roast, const char *hint, const char *fmt, ...) {
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof buf, fmt, args);
+    va_end(args);
+    vm_throw_rich(vm, flavor, roast, hint, buf);
+}
+
+/* The one throw shape every arithmetic type mismatch shares. The roast
+   normalises to "a numba and a yapstring" for that particular pair
+   whichever order the operands arrived in (the *message* keeps the real
+   order), and PLAN.md §4.2's own worked hint example is attached on `+`
+   alone -- both quirks copied from funnylang/vm.py rather than tidied. */
+static void vm_throw_same_energy(VM *vm, Value a, Value b, bool withAddHint) {
+    const char *ta = type_name_of(a), *tb = type_name_of(b);
+    bool numbaAndString = (strcmp(ta, "numba") == 0 && strcmp(tb, "yapstring") == 0) ||
+                          (strcmp(ta, "yapstring") == 0 && strcmp(tb, "numba") == 0);
+    char roast[256];
+    if (numbaAndString) {
+        snprintf(roast, sizeof roast, "a numba and a yapstring do NOT have the same energy.");
+    } else {
+        snprintf(roast, sizeof roast, "a %s and a %s do NOT have the same energy.", ta, tb);
+    }
+    const char *hint =
+        (withAddHint && numbaAndString) ? "wrap the numba in to_yap(...) first, so both sides are yapstrings" : NULL;
+    vm_throw_roast(vm, "TypeVibeMismatch", roast, hint, "a %s and a %s do NOT have the same energy.", ta, tb);
+}
+
+/* The remaining throw shapes whose Python counterpart passes an explicit
+   roast. Each pairs §4.1's roast with the message the runtime already
+   produced, so `e.message` (language-visible) is untouched and only the
+   rendered diagnostic gains anything. */
+
+static void vm_throw_too_deep(VM *vm) {
+    char roast[128];
+    snprintf(roast, sizeof roast, "you recursed %d deep. touch grass.", vm->frameCount);
+    vm_throw_roast(vm, "TooDeepBro", roast, NULL, "recursed %d deep.", vm->frameCount);
+}
+
+static void vm_throw_out_of_pocket(VM *vm, long long index, int count) {
+    char roast[192];
+    snprintf(roast, sizeof roast, "index %lld on a stash of %d. that's straight up out of pocket.", index, count);
+    vm_throw_roast(vm, "OutOfPocket", roast, NULL, "index %lld on a stash of %d.", index, count);
+}
+
+static void vm_throw_key_ghosted(VM *vm, const char *key) {
+    char roast[512];
+    snprintf(roast, sizeof roast, "key `%s` left the group chat.", key);
+    vm_throw_roast(vm, "KeyGhosted", roast, NULL, "key '%s' not found.", key);
+}
+
+static void vm_throw_no_such_method(VM *vm, const char *owner, const char *name) {
+    char roast[512];
+    snprintf(roast, sizeof roast, "`%s` doesn't do `%s`. that's not its thing.", owner, name);
+    vm_throw_roast(vm, "WhoDis", roast, NULL, "'%s' doesn't do '%s'.", owner, name);
+}
+
+static void vm_throw_wrong_homies(VM *vm, const char *name, const char *wantStr, int argc) {
+    char roast[512];
+    snprintf(roast, sizeof roast, "`%s` wanted %s args. you brought %d. awkward.", name, wantStr, argc);
+    vm_throw_roast(vm, "WrongNumberOfHomies", roast, NULL, "'%s' wants %s args, got %d.", name, wantStr, argc);
 }
 
 /* Searches from the current (innermost) frame outward for a handler,
@@ -902,7 +990,7 @@ static Value vm_pointer_add(VM *vm, Value a, Value b) {
     Value ptrVal = aIsPtr ? a : b;
     Value nVal = aIsPtr ? b : a;
     if (!IS_INT_LIKE(nVal)) {
-        vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
+        vm_throw_same_energy(vm, a, b, false);
         return GHOST_VAL;
     }
     ObjPointa *ptr = (ObjPointa *)AS_OBJ(ptrVal);
@@ -974,7 +1062,7 @@ static Value vm_add(VM *vm, Value a, Value b) {
         gc_pop_temp(&vm->gc);
         return OBJ_VAL(r);
     }
-    vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
+    vm_throw_same_energy(vm, a, b, true);
     return GHOST_VAL;
 }
 
@@ -983,7 +1071,7 @@ static Value vm_sub(VM *vm, Value a, Value b) {
         return vm_pointer_sub(vm, a, b);
     }
     if (!(IS_NUM(a) && IS_NUM(b))) {
-        vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
+        vm_throw_same_energy(vm, a, b, false);
         return GHOST_VAL;
     }
     if (IS_INT(a) && IS_INT(b)) {
@@ -1046,7 +1134,7 @@ static Value vm_mul(VM *vm, Value a, Value b) {
         return string_repeat(vm, AS_STRING(b), as_int64_like(a));
     }
     if (!(IS_NUM(a) && IS_NUM(b))) {
-        vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
+        vm_throw_same_energy(vm, a, b, false);
         return GHOST_VAL;
     }
     if (IS_INT(a) && IS_INT(b)) {
@@ -1072,7 +1160,7 @@ static bool numeric_is_zero(Value v) {
 
 static Value vm_div(VM *vm, Value a, Value b) {
     if (!(IS_NUM(a) && IS_NUM(b))) {
-        vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
+        vm_throw_same_energy(vm, a, b, false);
         return GHOST_VAL;
     }
     if (numeric_is_zero(b)) {
@@ -1084,7 +1172,7 @@ static Value vm_div(VM *vm, Value a, Value b) {
 
 static Value vm_idiv(VM *vm, Value a, Value b) {
     if (!(IS_NUM(a) && IS_NUM(b))) {
-        vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
+        vm_throw_same_energy(vm, a, b, false);
         return GHOST_VAL;
     }
     if (numeric_is_zero(b)) {
@@ -1105,7 +1193,7 @@ static Value vm_idiv(VM *vm, Value a, Value b) {
 
 static Value vm_mod(VM *vm, Value a, Value b) {
     if (!(IS_NUM(a) && IS_NUM(b))) {
-        vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
+        vm_throw_same_energy(vm, a, b, false);
         return GHOST_VAL;
     }
     if (numeric_is_zero(b)) {
@@ -1126,7 +1214,7 @@ static Value vm_mod(VM *vm, Value a, Value b) {
 
 static Value vm_pow(VM *vm, Value a, Value b) {
     if (!(IS_NUM(a) && IS_NUM(b))) {
-        vm_throw_fmt(vm, "TypeVibeMismatch", "a %s and a %s do NOT have the same energy.", type_name_of(a), type_name_of(b));
+        vm_throw_same_energy(vm, a, b, false);
         return GHOST_VAL;
     }
     if (IS_FLOAT(a) || IS_FLOAT(b)) {
@@ -1340,7 +1428,7 @@ static bool closure_arity_ok(VM *vm, FunctionProto *proto, int argc) {
             snprintf(wantBuf, sizeof wantBuf, "%d", want);
             wantStr = wantBuf;
         }
-        vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", proto->name, wantStr, argc);
+        vm_throw_wrong_homies(vm, proto->name, wantStr, argc);
         return false;
     }
     return true;
@@ -1361,7 +1449,7 @@ static void call_bound_native(VM *vm, ObjBoundNative *bn, int argc, int argStart
         char wantBuf[32];
         if (bn->minArity == bn->maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", bn->minArity);
         else snprintf(wantBuf, sizeof wantBuf, "%d-%d", bn->minArity, bn->maxArity);
-        vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", bn->name, wantBuf, argc);
+        vm_throw_wrong_homies(vm, bn->name, wantBuf, argc);
         return;
     }
     Value args[257]; /* argc is a uint8_t at the opcode level (max 255), +1 for the receiver */
@@ -1440,7 +1528,7 @@ static void call_native_fn(VM *vm, ObjNativeFn *nf, int argc, int argStart) {
         char wantBuf[32];
         if (nf->minArity == nf->maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", nf->minArity);
         else snprintf(wantBuf, sizeof wantBuf, "%d-%d", nf->minArity, nf->maxArity);
-        vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", nf->name, wantBuf, argc);
+        vm_throw_wrong_homies(vm, nf->name, wantBuf, argc);
         return;
     }
     Value args[256];
@@ -1495,7 +1583,7 @@ static void do_call(VM *vm, int argc) {
            already sitting in the callee slot -- overwrite that slot with
            the receiver instead of shifting args down over it. */
         if (vm->frameCount >= VM_MAX_FRAMES) {
-            vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+            vm_throw_too_deep(vm);
             return;
         }
         if (!closure_arity_ok(vm, bm->method->proto, argc + 1)) return;
@@ -1510,7 +1598,7 @@ static void do_call(VM *vm, int argc) {
         return;
     }
     if (vm->frameCount >= VM_MAX_FRAMES) {
-        vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+        vm_throw_too_deep(vm);
         return;
     }
     ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
@@ -1538,7 +1626,7 @@ static void do_call(VM *vm, int argc) {
    uses. `argStart - 1` is the slot being reused as `me`'s slot 0. */
 static void invoke_bound_closure(VM *vm, Value me, ObjClosure *method, int argc, int argStart) {
     if (vm->frameCount >= VM_MAX_FRAMES) {
-        vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+        vm_throw_too_deep(vm);
         return;
     }
     if (!closure_arity_ok(vm, method->proto, argc + 1)) return;
@@ -1564,7 +1652,7 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
         if (!instance_get_field(inst, name->chars, &fieldVal)) {
             ObjClosure *method = squad_find_method(inst->squad, name->chars);
             if (method == NULL) {
-                vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do '%s'.", inst->squad->name->chars, name->chars);
+                vm_throw_no_such_method(vm, inst->squad->name->chars, name->chars);
                 return;
             }
             invoke_bound_closure(vm, obj, method, argc, argStart);
@@ -1619,7 +1707,7 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
             ObjClosure *method = squad_find_method((ObjSquad *)AS_OBJ(obj), name->chars);
             if (method != NULL) {
                 if (vm->frameCount >= VM_MAX_FRAMES) {
-                    vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+                    vm_throw_too_deep(vm);
                     return;
                 }
                 if (!closure_arity_ok(vm, method->proto, argc)) return;
@@ -1630,7 +1718,7 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
                 push_frame(vm, method, argStart - 1);
                 return;
             }
-            vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do '%s'.", ((ObjSquad *)AS_OBJ(obj))->name->chars, name->chars);
+            vm_throw_no_such_method(vm, ((ObjSquad *)AS_OBJ(obj))->name->chars, name->chars);
             return;
         }
         if (IS_GHOST(obj)) {
@@ -1644,7 +1732,7 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
         char wantBuf[32];
         if (minArity == maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", minArity);
         else snprintf(wantBuf, sizeof wantBuf, "%d-%d", minArity, maxArity);
-        vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", name->chars, wantBuf, argc);
+        vm_throw_wrong_homies(vm, name->chars, wantBuf, argc);
         return;
     }
     Value args[257];
@@ -1677,7 +1765,7 @@ static void do_invoke_og(VM *vm, ObjString *name, int argc) {
     }
     ObjClosure *method = squad_find_method(homeSquad->superclass, name->chars);
     if (method == NULL) {
-        vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do '%s'.", homeSquad->superclass->name->chars, name->chars);
+        vm_throw_no_such_method(vm, homeSquad->superclass->name->chars, name->chars);
         return;
     }
     invoke_bound_closure(vm, me, method, argc, argStart);
@@ -1731,7 +1819,7 @@ static Value vm_get_prop(VM *vm, Value obj, ObjString *name) {
         ObjSquad *squad = (ObjSquad *)AS_OBJ(obj);
         ObjClosure *method = squad_find_method(squad, name->chars);
         if (method == NULL) {
-            vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do '%s'.", squad->name->chars, name->chars);
+            vm_throw_no_such_method(vm, squad->name->chars, name->chars);
             return GHOST_VAL;
         }
         return OBJ_VAL(method);
@@ -1802,7 +1890,7 @@ static Value vm_get_index(VM *vm, Value obj, Value key) {
         int64_t k = as_int64_like(key);
         int64_t idx = k < 0 ? k + s->count : k;
         if (idx < 0 || idx >= s->count) {
-            vm_throw_fmt(vm, "OutOfPocket", "index %lld on a stash of %d.", (long long)k, s->count);
+            vm_throw_out_of_pocket(vm, (long long)k, s->count);
             return GHOST_VAL;
         }
         return s->items[idx];
@@ -1834,7 +1922,7 @@ static Value vm_get_index(VM *vm, Value obj, Value key) {
         GroupChatEntry *e = groupchat_find(g, key);
         if (e == NULL) {
             char *disp = value_to_display(vm, key);
-            vm_throw_fmt(vm, "KeyGhosted", "key '%s' not found.", disp);
+            vm_throw_key_ghosted(vm, disp);
             free(disp);
             return GHOST_VAL;
         }
@@ -1844,7 +1932,7 @@ static Value vm_get_index(VM *vm, Value obj, Value key) {
         ObjInstance *inst = (ObjInstance *)AS_OBJ(obj);
         ObjClosure *method = squad_find_method(inst->squad, "get_it");
         if (method == NULL) {
-            vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do 'get_it'.", inst->squad->name->chars);
+            vm_throw_no_such_method(vm, inst->squad->name->chars, "get_it");
             return GHOST_VAL;
         }
         /* obj/key are already off the FunnyLang stack by the time
@@ -1876,7 +1964,7 @@ static void vm_set_index(VM *vm, Value obj, Value key, Value value) {
         int64_t k = as_int64_like(key);
         int64_t idx = k < 0 ? k + s->count : k;
         if (idx < 0 || idx >= s->count) {
-            vm_throw_fmt(vm, "OutOfPocket", "index %lld on a stash of %d.", (long long)k, s->count);
+            vm_throw_out_of_pocket(vm, (long long)k, s->count);
             return;
         }
         s->items[idx] = value;
@@ -1890,7 +1978,7 @@ static void vm_set_index(VM *vm, Value obj, Value key, Value value) {
         ObjInstance *inst = (ObjInstance *)AS_OBJ(obj);
         ObjClosure *method = squad_find_method(inst->squad, "set_it");
         if (method == NULL) {
-            vm_throw_fmt(vm, "WhoDis", "'%s' doesn't do 'set_it'.", inst->squad->name->chars);
+            vm_throw_no_such_method(vm, inst->squad->name->chars, "set_it");
             return;
         }
         /* obj/key/value are already off the FunnyLang stack (OP_SET_INDEX
@@ -2569,7 +2657,8 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                     chunk_line_for_offset(frame->closure->proto, vm->currentInstrStart, &line, &col);
                     int traceCount;
                     char **trace = build_trace(vm, &traceCount);
-                    ObjError *e = error_new(&vm->gc, "SkillIssue", display, line, col, vm->unit->sourceName, payload, trace, traceCount);
+                    ObjError *e = error_new(&vm->gc, "SkillIssue", display, NULL, NULL, line, col, vm->unit->sourceName, payload,
+                                             trace, traceCount);
                     free_trace(trace, traceCount);
                     free(display);
                     vm->pendingError = OBJ_VAL(e);
@@ -2885,7 +2974,7 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
             char wantBuf[32];
             if (bn->minArity == bn->maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", bn->minArity);
             else snprintf(wantBuf, sizeof wantBuf, "%d-%d", bn->minArity, bn->maxArity);
-            vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", bn->name, wantBuf, argc);
+            vm_throw_wrong_homies(vm, bn->name, wantBuf, argc);
             return GHOST_VAL;
         }
         Value full[257];
@@ -2899,7 +2988,7 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
             char wantBuf[32];
             if (nf->minArity == nf->maxArity) snprintf(wantBuf, sizeof wantBuf, "%d", nf->minArity);
             else snprintf(wantBuf, sizeof wantBuf, "%d-%d", nf->minArity, nf->maxArity);
-            vm_throw_fmt(vm, "WrongNumberOfHomies", "'%s' wants %s args, got %d.", nf->name, wantBuf, argc);
+            vm_throw_wrong_homies(vm, nf->name, wantBuf, argc);
             return GHOST_VAL;
         }
         return nf->fn(vm, args, argc);
@@ -2915,7 +3004,7 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
     if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_CLOSURE) {
         ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
         if (vm->frameCount >= VM_MAX_FRAMES) {
-            vm_throw_fmt(vm, "TooDeepBro", "recursed %d deep.", vm->frameCount);
+            vm_throw_too_deep(vm);
             return GHOST_VAL;
         }
         if (!closure_arity_ok(vm, closure->proto, argc)) return GHOST_VAL;

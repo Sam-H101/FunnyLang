@@ -1419,6 +1419,63 @@ gets an entry explaining what changed and why.
   `monkeypatch`, and the shared `native_binary` fixture moved to a new `tests/native/conftest.py`.
   Full suite after all of it: 52 native tests (47 differential + 5 network) green, including under
   `FUNNY_GC_STRESS=1`, plus the N5 acceptance corpus unchanged.
+
+- **N6 complete · diagnostics.** PLAN.md §4.2's renderer now lives in `native/diag.c`, and the C VM's
+  stderr is byte-identical to the Python VM's for every `err_*.funny` golden **in both funny and
+  serious modes** — 32 comparisons, all matching, which is N6's stated acceptance bar and a strictly
+  stronger check than the differential suite (that one only ever looked at stdout and the error
+  flavour).
+  The renderer is a transcription rather than an interpretation: every blank line, every box-drawing
+  character, the two-space body indent, the five-space snippet gutter, the right-justified line
+  numbers, and `splitlines() or [""]`'s empty-body quirk are all copied from
+  `funnylang/errors.py::render_diagnostic` deliberately, because "looks right" and "is byte-identical"
+  are different standards and only the second one is testable.
+  **What the error object was missing:** `ObjError` had no `roast` and no `hint` at all, so there was
+  nothing for funny mode to print. Both are now fields, with §4.1's `DEFAULT_ROASTS` table ported
+  verbatim into `error.c` and `error_new` applying Python's exact fallback chain (site-specific roast,
+  else the flavour's default, else the message). They are deliberately *not* in `error_get_field`:
+  PLAN.md §3.9's language-visible field set is flavor/message/line/col/file/trace/payload, and N6 is
+  not the milestone that changes what `my_bad (e)` can see.
+  Rather than touch all ~94 throw sites, only the ones whose Python counterpart passes an explicit
+  `roast=` changed, through five small helpers (`vm_throw_same_energy`, `vm_throw_too_deep`,
+  `vm_throw_out_of_pocket`, `vm_throw_key_ghosted`, `vm_throw_no_such_method`,
+  `vm_throw_wrong_homies`) — everything else keeps calling `vm_throw_fmt` and gets the default. Two
+  quirks in there are copied, not fixed: the mismatch roast normalises to "a numba and a yapstring"
+  whichever order the operands came in (while the *message* keeps the real order), and §4.2's worked
+  hint example is attached on `+` alone and not on the other arithmetic operators.
+  **The snippet, without a source file.** The C VM runs compiled `.funnyc`, so it has no source text —
+  but the unit carries the original path, and `diag.c` reads the file back to print the caret line.
+  When that file isn't readable the snippet is simply skipped, which is also exactly what the *Python*
+  VM renders when it's the one running a `.funnyc`, so the degraded case matches too rather than being
+  a special native-only shape.
+  `--serious` and `--no-color` are parsed in `main.c` (out of argv in place, so they work either side
+  of the path and never leak into `the_args()`); `FUNNY_SERIOUS=1` still works as the env-var form.
+  Colour auto-enables from **stdout**'s tty-ness even though the diagnostic goes to stderr — odd, but
+  that's what `_use_color` does, and matching it is the acceptance criterion. `platform.c` gained
+  `platform_stdout_is_tty` and `platform_console_init` (Windows: `SetConsoleOutputCP(CP_UTF8)` plus
+  `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, so the emoji and box-drawing don't get mangled by the ANSI
+  code page and ANSI colour isn't printed literally — N6 task 4). That also retires `main.c`'s
+  long-standing "banner is ASCII until platform.c exists" note; the banner is now merely waiting on
+  N7's CLI.
+  **Stdlib roasts are partially done, and that's stated rather than glossed:** `vm_throw_native_roast`
+  is the mechanism, and `filez`, `internet` and `computer.blue_screen` use it (so funny mode says
+  "the filesystem said no" / "the internet said no. 🚫" / "FUNNYLANG_FAULT_NOT_HANDLED" rather than a
+  bare "skill issue."). The remaining ~70 explicit `roast=` sites across `mafs`/`stash`/`yapper`/
+  `groupchat`/`builtins` still fall back to their flavour's default roast. That is a real, remaining
+  gap — it just isn't one N6's acceptance gate covers, and doing 70 hand-transcribed prose strings
+  without a test watching would be the wrong order to do it in.
+  New tests: `tests/native/test_native_diagnostics.py` (40 tests). The expected side is rendered live
+  by `render_diagnostic` rather than read from checked-in files, so the two implementations can't
+  drift behind a stale golden; it covers both modes for every golden, the three ported stdlib error
+  shapes, a pty-backed check that colour switches itself on for a terminal *and* wraps exactly the
+  spans Python wraps, and a guard that the two modes actually differ (without which every comparison
+  could pass vacuously). Three goldens are skipped with the reason recorded in the file:
+  `err_undefined_variable`, `err_immutable_reassign` and `err_ptr_address_of_const` fail during
+  *resolution*, before bytecode exists, so this VM never sees them until N8 gives it a compiler.
+  Verified on Linux (gcc and clang, ASan/UBSan clean) and Windows (MSVC `/W4 /WX`, with the emoji and
+  box-drawing confirmed intact in a real console). 92 native tests green including under
+  `FUNNY_GC_STRESS=1`; the N5 acceptance corpus still 71/71 and 7/7 after updating its own scraper,
+  which had been reading the flavour out of the old one-line stderr format.
   **Found a language-grammar quirk while writing the test, not a bug in either VM:** `sus` is itself
   a reserved statement-leading keyword (FunnyLang's own conditional, "sus (cond) { }"), so
   `sus.dump(x)` as a bare statement fails to parse on *both* VMs identically — confirmed by checking

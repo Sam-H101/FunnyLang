@@ -6,8 +6,40 @@
 
 #include "gc.h"
 
-ObjError *error_new(GC *gc, const char *flavor, const char *message, uint32_t line, uint32_t col,
-                     const char *file, Value payload, char **trace, int traceCount) {
+/* PLAN.md §4.1's own roast table, ported verbatim from
+   funnylang/errors.py's DEFAULT_ROASTS -- used whenever a throw site
+   doesn't supply a more specific one. */
+static const struct {
+    const char *flavor;
+    const char *roast;
+} DEFAULT_ROASTS[] = {
+    {"LexerSaidNah", "what even IS that character. i'm not doing this."},
+    {"ParserHadAStroke", "i read this three times. it's still not code."},
+    {"WhoDis", "who? never heard of them."},
+    {"TypeVibeMismatch", "those two do NOT have the same energy."},
+    {"MathAintMathin", "you divided by zero. the universe said no."},
+    {"OutOfPocket", "that's straight up out of pocket."},
+    {"KeyGhosted", "that key left the group chat."},
+    {"GhostError", "you're talking to a ghost, king."},
+    {"NotACallableRizz", "that thing has no call rizz whatsoever."},
+    {"WrongNumberOfHomies", "wrong number of homies. awkward."},
+    {"TooDeepBro", "you recursed way too deep. touch grass."},
+    {"ImportSkillIssue", "can't find it. did you make it up?"},
+    {"ImmutableVibes", "it's deadass. it doesn't change. like your ex's opinion of you."},
+    {"SkillIssue", "skill issue."},
+    {"ComputerExploded", "it's over. exit code 69."},
+};
+#define DEFAULT_ROAST_COUNT (int)(sizeof(DEFAULT_ROASTS) / sizeof(DEFAULT_ROASTS[0]))
+
+static const char *default_roast_for(const char *flavor, const char *fallback) {
+    for (int i = 0; i < DEFAULT_ROAST_COUNT; i++) {
+        if (strcmp(DEFAULT_ROASTS[i].flavor, flavor) == 0) return DEFAULT_ROASTS[i].roast;
+    }
+    return fallback;
+}
+
+ObjError *error_new(GC *gc, const char *flavor, const char *message, const char *roast, const char *hint,
+                     uint32_t line, uint32_t col, const char *file, Value payload, char **trace, int traceCount) {
     ObjError *e = (ObjError *)malloc(sizeof(ObjError));
     e->obj.type = OBJ_ERROR;
     e->obj.marked = false;
@@ -15,6 +47,9 @@ ObjError *error_new(GC *gc, const char *flavor, const char *message, uint32_t li
     e->obj.next = NULL;
     e->flavor = string_new(gc, flavor, (uint32_t)strlen(flavor));
     e->message = string_new(gc, message, (uint32_t)strlen(message));
+    const char *roastText = roast ? roast : default_roast_for(flavor, message);
+    e->roast = string_new(gc, roastText, (uint32_t)strlen(roastText));
+    e->hint = hint ? string_new(gc, hint, (uint32_t)strlen(hint)) : NULL;
     e->line = line;
     e->col = col;
     e->file = string_new(gc, file ? file : "", (uint32_t)strlen(file ? file : ""));

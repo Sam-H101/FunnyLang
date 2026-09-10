@@ -23,7 +23,12 @@ static const char *path_str(VM *vm, Value v, const char *fn_name) {
 }
 
 static void io_fail(VM *vm, const char *fn_name, const char *path, const char *errbuf) {
-    vm_throw_native(vm, "SkillIssue", "'%s' on '%s' failed: %s.", fn_name, path, errbuf);
+    /* funnylang/stdlib/filez.py's _io_wrap pairs the strerror message with
+       its own roast, so funny mode blames the filesystem by name instead
+       of falling back to the flavor's generic "skill issue." */
+    char roast[512];
+    snprintf(roast, sizeof(roast), "couldn't %s `%s`. the filesystem said no.", fn_name, path);
+    vm_throw_native_roast(vm, "SkillIssue", roast, "'%s' on '%s' failed: %s.", fn_name, path, errbuf);
 }
 
 /* -- pure path-string helpers (funnylang/stdlib/filez.py never touches

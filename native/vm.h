@@ -177,6 +177,11 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc);
    squad's `to_yap` magic method, if it has one -- a real call back into
    FunnyLang code, exactly like the callback-taking stash methods. */
 void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...);
+/* Same, but with PLAN.md §4.1's site-specific roast -- the comedic line
+   funny-mode diagnostics print instead of the message. Only for the stdlib
+   throw sites whose Python counterpart passes an explicit `roast=`; the
+   rest keep calling vm_throw_native and get the flavor's default. */
+void vm_throw_native_roast(VM *vm, const char *flavor, const char *roast, const char *fmt, ...);
 const char *vm_type_name(Value v);
 char *vm_value_to_display(VM *vm, Value v);
 /* Like vm_value_to_display, but a string is quoted (json-style) --

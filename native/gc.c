@@ -62,7 +62,7 @@ static void free_object(Obj *obj) {
             ObjError *e = (ObjError *)obj;
             for (int i = 0; i < e->rawTraceCount; i++) free(e->rawTrace[i]);
             free(e->rawTrace);
-            free(e); /* flavor/message/file are separate GC objects */
+            free(e); /* flavor/message/roast/hint/file are separate GC objects */
             return;
         }
         case OBJ_POINTA:
@@ -211,6 +211,8 @@ static void blacken_object(GC *gc, Obj *obj) {
             ObjError *e = (ObjError *)obj;
             gc_mark_object(gc, (Obj *)e->flavor);
             gc_mark_object(gc, (Obj *)e->message);
+            gc_mark_object(gc, (Obj *)e->roast);
+            if (e->hint) gc_mark_object(gc, (Obj *)e->hint); /* NULL when the error has no fix suggestion */
             gc_mark_object(gc, (Obj *)e->file);
             gc_mark_value(gc, e->payload);
             return;

@@ -37,7 +37,10 @@ static const char *string_arg(VM *vm, Value v, const char *fnName) {
    the generic text. Nothing differential-tests that branch (urllib always
    has ssl, so Python can't produce it). */
 static void throw_net_error(VM *vm, const PlatformHttpResponse *resp) {
-    vm_throw_native(vm, "SkillIssue", "%s", resp->failReason[0] ? resp->failReason : NET_SAID_NO);
+    const char *text = resp->failReason[0] ? resp->failReason : NET_SAID_NO;
+    /* internet.py uses the same line for message and roast, so funny mode
+       says "the internet said no" rather than the generic "skill issue." */
+    vm_throw_native_roast(vm, "SkillIssue", text, "%s", text);
 }
 
 static double value_as_double(Value v) {
@@ -55,7 +58,7 @@ static Value opt_get(GC *gc, ObjGroupChat *opts, const char *key, Value fallback
 
 static Value m_go_brrrr(VM *vm, Value *a, int argc) {
     if (platform_net_disabled()) {
-        vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
+        vm_throw_native_roast(vm, "SkillIssue", NET_SAID_NO, "%s", NET_SAID_NO);
         return GHOST_VAL;
     }
     const char *url = string_arg(vm, a[0], "go_brrrr");
@@ -143,7 +146,7 @@ static Value m_is_it_up(VM *vm, Value *a, int argc) {
 static Value m_download(VM *vm, Value *a, int argc) {
     (void)argc;
     if (platform_net_disabled()) {
-        vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
+        vm_throw_native_roast(vm, "SkillIssue", NET_SAID_NO, "%s", NET_SAID_NO);
         return GHOST_VAL;
     }
     const char *url = string_arg(vm, a[0], "download");
@@ -170,7 +173,7 @@ static Value m_speed_test(VM *vm, Value *a, int argc) {
     (void)a;
     (void)argc;
     if (platform_net_disabled()) {
-        vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
+        vm_throw_native_roast(vm, "SkillIssue", NET_SAID_NO, "%s", NET_SAID_NO);
         return GHOST_VAL;
     }
     double start = platform_monotonic_seconds();
@@ -192,14 +195,14 @@ static Value m_speed_test(VM *vm, Value *a, int argc) {
 static Value m_ping(VM *vm, Value *a, int argc) {
     (void)argc;
     if (platform_net_disabled()) {
-        vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
+        vm_throw_native_roast(vm, "SkillIssue", NET_SAID_NO, "%s", NET_SAID_NO);
         return GHOST_VAL;
     }
     const char *host = string_arg(vm, a[0], "ping");
     if (!host) return GHOST_VAL;
     double ms;
     if (!platform_tcp_ping(host, 80, DEFAULT_TIMEOUT_MS, &ms)) {
-        vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
+        vm_throw_native_roast(vm, "SkillIssue", NET_SAID_NO, "%s", NET_SAID_NO);
         return GHOST_VAL;
     }
     return FLOAT_VAL(ms);

@@ -105,6 +105,23 @@ void platform_os_info(char *sysname_out, size_t sysname_len, char *release_out, 
    unknown. */
 int platform_cpu_count(void);
 
+/* -- console (NATIVE_PLAN.md N6, diagnostics) ------------------------ */
+
+/* True when *stdout* is a terminal. Deliberately stdout and not stderr,
+   even though diagnostics go to stderr: funnylang/errors.py's own
+   `_use_color` checks `sys.stdout.isatty()`, and N6's acceptance is
+   byte-identical stderr, so the colour decision has to be made the same
+   (slightly odd) way. */
+bool platform_stdout_is_tty(void);
+
+/* Prepares the console for the §4.2 renderer's output: on Windows, sets
+   the output code page to UTF-8 so the box-drawing and emoji don't get
+   mangled by the ANSI code page, and enables VT processing so ANSI colour
+   is interpreted rather than printed literally. A no-op everywhere else,
+   where both are already true. Safe to call once at startup regardless of
+   whether anything is later written. */
+void platform_console_init(void);
+
 /* -- networking (NATIVE_PLAN.md N5 task 5, `internet`) --------------- */
 
 /* True when FUNNY_NO_NET=1 -- every internet.* function checks this

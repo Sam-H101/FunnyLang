@@ -15,8 +15,10 @@
 
 #include "builtins.h"
 #include "chunk.h"
+#include "diag.h"
 #include "error.h"
 #include "gc.h"
+#include "platform.h"
 #include "stash.h"
 #include "string.h"
 #include "value.h"
@@ -40,13 +42,32 @@ static uint8_t *read_file(const char *path, size_t *outLen) {
 }
 
 int main(int argc, char **argv) {
+    platform_console_init(); /* UTF-8 + ANSI on Windows; a no-op elsewhere */
+
+    /* N6 task 2's two global flags. The real CLI's full flag set is N7's
+       job; these two exist now because the diagnostics they control are
+       what N6 delivers, and its acceptance gate diffs both modes. Parsed
+       out of argv in place so the .funnyc path and the_args() past it are
+       unaffected wherever the flags appear. */
+    DiagOptions diagOptions = diag_default_options();
+    int argWrite = 1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--serious") == 0) {
+            diagOptions.serious = true;
+        } else if (strcmp(argv[i], "--no-color") == 0 || strcmp(argv[i], "--no-colour") == 0) {
+            diagOptions.color = false;
+        } else {
+            argv[argWrite++] = argv[i];
+        }
+    }
+    argc = argWrite;
+
     if (argc < 2) {
-        /* Deliberately plain ASCII: the real banner (funnylang/cli.py's
-           BANNER) is full box-drawing Unicode, which needs UTF-8 console
-           setup on Windows (SetConsoleOutputCP) before it's safe to print.
-           That setup is platform.c's job once it exists (NATIVE_PLAN.md
-           §4: "the ONLY file with #ifdef _WIN32") -- main.c doesn't get
-           its own ad hoc ifdef for it. */
+        /* Still plain ASCII, but no longer for the old reason: N6 gave
+           platform.c the Windows UTF-8/VT console setup this banner was
+           waiting on, and platform_console_init() above has already run.
+           What's left is that printing funnylang/cli.py's real BANNER is
+           the *CLI's* job, and the real CLI is N7. */
         puts("FunnyLang (native) -- it compiles. somehow.");
         puts("N2: pass a .funnyc file to run it. The real CLI lands in N7.");
         return 0;
@@ -91,10 +112,8 @@ int main(int argc, char **argv) {
                matching an uncaught Python SystemExit(n). */
             exitCode = (int)systemExitCode;
         } else {
-            /* Not the real diagnostic renderer (N6's diag.c) -- just
-               enough to report what went wrong until that exists. */
             ObjError *e = (ObjError *)AS_OBJ(vm.uncaughtError);
-            fprintf(stderr, "%s: %s\n", e->flavor->chars, e->message->chars);
+            diag_render_error(stderr, e, diagOptions);
             /* computer.explode()'s ComputerExploded is an ordinary
                catchable FunnyError everywhere else (sketchy/my_bad
                catches it like any other) -- exit 69 is purely a
