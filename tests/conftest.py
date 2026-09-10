@@ -45,7 +45,10 @@ def native_binary(tmp_path_factory):
     `native` ci.yml job.
     """
     out = tmp_path_factory.mktemp("native_build") / "funny_native_test"
-    srcs = sorted(str(p) for p in (_REPO_ROOT / "native").glob("*.c"))
+    # native/ has two entry points; this fixture builds the CLI one, so
+    # stub_main.c is left out or the link fails on a duplicate main().
+    # (`native_stub_binary` below builds the other.)
+    srcs = sorted(str(p) for p in (_REPO_ROOT / "native").glob("*.c") if p.name != "stub_main.c")
     cc = os.environ.get("CC", "cc")  # e.g. `CC=clang python3 -m pytest ...`
     cmd = [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(out), *srcs, "-lm"]
     # N5b: platform.c dlopen()s OpenSSL on Linux/BSD and uses Security.framework
@@ -60,6 +63,28 @@ def native_binary(tmp_path_factory):
         pytest.skip(f"no C compiler on PATH: {exc}")
     if result.returncode != 0:
         pytest.skip(f"no C toolchain available to build the native binary:\n{result.stdout}\n{result.stderr}")
+    return out
+
+
+@pytest.fixture(scope="session")
+def native_stub_binary(tmp_path_factory):
+    """The yeet runtime stub (`funnyrt`): the same sources as `funny` but
+    entered through stub_main.c instead of main.c, so it carries no compiler
+    -- a shipped executable only ever runs already-compiled bytecode."""
+    out = tmp_path_factory.mktemp("native_stub") / "funnyrt"
+    srcs = sorted(str(p) for p in (_REPO_ROOT / "native").glob("*.c") if p.name != "main.c")
+    cc = os.environ.get("CC", "cc")
+    cmd = [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(out), *srcs, "-lm"]
+    if platform.system() == "Darwin":
+        cmd += ["-framework", "Security", "-framework", "CoreFoundation"]
+    elif os.name != "nt":
+        cmd += ["-ldl"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError as exc:
+        pytest.skip(f"no C compiler on PATH: {exc}")
+    if result.returncode != 0:
+        pytest.skip(f"no C toolchain available to build the stub:\n{result.stdout}\n{result.stderr}")
     return out
 
 

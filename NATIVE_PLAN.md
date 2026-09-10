@@ -1571,6 +1571,37 @@ gets an entry explaining what changed and why.
   Verified on Linux (gcc and clang) and native Windows (MSVC), including finding the bundle beside the
   executable on both. 105 native tests green including under `FUNNY_GC_STRESS=1`; acceptance corpus
   73/73 and 7/7; self-hosted zero-Python corpus still 64/64.
+
+- **N7 (part 2) complete · `funny yeet` and the native runtime stub — and N7's acceptance is met.**
+  `funny yeet examples/hello.funny -o hello` produces a **228 KB** standalone executable on Linux
+  (437 KB with MSVC) that prints `yo sup world`, still runs after being moved, and exits 69 on an
+  uncaught `computer.explode()`. Against the plan's 1 MB budget, and against the ~8 MB PyInstaller
+  bundle it replaces.
+  `native/stub_main.c` implements PLAN.md §5.4 unchanged — the format didn't move, only the language:
+  read your own file, seek `filesize - 17`, check `FUNNYYEET`, load the payload behind it. Worth
+  recording because the docs disagree: §5.4's *diagram* shows the length before the magic, while the
+  code that writes it (and `funnylang/stub_main.py`, which reads it) puts the magic first. Followed
+  the code, since that's what existing yeeted binaries actually contain.
+  **`build.sh`/`build.bat` now produce two binaries**, because `native/` has two entry points: `funny`
+  (everything + `main.c`) and `funnyrt` (everything + `stub_main.c`). The stub deliberately contains
+  no compiler — a shipped executable only ever runs bytecode — which is the whole reason a yeeted
+  program is hundreds of kilobytes instead of megabytes. MSVC needed per-binary `/Fo` object
+  directories, or the second link silently reuses the first's objects.
+  The load-and-run path moved out of `main.c` into `native/runner.c`, shared by both entry points
+  rather than copied: a yeeted binary has to report an uncaught error, and in particular exit 69,
+  exactly the way `funny` does, and two copies of that would be two things to keep in step.
+  **A real bug the Windows check caught, not review:** `-o out\prog` failed with "No such file or
+  directory" because the parent-directory creation (M13's fix, kept) looked only for `/`. Both
+  `main.c` and `platform_mkdir_p` now treat `\` as a separator too — but only under `_WIN32`, since on
+  POSIX a backslash is a perfectly legal filename character and splitting on it there would be a
+  different bug.
+  Known limitation, stated rather than papered over: `yeet` compiles a *single* source file, since
+  linking a multi-module program needs the bundler, which is `selfhost/linker.funny` — N8 task 1. A
+  program with file imports isn't yeetable until that lands.
+  New tests: `tests/native/test_native_yeet.py` (6), covering each acceptance clause separately plus
+  the naked-stub message; the "still works after being moved" one is the one that matters most, since
+  it's what forces the stub to find itself through the OS rather than through `argv[0]`.
+  111 native tests green including under `FUNNY_GC_STRESS=1`, on Linux (gcc and clang) and Windows.
   **Found a language-grammar quirk while writing the test, not a bug in either VM:** `sus` is itself
   a reserved statement-leading keyword (FunnyLang's own conditional, "sus (cond) { }"), so
   `sus.dump(x)` as a bare statement fails to parse on *both* VMs identically — confirmed by checking

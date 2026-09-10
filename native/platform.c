@@ -266,6 +266,16 @@ static bool make_one_dir(const char *path, char *errbuf, size_t errbuf_len) {
 
 #endif
 
+/* '\' is a path separator on Windows and an ordinary (legal) filename
+   character on POSIX, so it only counts as one where it actually is one. */
+static bool is_path_sep(char c) {
+#ifdef _WIN32
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
+}
+
 bool platform_mkdir_p(const char *path, char *errbuf, size_t errbuf_len) {
     size_t len = strlen(path);
     char buf[4096];
@@ -275,7 +285,7 @@ bool platform_mkdir_p(const char *path, char *errbuf, size_t errbuf_len) {
     }
     memcpy(buf, path, len + 1);
     for (size_t i = 1; i <= len; i++) {
-        if (buf[i] != '/' && i != len) continue;
+        if (!is_path_sep(buf[i]) && i != len) continue;
         char saved = buf[i];
         buf[i] = '\0';
         if (buf[0] != '\0' && !make_one_dir(buf, errbuf, errbuf_len)) return false;
@@ -601,6 +611,11 @@ bool platform_temp_file(const char *prefix, char *out, size_t out_len) {
     return true;
 }
 
+bool platform_make_executable(const char *path) {
+    (void)path; /* Windows decides by extension, not by a mode bit */
+    return true;
+}
+
 bool platform_stdout_is_tty(void) { return _isatty(_fileno(stdout)) != 0; }
 
 void platform_console_init(void) {
@@ -643,6 +658,18 @@ bool platform_temp_file(const char *prefix, char *out, size_t out_len) {
     if (fd < 0) return false;
     close(fd);
     return true;
+}
+
+bool platform_make_executable(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    /* +x wherever there's already an r, matching `chmod +x`'s own umask-
+       respecting behaviour rather than forcing 0777. */
+    mode_t mode = st.st_mode;
+    if (mode & S_IRUSR) mode |= S_IXUSR;
+    if (mode & S_IRGRP) mode |= S_IXGRP;
+    if (mode & S_IROTH) mode |= S_IXOTH;
+    return chmod(path, mode) == 0;
 }
 
 bool platform_stdout_is_tty(void) { return isatty(STDOUT_FILENO) != 0; }

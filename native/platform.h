@@ -120,6 +120,12 @@ bool platform_executable_path(char *out, size_t out_len);
    removes it when done. */
 bool platform_temp_file(const char *prefix, char *out, size_t out_len);
 
+/* Marks a file executable (POSIX: adds the x bits the way `chmod +x`
+   does). A no-op on Windows, where being runnable is decided by the
+   extension rather than by a mode bit -- `funny yeet` calls it
+   unconditionally rather than branching at the call site. */
+bool platform_make_executable(const char *path);
+
 /* -- console (NATIVE_PLAN.md N6, diagnostics) ------------------------ */
 
 /* True when *stdout* is a terminal. Deliberately stdout and not stderr,

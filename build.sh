@@ -54,5 +54,21 @@ case "$(uname -s)" in
     *) LIBS+=(-ldl) ;;
 esac
 
-echo "+ $CC ${FLAGS[*]} -o $OUT ${SRCS[*]} ${LIBS[*]}"
-"$CC" "${FLAGS[@]}" -o "$OUT" "${SRCS[@]}" "${LIBS[@]}"
+# native/ has two entry points -- main.c (the `funny` CLI) and stub_main.c
+# (the yeet runtime stub, NATIVE_PLAN.md N7 task 2) -- so each binary gets
+# every other source plus exactly one of them. The stub deliberately has no
+# compiler in it: a shipped executable only ever runs bytecode, which is why
+# a yeeted program is a couple of hundred KB rather than PyInstaller's 8 MB.
+CORE=()
+for f in "${SRCS[@]}"; do
+    case "$f" in
+        native/main.c | native/stub_main.c) ;;
+        *) CORE+=("$f") ;;
+    esac
+done
+
+echo "+ $CC ${FLAGS[*]} -o $OUT ${CORE[*]} native/main.c ${LIBS[*]}"
+"$CC" "${FLAGS[@]}" -o "$OUT" "${CORE[@]}" native/main.c "${LIBS[@]}"
+
+echo "+ $CC ${FLAGS[*]} -o funnyrt ${CORE[*]} native/stub_main.c ${LIBS[*]}"
+"$CC" "${FLAGS[@]}" -o funnyrt "${CORE[@]}" native/stub_main.c "${LIBS[@]}"

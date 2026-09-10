@@ -16,8 +16,10 @@ dist/
 .coverage
 htmlcov/
 
-# native/ build output (build.sh / build.bat -- NATIVE_PLAN.md N0)
+# native/ build output (build.sh / build.bat -- NATIVE_PLAN.md N0/N7):
+# the CLI, and the runtime stub `funny yeet` appends programs to.
 /funny
+/funnyrt
 *.obj
 *.pdb
 *.ilk
