@@ -2106,4 +2106,39 @@ gets an entry explaining what changed and why.
   Windows, including a yeeted `.exe` that runs.
   **N8 acceptance:** `run/build/xray/fmt/test/vibe/yeet` all work with the C binary and match the
   Python CLI. `bootstrap` is N9 task 2 and reports itself as not yet wired up rather than pretending.
+- **N9 task 2 · `funny bootstrap --verify` on the C VM.** `selfhost/bootstrap.funny` (the library)
+  plus `selfhost/bootstrapcli.funny` (argv), the same split `fmt.funny`/`fmtcli.funny` has. Stage 2
+  is the toolchain linked from `selfhost/` by this build, stage 3 is what stage 2 produces from the
+  same sources, stage 4 is what stage 3 produces; byte-equal stage 3 and 4 is the fixed point. It
+  reaches one: **255,687 bytes, identical.**
+  **DECISION · the native bootstrap stages the linker, not the compiler.** `cli.py`'s stages
+  `funnyc.funny`, whose stage 3 and 4 are bare `.funnyc` files — and a bare `.funnyc` has no bundle,
+  so its own `gimme { ... } from "compiler.funny"` has nothing to resolve against. The Python VM gets
+  away with that by pointing a `ModuleResolver` at `selfhost/` and *compiling those imports on the
+  fly*, which requires a compiler inside the running VM. The native runtime has none by design: a
+  file import is resolved at **link** time. So every native stage is a self-contained bundle, which
+  means staging `linker.funny` rather than `funnyc.funny`. That is strictly stronger — linking a
+  bundle exercises lexer, parser, resolver, compiler, emitter *and* bundler, where compiling one file
+  skips the last — and it is the only shape that works without a run-time compiler. The two byte
+  counts therefore differ by design (255,687 vs 1,009); every other line of output is identical,
+  thousands separators included, and a test asserts exactly that.
+  **`--diff` is tested through a driver**, because it is unreachable through the CLI: the bootstrap
+  reaches a fixed point, so the stages never differ, so the one code path whose whole job is
+  explaining a *failure* would otherwise ship untested. `proto_differs` was widened to compare every
+  field of a proto, matching `cli.py`'s whole-`FunctionProto` comparison, so both implementations
+  agree on *which* proto is the first divergent one — and the case where two protos are equal but the
+  bundles still differ (constants live in the unit's pool, not the proto) is reported as exactly that
+  rather than pointed at an innocent proto.
+  **Found · a bundle cannot address a module outside the entry's directory.** A `.funnypak` keys its
+  modules by path relative to the entry's directory, so an import that escapes it
+  (`../bootstrap.funny` from `selfhost/_drivers/`) gets an absolute key the runtime loader can never
+  resolve back — `gimme` at run time normalises to `../bootstrap.funny`, which is not that key.
+  **Both implementations share this**, since `funnylang/modules.py`'s `_canonical_name` and
+  `make_pak_module_loader` do the same thing. Not fixed here: the fix is to root canonical names at
+  the common ancestor of all modules, which changes every bundle key and would break byte-identity
+  with the Python bundler mid-milestone. Logged so it is decided deliberately; today it only bites a
+  test driver, and the workaround (put the driver beside what it imports) is one line.
+  Verified: 8 tests in `tests/native/test_native_bootstrap.py` — the fixed point, output shape
+  against the Python CLI, `--verify` being required, `--keep` leaving all three stages behind and its
+  absence leaving nothing, and three shapes of `--diff` report. Full suite 1313 passed.
 

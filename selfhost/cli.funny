@@ -358,8 +358,7 @@ flex bet main() {
         bounce cmd_yeet(tail[0], out, vibes)
     }
     sus (cmd == "bootstrap") {
-        yell("funny bootstrap isn't wired up in the native CLI yet (NATIVE_PLAN.md N9 task 2).")
-        bounce 1
+        bounce run_tool("bootstrapcli.funny", tail)
     }
 
     // No subcommand: `funny <file> [args...]`.

@@ -1,0 +1,245 @@
+// selfhost/bootstrap.funny — NATIVE_PLAN.md N9 task 2: the self-hosting
+// fixed point, proved on the C VM with no Python anywhere in the loop.
+//
+// A library, deliberately -- `bootstrapcli.funny` is the CLI over it, the
+// same split `fmt.funny`/`fmtcli.funny` has. That keeps `stage_diff`
+// reachable from a test driver, which matters because it is the one code
+// path whose whole job is explaining a *failed* bootstrap and so never runs
+// when things are working.
+//
+// stage 2 is the toolchain linked from `selfhost/` by *this* build; stage 3
+// is what stage 2 produces when asked to link the same sources; stage 4 is
+// what stage 3 produces. If stage 3 and stage 4 are byte-identical, the
+// compiler has reached a fixed point: it compiles itself into itself.
+//
+// WHY THE LINKER AND NOT THE COMPILER. funnylang/cli.py's version stages the
+// *compiler* (`funnyc.funny`), whose stage 3 and 4 are bare `.funnyc` files.
+// A bare `.funnyc` has no bundle, so its own `gimme { ... } from
+// "compiler.funny"` has nothing to resolve against -- the Python VM gets away
+// with it by pointing a `ModuleResolver` at `selfhost/` and *compiling those
+// imports on the fly*, which needs a compiler inside the running VM. The
+// native runtime deliberately has no such thing: a file import is resolved at
+// link time. So the native bootstrap stages the linker instead, and every
+// stage is a self-contained bundle. That is a strictly stronger check --
+// linking a bundle runs the lexer, parser, resolver, compiler, emitter *and*
+// bundler, where compiling one file skips the last -- and it is the only
+// shape that works without a compiler at run time. Logged in §9.
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme filez
+gimme sus
+gimme yapper
+gimme computer
+gimme { build_bundle, emit_funnypak } from "bundler.funny"
+gimme { load_funnypak } from "loader.funny"
+gimme { disassemble_proto } from "disasm.funny"
+
+// The file every stage links: the linker itself, which pulls in the whole
+// toolchain (lexer, parser, compiler, emitter, prelude, bundler).
+flex deadass SUBJECT = "linker.funny"
+
+flex bet selfhost_dir() {
+    yo exe = computer.exe_path()
+    sus (exe != ghost) {
+        yo beside = filez.join_path(filez.dir_of(exe), "selfhost")
+        sus (filez.is_dir(beside)) {
+            bounce beside
+        }
+    }
+    sus (filez.is_dir("selfhost")) {
+        bounce "selfhost"
+    }
+    bounce ghost
+}
+
+flex bet run_stage(toolchain_bytes, in_path, out_path) {
+    yo r = sus.run_bytecode(toolchain_bytes, [in_path, out_path])
+    sus (r["flavor"] != ghost) {
+        bounce r["flavor"] + ": " + r["message"]
+    }
+    sus (!filez.exists(out_path)) {
+        bounce "the stage produced no output file."
+    }
+    bounce ghost
+}
+
+// -- --diff ---------------------------------------------------------------
+// The first proto where the two stages diverge, disassembled twice. A raw
+// byte offset says nothing; two disassemblies say exactly what changed.
+
+// Every field of the proto, matching cli.py's `p3 != p4` on a whole
+// FunctionProto -- so both implementations agree about *which* proto is the
+// first divergent one. Constants live in the unit's pool rather than the
+// proto, so two protos can compare equal while the bundles still differ;
+// that case is reported separately rather than pointed at an innocent proto.
+flex bet proto_differs(a, b) {
+    sus (a["name"] != b["name"] || a["arity"] != b["arity"]) {
+        bounce fax
+    }
+    sus (a["default_count"] != b["default_count"] || a["is_variadic"] != b["is_variadic"]) {
+        bounce fax
+    }
+    sus (a["upvalue_count"] != b["upvalue_count"] || a["max_stack"] != b["max_stack"]) {
+        bounce fax
+    }
+    sus (a["local_count"] != b["local_count"]) {
+        bounce fax
+    }
+    sus (a["code"].how_thicc() != b["code"].how_thicc()) {
+        bounce fax
+    }
+    grind i from 0 to a["code"].how_thicc() {
+        sus (a["code"][i] != b["code"][i]) {
+            bounce fax
+        }
+    }
+    sus (a["lines"].how_thicc() != b["lines"].how_thicc()) {
+        bounce fax
+    }
+    grind i from 0 to a["lines"].how_thicc() {
+        yo la = a["lines"][i]
+        yo lb = b["lines"][i]
+        sus (la["offset"] != lb["offset"] || la["line"] != lb["line"] || la["col"] != lb["col"]) {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
+flex bet stage_diff(path3, path4) {
+    yo pak3 = load_funnypak(filez.read_bytes(path3))
+    yo pak4 = load_funnypak(filez.read_bytes(path4))
+    sus (pak3["names"].how_thicc() != pak4["names"].how_thicc()) {
+        bounce "module count differs: stage3 has " + to_yap(pak3["names"].how_thicc()) + ", stage4 has " + to_yap(pak4["names"].how_thicc()) + "."
+    }
+    grind m from 0 to pak3["names"].how_thicc() {
+        sus (pak3["names"][m] != pak4["names"][m]) {
+            bounce "module " + to_yap(m) + " differs: stage3 has " + pak3["names"][m] + ", stage4 has " + pak4["names"][m] + "."
+        }
+        yo u3 = pak3["units"][m]
+        yo u4 = pak4["units"][m]
+        sus (u3["protos"].how_thicc() != u4["protos"].how_thicc()) {
+            bounce "proto count differs in " + pak3["names"][m] + ": stage3 has " + to_yap(u3["protos"].how_thicc()) + ", stage4 has " + to_yap(u4["protos"].how_thicc()) + "."
+        }
+        grind i from 0 to u3["protos"].how_thicc() {
+            yo p3 = u3["protos"][i]
+            yo p4 = u4["protos"][i]
+            sus (proto_differs(p3, p4)) {
+                yo label = "proto #" + to_yap(i) + " (" + p3["name"] + ") in " + pak3["names"][m]
+                yo out = ["first divergent proto: " + label, "", "-- stage3 --", disassemble_proto(u3, p3, label)]
+                out.yeet_in("")
+                out.yeet_in("-- stage4 --")
+                out.yeet_in(disassemble_proto(u4, p4, label))
+                bounce out.join("\n")
+            }
+        }
+    }
+    bounce "protos are equal but the raw bytes differ (const pool or header mismatch)."
+}
+
+// -- the command ----------------------------------------------------------
+
+flex bet bootstrap(keep, show_diff) {
+    yo dir = selfhost_dir()
+    sus (dir == ghost) {
+        yell("can't find selfhost/. run from a tree that has one.")
+        bounce 1
+    }
+    yo subject = filez.join_path(dir, SUBJECT)
+
+    yo build_dir = ghost
+    sus (keep) {
+        build_dir = filez.join_path("build", "bootstrap")
+        filez.mkdir(build_dir)
+    } nah {
+        // No temp *directory* primitive, and none is needed: three temp files
+        // in the same place work identically, and `keep` is the mode where
+        // anyone actually goes looking for them.
+        build_dir = filez.dir_of(filez.temp_file("funny-bootstrap"))
+    }
+    yo stage2 = filez.join_path(build_dir, "stage2.funnypak")
+    yo stage3 = filez.join_path(build_dir, "stage3.funnypak")
+    yo stage4 = filez.join_path(build_dir, "stage4.funnypak")
+
+    yo stage2_bytes = ghost
+    sketchy {
+        stage2_bytes = emit_funnypak(build_bundle(subject))
+    } my_bad (e) {
+        yell("stage 2 failed to link:")
+        yell("  " + e.flavor + ": " + e.message)
+        bounce 1
+    }
+    filez.write_bytes(stage2, stage2_bytes)
+    yap "🥁 stage 2... compiled."
+
+    yo err = run_stage(stage2_bytes, subject, stage3)
+    sus (err != ghost) {
+        yell("stage 2 -> stage 3 failed:")
+        yell("  " + err)
+        bounce 1
+    }
+    yap "🥁 stage 3... compiled by stage 2."
+
+    yo stage3_bytes = filez.read_bytes(stage3)
+    err = run_stage(stage3_bytes, subject, stage4)
+    sus (err != ghost) {
+        yell("stage 3 -> stage 4 failed:")
+        yell("  " + err)
+        bounce 1
+    }
+    yap "🥁 stage 4... compiled by stage 3."
+    yap ""
+
+    yo stage4_bytes = filez.read_bytes(stage4)
+    sus (same_bytes(stage3_bytes, stage4_bytes)) {
+        yap "stage3 and stage4 are byte-identical (" + with_commas(stage3_bytes.how_thicc()) + " bytes)."
+        yap "FunnyLang now compiles FunnyLang. we are so back. 🏆"
+        cleanup(keep, [stage2, stage3, stage4])
+        bounce 0
+    }
+
+    yell("stage3 (" + to_yap(stage3_bytes.how_thicc()) + " bytes) and stage4 (" + to_yap(stage4_bytes.how_thicc()) + " bytes) differ.")
+    sus (show_diff) {
+        yell(stage_diff(stage3, stage4))
+    }
+    cleanup(keep, [stage2, stage3, stage4])
+    bounce 1
+}
+
+flex bet cleanup(keep, paths) {
+    sus (keep) {
+        bounce ghost
+    }
+    grind p in paths {
+        sus (filez.exists(p)) {
+            filez.obliterate(p)
+        }
+    }
+}
+
+flex bet same_bytes(a, b) {
+    sus (a.how_thicc() != b.how_thicc()) {
+        bounce cap
+    }
+    grind i from 0 to a.how_thicc() {
+        sus (a[i] != b[i]) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+// cli.py prints the byte count with `:,`.
+flex bet with_commas(n) {
+    yo s = to_yap(n)
+    yo out = []
+    yo len = s.how_thicc()
+    grind i from 0 to len {
+        sus (i > 0 && (len - i) % 3 == 0) {
+            out.yeet_in(",")
+        }
+        out.yeet_in(s[i])
+    }
+    bounce out.join("")
+}
