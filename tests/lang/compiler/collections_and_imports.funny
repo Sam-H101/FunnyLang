@@ -1,0 +1,28 @@
+// The rest of tests/test_compiler.py's opcode assertions: literal builders,
+// template strings, the pipe operator, indexing and slicing, compound
+// assignment to an index and to a property, exports, and both import forms.
+gimme mafs
+gimme { double, TAU } from "mathstuff.funny"
+
+yap [1, 2, 3]
+yap {"a": 1}
+
+yo name = "sam"
+yap `hi {name}`
+
+bet add(a, b) { bounce a + b }
+// `1 |> add(2)` prepends the left side, so it compiles to add(1, 2).
+yap 1 |> add(2)
+
+yo a = [1, 2, 3]
+yap a[0]
+yap a[1:2]
+a[0] += 1
+
+// A compound assign to a property reads it, adds, and writes it back -- the
+// DUP is what keeps the object around between the two.
+bet bump(obj) {
+    obj.n += 1
+}
+
+flex deadass PI = 3

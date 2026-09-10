@@ -1,0 +1,17 @@
+!DIAG serious
+FUNNYLANG ERROR
+
+  TypeVibeMismatch  ──  serious_mode.funny:7:5
+
+     5 │ // and this is the serious one.
+     6 │ yo x = 1
+     7 │ yap x + "nope"
+       │     ^ this right here
+     8 │ 
+
+  a numba and a yapstring do NOT have the same energy.
+
+  fix:  wrap the numba in to_yap(...) first, so both sides are yapstrings
+
+  stack trace:
+       at <the big one>  serious_mode.funny:7

@@ -294,7 +294,18 @@ static Value m_oops(VM *vm, Value *a, int argc) {
             *slots[i] = AS_STRING(e->value)->chars;
         }
     }
-    ObjError *e = error_new(&vm->gc, AS_STRING(a[0])->chars, message, roast, hint, line, col, file, GHOST_VAL, NULL, 0);
+    /* Any value, unlike the three above -- PLAN.md §3.9 defines `payload` as
+       a readable field and makes no claim about its type. The self-hosted
+       parser uses it to carry the *other* syntax errors it collected, since
+       an error value can only be one error and §4.2 asks for up to five to
+       be reported. */
+    Value payload = GHOST_VAL;
+    if (argc > 4 && IS_OBJ(a[4]) && AS_OBJ(a[4])->type == OBJ_GROUPCHAT) {
+        GroupChatEntry *pe = groupchat_find((ObjGroupChat *)AS_OBJ(a[4]),
+                                            OBJ_VAL(string_new(&vm->gc, "payload", 7)));
+        if (pe != NULL) payload = pe->value;
+    }
+    ObjError *e = error_new(&vm->gc, AS_STRING(a[0])->chars, message, roast, hint, line, col, file, payload, NULL, 0);
     return OBJ_VAL(e);
 }
 

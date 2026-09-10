@@ -1,0 +1,39 @@
+// PLAN.md §4.2: the parser "reports up to 5 syntax errors, then ... and {n}
+// more." That happens in the CLI, not in `sus.render_diag` -- an error value
+// can only be one error, and the collected siblings ride in its payload -- so
+// this golden drives the real command line and reads the stderr it produced.
+//
+// Before N11 the self-hosted parser collapsed a bundle into its first error,
+// so a file with seven syntax errors showed exactly one. This is the check
+// that it no longer does.
+gimme sus
+gimme filez
+gimme yapper
+
+flex bet cli(args) {
+    bounce sus.run_bytecode(sus.toolchain(), args)
+}
+
+yo base = filez.temp_file()
+yo src = base + ".funny"
+yo lines = []
+grind i from 0 to 7 {
+    lines.yeet_in("1 + 2 = 3")
+}
+filez.yeet_out(src, lines.join("\n") + "\n")
+
+yo r = cli(["run", src])
+yo err = r["err"]
+yap "exit " + to_yap(r["code"])
+yo shown = 0
+grind line in yapper.lines(err) {
+    sus (yapper.contains(line, "ParserHadAStroke")) {
+        shown += 1
+    }
+}
+yap "diagnostics shown: " + to_yap(shown)
+yap "summary line present: " + to_yap(yapper.contains(err, "... and 2 more. i'll stop."))
+yap "roast is the specific one: " + to_yap(yapper.contains(err, "you can't assign to that. that's not a place."))
+
+filez.obliterate(src)
+filez.obliterate(base)

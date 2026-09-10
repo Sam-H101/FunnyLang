@@ -1,0 +1,30 @@
+// The mirror image of the resolver's error cases: things that look similar
+// and are allowed. tests/test_resolver.py checks each of these does *not*
+// raise; a golden checks they also do the right thing.
+yo counter = 1
+counter = 2
+yap counter
+
+bruh (counter < 4) {
+    counter += 1
+    sus (counter == 3) {
+        // `bail` inside a nested `sus` inside a loop is still inside the loop.
+        bail
+    }
+}
+yap counter
+
+grind i from 0 to 10 {
+    sus (i == 2) { bail }
+    yap i
+}
+
+bet shadows_in_a_nested_block() {
+    yo x = 1
+    sus (fax) {
+        yo x = 2
+        yap x
+    }
+    yap x
+}
+shadows_in_a_nested_block()

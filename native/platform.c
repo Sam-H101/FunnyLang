@@ -314,12 +314,10 @@ static bool make_one_dir(const char *path, char *errbuf, size_t errbuf_len) {
     int rc = _wmkdir(wpath);
     free(wpath);
     if (rc != 0) {
-        if (errno == EEXIST) {
-            if (!path_is_dir(path)) {
-                set_errbuf(errbuf, errbuf_len, EEXIST);
-                return false;
-            }
-        } else {
+        /* "Already there" is success for mkdir -p, and Windows spells it more
+           than one way: EEXIST for an ordinary directory, EACCES for a drive
+           root. Ask what is true rather than trusting the errno. */
+        if (!path_is_dir(path)) {
             set_errbuf(errbuf, errbuf_len, errno);
             return false;
         }

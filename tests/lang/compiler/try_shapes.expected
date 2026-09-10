@@ -1,0 +1,32 @@
+!XRAY
+== <script> (entry) (arity 0) ==
+0000  line 5  TRY_PUSH      8 28
+0005  line 6  CONST         0    ; "a"
+0008          CHUCK
+0009  line 5  TRY_POP
+0010          JUMP          11
+0013          TRY_PUSH      65535 15
+0018  line 8  CONST         1    ; "b"
+0021          CHUCK
+0022  line 5  POP
+0023          TRY_POP
+0024  line 10 CONST         2    ; "cleanup"
+0027          YAP           1 1
+0030  line 5  JUMP          7
+0033  line 10 CONST         2    ; "cleanup"
+0036          YAP           1 1
+0039  line 5  CHUCK
+0040  line 13 TRY_PUSH      65535 19
+0045  line 14 CONST         3    ; 1
+0048          YAP           1 1
+0051  line 13 TRY_POP
+0052          JUMP          0
+0055  line 16 CONST         2    ; "cleanup"
+0058          YAP           1 1
+0061  line 13 JUMP          7
+0064  line 16 CONST         2    ; "cleanup"
+0067          YAP           1 1
+0070  line 13 CHUCK
+0071          GHOST
+0072          RETURN
+

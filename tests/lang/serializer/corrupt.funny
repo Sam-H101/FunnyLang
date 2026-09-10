@@ -1,0 +1,39 @@
+// A malformed artifact has to be rejected with a diagnostic, not misread.
+// tests/test_serializer.py covers bad magic, truncation and a version
+// mismatch against the loader directly; here they go through ,
+// which is where a user meets them.
+gimme sus
+gimme filez
+gimme yapper
+
+flex bet cli(args) {
+    bounce sus.run_bytecode(sus.toolchain(), args)
+}
+
+flex bet try_bytes(label, bytes) {
+    yo base = filez.temp_file()
+    yo path = base + ".funnyc"
+    filez.write_bytes(path, bytes)
+    yo r = cli(["run", path])
+    yap label + " -> exit " + to_yap(r["code"]) + ", flavor " + to_yap(r["flavor"])
+    filez.obliterate(path)
+    filez.obliterate(base)
+}
+
+// "NOTFUNNY" where "FUNNYC\0\0" belongs.
+try_bytes("bad magic", [0x4E, 0x4F, 0x54, 0x46, 0x55, 0x4E, 0x4E, 0x59, 0x00, 0x01])
+
+// Correct magic, then nothing.
+try_bytes("truncated", [0x46, 0x55, 0x4E, 0x4E, 0x59, 0x43, 0x00, 0x00])
+
+// Correct magic, a version this runtime does not speak.
+try_bytes("version mismatch", [0x46, 0x55, 0x4E, 0x4E, 0x59, 0x43, 0x00, 0x00, 0x00, 0x63, 0x00, 0x00, 0x00, 0x00])
+
+// A bundle with the wrong magic, same idea one level up.
+yo base = filez.temp_file()
+yo pak = base + ".funnypak"
+filez.write_bytes(pak, [0x4E, 0x4F, 0x54, 0x50, 0x41, 0x4B, 0x00, 0x00, 0x00])
+yo r = cli(["run", pak])
+yap "bad pak magic -> exit " + to_yap(r["code"])
+filez.obliterate(pak)
+filez.obliterate(base)

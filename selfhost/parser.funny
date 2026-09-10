@@ -211,15 +211,24 @@ flex bet parse_program(tokens, file = ghost) {
         sus (ps["errors"].how_thicc() == 1) {
             chuck first
         }
-        // Several: the flavor and position come from the first, the way
-        // parser.py's ParseErrorBundle exposes `errors[0]`, and the messages
-        // are joined. The roast falls back to the flavor default, since
-        // there is no single site left for it to have come from.
-        yo messages = []
+        // Several: the first is the error, and the rest ride in its payload.
+        // PLAN.md §4.2 asks for up to five syntax errors to be reported, and
+        // an error value can only be one error -- so the CLI renders the
+        // first, then whatever is in here. Collapsing them into one joined
+        // message, which is what this used to do, showed a user with seven
+        // syntax errors exactly one of them.
+        // The payload holds *all* of them, first included, and the CLI
+        // renders each rather than rendering the carrier -- so the carrier's
+        // own roast never shows and does not need to be recovered (it could
+        // not be: §3.9 makes `roast` unreadable from FunnyLang). Its flavor
+        // and position still matter, because anything that catches by flavor
+        // sees the first error, the way ParseErrorBundle exposes errors[0].
+        yo all_errors = []
         grind e in ps["errors"] {
-            messages.yeet_in(e["message"])
+            all_errors.yeet_in(e["exc"])
         }
-        chuck oops(first.flavor, messages.join("; "), first.line, first.col, {"file": file})
+        chuck oops(first.flavor, first.message, first.line, first.col,
+                   {"file": file, "payload": all_errors})
     }
     bounce {"node": "Program", "statements": statements, "line": 1, "col": 1}
 }
@@ -624,7 +633,8 @@ flex bet make_assign(ps, target, op, value) {
     // reference. Spelling the flavor into the message text was never the same
     // thing -- an `!ERROR ParserHadAStroke` golden reads the flavor, not the
     // message, and so does anything else that catches by flavor.
-    chuck oops("ParserHadAStroke", "that's not something you can assign to.", target["line"], target["col"], {"file": ps["file"]})
+    chuck oops("ParserHadAStroke", "that's not something you can assign to.", target["line"], target["col"],
+               {"file": ps["file"], "roast": "you can't assign to that. that's not a place."})
 }
 
 flex bet parse_ternary(ps) {

@@ -135,14 +135,37 @@ flex bet compile_to_blob(path, vibes) {
 //
 // The fallback is kept for the case `render_diag` cannot render -- an error
 // value from somewhere that never set a position.
+// PLAN.md §4.2: "reports up to 5 syntax errors, then ... and {n} more."
+deadass MAX_REPORTED_ERRORS = 5
+
 flex bet report_compile_error(path, e) {
-    yo text = sus.render_diag(e)
-    sus (text == ghost) {
-        yell("couldn't compile " + path + ":")
-        yell("  " + e.message)
-        bounce ghost
+    // A parse that collected several errors carries the rest in its payload;
+    // rendering only the carrier would show a user with seven syntax errors
+    // exactly one of them, which is what this did before N11.
+    yo errors = [e]
+    sus (what_is_it(e.payload) == "stash" fr e.payload.how_thicc() > 0) {
+        errors = e.payload
     }
-    yell(yapper.rtrim(text))
+    yo shown = errors.how_thicc() < MAX_REPORTED_ERRORS ? errors.how_thicc() : MAX_REPORTED_ERRORS
+    grind i from 0 to shown {
+        yo text = sus.render_diag(errors[i])
+        sus (text == ghost) {
+            yell("couldn't compile " + path + ":")
+            yell("  " + errors[i].message)
+            nvm
+        }
+        yell(yapper.rtrim(text))
+        // A blank line between diagnostics: the reference joins already-
+        // newline-terminated renderings with one more newline.
+        sus (i + 1 < shown) {
+            yell("")
+        }
+    }
+    yo remaining = errors.how_thicc() - shown
+    sus (remaining > 0) {
+        yell("")
+        yell("... and " + to_yap(remaining) + " more. i'll stop.")
+    }
 }
 
 flex bet cmd_run(path, program_args, show_time, vibes) {

@@ -1,0 +1,160 @@
+!XRAY
+== bet params_get_slots (arity 2) ==
+0000  line 10 GET_LOCAL     0
+0002          YAP           1 1
+0005  line 11 GET_LOCAL     1
+0007          YAP           1 1
+0010  line 12 CONST         2    ; 3
+0013  line 13 GET_LOCAL     2
+0015          YAP           1 1
+0018  line 8  GHOST
+0019          RETURN
+
+== bet <lowkey> (arity 0) ==
+0000  line 21 GET_UPVAL     0
+0002          CONST         0    ; 1
+0005          ADD
+0006          SET_UPVAL     0
+0008          POP
+0009  line 22 GET_UPVAL     0
+0011          RETURN
+0012  line 20 GHOST
+0013          RETURN
+
+== bet captures_one (arity 0) ==
+0000  line 17 CONST         5    ; 0
+0003  line 20 CLOSURE       6    ; proto #1 [local:0]
+0008          RETURN
+0009  line 16 GHOST
+0010          RETURN
+
+== bet <lowkey> (arity 0) ==
+0000  line 30 GET_UPVAL     0
+0002          RETURN
+0003          GHOST
+0004          RETURN
+
+== bet middle (arity 0) ==
+0000  line 30 CLOSURE       9    ; proto #3 [upval:0]
+0005          RETURN
+0006  line 28 GHOST
+0007          RETURN
+
+== bet chains_through_two (arity 0) ==
+0000  line 27 CONST         0    ; 1
+0003  line 28 CLOSURE       10    ; proto #4 [local:0]
+0008  line 32 GET_LOCAL     1
+0010          RETURN
+0011  line 26 GHOST
+0012          RETURN
+
+== bet shadowing_in_nested_block (arity 0) ==
+0000  line 37 CONST         0    ; 1
+0003  line 38 FAX
+0004          JUMP_IF_FALSE 12
+0007  line 39 CONST         13    ; 2
+0010  line 40 GET_LOCAL     1
+0012          YAP           1 1
+0015          POP
+0016  line 38 JUMP          0
+0019  line 42 GET_LOCAL     0
+0021          YAP           1 1
+0024  line 36 GHOST
+0025          RETURN
+
+== bet even (arity 1) ==
+0000  line 48 GET_LOCAL     0
+0002          CONST         5    ; 0
+0005          EQ
+0006          JUMP_IF_FALSE 5
+0009          FAX
+0010          RETURN
+0011          JUMP          0
+0014  line 49 GET_GLOBAL    16    ; "odd"
+0017          GET_LOCAL     0
+0019          CONST         0    ; 1
+0022          SUB
+0023          CALL          1
+0025          RETURN
+0026  line 47 GHOST
+0027          RETURN
+
+== bet odd (arity 1) ==
+0000  line 52 GET_LOCAL     0
+0002          CONST         5    ; 0
+0005          EQ
+0006          JUMP_IF_FALSE 5
+0009          CAP
+0010          RETURN
+0011          JUMP          0
+0014  line 53 GET_GLOBAL    18    ; "even"
+0017          GET_LOCAL     0
+0019          CONST         0    ; 1
+0022          SUB
+0023          CALL          1
+0025          RETURN
+0026  line 51 GHOST
+0027          RETURN
+
+== <script> (entry) (arity 0) ==
+0000  line 5  CONST         0    ; 1
+0003          DEF_GLOBAL    1    ; "at_top_level"
+0006  line 6  GET_GLOBAL    1    ; "at_top_level"
+0009          YAP           1 1
+0012  line 8  CLOSURE       3    ; proto #0
+0015          DEF_GLOBAL    4    ; "params_get_slots"
+0018  line 16 CLOSURE       7    ; proto #2
+0021          DEF_GLOBAL    8    ; "captures_one"
+0024  line 26 CLOSURE       11    ; proto #5
+0027          DEF_GLOBAL    12    ; "chains_through_two"
+0030  line 36 CLOSURE       14    ; proto #6
+0033          DEF_GLOBAL    15    ; "shadowing_in_nested_block"
+0036  line 47 CLOSURE       17    ; proto #7
+0039          DEF_GLOBAL    18    ; "even"
+0042  line 51 CLOSURE       19    ; proto #8
+0045          DEF_GLOBAL    16    ; "odd"
+0048  line 57 CONST         5    ; 0
+0051          CONST         0    ; 1
+0054          CONST         2    ; 3
+0057          GET_LOCAL     1
+0059          CONST         5    ; 0
+0062          GE
+0063          GET_LOCAL     0
+0065          GET_LOCAL     2
+0067          LT
+0068          BAND
+0069          GET_LOCAL     1
+0071          CONST         5    ; 0
+0074          LT
+0075          GET_LOCAL     0
+0077          GET_LOCAL     2
+0079          GT
+0080          BAND
+0081          BOR
+0082          JUMP_IF_FALSE 19
+0085          GET_LOCAL     0
+0087  line 58 GET_LOCAL     3
+0089          YAP           1 1
+0092  line 57 POP
+0093          GET_LOCAL     0
+0095          GET_LOCAL     1
+0097          ADD
+0098          SET_LOCAL     0
+0100          POP
+0101          LOOP          47
+0104          POP
+0105          POP
+0106          POP
+0107  line 60 CONST         0    ; 1
+0110          CONST         13    ; 2
+0113          BUILD_STASH   2
+0116          ITER_NEW
+0117          ITER_NEXT     9
+0120  line 61 GET_LOCAL     1
+0122          YAP           1 1
+0125  line 60 POP
+0126          LOOP          12
+0129          POP
+0130          GHOST
+0131          RETURN
+

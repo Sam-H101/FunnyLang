@@ -2701,3 +2701,77 @@ gets an entry explaining what changed and why.
 
   293 goldens on Linux and Windows, `tests/native` 248 passed, full suite 1313 passed, bootstrap fixed
   point byte-identical at the same size on both, MSVC `/W4 /WX` clean.
+
+- **N11 task 2 · the final disposition, file by file.** The survey earlier in this section predicted
+  what would happen; this is what did. **324 goldens**, from 76 at the start. Every plain and
+  `!ERROR` golden also passes on the *Python* VM, and every `!XRAY` golden was diffed byte for byte
+  against `funnylang.lexer`, `dump_ast` or `disasm.disassemble`. Nothing here was captured from
+  native output and blessed.
+
+  | pytest file | fns | where it went |
+  |---|---:|---|
+  | `test_stdlib.py` | 82 | `tests/lang/stdlib/` (90). One dropped: `internet.is_it_up` under `FUNNY_NO_NET`. |
+  | `test_vm.py` | 53 | `tests/lang/vm/` (48) plus the pre-existing `err_*` goldens, which already covered all eleven `isinstance(err, Flavor)` tests. |
+  | `test_squads.py` | 26 | `tests/lang/squads/` (21), including a disassembly golden for SQUAD/METHOD/INHERIT/INVOKE/INVOKE_OG. |
+  | `test_lexer.py` | 46 | `tests/lang/lexer/` (18): nine `!XRAY --tokens` dumps covering every keyword, operator, literal form and template shape, and nine `!ERROR LexerSaidNah` cases. |
+  | `test_parser.py` | 81 | `tests/lang/parser/` (13): six `!XRAY --ast` dumps covering the whole grammar, seven parse-error cases. |
+  | `test_resolver.py` | 30 | `tests/lang/resolver/` (2) plus nine `!ERROR` goldens in `tests/lang/errors/`. Resolution *kind and slot* are visible in the disassembly, which is more than the pytest asserted. |
+  | `test_compiler.py` | 40 | `tests/lang/compiler/` (9) disassembly goldens. |
+  | `test_serializer.py` | 12 | `tests/lang/serializer/` (2): a round trip through the shipped serializer carrying every §5.2 constant tag, and four malformed-artifact cases. |
+  | `test_errors.py` | 10 | `tests/lang/errors/` (22), including both diagnostic modes, both exit codes, and the multi-error bundle. |
+  | `test_modules.py` | 16 | `tests/lang/modules/` (13 + 1 `.pending`). `FUNNYPATH` not converted. |
+  | `test_hardening.py` | 10 | `tests/lang/hardening/` (2) + `tests/slow/jump_widening` (1). Timing assertions deliberately not converted. |
+  | `test_cli.py` | 34 | `tests/lang/cli/` (6), driving the real dispatch through `sus.toolchain()`. |
+  | `test_packager.py` | 8 | `tests/lang/cli/yeet` — trailer, payload and payload behaviour. Running the produced `.exe` needs a process; `release.yml` does that on three platforms. |
+  | `test_bootstrap.py` | 3 | `funny bootstrap --verify`, already a CI step on both platforms and a strictly stronger check. |
+  | `test_fuzz.py` | 2 | `tests/lang/fuzz/` (1), seeded and reproducible. |
+  | `test_selfhost_*.py` | 16 | **Dropped.** Each compares the Python front end against `selfhost/`; delete Python and there is no second side. The bootstrap fixed point remains, which checks the compiler against itself rather than against an oracle — weaker in kind, and said plainly rather than filed under "replaced by". |
+
+  **What is genuinely not covered, and why** — four things, each written down beside the goldens that
+  would cover them rather than only here:
+  1. `FUNNYPATH` module resolution — needs an environment variable set for the program under test,
+     which a golden cannot do, and `selfhost/bundler.funny` documents not implementing it.
+  2. `funny_modules/` found by walking *up* — parked as `.pending`; a bundle's keys are relative to
+     the entry's directory, so a module above it has no expressible key.
+  3. Wall-clock compile-time budgets — a property of the machine. The scaling table above is a better
+     record of the same concern than a test that goes red on a busy runner.
+  4. Running a `yeet`ed executable — needs process spawn, which the language does not have and should
+     not grow for its own tests.
+
+  **And what the conversion cost, which is the part worth remembering.** Eleven product defects, none
+  of which the 1,313-test suite could see, because that suite runs the *Python* implementation:
+  Windows bundles keyed by absolute path; ASCII-only `is_letter`; four parse errors with the wrong
+  flavor; a **segfault** on a circular import; a missing import with the wrong flavor; nested runs
+  leaking stdout and stderr past the isolation that was supposed to contain them; `groupchat` as an
+  association list; **no jump relaxation at all**, so a function body over 64 KB could not be
+  compiled; Windows unable to open a non-ANSI filename; eleven missing error roasts; and a parse
+  bundle collapsing to its first error, so seven syntax errors showed one.
+
+- **N11 · two more Windows defects, both found by the last two goldens.**
+  - **`filez.mkdir` could not create an absolute path on another drive.** `platform_mkdir_p` walked
+    every prefix from index 1, so for `C:/Users/.../Temp/x` the first component it tried to create
+    was `C:` — which names the *current directory on drive C*, and `_wmkdir` on it returns `EACCES`
+    rather than `EEXIST`. The walk treated that as fatal. It worked under the repository only because
+    the repository is on the current drive, where `_wmkdir("F:")` happens to return `EEXIST` and the
+    walk carried on. Fixed by starting the walk after any drive prefix — `platform_drive_prefix_len`
+    already knew where one ends — and by asking `path_is_dir` rather than trusting the errno, since
+    Windows spells "already there" more than one way. Found by the `funny yeet` golden, which uses
+    `-o` into a directory that does not exist yet (the M13 packager behaviour) with a temp path.
+  - The `yeet` golden itself is as far as a golden can honestly go: it checks the §5.4 trailer's
+    magic and length, extracts the payload, runs it through `sus.run_bytecode`, and requires the
+    output to match running the source. *Running the produced executable* needs to start a process,
+    which the language does not do and should not learn to do for its own tests; `release.yml`
+    already runs the real artifact on three platforms.
+
+- **N11 · the parse-error bundle, and the last eleven roasts.** PLAN.md §4.2 says the parser "reports
+  up to 5 syntax errors, then ... and {n} more." The self-hosted parser collapsed a bundle into its
+  first error, so a file with seven syntax errors showed **one**. An error value can only be one
+  error, so the siblings now ride in the error's `payload` — a field §3.9 already defines and
+  `error_new` already carried — and `cli.funny` renders the first five and counts the rest. Verified
+  the only way that means anything: `./funny run` and `python -m funnylang run` on a seven-error file
+  produce **byte-identical stderr**, summary line included.
+
+  The assignment-target error also had its own roast in `funnylang/parser.py` that the earlier sweep
+  missed, so the diagnostic read *"i read this three times. it's still not code."* instead of
+  *"you can't assign to that. that's not a place."* Eleven overridden roasts across the lexer, parser
+  and resolver are now copied verbatim; that is all of them.

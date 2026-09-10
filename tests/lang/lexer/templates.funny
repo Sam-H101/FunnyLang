@@ -1,0 +1,9 @@
+`hello`
+`yo {name}`
+`{a} and {b}`
+`{ {1: 2} }`
+`\{not a sub}`
+`a\`b`
+...rest
+a&&b
+a & &b

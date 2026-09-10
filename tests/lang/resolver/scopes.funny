@@ -1,0 +1,62 @@
+// Where a name lives is visible in the opcodes: GET_LOCAL with a slot,
+// GET_GLOBAL with a name, GET_UPVAL with an index. tests/test_resolver.py
+// asserted on `Resolution.kind`/`.index`; the disassembly below says the same
+// thing, and says which slot, which is more than the pytest checked.
+yo at_top_level = 1
+yap at_top_level
+
+bet params_get_slots(a, b) {
+    // a -> slot 0, b -> slot 1.
+    yap a
+    yap b
+    yo local_after_params = 3
+    yap local_after_params
+}
+
+bet captures_one() {
+    yo n = 0
+    // The lambda reads and writes `n` from the enclosing frame, so `n` is an
+    // upvalue there and a captured local here.
+    bounce lowkey () => {
+        n += 1
+        bounce n
+    }
+}
+
+bet chains_through_two() {
+    yo outer = 1
+    bet middle() {
+        // `outer` is an upvalue of middle, captured from a local...
+        bounce lowkey () => outer  // ...and an upvalue of the lambda, captured from an upvalue.
+    }
+    bounce middle
+}
+
+// A nested block may shadow; the same scope may not.
+bet shadowing_in_nested_block() {
+    yo x = 1
+    sus (fax) {
+        yo x = 2
+        yap x
+    }
+    yap x
+}
+
+// Mutual recursion at the top level: `even` refers to `odd` before `odd` is
+// declared, which only works because top-level functions are pre-declared.
+bet even(n) {
+    sus (n == 0) { bounce fax }
+    bounce odd(n - 1)
+}
+bet odd(n) {
+    sus (n == 0) { bounce cap }
+    bounce even(n - 1)
+}
+
+// A loop variable is a local, scoped to the loop.
+grind i from 0 to 3 {
+    yap i
+}
+grind item in [1, 2] {
+    yap item
+}
