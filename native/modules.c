@@ -141,8 +141,35 @@ Value do_import(VM *vm, const char *path, int mode) {
         vm_throw_native(vm, "ImportSkillIssue", "'%s' isn't in this bundle.", path);
         return GHOST_VAL;
     }
+
+    /* A module reached again while it is still running is a cycle. The cache
+       above only holds modules that have *finished*, so without this check
+       the loader re-enters vm_run_module forever and overflows the C stack --
+       a segfault where funnylang/modules.py raises a diagnostic. The smallest
+       case is a file importing itself. */
+    int start = vm_loading_index_of(vm, target);
+    if (start >= 0) {
+        char chain[1024];
+        size_t pos = 0;
+        for (int i = start; i <= vm_loading_count(vm); i++) {
+            /* One past the end repeats the module that closes the loop, the
+               way `self.loading[idx:] + [key]` does. */
+            const char *name = i < vm_loading_count(vm) ? vm_loading_at(vm, i) : target;
+            const char *slash = strrchr(name, '/');
+            const char *base = slash != NULL ? slash + 1 : name;
+            int written = snprintf(chain + pos, sizeof chain - pos, "%s%s",
+                                   i > start ? " \xe2\x86\x92 " : "", base);
+            if (written < 0 || (size_t)written >= sizeof chain - pos) break;
+            pos += (size_t)written;
+        }
+        vm_throw_native(vm, "ImportSkillIssue", "circular import: %s", chain);
+        return GHOST_VAL;
+    }
+
     gc_push_temp(&vm->gc, key);
+    vm_loading_push(vm, target);
     Value module = vm_run_module(vm, unit, target);
+    vm_loading_pop(vm);
     if (!vm->hadError) groupchat_set(&vm->gc, cache, key, module);
     gc_pop_temp(&vm->gc);
     return module;

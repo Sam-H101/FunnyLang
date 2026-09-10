@@ -619,6 +619,9 @@ void vm_init(VM *vm) {
     vm->currentModuleName = NULL;
     vm->out = NULL;
     vm->err = stderr;
+    vm->loadingModules = NULL;
+    vm->loadingCount = 0;
+    vm->loadingCapacity = 0;
     vm->currentFrameIndex = -1;
     vm->currentInstrStart = 0;
     vm->hadError = false;
@@ -634,7 +637,49 @@ void vm_init(VM *vm) {
     vm->ownedUnitCapacity = 0;
 }
 
+/* -- the import-loading stack ---------------------------------------------
+ *
+ * Names are owned copies: the caller's buffer is a scratch array in
+ * do_import, and the entry's name belongs to the pak, which may outlive
+ * nothing in particular. Small and short-lived either way -- the depth is
+ * the import nesting depth.
+ */
+void vm_loading_push(VM *vm, const char *name) {
+    if (vm->loadingCount == vm->loadingCapacity) {
+        vm->loadingCapacity = vm->loadingCapacity == 0 ? 8 : vm->loadingCapacity * 2;
+        vm->loadingModules = (char **)realloc(vm->loadingModules, (size_t)vm->loadingCapacity * sizeof(char *));
+    }
+    size_t n = strlen(name) + 1;
+    char *copy = (char *)malloc(n);
+    memcpy(copy, name, n);
+    vm->loadingModules[vm->loadingCount++] = copy;
+}
+
+void vm_loading_pop(VM *vm) {
+    if (vm->loadingCount > 0) free(vm->loadingModules[--vm->loadingCount]);
+}
+
+int vm_loading_index_of(const VM *vm, const char *name) {
+    for (int i = 0; i < vm->loadingCount; i++) {
+        if (strcmp(vm->loadingModules[i], name) == 0) return i;
+    }
+    return -1;
+}
+
+const char *vm_loading_at(const VM *vm, int i) {
+    return vm->loadingModules[i];
+}
+
+int vm_loading_count(const VM *vm) {
+    return vm->loadingCount;
+}
+
 void vm_destroy(VM *vm) {
+    for (int i = 0; i < vm->loadingCount; i++) free(vm->loadingModules[i]);
+    free(vm->loadingModules);
+    vm->loadingModules = NULL;
+    vm->loadingCount = 0;
+    vm->loadingCapacity = 0;
     /* Sessions first: each owns a whole child VM whose heap may hold
        closures pointing into units this VM's table also owns. */
     for (int i = vm->sessionCount; i > 0; i--) vm_session_close(vm, i);
@@ -3212,11 +3257,19 @@ VmResult vm_run_pak(VM *vm, CompiledPak *pak, FILE *out) {
     vm->pak = pak;
     vm->pakModuleCache = OBJ_VAL(groupchat_new(&vm->gc, NULL, 0));
     vm->currentModuleName = pak->entryName;
+    /* The entry goes on the loading stack too, so a cycle that loops back
+       through it is caught the same way as one between two libraries --
+       `gimme "main.funny"` from main.funny is the smallest cycle there is,
+       and it used to be the one that crashed. Same reason
+       funnylang/modules.py calls `enter()` for the entry script. */
+    vm_loading_push(vm, pak->entryName);
     /* The entry runs through the ordinary path, so it gets the same fresh
        namespaces and the same error handling as a lone .funnyc; the only
        difference is that `pak` is now set, which is what makes a quoted
        `gimme` resolve instead of failing. */
-    return vm_run(vm, entry, out);
+    VmResult result = vm_run(vm, entry, out);
+    vm_loading_pop(vm);
+    return result;
 }
 
 Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {

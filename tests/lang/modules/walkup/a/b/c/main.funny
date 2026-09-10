@@ -1,0 +1,3 @@
+// Nothing beside this file; `funny_modules/` is three directories up.
+gimme "shared.funny"
+yap shared.f()

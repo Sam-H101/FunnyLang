@@ -46,7 +46,13 @@ flex bet resolve_import(quoted, importing_abs) {
         }
         d = parent
     }
-    chuck "can't find '" + quoted + "' imported from " + importing_abs
+    // `oops`, not a chucked string: a chucked string is always a SkillIssue,
+    // and this is an ImportSkillIssue in the reference -- which is what an
+    // `!ERROR ImportSkillIssue` golden reads. Message and roast copied from
+    // funnylang/modules.py's `resolve`, which does not mention the importing
+    // file; the position does that job.
+    chuck oops("ImportSkillIssue", "can't find '" + quoted + "'.", ghost, ghost,
+               {"roast": "can't find `" + quoted + "`. did you make it up?"})
 }
 
 // A module's key in the bundle: its path relative to the *entry* file's

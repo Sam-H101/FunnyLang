@@ -2600,3 +2600,39 @@ gets an entry explaining what changed and why.
 
   Verified: 278/278 on Linux and Windows, `tests/native` 248 passed, bootstrap fixed point
   byte-identical at the same size on both, MSVC `/W4 /WX` clean.
+
+- **N11 · module goldens, and a segfault.** `tests/test_modules.py`'s 16 tests become one directory
+  per case under `tests/lang/modules/`, so two cases can both have a `lib.funny`. The imported files
+  have no golden of their own, so they are never run as tests but are still there to be imported —
+  the behaviour `test_a_funny_file_with_no_golden_is_ignored` already pins.
+
+  **`funny test` on a circular import died with SIGSEGV.** A `.funnypak` module was added to the
+  loader's cache only once it had *finished*, so a module reached again while still running
+  re-entered `vm_run_module` forever and took the C stack with it. `gimme "main.funny"` from
+  `main.funny` — the smallest cycle there is — was enough. `funnylang/modules.py` has always kept a
+  stack of modules currently loading and reported the cycle from it; the native loader now does too,
+  with the entry module on the stack as well (Python calls `enter()` for the entry script for exactly
+  this reason) and the same `circular import: a → b → a` message built from basenames.
+
+  Worth noting *why* it had gone unseen: `funny run` on a single file emits a `.funnyc`, not a pak,
+  and a lone `.funnyc` has no module loader at all — so the same source reports a `WhoDis` there. It
+  is only the bundled path that recursed, and only `funny test` always bundles.
+
+  **A missing import was a `SkillIssue`.** `selfhost/bundler.funny` reported it with
+  `chuck "<string>"`, which can only ever be a `SkillIssue`; the reference raises `ImportSkillIssue`.
+  Third instance of this same mistake after the parser's two, and the reason is always the same:
+  spelling a flavor into a message is not the same as having that flavor.
+
+  **One case is parked as `.pending`: `funny_modules/` found by walking up.** A `.funnypak`'s keys
+  are relative to the *entry*'s directory, so a module found above it has no expressible key — the
+  bundler resolves it, keys it by absolute path because the prefix does not match, and the runtime
+  loader then looks for `shared.funny` and does not find it. Logged earlier in this section as a
+  shared limitation; the equivalent pytest passes only because Python's runtime loader goes back to
+  the filesystem, which a bundle by definition cannot. The fix — rooting keys at the common ancestor
+  of every module rather than at the entry — changes every key in every bundle, and is deferred while
+  byte-identity against the Python bundler is still one of the checks holding this work together.
+  `FUNNYPATH` resolution is not converted at all: it needs an environment variable set for the
+  program under test, which a golden cannot do, and the bundler documents not implementing it.
+
+  **291 goldens**, 13/13 of the module ones passing on the Python VM too. `tests/native` 248 passed,
+  full suite 1313 passed, bootstrap fixed point byte-identical at the same size on Linux and Windows.

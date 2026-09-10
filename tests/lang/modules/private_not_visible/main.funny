@@ -1,0 +1,3 @@
+// The importer's globals must not see the module's private ones.
+gimme "lib.funny"
+yap secret_local

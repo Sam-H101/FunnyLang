@@ -1,0 +1,2 @@
+yo secret_local = 42
+flex bet get_it() { bounce secret_local }

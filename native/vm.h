@@ -145,6 +145,14 @@ struct VM {
        runs, and a child's diagnostics landing in the parent's stderr is
        the same leak stdout used to have. Never NULL after vm_init. */
     FILE *err;
+    /* Bundle modules currently being executed, innermost last. A module is
+       only added to `pakModuleCache` once it has *finished*, so without this
+       a cycle re-enters vm_run_module forever and overflows the C stack --
+       which is a segfault, not a diagnostic. funnylang/modules.py has always
+       kept the same stack, and reports the cycle from it. Owned strings. */
+    char **loadingModules;
+    int loadingCount;
+    int loadingCapacity;
 
     /* Where the dispatch loop currently is, refreshed at the top of every
        iteration -- vm_throw() (callable from deep inside an arithmetic
@@ -223,6 +231,15 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out);
    entry imports resolves against the bundle rather than the filesystem, so
    a .funnypak is self-contained by construction. */
 VmResult vm_run_pak(VM *vm, CompiledPak *pak, FILE *out);
+
+/* The import-loading stack, for modules.c's cycle check. Not part of the
+   language surface: these exist because do_import lives in another
+   translation unit. */
+void vm_loading_push(VM *vm, const char *name);
+void vm_loading_pop(VM *vm);
+int vm_loading_index_of(const VM *vm, const char *name);
+const char *vm_loading_at(const VM *vm, int i);
+int vm_loading_count(const VM *vm);
 
 /* Runs `unit`'s entry as the top level of a *persistent* session: the
    globals and exports live on the VM rather than being created fresh, which

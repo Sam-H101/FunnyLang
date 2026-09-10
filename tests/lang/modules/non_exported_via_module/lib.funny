@@ -1,0 +1,2 @@
+bet secret() { bounce 1 }
+flex bet pub() { bounce 2 }

@@ -1,0 +1,3 @@
+gimme { X, f } from "lib.funny"
+yap X
+yap f()

@@ -1,0 +1,3 @@
+gimme "lib.funny"
+yap lib.get_it()
+yap what_is_it(lib)
