@@ -289,6 +289,71 @@ static Value m_exists(VM *vm, Value *a, int argc) {
     return BOOL_VAL(platform_path_exists(path));
 }
 
+/* The raw-bytes counterpart to `append_to`. `write_bytes` already existed;
+   without this, a program could create a binary but never add to one --
+   which is exactly what `funny yeet` does to the runtime stub. */
+static Value m_append_bytes(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "append_bytes");
+    if (!path) return GHOST_VAL;
+    if (!(IS_OBJ(a[1]) && AS_OBJ(a[1])->type == OBJ_STASH)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'append_bytes' needs a stash of ints 0-255, not a %s.",
+                        vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjStash *s = (ObjStash *)AS_OBJ(a[1]);
+    unsigned char *buf = (unsigned char *)malloc(s->count > 0 ? (size_t)s->count : 1);
+    for (int i = 0; i < s->count; i++) {
+        Value b = s->items[i];
+        if (!IS_INT(b) || AS_INT(b) < 0 || AS_INT(b) > 255) {
+            free(buf);
+            vm_throw_native(vm, "TypeVibeMismatch", "'append_bytes' needs a stash of ints 0-255.");
+            return GHOST_VAL;
+        }
+        buf[i] = (unsigned char)AS_INT(b);
+    }
+    char errbuf[256];
+    bool ok = platform_append_file(path, buf, (size_t)s->count, errbuf, sizeof(errbuf));
+    free(buf);
+    if (!ok) {
+        io_fail(vm, "append_bytes", path, errbuf);
+        return GHOST_VAL;
+    }
+    return INT_VAL(s->count);
+}
+
+/* Marks `path` runnable: the executable bits on POSIX, a no-op on Windows,
+   where being executable is a matter of the extension. A program that
+   writes a program has to be able to do this. */
+static Value m_make_executable(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "make_executable");
+    if (!path) return GHOST_VAL;
+    platform_make_executable(path);
+    return GHOST_VAL;
+}
+
+/* A path in the OS temp directory that nothing else is using. The file is
+   the caller's to remove -- `obliterate` when done. */
+static Value m_temp_file(VM *vm, Value *a, int argc) {
+    const char *prefix = "funny";
+    if (argc > 0 && !IS_GHOST(a[0])) {
+        if (!IS_STRING(a[0])) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'temp_file' needs a yapstring prefix, not a %s.",
+                            vm_type_name(a[0]));
+            return GHOST_VAL;
+        }
+        prefix = AS_STRING(a[0])->chars;
+    }
+    char buf[4096];
+    if (!platform_temp_file(prefix, buf, sizeof(buf))) {
+        vm_throw_native_roast(vm, "SkillIssue", "couldn't make a temp file. the filesystem said no.",
+                              "'temp_file' couldn't create a temporary file.");
+        return GHOST_VAL;
+    }
+    return OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)strlen(buf)));
+}
+
 static Value m_is_dir(VM *vm, Value *a, int argc) {
     (void)argc;
     const char *path = path_str(vm, a[0], "is_dir");
@@ -450,6 +515,9 @@ static const FilezEntry FILEZ_FUNCTIONS[] = {
     {"mkdir", m_mkdir, 1, 1},
     {"read_bytes", m_read_bytes, 1, 1},
     {"write_bytes", m_write_bytes, 2, 2},
+    {"append_bytes", m_append_bytes, 2, 2},
+    {"make_executable", m_make_executable, 1, 1},
+    {"temp_file", m_temp_file, 0, 1},
     {"abs_path", m_abs_path, 1, 1},
     {"join_path", m_join_path, 1, 255},
     {"dir_of", m_dir_of, 1, 1},

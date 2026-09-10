@@ -186,6 +186,9 @@ Free functions below; most are also `groupchat` instance methods.
 | `filez.mkdir(path)` | Creates a directory (and any missing parents). |
 | `filez.read_bytes(path)` | Reads a whole file as a `stash` of ints `0`–`255`. |
 | `filez.write_bytes(path, bytes)` | Writes a `stash` of ints `0`–`255` to `path`; returns the byte count. |
+| `filez.append_bytes(path, bytes)` | Appends a `stash` of ints `0`–`255` to `path`; returns the byte count. |
+| `filez.make_executable(path)` | Marks `path` runnable (the executable bits on POSIX; a no-op on Windows). |
+| `filez.temp_file(prefix?)` | Creates an empty file in the OS temp directory and returns its path. Yours to `obliterate`. |
 | `filez.abs_path(path)` | The absolute, resolved form of `path`. |
 | `filez.join_path(...parts)` | Joins path components with the OS separator. |
 | `filez.dir_of(path)` / `filez.base_of(path)` / `filez.ext_of(path)` | The parent directory / filename / extension of `path`. |
@@ -211,6 +214,8 @@ platform info.
 | `computer.flex()` | Prints a summary of the OS, CPU count, RAM, and Python version. |
 | `computer.ram()` | Total system RAM, in bytes. |
 | `computer.yeet_to_void(x?)` | Accepts anything, does nothing, returns `ghost` — the `/dev/null` of functions. |
+| `computer.env(name, default?)` | An environment variable's value, or `default` (`ghost` if not given) when it is unset. |
+| `computer.exe_path()` | The path of the running executable — how `funny` finds its own sidecars. `ghost` if the OS won't say. |
 | `computer.readline(prompt?)` | Prints `prompt` (no newline) if given, then reads one line of stdin. Returns `ghost` at end of input — unlike `ask()`, which returns `""` for both that and an empty line. |
 | `computer.beep()` | Rings the terminal bell (`\a`). |
 | `computer.clear()` | Clears the terminal screen. |
@@ -239,6 +244,9 @@ network at all.
 | `sus.fields_of(x)` | A squad instance's own fields as a `groupchat` (empty for anything else). |
 | `sus.is_a(x, type_name)` | Whether `what_is_it(x) == type_name`. |
 | `sus.stack_trace()` | The current call stack as a `stash` of `yapstring`s, from wherever it's called. |
+| `sus.run_bytecode(bytes, args?)` | Runs a compiled program in a fresh, isolated VM with stdout captured. Returns `{out, flavor, message, code}`. |
+| `sus.run_program(bytes, args?, label?)` | Runs a compiled program the way the top level does: output straight through, a full diagnostic on error. Returns `{code, ms}`. |
+| `sus.new_session()` / `sus.run_in(id, bytes, args?)` / `sus.close_session(id)` | A VM kept alive between runs — a REPL. `run_in` returns `{repr, flavor, message, code}`; `repr` is the last expression's rendering. |
 | `sus.dump(x)` | Prints `x`'s `repr`-style form and returns it unchanged (like `sheesh`, under a different name for reflection-flavored code). |
 
 Note: `sus` is also the `if` keyword. As a bare `gimme sus`, it's unambiguously the stdlib module

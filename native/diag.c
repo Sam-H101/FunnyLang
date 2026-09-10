@@ -17,12 +17,29 @@ static bool is_compile_time_flavor(const char *flavor) {
            strcmp(flavor, "WhoDis") == 0 || strcmp(flavor, "ImmutableVibes") == 0;
 }
 
-DiagOptions diag_default_options(void) {
+/* FUNNY_SERIOUS plus stdout's own tty-ness -- what the options are when
+   nobody has said otherwise. */
+static DiagOptions derive_default_options(void) {
     DiagOptions opts;
     const char *serious = getenv("FUNNY_SERIOUS");
     opts.serious = serious != NULL && strcmp(serious, "1") == 0;
     opts.color = platform_stdout_is_tty();
     return opts;
+}
+
+/* The CLI parses --serious/--no-color once and installs the result here, so
+   a nested run (sus.run_program, the compiler, a REPL input) renders the
+   same way instead of each re-deriving from the environment. */
+static bool g_hasOverride = false;
+static DiagOptions g_override;
+
+void diag_set_default_options(DiagOptions opts) {
+    g_override = opts;
+    g_hasOverride = true;
+}
+
+DiagOptions diag_default_options(void) {
+    return g_hasOverride ? g_override : derive_default_options();
 }
 
 /* One source file, split into lines the way funnylang/source.py does:

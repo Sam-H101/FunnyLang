@@ -93,6 +93,24 @@ def test_checked_in_bootstrap_is_not_stale(selfhost_pak):
     )
 
 
+def test_checked_in_cli_is_not_stale():
+    """`bootstrap/cli.funnypak` is the other checked-in bundle, and since N8
+    task 6 the binary does nothing without it: `native/main.c` is a loader
+    and every subcommand lives in selfhost/cli.funny. Same policy as the
+    compiler bundle -- linking is deterministic, so this is a byte
+    comparison. See bootstrap/STAGE0.md."""
+    from funnylang.modules import build_bundle
+    from funnylang.serializer import dump_funnypak
+
+    checked_in = ROOT / "bootstrap" / "cli.funnypak"
+    assert checked_in.exists(), "bootstrap/cli.funnypak is missing; see bootstrap/STAGE0.md"
+    units, entry_canonical = build_bundle(str(ROOT / "selfhost" / "cli.funny"))
+    assert checked_in.read_bytes() == dump_funnypak(units, entry_canonical), (
+        "bootstrap/cli.funnypak is stale -- selfhost/ changed without it being regenerated. "
+        "Run: python3 -m funnylang build selfhost/cli.funny -o bootstrap/cli.funnypak"
+    )
+
+
 def test_cli_runs_a_source_file_in_one_command(native_binary, tmp_path):
     """`funny foo.funny` -- compile and run, no Python, one command. Uses the
     checked-in bootstrap bundle the way a user would, via FUNNY_TOOLCHAIN so

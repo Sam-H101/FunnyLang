@@ -1,10 +1,11 @@
 """`filez` — file I/O (PLAN.md §M6 task 4). Required by M12 self-hosting."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from ..errors import SkillIssue, TypeVibeMismatch
-from ..values import Module, NativeFn, Stash, type_name
+from ..values import GHOST, Module, NativeFn, Stash, type_name
 
 
 def _nf(name, fn, lo, hi=None):
@@ -58,6 +59,54 @@ def _append_to(vm, a):
 
     _io_wrap("append_to", path, _do)
     return len(text)
+
+
+def _append_bytes(vm, a):
+    """The raw-bytes counterpart to `append_to`. `write_bytes` already
+    existed; without this a program could create a binary but never add to
+    one, which is exactly what `funny yeet` does to the runtime stub."""
+    path = _path_str(a[0], "append_bytes")
+    data = a[1]
+    if not isinstance(data, Stash):
+        raise TypeVibeMismatch("'append_bytes' needs a stash of numbas.")
+    data = bytes(int(x) & 0xFF for x in data.items)
+
+    def _do():
+        with open(path, "ab") as f:
+            f.write(data)
+
+    _io_wrap("append_bytes", path, _do)
+    return len(data)
+
+
+def _make_executable(vm, a):
+    """Marks `path` runnable: the executable bits on POSIX, a no-op on
+    Windows, where being executable is a matter of the extension."""
+    import stat
+
+    path = _path_str(a[0], "make_executable")
+    if os.name != "nt":
+        mode = os.stat(path).st_mode
+        os.chmod(path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return GHOST
+
+
+def _temp_file(vm, a):
+    """A path in the OS temp directory that nothing else is using. The file
+    is the caller's to remove -- `obliterate` when done."""
+    import tempfile
+
+    from ..errors import TypeVibeMismatch
+    from ..values import type_name
+
+    prefix = "funny"
+    if a and a[0] is not GHOST:
+        if not isinstance(a[0], str):
+            raise TypeVibeMismatch(f"'temp_file' needs a yapstring prefix, not a {type_name(a[0])}.")
+        prefix = a[0]
+    fd, path = tempfile.mkstemp(prefix=prefix)
+    os.close(fd)
+    return path
 
 
 def _exists(vm, a):
@@ -148,6 +197,9 @@ def build() -> Module:
         "yeet_out": _nf("yeet_out", _yeet_out, 2),
         "append_to": _nf("append_to", _append_to, 2),
         "exists": _nf("exists", _exists, 1),
+        "append_bytes": _nf("append_bytes", _append_bytes, 2),
+        "make_executable": _nf("make_executable", _make_executable, 1),
+        "temp_file": _nf("temp_file", _temp_file, 0, 1),
         "is_dir": _nf("is_dir", _is_dir, 1),
         "is_file": _nf("is_file", _is_file, 1),
         "obliterate": _nf("obliterate", _obliterate, 1),

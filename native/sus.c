@@ -6,6 +6,8 @@
 
 #include "builtins.h"
 #include "chunk.h"
+#include "diag.h"
+#include "runner.h"
 #include "error.h"
 #include "gc.h"
 #include "groupchat.h"
@@ -235,6 +237,80 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
  * session lives until its owning VM is destroyed; `sus.close_session` exists
  * for a caller (the REPL's `.clear`) that wants one reclaimed sooner.
  */
+/* Runs a compiled program the way the top level runs one: output goes
+   straight to this process's stdout (not captured), an uncaught error is
+   rendered as the full §4.2 diagnostic on stderr, and the exit code comes
+   back -- 0, `dip(n)`'s own code, 69 for an uncaught ComputerExploded, else
+   1. Exactly `funny_run_bytecode`, which is what `funny run` has always
+   called; exposing it is what lets the CLI itself be FunnyLang.
+
+   Distinct from `run_bytecode` (captures output, reports the flavor instead
+   of rendering) and from `run_in` (a persistent session): this one is for a
+   caller that *is* the command line. */
+static Value m_run_program(VM *vm, Value *a, int argc) {
+    if (!(IS_OBJ(a[0]) && AS_OBJ(a[0])->type == OBJ_STASH)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'run_program' needs a stash of bytes, not a %s.",
+                        vm_type_name(a[0]));
+        return GHOST_VAL;
+    }
+    ObjStash *blob = (ObjStash *)AS_OBJ(a[0]);
+    size_t len = (size_t)blob->count;
+    uint8_t *data = (uint8_t *)malloc(len > 0 ? len : 1);
+    for (size_t i = 0; i < len; i++) {
+        Value b = blob->items[i];
+        if (!IS_INT(b) || AS_INT(b) < 0 || AS_INT(b) > 255) {
+            free(data);
+            vm_throw_native(vm, "TypeVibeMismatch", "'run_program' needs a stash of ints 0-255.");
+            return GHOST_VAL;
+        }
+        data[i] = (uint8_t)AS_INT(b);
+    }
+
+    int childArgc = 0;
+    char **childArgv = NULL;
+    if (argc > 1 && IS_OBJ(a[1]) && AS_OBJ(a[1])->type == OBJ_STASH) {
+        ObjStash *argStash = (ObjStash *)AS_OBJ(a[1]);
+        childArgc = argStash->count;
+        childArgv = (char **)malloc((size_t)(childArgc > 0 ? childArgc : 1) * sizeof(char *));
+        for (int i = 0; i < childArgc; i++) {
+            const char *s = IS_STRING(argStash->items[i]) ? AS_STRING(argStash->items[i])->chars : "";
+            size_t n = strlen(s);
+            childArgv[i] = (char *)malloc(n + 1);
+            memcpy(childArgv[i], s, n + 1);
+        }
+    }
+
+    /* An error *label* turns the diagnostic into "couldn't compile X:" plus
+       the message, which is what the compile phase wants and a plain run
+       does not; the caller picks by passing one or not. */
+    char *label = NULL;
+    if (argc > 2 && IS_STRING(a[2])) {
+        const char *s = AS_STRING(a[2])->chars;
+        size_t n = strlen(s);
+        label = (char *)malloc(n + 1);
+        memcpy(label, s, n + 1);
+    }
+
+    double runMs = 0.0;
+    RunnerOptions opts;
+    opts.diag = diag_default_options();
+    opts.errorLabel = label;
+    fflush(vm->out); /* the child writes to the real stdout; keep the order right */
+    int status = funny_run_bytecode(data, len, childArgv, childArgc, opts, &runMs);
+
+    free(data);
+    free(label);
+    for (int i = 0; i < childArgc; i++) free(childArgv[i]);
+    free(childArgv);
+
+    ObjGroupChat *out = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "code", 4)), INT_VAL(status));
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "ms", 2)), FLOAT_VAL(runMs));
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
+}
+
 static Value m_new_session(VM *vm, Value *a, int argc) {
     (void)a;
     (void)argc;
@@ -361,6 +437,7 @@ static const SusEntry SUS_FUNCTIONS[] = {
     {"stack_trace", m_stack_trace, 0, 0},
     {"dump", m_dump, 1, 1},
     {"run_bytecode", m_run_bytecode, 1, 2},
+    {"run_program", m_run_program, 1, 3},
     {"new_session", m_new_session, 0, 0},
     {"run_in", m_run_in, 2, 3},
     {"close_session", m_close_session, 1, 1},

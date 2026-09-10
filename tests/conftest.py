@@ -63,6 +63,21 @@ def native_binary(tmp_path_factory):
         pytest.skip(f"no C compiler on PATH: {exc}")
     if result.returncode != 0:
         pytest.skip(f"no C toolchain available to build the native binary:\n{result.stdout}\n{result.stderr}")
+
+    # NATIVE_PLAN.md N8 task 6: `funny` is now a loader — every subcommand
+    # lives in selfhost/cli.funny, and the binary finds that bundle *beside
+    # itself*. This fixture builds into a temp directory, so the sidecars
+    # have to come along. Built fresh from selfhost/ rather than copied out
+    # of bootstrap/, so a test never runs against a stale checked-in bundle.
+    from funnylang.modules import build_bundle
+    from funnylang.serializer import dump_funnypak
+
+    sidecars = out.parent / "bootstrap"
+    sidecars.mkdir(exist_ok=True)
+    for entry, name in ((_REPO_ROOT / "selfhost" / "cli.funny", "cli.funnypak"),
+                        (_REPO_ROOT / "selfhost" / "funnyc.funny", "funnyc.funnypak")):
+        units, entry_canonical = build_bundle(str(entry))
+        (sidecars / name).write_bytes(dump_funnypak(units, entry_canonical))
     return out
 
 

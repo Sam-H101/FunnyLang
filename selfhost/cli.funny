@@ -1,0 +1,439 @@
+// selfhost/cli.funny — NATIVE_PLAN.md N8 task 6: argument parsing and
+// subcommand dispatch, in FunnyLang. With this, `native/main.c` shrinks to
+// "find the toolchain bundle, hand it argv" and every subcommand's logic
+// lives in this directory.
+//
+//     funny [globals] run <file> [-- args...]
+//     funny [globals] build <file> -o <out>
+//     funny [globals] yeet <file.funny> [-o <out>]
+//     funny [globals] xray <file> [--tokens] [--ast] [--pak]
+//     funny [globals] fmt <file> [--check]
+//     funny [globals] test <dir>
+//     funny [globals] vibe
+//     funny [globals] <file> [-- args...]      (run is optional)
+//
+// globals: --serious --no-color --time --vibes --version
+//
+// The global flags that change *diagnostics* are handled by main.c before
+// this ever runs, because they have to apply to the runtime itself; they are
+// stripped here as well so they never reach a program's own the_args().
+//
+// Restricted to the self-hosting subset (PLAN.md §8).
+
+gimme filez
+gimme sus
+gimme yapper
+gimme rizz
+gimme clock
+gimme computer
+gimme { build_bundle, emit_funnypak } from "bundler.funny"
+gimme { emit_funnyc } from "emitter.funny"
+
+flex deadass VERSION = "1.1.0"
+flex deadass BYTECODE_VERSION = 2
+
+flex deadass VIBES_QUIPS = [
+    "cooking...", "no cap, almost there...", "vibing through the bytecode...",
+    "asking the compiler nicely...", "channeling big brain energy...",
+    "this is fine...", "deleting system32...", "consulting the elders...",
+]
+
+flex bet quip(vibes, phase) {
+    sus (vibes) {
+        yap "[" + phase + "] " + rizz.pick(VIBES_QUIPS)
+    }
+}
+
+// -- finding our own sidecars ---------------------------------------------
+// Three steps, the same order main.c used before this file existed: an
+// explicit env override, then next to the running binary, then the current
+// directory. N10 embeds the toolchain in the binary and deletes step 2 and 3.
+
+flex bet find_beside_exe(name) {
+    yo exe = computer.exe_path()
+    sus (exe == ghost) {
+        bounce ghost
+    }
+    yo candidate = filez.join_path(filez.dir_of(exe), name)
+    sus (filez.exists(candidate)) {
+        bounce candidate
+    }
+    bounce ghost
+}
+
+flex bet find_sidecar(env_name, relative_name, bare_name) {
+    yo override = computer.env(env_name)
+    sus (override != ghost && override != "") {
+        sus (filez.exists(override)) {
+            bounce override
+        }
+        bounce ghost
+    }
+    yo beside = find_beside_exe(relative_name)
+    sus (beside != ghost) {
+        bounce beside
+    }
+    sus (filez.exists(bare_name)) {
+        bounce bare_name
+    }
+    bounce ghost
+}
+
+flex bet find_toolchain() {
+    bounce find_sidecar("FUNNY_TOOLCHAIN", filez.join_path("bootstrap", "funnyc.funnypak"),
+                        filez.join_path("bootstrap", "funnyc.funnypak"))
+}
+
+flex bet stub_name() {
+    // Windows will not run a file without an extension; everywhere else the
+    // executable bit is what matters and the bare name is right.
+    sus (yapper.contains(computer.env("OS", ""), "Windows")) {
+        bounce "funnyrt.exe"
+    }
+    yo exe = computer.exe_path()
+    sus (exe != ghost && yapper.ends_with(exe, ".exe")) {
+        bounce "funnyrt.exe"
+    }
+    bounce "funnyrt"
+}
+
+// -- compiling ------------------------------------------------------------
+
+// A single-module program is emitted as a plain .funnyc carrying its own
+// *path* as the source name, not as a one-entry bundle carrying a canonical
+// key -- because that name is what the diagnostic renderer reads the source
+// snippet back from. Bundling everything would silently cost every
+// single-file program its snippet, which is most of what §4.2 is for.
+flex bet compile_to_blob(path, vibes) {
+    quip(vibes, "compiling")
+    yo bundle = build_bundle(path)
+    sus (bundle["names"].how_thicc() == 1) {
+        bounce emit_funnyc(bundle["units"][0], path)
+    }
+    bounce emit_funnypak(bundle)
+}
+
+// -- run ------------------------------------------------------------------
+
+flex bet cmd_run(path, program_args, show_time, vibes) {
+    // Source is the one case decided by extension rather than magic: there
+    // is no magic number for "FunnyLang source", and guessing from the
+    // contents would be worse than reading the name.
+    yo blob = ghost
+    yo compile_ms = 0.0
+    sus (yapper.ends_with(path, ".funny")) {
+        sus (!filez.exists(path)) {
+            yell("couldn't read '" + path + "'.")
+            bounce 1
+        }
+        yo started = clock.stopwatch()
+        sketchy {
+            blob = compile_to_blob(path, vibes)
+        } my_bad (e) {
+            yell("couldn't compile " + path + ":")
+            yell("  " + e.message)
+            bounce 1
+        }
+        compile_ms = started() * 1000.0
+    } nah {
+        sus (!filez.exists(path)) {
+            yell("couldn't read '" + path + "'.")
+            bounce 1
+        }
+        blob = filez.read_bytes(path)
+    }
+    quip(vibes, "running")
+    yo result = sus.run_program(blob, program_args)
+    sus (show_time && result["code"] == 0) {
+        yap "compiled in " + whole_ms(compile_ms) + "ms, ran in " + whole_ms(result["ms"]) + "ms. blazingly fast (probably)"
+    }
+    bounce result["code"]
+}
+
+// cli.py formats both of these with `:.0f`, which rounds rather than
+// truncating.
+flex bet whole_ms(ms) {
+    bounce to_yap(to_int(ms.round(0)))
+}
+
+// -- build ----------------------------------------------------------------
+
+flex bet cmd_build(path, out, vibes) {
+    quip(vibes, "compiling")
+    yo bundle = ghost
+    sketchy {
+        bundle = build_bundle(path)
+    } my_bad (e) {
+        yell(e.flavor + ": " + e.message)
+        bounce 1
+    }
+    quip(vibes, "linking")
+    yo names = bundle["names"]
+    yo data = ghost
+    // A single-module program asked for as a .funnyc gets one, not a bundle
+    // with one entry in it -- matching cmd_build exactly.
+    sus (names.how_thicc() == 1 && yapper.ends_with(out, ".funnyc")) {
+        data = emit_funnyc(bundle["units"][0], names[0])
+    } nah {
+        data = emit_funnypak(bundle)
+    }
+    filez.write_bytes(out, data)
+    yo plural = names.how_thicc() == 1 ? "" : "s"
+    yap "built " + out + " (" + to_yap(data.how_thicc()) + " bytes, " + to_yap(names.how_thicc()) + " module" + plural + ")."
+    bounce 0
+}
+
+// -- yeet -----------------------------------------------------------------
+// PLAN.md §5.4: copy the runtime stub, append the compiled program and a
+// 17-byte trailer, mark it executable. No PyInstaller, no per-program
+// freeze, no 8 MB.
+
+flex bet cmd_yeet(path, out, vibes) {
+    yo stub = find_sidecar("FUNNY_STUB", stub_name(), stub_name())
+    sus (stub == ghost) {
+        yell("can't find the runtime stub (funnyrt). set FUNNY_STUB, or build it.")
+        bounce 1
+    }
+    yo payload = ghost
+    sketchy {
+        payload = compile_to_blob(path, vibes)
+    } my_bad (e) {
+        yell("couldn't compile " + path + ":")
+        yell("  " + e.message)
+        bounce 1
+    }
+
+    quip(vibes, "yeeting")
+    // Create -o's parent directory rather than failing on a path whose
+    // directory doesn't exist yet (the M13 packager fix, kept).
+    yo parent = filez.dir_of(out)
+    sus (parent != "" && parent != "." && !filez.exists(parent)) {
+        filez.mkdir(parent)
+    }
+
+    yo stub_bytes = filez.read_bytes(stub)
+    filez.write_bytes(out, stub_bytes)
+    filez.append_bytes(out, payload)
+    // [ magic (9) ][ payload length, u64 big-endian (8) ] -- the same
+    // 17-byte trailer packager.py writes, unchanged.
+    yo trailer = []
+    grind b in [0x46, 0x55, 0x4E, 0x4E, 0x59, 0x59, 0x45, 0x45, 0x54] { // "FUNNYYEET"
+        trailer.yeet_in(b)
+    }
+    yo n = payload.how_thicc()
+    grind i from 0 to 8 {
+        trailer.yeet_in((n >> ((7 - i) * 8)) & 0xFF)
+    }
+    filez.append_bytes(out, trailer)
+    filez.make_executable(out)
+
+    yo total = stub_bytes.how_thicc() + n + 17
+    yap "yeeted " + one_decimal(total / (1024.0 * 1024.0)) + " MB of pure comedy into " + out + ". it runs anywhere. no python. no cap."
+    bounce 0
+}
+
+// cli.py's `:.1f`.
+flex bet one_decimal(x) {
+    yo s = to_yap(x.round(1))
+    yo dot = yapper.index_of(s, ".")
+    sus (dot < 0) {
+        bounce s + ".0"
+    }
+    sus (s.how_thicc() - dot - 1 == 0) {
+        bounce s + "0"
+    }
+    bounce s
+}
+
+// -- argv -----------------------------------------------------------------
+
+flex deadass SUBCOMMANDS = ["run", "build", "yeet", "xray", "fmt", "test", "vibe", "bootstrap"]
+
+flex bet usage() {
+    yap "FunnyLang (native) -- it compiles. somehow."
+    yap "usage: funny [--serious] [--no-color] [--time] [--vibes] [run] <file> [args...]"
+    yap "       funny build <file> -o <out>"
+    yap "       funny yeet <file.funny> [-o <out>]"
+    yap "       funny xray <file> [--tokens] [--ast] [--pak]"
+    yap "       funny fmt <file> [--check]"
+    yap "       funny test <dir>"
+    yap "       funny vibe"
+    yap "  <file> may be .funny (compiled on the spot), .funnyc, or .funnypak."
+}
+
+flex bet default_yeet_out(source) {
+    // The source path with its extension dropped (plus .exe on Windows),
+    // same default as cli.py.
+    yo dot = ghost
+    yo base = source
+    yo ext = filez.ext_of(source)
+    sus (ext != "") {
+        base = yapper.slice(source, 0, source.how_thicc() - ext.how_thicc())
+    }
+    sus (stub_name() == "funnyrt.exe") {
+        bounce base + ".exe"
+    }
+    bounce base
+}
+
+flex bet main() {
+    yo args = the_args()
+
+    // Global flags are stripped wherever they appear, so they work before or
+    // after the subcommand and never reach a program's own the_args().
+    yo show_time = cap
+    yo vibes = cap
+    yo want_version = cap
+    yo rest = []
+    grind a in args {
+        sus (a == "--serious" || a == "--no-color" || a == "--no-colour") {
+            // Handled by main.c, which has to apply them to the runtime's own
+            // renderer before anything runs. Dropped here so they don't look
+            // like a file name.
+            nvm
+        }
+        sus (a == "--time") {
+            show_time = fax
+            nvm
+        }
+        sus (a == "--vibes") {
+            vibes = fax
+            nvm
+        }
+        sus (a == "--version") {
+            want_version = fax
+            nvm
+        }
+        rest.yeet_in(a)
+    }
+
+    sus (want_version) {
+        yap "funny " + VERSION + " (bytecode v" + to_yap(BYTECODE_VERSION) + ")"
+        bounce 0
+    }
+    sus (rest.how_thicc() == 0) {
+        usage()
+        bounce 0
+    }
+
+    yo cmd = rest[0]
+    yo tail = rest.slice(1, rest.how_thicc())
+
+    sus (cmd == "vibe") {
+        bounce run_vibe()
+    }
+    sus (cmd == "test") {
+        sus (tail.how_thicc() < 1) {
+            yell("funny test needs a directory.")
+            bounce 1
+        }
+        bounce run_tool("test.funny", tail)
+    }
+    sus (cmd == "fmt") {
+        sus (tail.how_thicc() < 1) {
+            yell("funny fmt needs a file.")
+            bounce 1
+        }
+        bounce run_tool("fmtcli.funny", tail)
+    }
+    sus (cmd == "xray") {
+        sus (tail.how_thicc() < 1) {
+            yell("funny xray needs a file.")
+            bounce 1
+        }
+        bounce run_tool("xray.funny", tail)
+    }
+    sus (cmd == "build") {
+        bounce dispatch_build(tail, vibes)
+    }
+    sus (cmd == "yeet") {
+        sus (tail.how_thicc() < 1) {
+            yell("funny yeet needs a file.")
+            bounce 1
+        }
+        yo out = flag_value(tail, "-o", "--out")
+        sus (out == ghost) {
+            out = default_yeet_out(tail[0])
+        }
+        bounce cmd_yeet(tail[0], out, vibes)
+    }
+    sus (cmd == "bootstrap") {
+        yell("funny bootstrap isn't wired up in the native CLI yet (NATIVE_PLAN.md N9 task 2).")
+        bounce 1
+    }
+
+    // No subcommand: `funny <file> [args...]`.
+    yo path = cmd
+    yo program_args = tail
+    sus (cmd == "run") {
+        sus (tail.how_thicc() < 1) {
+            usage()
+            bounce 0
+        }
+        path = tail[0]
+        program_args = tail.slice(1, tail.how_thicc())
+    }
+    bounce cmd_run(path, program_args, show_time, vibes)
+}
+
+flex bet dispatch_build(tail, vibes) {
+    sus (tail.how_thicc() < 1) {
+        yell("funny build needs a file.")
+        bounce 1
+    }
+    yo out = flag_value(tail, "-o", "--out")
+    sus (out == ghost) {
+        yell("funny build needs -o <out>.")
+        bounce 1
+    }
+    bounce cmd_build(tail[0], out, vibes)
+}
+
+flex bet flag_value(args, short_name, long_name) {
+    grind i from 0 to args.how_thicc() - 1 {
+        sus (args[i] == short_name || args[i] == long_name) {
+            bounce args[i + 1]
+        }
+    }
+    bounce ghost
+}
+
+// The tools that are their own programs (xray, fmt, test, vibe) are run as
+// programs: compiled from selfhost/ and handed their own argv. That keeps
+// each one usable on its own -- `funny selfhost/xray.funny -- file` still
+// works -- rather than turning them into libraries that only this file can
+// call. N10 embeds them all in one bundle, at which point this becomes a
+// lookup rather than a compile.
+flex bet tool_path(name) {
+    yo beside = find_beside_exe(filez.join_path("selfhost", name))
+    sus (beside != ghost) {
+        bounce beside
+    }
+    yo local = filez.join_path("selfhost", name)
+    sus (filez.exists(local)) {
+        bounce local
+    }
+    bounce ghost
+}
+
+flex bet run_tool(name, tool_args) {
+    yo path = tool_path(name)
+    sus (path == ghost) {
+        yell("can't find selfhost/" + name + ". run from a tree that has one.")
+        bounce 1
+    }
+    yo blob = ghost
+    sketchy {
+        blob = emit_funnypak(build_bundle(path))
+    } my_bad (e) {
+        yell("couldn't compile " + path + ": " + e.message)
+        bounce 1
+    }
+    bounce sus.run_program(blob, tool_args)["code"]
+}
+
+flex bet run_vibe() {
+    bounce run_tool("vibe.funny", [])
+}
+
+dip(main())

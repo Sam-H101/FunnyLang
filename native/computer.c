@@ -118,6 +118,31 @@ static Value m_readline(VM *vm, Value *a, int argc) {
     return result;
 }
 
+/* An environment variable's value, or the default (`ghost` when none is
+   given) if it is unset. Added for NATIVE_PLAN.md N8 task 6: the CLI reads
+   FUNNY_TOOLCHAIN and FUNNY_STUB, and a language whose own toolchain is
+   written in it has to be able to see its own environment. */
+static Value m_env(VM *vm, Value *a, int argc) {
+    if (!IS_STRING(a[0])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'env' needs a yapstring name, not a %s.", vm_type_name(a[0]));
+        return GHOST_VAL;
+    }
+    const char *value = getenv(AS_STRING(a[0])->chars);
+    if (value == NULL) return argc > 1 ? a[1] : GHOST_VAL;
+    return OBJ_VAL(string_new(&vm->gc, value, (uint32_t)strlen(value)));
+}
+
+/* The path of the running executable, or `ghost` if the OS will not say.
+   `funny` finds its own sidecars (the compiler bundle, the yeet stub) next
+   to itself, which is the one thing a CLI cannot do from argv alone. */
+static Value m_exe_path(VM *vm, Value *a, int argc) {
+    (void)a;
+    (void)argc;
+    char buf[4096];
+    if (!platform_executable_path(buf, sizeof(buf))) return GHOST_VAL;
+    return OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)strlen(buf)));
+}
+
 static Value m_yeet_to_void(VM *vm, Value *a, int argc) {
     (void)vm;
     (void)a;
@@ -170,6 +195,8 @@ static const ComputerEntry COMPUTER_FUNCTIONS[] = {
     {"ram", m_ram, 0, 0},
     {"yeet_to_void", m_yeet_to_void, 0, 1},
     {"readline", m_readline, 0, 1},
+    {"env", m_env, 1, 2},
+    {"exe_path", m_exe_path, 0, 0},
     {"beep", m_beep, 0, 0},
     {"clear", m_clear, 0, 0},
     {"uptime", m_uptime, 0, 0},

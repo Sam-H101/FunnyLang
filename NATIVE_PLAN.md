@@ -2051,4 +2051,59 @@ gets an entry explaining what changed and why.
   called in two later ones. Plus `.xray`, `.time`'s `:.2f` shape, `dip()` not killing the host, and
   errors of both kinds leaving the session alive. Clean under `FUNNY_GC_STRESS=1` and ASan/UBSan.
   Full suite 1276 passed; MSVC `/W4 /WX` clean, REPL verified on Windows.
+- **N8 task 6 · the CLI, in FunnyLang — and `native/main.c` down from 379 lines to 118.**
+  `selfhost/cli.funny` owns argument parsing and every subcommand: `run`, `build`, `yeet`, `xray`,
+  `fmt`, `test`, `vibe`, plus the bare-file shorthand and the global flags. `main.c` now does the
+  three things that cannot be done from inside the language before the language is running — set up
+  the console, read the two diagnostic flags, find the CLI bundle and hand it argv. (Half of what is
+  left is the comment explaining why those three.)
+  **DECISION · how far to shrink, put to the project owner.** Moving `build`/`xray`/`fmt`/`test`/
+  `vibe` was mechanical; `run` and especially `yeet` were not, because `yeet` is a hundred lines of
+  reading an env var, finding the running executable, appending bytes to a binary, marking it
+  executable and making a temp file — none of which the language could express. Three options were
+  offered: add those primitives and shrink all the way, keep `yeet`'s binary surgery behind one
+  narrow C entry point, or leave `run`/`yeet` native and log a partial task. The owner chose to add
+  the primitives, so:
+  **ADDITIONS · `computer.env(name, default?)`, `computer.exe_path()`, `filez.append_bytes()`,
+  `filez.make_executable()`, `filez.temp_file(prefix?)`, `sus.run_program(bytes, args?, label?)`.**
+  None is CLI logic; each is platform I/O a systems-capable language plausibly wants anyway.
+  `append_bytes` in particular was a plain gap — `write_bytes` existed, `append_to` was text-only, so
+  a program could *create* a binary but never add to one. `run_program` is the third member of the
+  run family and the one for a caller that *is* the command line: output straight through, the full
+  §4.2 diagnostic on an uncaught error, and the process exit code back (`run_bytecode` captures and
+  reports a flavor; `run_in` is a persistent session).
+  **`computer.exe_path()` differs between implementations by nature** — the native runtime answers
+  with the `funny` binary, which is how it finds its sidecars; the Python implementation has no such
+  binary and answers with the entry script. Tested on properties (non-empty, exists, its directory is
+  a directory) rather than by byte-diff, the same exception `computer.flex()` already carries.
+  **`diag_set_default_options`.** `--serious`/`--no-color` configure the *runtime's* renderer, so
+  they cannot live in the FunnyLang half: they have to apply to a program the CLI runs in a nested
+  VM. `main.c` parses them once and installs them process-wide; `cli.funny` strips them again on its
+  side so they never reach a program's own `the_args()`.
+  **`bootstrap/cli.funnypak` is now checked in too**, with the same staleness test and a rewritten
+  `bootstrap/STAGE0.md`. This is a real change in what the binary needs: before, `funny` could run a
+  `.funnyc` on its own; now it does nothing without this bundle. `--version` is deliberately answered
+  by the C loader anyway — it is the one command someone runs when their install is broken, so it
+  must not depend on the thing that might be broken. N10 embeds both bundles and the sidecars go
+  away.
+  **Fixed · single-file programs were losing their diagnostic snippet.** The first cut compiled every
+  `funny run` through the bundler, which replaces the entry's source name with its canonical bundle
+  key — so `diag_render_error` could no longer read the file back and every one-file program silently
+  lost its source snippet and caret, which is most of what §4.2 is for. A single-module program is
+  now emitted as a plain `.funnyc` carrying its own path; only a genuinely multi-module program gets
+  a bundle.
+  **A process note worth keeping.** Three separate times this milestone, a shell check of the form
+  `./build.sh 2>&1 | grep -E "error" ; echo built` reported success for a build that had actually
+  failed, and the stale binary then produced a baffling wrong answer — `funny` dispatching every
+  subcommand to `cmd_run` because the *old* `main.c` was still linked. `build.sh` has `set -e` and
+  does exit non-zero; the `;` threw the status away. Checks now use `&&`.
+  Verified: every subcommand run through both CLIs and diffed — `run` (source, `.funnyc`,
+  `.funnypak`, multi-module), the bare-file shorthand, `build` (bytes *and* message), `xray` in all
+  three modes, `fmt --check`, `test` over `tests/lang` and `examples` — **0 mismatches**, plus the
+  uncaught-error diagnostic byte-identical on stderr, `dip`'s exit code, `computer.explode()`'s 69,
+  and a `yeet`ed binary that runs. 27 tests in `tests/native/test_native_cli.py`. Full suite 1305
+  passed; MSVC `/W4 /WX` clean, with `run`/`build`/`xray`/`fmt`/`test`/`vibe`/`yeet` all exercised on
+  Windows, including a yeeted `.exe` that runs.
+  **N8 acceptance:** `run/build/xray/fmt/test/vibe/yeet` all work with the C binary and match the
+  Python CLI. `bootstrap` is N9 task 2 and reports itself as not yet wired up rather than pretending.
 

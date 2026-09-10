@@ -104,6 +104,65 @@ _SESSIONS: dict[int, object] = {}
 _NEXT_SESSION = [0]
 
 
+def _run_program(vm, a):
+    """Runs a compiled program the way the top level runs one.
+
+    Output goes straight to this process's stdout (not captured), an uncaught
+    error is rendered as the full §4.2 diagnostic on stderr, and the exit code
+    comes back -- 0, `dip(n)`'s own code, 69 for an uncaught
+    ComputerExploded, else 1. Exactly what `cmd_run` does after the compile,
+    which is what lets the CLI itself be FunnyLang (NATIVE_PLAN.md N8 task 6).
+
+    Distinct from `run_bytecode` (captures output, reports the flavor instead
+    of rendering) and from `run_in` (a persistent session): this one is for a
+    caller that *is* the command line.
+    """
+    import sys
+    import time
+
+    from ..errors import ComputerExploded, FunnyError, render_diagnostic
+    from ..modules import CanonicalSource, make_pak_module_loader
+    from ..serializer import load_funnyc, load_funnypak
+    from ..vm import VM
+    from . import install_stdlib
+
+    blob = a[0]
+    if not isinstance(blob, Stash):
+        raise TypeVibeMismatch(f"'run_program' needs a stash of bytes, not a {type_name(blob)}.")
+    try:
+        data = bytes(bytearray(blob.items))
+    except (TypeError, ValueError):
+        raise TypeVibeMismatch("'run_program' needs a stash of ints 0-255.") from None
+
+    label = a[2] if len(a) > 2 and isinstance(a[2], str) else None
+
+    child = VM()
+    install_stdlib(child)
+    if len(a) > 1 and isinstance(a[1], Stash):
+        child.program_args = [str(x) for x in a[1].items]
+
+    code = 0
+    start = time.perf_counter()
+    try:
+        if data[:9] == b"FUNNYPAK\x00":
+            modules, entry_name = load_funnypak(data)
+            child.module_loader = make_pak_module_loader(modules, entry_name)
+            child.interpret(modules[entry_name], CanonicalSource(entry_name))
+        else:
+            child.interpret(load_funnyc(data), None)
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 0
+    except FunnyError as err:
+        if label is not None:
+            print(f"{label}\n  {err.message}", file=sys.stderr)
+            code = 1
+        else:
+            print(render_diagnostic(err), file=sys.stderr, end="")
+            code = 69 if isinstance(err, ComputerExploded) else 1
+    ms = (time.perf_counter() - start) * 1000.0
+    return GroupChat({"code": code, "ms": ms})
+
+
 def _new_session(vm, a):
     import io  # noqa: F401  (parity with the C implementation's own imports)
 
@@ -181,6 +240,7 @@ def build() -> Module:
         "stack_trace": _nf("stack_trace", _stack_trace, 0),
         "dump": _nf("dump", _dump, 1),
         "run_bytecode": _nf("run_bytecode", _run_bytecode, 1, 2),
+        "run_program": _nf("run_program", _run_program, 1, 3),
         "new_session": _nf("new_session", _new_session, 0),
         "run_in": _nf("run_in", _run_in, 2, 3),
         "close_session": _nf("close_session", _close_session, 1),

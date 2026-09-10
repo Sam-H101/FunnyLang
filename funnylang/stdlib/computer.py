@@ -7,6 +7,7 @@ import os
 import platform
 import sys
 import time
+from pathlib import Path
 
 from ..errors import ComputerExploded, SkillIssue
 from ..values import GHOST, Module, NativeFn, to_display
@@ -121,6 +122,35 @@ def _readline(vm, a):
     return line
 
 
+def _env(vm, a):
+    """An environment variable's value, or the default (`ghost` when none is
+    given) if it is unset. Added for NATIVE_PLAN.md N8 task 6: the CLI reads
+    FUNNY_TOOLCHAIN and FUNNY_STUB, and a language whose own toolchain is
+    written in it has to be able to see its own environment."""
+    from ..errors import TypeVibeMismatch
+    from ..values import type_name
+
+    if not isinstance(a[0], str):
+        raise TypeVibeMismatch(f"'env' needs a yapstring name, not a {type_name(a[0])}.")
+    value = os.environ.get(a[0])
+    if value is None:
+        return a[1] if len(a) > 1 else GHOST
+    return value
+
+
+def _exe_path(vm, a):
+    """The path of the running executable, or `ghost` if it cannot be
+    determined. The native runtime answers with the `funny` binary itself,
+    which is how it finds its own sidecars; under this implementation there
+    is no such binary, so the closest true answer is the entry script
+    Python was pointed at. Documented as differing, since a program that
+    prints it cannot be byte-compared across the two."""
+    path = sys.argv[0] if sys.argv and sys.argv[0] else None
+    if not path:
+        return GHOST
+    return str(Path(path).resolve())
+
+
 def _yeet_to_void(vm, a):
     return GHOST
 
@@ -153,6 +183,8 @@ def build() -> Module:
         "ram": _nf("ram", _ram, 0),
         "yeet_to_void": _nf("yeet_to_void", _yeet_to_void, 0, 1),
         "readline": _nf("readline", _readline, 0, 1),
+        "env": _nf("env", _env, 1, 2),
+        "exe_path": _nf("exe_path", _exe_path, 0),
         "beep": _nf("beep", _beep, 0),
         "clear": _nf("clear", _clear, 0),
         "uptime": _nf("uptime", _uptime, 0),

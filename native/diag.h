@@ -26,6 +26,12 @@ typedef struct {
    FUNNY_SERIOUS=1, `color` on only when stdout is a terminal. */
 DiagOptions diag_default_options(void);
 
+/* Overrides what diag_default_options() returns for the rest of the process.
+   The CLI parses --serious/--no-color once and calls this, so a nested run
+   (sus.run_program, the compiler, a REPL input) renders the same way instead
+   of each re-deriving from the environment and its own isatty. */
+void diag_set_default_options(DiagOptions opts);
+
 /* Writes the rendered diagnostic (trailing newline included) to `out`.
  *
  * The source snippet is read from the file `err` names, when that file is
