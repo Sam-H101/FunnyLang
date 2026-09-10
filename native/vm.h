@@ -154,6 +154,15 @@ struct VM {
     int loadingCount;
     int loadingCapacity;
 
+    /* The `interns` worker this VM is running as, or NULL for a VM that is
+       not one (the main program, a `sus` child, a REPL session). It is here
+       rather than in thread-local storage because the VM already *is* the
+       per-execution context, and a `_Thread_local` would be a second one --
+       with the added problem that MSVC's support for the C11 spelling is not
+       something to depend on. `interns.assignment()` and `interns.deliver()`
+       read it to find which worker they belong to. */
+    void *workerContext;
+
     /* Where the dispatch loop currently is, refreshed at the top of every
        iteration -- vm_throw() (callable from deep inside an arithmetic
        helper, not just the dispatch switch itself) needs this to build a

@@ -1,0 +1,56 @@
+// ASYNC_PLAN.md A1: a handle is a numba, and every way of misusing one has
+// its own answer rather than a crash.
+//
+// The interesting case is the last one. A numba is one of the things that
+// *can* cross to a worker, so an intern can be handed a colleague's ticket --
+// and two threads joining the same thread is undefined behaviour, not a race
+// the collector would ever catch. Handles are therefore numbered per hiring
+// VM, so a stolen ticket names the thief's own intern (or nobody) rather than
+// somebody else's thread, and the hazard cannot be reached at all.
+gimme interns
+gimme filez
+
+deadass ECHO = "gimme interns\ninterns.deliver(interns.assignment())\n"
+yo src = filez.temp_file() + ".funny"
+filez.yeet_out(src, ECHO)
+
+flex bet oopsie(thunk) {
+    sketchy {
+        thunk()
+        yap "NO ERROR"
+    } my_bad (e) {
+        yap e.flavor + ": " + e.message
+    }
+}
+
+// Never hired.
+oopsie(lowkey () => interns.wait_up(999))
+
+// Hired, waited on, waited on again.
+yo h = interns.hire(src, "once")
+yap interns.wait_up(h)
+oopsie(lowkey () => interns.wait_up(h))
+
+// Not a handle at all.
+oopsie(lowkey () => interns.wait_up("no"))
+oopsie(lowkey () => interns.hire(42))
+oopsie(lowkey () => interns.everybody("not a stash"))
+oopsie(lowkey () => interns.everybody([1, "two"]))
+
+// The worker protocol only means anything inside a worker.
+oopsie(lowkey () => interns.assignment())
+oopsie(lowkey () => interns.deliver(1))
+
+// Somebody else's intern. The parent hires two: one to be waited on, and one
+// that is handed the other's number and tries to collect on it.
+deadass THIEF = "gimme interns\nsketchy {\n    interns.wait_up(interns.assignment())\n    interns.deliver(\"stole it\")\n} my_bad (e) {\n    interns.deliver(e.flavor + \": \" + e.message)\n}\n"
+yo thief_src = filez.temp_file() + ".funny"
+filez.yeet_out(thief_src, THIEF)
+
+yo victim = interns.hire(src, "mine")
+yo thief = interns.hire(thief_src, victim)
+yap interns.wait_up(thief)
+yap interns.wait_up(victim)
+
+filez.obliterate(src)
+filez.obliterate(thief_src)

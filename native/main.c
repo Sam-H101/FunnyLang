@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "diag.h"
+#include "interns.h"
 #include "platform.h"
 #include "runner.h"
 #include "sus.h"
@@ -108,5 +109,10 @@ int main(int argc, char **argv) {
     RunnerOptions opts = {diag, NULL, NULL, NULL};
     int status = funny_run_bytecode(cliBytes, cliLen, argv + 1, argc - 1, opts, NULL);
     free(owned);
+    /* Interns are joined as each VM is destroyed; this is the last sweep --
+       the compiled-worker cache, and the registry itself. Nothing is killed:
+       ASYNC_PLAN.md §3.4 -- a thread stopped mid-allocation leaves a heap
+       nothing can safely free, so `funny` waits for its workers. */
+    interns_shutdown();
     return status;
 }

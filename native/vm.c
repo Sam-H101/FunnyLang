@@ -25,6 +25,7 @@
 #include "builtins.h"
 #include "error.h"
 #include "groupchat.h"
+#include "interns.h"
 #include "iterator.h"
 #include "mafs.h"
 #include "modules.h"
@@ -619,6 +620,7 @@ void vm_init(VM *vm) {
     vm->currentModuleName = NULL;
     vm->out = NULL;
     vm->err = stderr;
+    vm->workerContext = NULL;
     vm->loadingModules = NULL;
     vm->loadingCount = 0;
     vm->loadingCapacity = 0;
@@ -675,6 +677,16 @@ int vm_loading_count(const VM *vm) {
 }
 
 void vm_destroy(VM *vm) {
+    /* Interns this VM hired and never waited on. Their handles are numbas
+       that only mean anything to this VM, so they die with it -- and the
+       thread has to be joined before anything else here runs, because a
+       worker still running is still hiring, still allocating, and still
+       writing into a registry entry this teardown would otherwise free.
+       Here rather than at each of the half-dozen sites that destroy a VM
+       (the runner, sus.run_bytecode, a REPL session, a worker finishing its
+       own program) so that none of them can forget. */
+    interns_join_owned_by(vm);
+
     for (int i = 0; i < vm->loadingCount; i++) free(vm->loadingModules[i]);
     free(vm->loadingModules);
     vm->loadingModules = NULL;

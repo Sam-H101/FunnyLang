@@ -1,0 +1,11 @@
+OutOfPocket: you've got no intern #999.
+once
+OutOfPocket: you already waited on intern #1.
+TypeVibeMismatch: 'wait_up' needs an intern, not a yapstring.
+TypeVibeMismatch: 'hire' needs the path to a .funny file, not a numba.
+TypeVibeMismatch: 'everybody' needs a stash of interns, not a yapstring.
+TypeVibeMismatch: 'everybody' needs a stash of interns; #1 is a yapstring.
+OutOfPocket: 'assignment' only means something inside an intern's own script.
+OutOfPocket: 'deliver' only means something inside an intern's own script.
+OutOfPocket: you've got no intern #2.
+mine

@@ -1,0 +1,58 @@
+// ASYNC_PLAN.md §3.3: the deep copy is a language-visible restriction, and
+// the error has to say so at the place that tried it. A closure references
+// upvalues and a module's globals; a squad instance references its class; a
+// `pointa` addresses a cell in one specific heap. None of those has a
+// meaningful second copy on the other side, so none of them crosses.
+//
+// A structure that contains itself is rejected too, rather than followed --
+// the display path already learned this lesson and prints `[...]`, but there
+// is no honest `[...]` to hand another heap.
+gimme interns
+gimme filez
+
+deadass ECHO = "gimme interns\ninterns.deliver(interns.assignment())\n"
+yo src = filez.temp_file() + ".funny"
+filez.yeet_out(src, ECHO)
+
+flex bet refused(v) {
+    sketchy {
+        interns.hire(src, v)
+        yap "NOT REFUSED"
+    } my_bad (e) {
+        yap e.flavor + ": " + e.message
+    }
+}
+
+squad Dog {
+    spawn(name) {
+        me.name = name
+    }
+}
+
+yo cell = 1
+
+refused(lowkey (x) => x)
+refused(Dog("rex"))
+refused(Dog)
+refused(&cell)
+
+yo cycle = [1, 2]
+cycle.yeet_in(cycle)
+refused(cycle)
+
+yo nested = {"a": [1]}
+nested["a"].yeet_in(nested)
+refused(nested)
+
+// The same restriction applies on the way *back*: a worker cannot deliver
+// what it cannot copy either.
+yo src2 = filez.temp_file() + ".funny"
+filez.yeet_out(src2, "gimme interns\ninterns.deliver(lowkey () => 1)\n")
+sketchy {
+    interns.wait_up(interns.hire(src2, ghost))
+} my_bad (e) {
+    yap "delivered back: " + e.flavor
+}
+
+filez.obliterate(src)
+filez.obliterate(src2)

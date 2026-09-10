@@ -318,13 +318,13 @@ signal available.
 ## 8. Definition of Done
 
 - [ ] `async_ngl` and `await_fr` are out of `RESERVED_FUTURE` and do what their names say.
-- [ ] `interns` runs real OS threads; a worker's crash or error surfaces in the parent as a normal
-      FunnyLang error, never as a runtime abort.
+- [x] `interns` runs real OS threads; a worker's crash or error surfaces in the parent as a normal
+      FunnyLang error, never as a runtime abort. **(A1)**
 - [ ] The existing 376 goldens pass unchanged, under `FUNNY_GC_STRESS=50` and ASan.
 - [ ] New goldens for every hazard in §3, not just every feature in §6.
-- [ ] TSan clean on the worker tests.
+- [x] TSan clean on the worker tests. **(A1)**
 - [ ] `await_fr` inside a native callback raises a clear error naming the callback.
-- [ ] A value that cannot cross the worker boundary is rejected with a message that says why.
+- [x] A value that cannot cross the worker boundary is rejected with a message that says why. **(A1)**
 - [ ] `CantWaitRightNow` and `LeftOnRead` are the *only* additions to §4.1's flavor taxonomy.
 - [ ] MSVC `/W4 /WX`, gcc and clang `-Wall -Wextra -Werror` clean; the corpus green on Linux,
       Windows and macOS.
@@ -379,3 +379,63 @@ spec contradiction, and every wrong turn worth not repeating.
 
   The existing corpus is untouched: 376/376 and the bootstrap fixed point on Linux (gcc, clang) and
   Windows (MSVC `/W4 /WX`).
+
+- **A1 · `interns`: workers, no syntax. Done.** `gimme interns` gives `hire`, `wait_up`,
+  `everybody`, `headcount`, and the two halves of the worker protocol, `assignment` and `deliver`.
+  Each hire is a real OS thread running a fresh `VM` with its own heap and its own collector --
+  `sus.run_bytecode` with the call made asynchronous, exactly as §2.3 argued. Values are deep-copied
+  in and out through `native/portable.{h,c}`; nothing is shared, so no lock protects any FunnyLang
+  value anywhere.
+
+  **`hire` takes a path and an argument, and the worker is a *program*, not a function.** §3.3 says
+  "a module path and a function name"; §1 and §2.4's table both say `interns.hire(path, arg)`, and
+  the table is what shipped. Naming a function would have meant inventing a second way to enter
+  FunnyLang code -- a top-level script has no `bounce` -- so the worker reads its input with
+  `interns.assignment()` and returns through `interns.deliver(v)`:
+
+  ```funny
+  gimme interns
+  yo n = interns.assignment()
+  interns.deliver(n * 2)
+  ```
+
+  **Choices worth recording:**
+  - **A worker's `yap` is captured and replayed at the `wait_up`, not printed as it happens.** Two
+    workers writing to one stream interleave by luck, and §5 rules out a golden that depends on
+    luck. Replaying at the join makes the output appear in the order the program *waited*, which is
+    a fixed order and the one the reader already has in front of them. `yell` gets the same
+    treatment, to `vm->err`.
+  - **Handles are numbered per hiring VM, not per process.** A numba is one of the things that *can*
+    cross to a worker, so an intern can be handed a colleague's ticket -- and two threads joining
+    the same thread is undefined behaviour rather than a race anything would catch. Per-VM numbering
+    makes a stolen ticket name the thief's *own* intern (or nobody), so the hazard cannot be
+    reached, and the check is structural instead of a rule to remember. It also makes `#1` mean
+    `#1`: a golden that prints a handle would otherwise depend on how many interns every other
+    golden in the same `funny test` process had hired first.
+  - **`vm_destroy` joins the interns that VM hired.** Not the runner, not `sus.run_bytecode`, not
+    the REPL-session teardown, not the worker finishing its own program -- all four destroy a VM,
+    and putting the join at the one place they have in common means none of them can forget it.
+    A worker that walks off without waiting on its own hires therefore neither hangs nor leaks.
+  - **Compiled worker bundles are cached by path.** Hiring the same script twice -- which is what
+    §1's example does -- otherwise runs the whole self-hosted toolchain twice for a byte-identical
+    answer. A `.funnyc` or `.funnypak` hired by path is *not* cached: reading a file is cheap, and
+    that is the one case where a stale copy is plausible.
+  - **A `.funnyc`/`.funnypak` path is loaded directly, with no compiler involved.** That is what
+    lets a yeeted binary hire an intern at all: `funnyrt` deliberately contains no compiler, so
+    hiring from `.funny` source there is an `ImportSkillIssue` that says exactly that.
+  - **`sus.c` gained `sus_get_toolchain`** -- the setter existed, the getter did not. Compiling a
+    worker means running `funny build` in a child VM, because the compiler is written in FunnyLang.
+  - **`VM` gained a `void *workerContext`** rather than a `_Thread_local`. The VM already *is* the
+    per-execution context, and MSVC's support for the C11 spelling is not something to depend on.
+  - **No new error flavors.** A value that cannot cross is a `TypeVibeMismatch` naming the type, and
+    an error raised inside a worker is re-raised in the parent **with its own original flavor**, per
+    §2.4. `CantWaitRightNow` and `LeftOnRead` belong to A4 and A5 and are not added until something
+    raises them.
+
+  **Acceptance, met:** six new goldens under `tests/lang/interns/` -- the round trip for every type
+  that may cross plus the proof that it is a copy; a worker's error surfacing with its flavor
+  intact, alongside its output; every value that cannot cross (closure, instance, squad, `pointa`,
+  self-containing stash, self-containing groupchat) and the same restriction on the way back; the
+  gather; every way to misuse a handle; and interns hiring interns. 382/382 on Linux (gcc) and
+  Windows (MSVC `/W4 /WX`), 382/382 under `FUNNY_GC_STRESS=50`, and the interns corpus clean under
+  ASan+UBSan **and under ThreadSanitizer** (`build/a1/sanitize.sh`).

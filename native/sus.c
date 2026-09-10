@@ -128,6 +128,11 @@ void sus_set_toolchain(const uint8_t *bytes, size_t len) {
     g_toolchainLen = len;
 }
 
+const uint8_t *sus_get_toolchain(size_t *outLen) {
+    *outLen = g_toolchainLen;
+    return g_toolchain;
+}
+
 static Value m_toolchain(VM *vm, Value *a, int argc) {
     (void)a;
     (void)argc;

@@ -1,0 +1,46 @@
+// ASYNC_PLAN.md A1: what crosses to a worker and back.
+//
+// An intern has its own VM, its own heap and its own collector, so nothing is
+// shared -- every value is deep-copied on the way in and on the way out
+// (§2.2, §3.3). This is the round trip for each type that is allowed to make
+// the journey, plus the proof that it really is a copy.
+//
+// The worker script is written to a temp file rather than kept beside this
+// one, so the golden does not depend on the working directory and there is no
+// second `.funny` under tests/lang/ for the runner to trip over.
+gimme interns
+gimme filez
+gimme sus
+
+deadass ECHO = "gimme interns\ninterns.deliver(interns.assignment())\n"
+
+yo src = filez.temp_file() + ".funny"
+filez.yeet_out(src, ECHO)
+
+flex bet round_trip(v) {
+    bounce interns.wait_up(interns.hire(src, v))
+}
+
+yap to_yap(round_trip(ghost))
+yap round_trip(fax)
+yap round_trip(cap)
+yap round_trip(42)
+yap round_trip(-7)
+yap round_trip(3.5)
+yap round_trip("yo sup")
+yap round_trip([1, "two", [3]])
+yap round_trip({"a": 1, "b": [2, 3]})
+yap round_trip(2 ** 100)
+yap sus.type_of(round_trip(2 ** 100))
+
+// Hiring with no argument at all: the assignment is ghost.
+yap to_yap(interns.wait_up(interns.hire(src)))
+
+// It is a copy, not a share. Changing the original afterwards cannot reach
+// what the intern was given, and what comes back is a fresh structure.
+yo original = [1, 2]
+yo back = round_trip(original)
+original.yeet_in(3)
+yap to_yap(original) + " vs " + to_yap(back)
+
+filez.obliterate(src)

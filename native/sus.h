@@ -25,4 +25,10 @@ Value sus_build(struct VM *vm);
    `ghost` until this is called, which is the honest answer in the stub. */
 void sus_set_toolchain(const uint8_t *bytes, size_t len);
 
+/* The same bytes, for a caller in C rather than in FunnyLang: `interns`
+   compiles a worker's `.funny` source by running the toolchain, the way the
+   command line does. NULL (and *outLen 0) when none was registered, which is
+   the stub's situation. */
+const uint8_t *sus_get_toolchain(size_t *outLen);
+
 #endif /* FUNNY_SUS_H */
