@@ -104,8 +104,79 @@ static bool ci_contains(const char *haystack, const char *needle) {
 }
 
 #ifdef _WIN32
+/* -- UTF-8 <-> UTF-16 at the Windows filesystem boundary -------------------
+ *
+ * Paths are UTF-8 `char *` everywhere else in the runtime, because that is
+ * the only string representation FunnyLang has. Windows' `A` entry points
+ * interpret those bytes in the active ANSI codepage, so a name with a
+ * character that codepage cannot represent -- an accent, an emoji, any CJK --
+ * addresses a different file, or none. The `W` entry points take UTF-16 and
+ * have no such limit, so the conversion happens here, once, and nothing
+ * outside this file has to know.
+ *
+ * Returns a malloc'd wide string the caller frees, or NULL if the input is
+ * not valid UTF-8 (in which case the caller reports the operation as failing,
+ * which is the truth: there is no file by that name).
+ */
+static wchar_t *widen(const char *path) {
+    if (path == NULL) return NULL;
+    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    wchar_t *out = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
+    if (out == NULL) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, out, n) <= 0) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
+/* The other direction, for a name read back out of a directory listing. */
+static char *narrow(const wchar_t *w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    if (n <= 0) return NULL;
+    char *out = (char *)malloc((size_t)n);
+    if (out == NULL) return NULL;
+    if (WideCharToMultiByte(CP_UTF8, 0, w, -1, out, n, NULL, NULL) <= 0) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
+/* fopen with a UTF-8 path. _wfopen is the whole point; the mode is ASCII so
+   a fixed-size widening buffer is enough for it. */
+static FILE *fopen_utf8(const char *path, const char *mode) {
+    wchar_t *wpath = widen(path);
+    if (wpath == NULL) {
+        errno = ENOENT;
+        return NULL;
+    }
+    wchar_t wmode[8];
+    size_t i = 0;
+    for (; mode[i] != '\0' && i < (sizeof wmode / sizeof wmode[0]) - 1; i++) wmode[i] = (wchar_t)mode[i];
+    wmode[i] = L'\0';
+    FILE *f = _wfopen(wpath, wmode);
+    free(wpath);
+    return f;
+}
+
+static DWORD attrs_utf8(const char *path) {
+    wchar_t *wpath = widen(path);
+    if (wpath == NULL) return INVALID_FILE_ATTRIBUTES;
+    DWORD attrs = GetFileAttributesW(wpath);
+    free(wpath);
+    return attrs;
+}
+#else
+/* Everywhere else a path is already UTF-8 bytes and the C library takes it
+   as-is, so these are the identity. */
+#define fopen_utf8(path, mode) fopen((path), (mode))
+#endif
+
+#ifdef _WIN32
 static bool path_is_dir(const char *path) {
-    DWORD attrs = GetFileAttributesA(path);
+    DWORD attrs = attrs_utf8(path);
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
@@ -113,7 +184,7 @@ static bool path_is_dir(const char *path) {
    "exists and isn't a directory" is the closest equivalent -- which is what
    Python itself reports for every ordinary file on this platform. */
 static bool path_is_file(const char *path) {
-    DWORD attrs = GetFileAttributesA(path);
+    DWORD attrs = attrs_utf8(path);
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 #else
@@ -142,7 +213,7 @@ bool platform_read_file(const char *path, unsigned char **out_data, size_t *out_
         set_errbuf(errbuf, errbuf_len, EISDIR);
         return false;
     }
-    FILE *f = fopen(path, "rb");
+    FILE *f = fopen_utf8(path, "rb");
     if (!f) {
         set_errbuf(errbuf, errbuf_len, errno);
         return false;
@@ -184,7 +255,7 @@ bool platform_read_file(const char *path, unsigned char **out_data, size_t *out_
 
 static bool write_impl(const char *path, const unsigned char *data, size_t len, const char *mode, char *errbuf,
                         size_t errbuf_len) {
-    FILE *f = fopen(path, mode);
+    FILE *f = fopen_utf8(path, mode);
     if (!f) {
         set_errbuf(errbuf, errbuf_len, errno);
         return false;
@@ -213,14 +284,20 @@ bool platform_append_file(const char *path, const unsigned char *data, size_t le
 
 #ifdef _WIN32
 
-bool platform_path_exists(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
+bool platform_path_exists(const char *path) { return attrs_utf8(path) != INVALID_FILE_ATTRIBUTES; }
 
 bool platform_remove_path(const char *path, char *errbuf, size_t errbuf_len) {
     if (!platform_path_exists(path)) {
         set_errbuf_win32(errbuf, errbuf_len, ERROR_FILE_NOT_FOUND);
         return false;
     }
-    BOOL ok = path_is_dir(path) ? RemoveDirectoryA(path) : DeleteFileA(path);
+    wchar_t *wpath = widen(path);
+    if (wpath == NULL) {
+        set_errbuf(errbuf, errbuf_len, ENOENT);
+        return false;
+    }
+    BOOL ok = path_is_dir(path) ? RemoveDirectoryW(wpath) : DeleteFileW(wpath);
+    free(wpath);
     if (!ok) {
         set_errbuf_win32(errbuf, errbuf_len, GetLastError());
         return false;
@@ -229,7 +306,14 @@ bool platform_remove_path(const char *path, char *errbuf, size_t errbuf_len) {
 }
 
 static bool make_one_dir(const char *path, char *errbuf, size_t errbuf_len) {
-    if (_mkdir(path) != 0) {
+    wchar_t *wpath = widen(path);
+    if (wpath == NULL) {
+        set_errbuf(errbuf, errbuf_len, ENOENT);
+        return false;
+    }
+    int rc = _wmkdir(wpath);
+    free(wpath);
+    if (rc != 0) {
         if (errno == EEXIST) {
             if (!path_is_dir(path)) {
                 set_errbuf(errbuf, errbuf_len, EEXIST);
@@ -347,8 +431,14 @@ static int cmp_cstr(const void *a, const void *b) {
 bool platform_list_dir(const char *path, char ***out_names, size_t *out_count, char *errbuf, size_t errbuf_len) {
     char pattern[4100];
     snprintf(pattern, sizeof(pattern), "%s/*", path);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
+    wchar_t *wpattern = widen(pattern);
+    if (wpattern == NULL) {
+        set_errbuf(errbuf, errbuf_len, ENOENT);
+        return false;
+    }
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(wpattern, &fd);
+    free(wpattern);
     if (h == INVALID_HANDLE_VALUE) {
         set_errbuf_win32(errbuf, errbuf_len, GetLastError());
         return false;
@@ -356,14 +446,21 @@ bool platform_list_dir(const char *path, char ***out_names, size_t *out_count, c
     size_t cap = 16, count = 0;
     char **names = (char **)malloc(cap * sizeof(char *));
     do {
-        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        /* Back to UTF-8 immediately: every caller above this one, and the
+           language itself, only knows UTF-8 `char *`. */
+        char *name = narrow(fd.cFileName);
+        if (name == NULL) continue;
         if (count == cap) {
             cap *= 2;
             names = (char **)realloc(names, cap * sizeof(char *));
         }
-        names[count++] = _strdup(fd.cFileName);
-    } while (FindNextFileA(h, &fd));
+        names[count++] = name;
+    } while (FindNextFileW(h, &fd));
     FindClose(h);
+    /* Sorted by UTF-8 bytes, which is what the POSIX branch does too and what
+       funnylang's own `sorted()` on a list of str produces for the ASCII
+       names that make up every real corpus. */
     qsort(names, count, sizeof(char *), cmp_cstr);
     *out_names = names;
     *out_count = count;
@@ -372,9 +469,26 @@ bool platform_list_dir(const char *path, char ***out_names, size_t *out_count, c
 
 bool platform_abs_path(const char *path, char *out, size_t out_len, char *errbuf, size_t errbuf_len) {
     char resolved[4096];
-    if (_fullpath(resolved, path, sizeof(resolved)) == NULL) {
-        set_errbuf(errbuf, errbuf_len, errno);
-        return false;
+    {
+        wchar_t *wpath = widen(path);
+        if (wpath == NULL) {
+            set_errbuf(errbuf, errbuf_len, ENOENT);
+            return false;
+        }
+        wchar_t wresolved[4096];
+        wchar_t *ok = _wfullpath(wresolved, wpath, sizeof(wresolved) / sizeof(wresolved[0]));
+        free(wpath);
+        if (ok == NULL) {
+            set_errbuf(errbuf, errbuf_len, errno);
+            return false;
+        }
+        char *utf8 = narrow(wresolved);
+        if (utf8 == NULL) {
+            set_errbuf(errbuf, errbuf_len, EILSEQ);
+            return false;
+        }
+        snprintf(resolved, sizeof(resolved), "%s", utf8);
+        free(utf8);
     }
     /* _fullpath uses backslashes; normalize to '/' so the rest of the
        runtime's own path-string functions (filez.c) stay POSIX-style --

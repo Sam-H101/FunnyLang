@@ -37,12 +37,14 @@ flex deadass OPCODES = {
     "BUILD_GROUPCHAT": 57, "BUILD_STRING": 58, "YAP": 59, "CHUCK": 60,
     "TRY_PUSH": 61, "TRY_POP": 62, "SQUAD": 63, "METHOD": 64, "INHERIT": 65,
     "IMPORT": 66, "EXPORT": 67, "ITER_NEW": 68, "ITER_NEXT": 69, "HALT": 70,
-    // 71/72 (JUMP_LONG/LOOP_LONG) are never emitted by this compiler (M11 --
-    // only a relaxation pass for functions too big to fit a u16 jump offset
-    // needs them, and this compiler has no such pass), so they're absent
-    // here on purpose, same as before M15. 73-79 are pointers (PLAN.md
-    // §3.10, §16) -- selfhost must be able to *compile* them even though
-    // §8 forbids using them in its own source.
+    // 71/72 are emitted by the relaxation pass in chunk_relax, for a function
+    // whose body outgrows a u16 jump offset. They were absent here for as
+    // long as this compiler had no such pass -- which meant it could not
+    // compile a function body over 64 KB of bytecode at all, where the
+    // reference could. 73-79 are pointers (PLAN.md §3.10, §16) -- selfhost
+    // must be able to *compile* them even though §8 forbids using them in
+    // its own source.
+    "JUMP_LONG": 71, "LOOP_LONG": 72,
     "PTR_LOCAL": 73, "PTR_GLOBAL": 74, "PTR_UPVAL": 75, "PTR_INDEX": 76,
     "PTR_PROP": 77, "DEREF": 78, "SET_DEREF": 79,
 }
@@ -60,6 +62,10 @@ flex deadass OPERAND_WIDTHS = {
     "LT": [], "LE": [], "GT": [], "GE": [], "IN": [], "JUMP": [2],
     "JUMP_IF_FALSE": [2], "JUMP_IF_TRUE": [2], "JUMP_IF_FALSE_KEEP": [2],
     "JUMP_IF_TRUE_KEEP": [2], "JUMP_IF_GHOST_KEEP": [2], "LOOP": [2],
+    // u32 offsets: the wide forms the relaxation pass emits. Needed here as
+    // well as in OPCODES because the disassembler decodes operands from this
+    // table, so `funny xray` on a relaxed function reads them correctly.
+    "JUMP_LONG": [4], "LOOP_LONG": [4],
     "CALL": [1], "INVOKE": [2, 1], "INVOKE_OG": [2, 1], "RETURN": [],
     "BUILD_STASH": [2], "BUILD_GROUPCHAT": [2], "BUILD_STRING": [2],
     "YAP": [1, 1], "CHUCK": [], "TRY_PUSH": [2, 2], "TRY_POP": [],
@@ -137,6 +143,11 @@ flex bet new_chunk(name, arity, default_count, is_variadic, pool) {
         "name": name, "arity": arity, "default_count": default_count,
         "is_variadic": is_variadic, "pool": pool, "code": [], "lines": [],
         "upvalue_count": 0, "local_count": 0, "stack_depth": 0, "max_stack": 0,
+        // Every jump and loop emitted, in emission order, for the relaxation
+        // pass in chunk_finish. `needs_relax` says whether any of them
+        // overflowed a u16 offset, so the common case pays nothing but the
+        // bookkeeping.
+        "jumps": [], "needs_relax": cap,
     }
 }
 
@@ -204,38 +215,269 @@ flex bet chunk_next_offset(ch) {
     bounce ch["code"].how_thicc()
 }
 
+// A conditional jump cannot simply grow a wider operand: the opcode carries
+// its own pop/keep semantics, so a wide version would be a different
+// instruction. The relaxation pass gives these a trampoline instead.
+flex deadass COND_JUMP_OPS = [
+    "JUMP_IF_FALSE", "JUMP_IF_TRUE", "JUMP_IF_FALSE_KEEP",
+    "JUMP_IF_TRUE_KEEP", "JUMP_IF_GHOST_KEEP",
+]
+
 flex bet chunk_emit_jump(ch, op_name, line, col) {
-    chunk_emit(ch, op_name, [0], line, col)
+    yo start = chunk_emit(ch, op_name, [0], line, col)
+    // `target` is filled in by chunk_patch_jump; a forward jump does not know
+    // where it lands until the body it skips has been emitted.
+    ch["jumps"].yeet_in({"pos": start, "op": op_name, "is_loop": cap, "target": ghost})
     bounce ch["code"].how_thicc() - 2
 }
 
 flex bet chunk_patch_jump(ch, site) {
-    yo offset = ch["code"].how_thicc() - (site + 2)
-    sus (offset < 0 || offset > 0xFFFF) {
-        chuck "your function is too long. seek help."
+    yo target = ch["code"].how_thicc()
+    yo pos = site - 1
+    grind i from 0 to ch["jumps"].how_thicc() {
+        yo j = ch["jumps"][ch["jumps"].how_thicc() - 1 - i]
+        sus (j["pos"] == pos) {
+            j["target"] = target
+            bail
+        }
     }
-    ch["code"][site] = (offset >> 8) & 0xFF
-    ch["code"][site + 1] = offset & 0xFF
+    yo offset = target - (site + 2)
+    sus (offset >= 0 fr offset <= 0xFFFF) {
+        ch["code"][site] = (offset >> 8) & 0xFF
+        ch["code"][site + 1] = offset & 0xFF
+        bounce ghost
+    }
+    // Too far for a u16. Leave a placeholder and let chunk_finish rewrite the
+    // whole instruction -- the offset is not knowable yet anyway, since
+    // widening any earlier jump moves this one.
+    ch["code"][site] = 0xFF
+    ch["code"][site + 1] = 0xFF
+    ch["needs_relax"] = fax
 }
 
 flex bet chunk_emit_loop(ch, loop_start, line, col) {
     chunk_mark_line(ch, line, col)
+    yo pos = ch["code"].how_thicc()
     ch["code"].yeet_in(OPCODES.get("LOOP"))
     yo offset = ch["code"].how_thicc() + 2 - loop_start
-    sus (offset < 0 || offset > 0xFFFF) {
-        chuck "your function is too long. seek help."
+    sus (offset >= 0 fr offset <= 0xFFFF) {
+        ch["code"].yeet_in((offset >> 8) & 0xFF)
+        ch["code"].yeet_in(offset & 0xFF)
+    } nah {
+        ch["code"].yeet_in(0xFF)
+        ch["code"].yeet_in(0xFF)
+        ch["needs_relax"] = fax
     }
-    ch["code"].yeet_in((offset >> 8) & 0xFF)
-    ch["code"].yeet_in(offset & 0xFF)
+    // A loop's target is known immediately: it is where the loop started.
+    ch["jumps"].yeet_in({"pos": pos, "op": "LOOP", "is_loop": fax, "target": loop_start})
+}
+
+// -- jump relaxation (PLAN.md §16) -----------------------------------------
+//
+// A port of funnylang/chunk.py's `_relax`, which the self-hosted compiler
+// never had: it chucked "your function is too long" instead, so a function
+// body over 64 KB of bytecode simply could not be compiled here. The pytest
+// suite covers 50,000-statement bodies; after N11 there is no reference left
+// to fall back to.
+//
+// Standard assembler-style fixed-point relaxation. An unconditional JUMP or
+// LOOP becomes JUMP_LONG / LOOP_LONG with a u32 offset (3 bytes -> 5). A
+// conditional keeps its opcode -- a wide version would be a different
+// instruction with different pop/keep semantics -- and gets a trampoline
+// instead (3 bytes -> 11):
+//
+//     COND_OP  +3   ; taken -> lands exactly on the JUMP_LONG below
+//     JUMP     +5   ; not taken -> skips it, into the body
+//     JUMP_LONG <target>
+//
+// Widening one jump moves every later one, which can push a second jump over
+// the limit, so the marking loop repeats until nothing changes.
+
+flex bet is_cond_jump(op) {
+    grind c in COND_JUMP_OPS {
+        sus (c == op) {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
+// Bytes this jump occupies once relaxed.
+flex bet relax_size_of(site, long) {
+    sus (!long) {
+        bounce 3
+    }
+    sus (is_cond_jump(site["op"])) {
+        bounce 11
+    }
+    bounce 5
+}
+
+// Running total of how much each jump *before* index i has grown, so an old
+// code offset can be mapped to its new one.
+flex bet relax_prefix(sites, is_long) {
+    yo cum = []
+    yo total = 0
+    grind i from 0 to sites.how_thicc() {
+        total += relax_size_of(sites[i], is_long[i]) - 3
+        cum.yeet_in(total)
+    }
+    bounce cum
+}
+
+// Where old offset `p` lands after the growth recorded in `cum`. The
+// reference uses bisect_right(starts, p - 3): every jump that *starts* at or
+// before p - 3 has finished before p, so its growth applies.
+flex bet relax_shift(starts, cum, p) {
+    yo lo = 0
+    yo hi = starts.how_thicc()
+    yo needle = p - 3
+    bruh (lo < hi) {
+        yo mid = (lo + hi) \ 2
+        sus (starts[mid] <= needle) {
+            lo = mid + 1
+        } nah {
+            hi = mid
+        }
+    }
+    sus (lo > 0) {
+        bounce p + cum[lo - 1]
+    }
+    bounce p
+}
+
+flex bet push_u16(out, value) {
+    out.yeet_in((value >> 8) & 0xFF)
+    out.yeet_in(value & 0xFF)
+}
+
+flex bet push_u32(out, value) {
+    out.yeet_in((value >> 24) & 0xFF)
+    out.yeet_in((value >> 16) & 0xFF)
+    out.yeet_in((value >> 8) & 0xFF)
+    out.yeet_in(value & 0xFF)
+}
+
+// Returns {"code": [...], "lines": [...]} with every over-long jump rewritten.
+flex bet chunk_relax(ch) {
+    // Emission order is already position order for `pos`, except that a
+    // nested function's jumps never mix in -- each chunk has its own list.
+    // Sorted anyway, because chunk_patch_jump fills targets out of order and
+    // the shift() binary search needs `starts` ascending.
+    yo sites = sort_by_pos(ch["jumps"])
+    yo starts = []
+    grind s in sites {
+        starts.yeet_in(s["pos"])
+    }
+    yo n = sites.how_thicc()
+    yo is_long = []
+    grind i from 0 to n {
+        is_long.yeet_in(cap)
+    }
+
+    bruh (fax) {
+        yo cum = relax_prefix(sites, is_long)
+        yo changed = cap
+        grind i from 0 to n {
+            sus (is_long[i]) {
+                nvm
+            }
+            yo s = sites[i]
+            yo new_pos = relax_shift(starts, cum, s["pos"])
+            yo new_target = relax_shift(starts, cum, s["target"])
+            yo instr_end = new_pos + 3
+            yo offset = s["is_loop"] ? instr_end - new_target : new_target - instr_end
+            sus (offset < 0 || offset > 0xFFFF) {
+                is_long[i] = fax
+                changed = fax
+            }
+        }
+        sus (!changed) {
+            bail
+        }
+    }
+
+    yo cum = relax_prefix(sites, is_long)
+    yo out = []
+    yo pos = 0
+    grind i from 0 to n {
+        yo s = sites[i]
+        grind b from pos to s["pos"] {
+            out.yeet_in(ch["code"][b])
+        }
+        yo new_pos = out.how_thicc()
+        yo new_target = relax_shift(starts, cum, s["target"])
+        sus (!is_long[i]) {
+            yo instr_end = new_pos + 3
+            yo offset = s["is_loop"] ? instr_end - new_target : new_target - instr_end
+            out.yeet_in(OPCODES.get(s["op"]))
+            push_u16(out, offset)
+        } kinda_sus (s["is_loop"]) {
+            out.yeet_in(OPCODES.get("LOOP_LONG"))
+            push_u32(out, (new_pos + 5) - new_target)
+        } kinda_sus (s["op"] == "JUMP") {
+            out.yeet_in(OPCODES.get("JUMP_LONG"))
+            push_u32(out, new_target - (new_pos + 5))
+        } nah {
+            // The trampoline: the conditional jumps over a 3-byte JUMP that
+            // in turn skips the JUMP_LONG carrying the real target.
+            out.yeet_in(OPCODES.get(s["op"]))
+            push_u16(out, 3)
+            out.yeet_in(OPCODES.get("JUMP"))
+            push_u16(out, 5)
+            out.yeet_in(OPCODES.get("JUMP_LONG"))
+            push_u32(out, new_target - (new_pos + 11))
+        }
+        pos = s["pos"] + 3
+    }
+    grind b from pos to ch["code"].how_thicc() {
+        out.yeet_in(ch["code"][b])
+    }
+
+    yo lines = []
+    grind e in ch["lines"] {
+        lines.yeet_in({"offset": relax_shift(starts, cum, e["offset"]), "line": e["line"], "col": e["col"]})
+    }
+    bounce {"code": out, "lines": lines}
+}
+
+// Insertion sort by "pos". The list is nearly sorted already (emission order
+// is position order), and a chunk has few jumps, so this beats hauling in a
+// general sort -- and `stash.sort_by` is not in the self-hosting subset.
+flex bet sort_by_pos(jumps) {
+    yo out = []
+    grind j in jumps {
+        out.yeet_in(j)
+    }
+    grind i from 1 to out.how_thicc() {
+        yo item = out[i]
+        yo k = i - 1
+        bruh (k >= 0 fr out[k]["pos"] > item["pos"]) {
+            out[k + 1] = out[k]
+            k -= 1
+        }
+        out[k + 1] = item
+    }
+    bounce out
 }
 
 flex bet chunk_finish(ch) {
+    // The relaxation pass only runs when something actually overflowed, so
+    // the overwhelmingly common case pays nothing beyond having recorded the
+    // jump sites.
+    yo code = ch["code"]
+    yo lines = ch["lines"]
+    sus (ch["needs_relax"]) {
+        yo relaxed = chunk_relax(ch)
+        code = relaxed["code"]
+        lines = relaxed["lines"]
+    }
     bounce {
         "name": ch["name"], "arity": ch["arity"],
         "default_count": ch["default_count"], "is_variadic": ch["is_variadic"],
         "upvalue_count": ch["upvalue_count"], "max_stack": ch["max_stack"],
-        "local_count": ch["local_count"], "code": ch["code"],
-        "lines": ch["lines"],
+        "local_count": ch["local_count"], "code": code,
+        "lines": lines,
     }
 }
 

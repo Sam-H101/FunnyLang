@@ -1,0 +1,76 @@
+// tests/test_hardening.py task 6: a jump whose offset does not fit in 16
+// bits. A `sus` body of enough statements pushes JUMP_IF_FALSE's operand past
+// 0xFFFF, which used to be an OverflowError before JUMP_LONG existed; the
+// same goes for a `bruh` body's backwards LOOP and for a `bail` out of one.
+//
+// The programs are generated here rather than checked in: a 12,000-line
+// fixture is not something anyone should have to read or diff, and the
+// interesting part is the size, not the contents. Each is compiled and run
+// through the real command line, and what is asserted is that the *behaviour*
+// is right at that size -- a widened jump that lands in the wrong place shows
+// up immediately as wrong output.
+//
+// 12,000 statements is a little over the 0xFFFF byte threshold and costs
+// about a second. The pytest version used 50,000 because the Python compiler
+// is linear and could afford it; so is this one now (the constant pool stopped
+// being an association list), but there is no reason to spend four seconds
+// proving the same thing.
+gimme sus
+gimme filez
+gimme yapper
+
+deadass N = 12000
+
+flex bet cli(args) {
+    bounce sus.run_bytecode(sus.toolchain(), args)
+}
+
+// `.funny` on the end on purpose: `funny run` dispatches on the extension,
+// and `filez.temp_file()` hands back a path without one -- so a bare temp
+// path is read as bytecode and fails to load. The temp file itself is what
+// reserves the name; the sibling beside it is what gets compiled.
+flex bet run_source(text) {
+    yo base = filez.temp_file()
+    yo src = base + ".funny"
+    filez.yeet_out(src, text)
+    yo r = cli(["run", src])
+    filez.obliterate(src)
+    filez.obliterate(base)
+    bounce r
+}
+
+// `prefix` followed by the line's own index, so the taken-branch case can
+// check that the *first* and *last* statements both ran.
+flex bet numbered(prefix, count) {
+    yo lines = []
+    grind i from 0 to count {
+        lines.yeet_in(prefix + to_yap(i))
+    }
+    bounce lines.join("\n")
+}
+
+flex bet repeated(line, count) {
+    yo lines = []
+    grind i from 0 to count {
+        lines.yeet_in(line)
+    }
+    bounce lines.join("\n")
+}
+
+// A taken branch whose body is longer than a 16-bit forward jump.
+yo taken = run_source("yo flag = fax\nsus (flag) {\n" + numbered("    yap ", N) + "\n}\n")
+yo lines = yapper.lines(yapper.trim(taken["out"]))
+yap "huge if, taken: " + to_yap(lines.how_thicc()) + " lines, " + lines[0] + " .. " + lines[lines.how_thicc() - 1]
+
+// The same body, not taken: the jump has to clear all of it.
+yo skipped = run_source("yo flag = cap\nsus (flag) {\n" + numbered("    yap ", N) + "\n}\nyap \"done\"\n")
+yap "huge if, skipped: " + yapper.trim(skipped["out"])
+
+// A loop body longer than a 16-bit *backwards* jump, run twice.
+yo loop = run_source("yo i = 0\nyo total = 0\nbruh (i < 2) {\n" + numbered("    total = total + ", N) + "\n    i = i + 1\n}\nyap total\n")
+yap "huge loop total: " + yapper.trim(loop["out"])
+
+// `bail` out of a body that long: the forward jump to the loop's end widens
+// too. Three passes add 1 each time before the fourth bails.
+yo bailed = run_source("yo i = 0\nyo total = 0\nbruh (fax) {\n    sus (i == 3) { bail }\n" + repeated("    total = total + 1", N) + "\n    i = i + 1\n}\nyap total\n")
+yap "bail out of huge loop: " + yapper.trim(bailed["out"])

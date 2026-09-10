@@ -80,6 +80,7 @@ static void free_object(Obj *obj) {
         case OBJ_GROUPCHAT: {
             ObjGroupChat *g = (ObjGroupChat *)obj;
             free(g->entries);
+            free(g->index);
             free(g);
             return;
         }

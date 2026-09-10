@@ -168,6 +168,15 @@ jobs:
         shell: cmd
         run: funny.exe test tests/lang
 
+      # Separate directory, separate step: these generate and compile programs
+      # big enough to be worth several seconds each, so they stay out of the
+      # ordinary corpus run. Not optional -- jump relaxation only happens at
+      # this size, and it did not exist at all until N11.
+      - name: Golden corpus, slow (release)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: funny.exe test tests/slow
+
       - name: Bootstrap fixed point (release)
         if: runner.os == 'Windows'
         shell: cmd
@@ -278,6 +287,7 @@ jobs:
           FUNNY_NO_NET: "1"
         run: |
           ./funny test tests/lang
+          ./funny test tests/slow
           ./funny test examples
 
       - name: xray and fmt

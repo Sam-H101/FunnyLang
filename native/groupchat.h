@@ -30,6 +30,17 @@ typedef struct {
     GroupChatEntry *entries;
     int count;
     int capacity;
+    /* Open-addressed hash index over the *string* keys in `entries`, holding
+       positions into it; -1 is an empty slot. NULL until the groupchat is
+       big enough to be worth one (see GROUPCHAT_INDEX_MIN in groupchat.c) --
+       a linear scan wins for the handful of entries most groupchats hold,
+       and costs no allocation.
+
+       `entries` stays the ordered array everything else reads, so insertion
+       order, iteration, keys(), display and serialisation are all unchanged.
+       This only answers "where is this key". */
+    int32_t *index;
+    int indexCapacity;
 } ObjGroupChat;
 
 struct GC;
@@ -42,7 +53,10 @@ ObjGroupChat *groupchat_new(struct GC *gc, const GroupChatEntry *entries, int co
 
 /* NULL if `key` isn't present (value_equal_narrow, not pointer identity --
    matches Python's dict `==`-based key lookup for the value tags this
-   runtime supports at N4's scope: ghost/bool/numba/yapstring). */
+   runtime supports at N4's scope: ghost/bool/numba/yapstring).
+
+   O(1) for a string key once the index exists, O(n) otherwise -- see the
+   note on `index` above for why numeric keys are deliberately not indexed. */
 GroupChatEntry *groupchat_find(ObjGroupChat *g, Value key);
 void groupchat_set(struct GC *gc, ObjGroupChat *g, Value key, Value value);
 bool groupchat_remove(ObjGroupChat *g, Value key);

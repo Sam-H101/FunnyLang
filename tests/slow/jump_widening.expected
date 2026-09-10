@@ -1,0 +1,5 @@
+!NATIVE
+huge if, taken: 12000 lines, 0 .. 11999
+huge if, skipped: done
+huge loop total: 143988000
+bail out of huge loop: 36000

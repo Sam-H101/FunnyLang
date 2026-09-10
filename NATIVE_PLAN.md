@@ -2636,3 +2636,68 @@ gets an entry explaining what changed and why.
 
   **291 goldens**, 13/13 of the module ones passing on the Python VM too. `tests/native` 248 passed,
   full suite 1313 passed, bootstrap fixed point byte-identical at the same size on Linux and Windows.
+
+- **N11 · the hardening conversion, and three product defects it uncovered.** `tests/test_hardening.py`
+  is the file that tests things *at size*, and converting it found more than the rest of the suite put
+  together. In order of discovery:
+
+  **1. `groupchat` was an association list.** `groupchat_find` was a linear scan, and `groupchat_set`
+  calls it, so building a dictionary was O(n²) — and FunnyLang's `groupchat` is the language's
+  dictionary type. Measured before the fix: 2,000 inserts 10.5 ms, 32,000 inserts **2,935 ms** — 16×
+  the input for 278× the time. That is what made the self-hosted compiler quadratic, because its
+  constant pool is a groupchat keyed by `"tag:value"`:
+
+  | statements | native before | native after | Python |
+  |---:|---:|---:|---:|
+  | 2,500 | 0.24 s | 0.14 s | 0.26 s |
+  | 5,000 | 0.66 s | 0.29 s | 0.35 s |
+  | 10,000 | 2.11 s | 0.65 s | 0.50 s |
+  | 20,000 | 6.02 s | 1.37 s | 0.85 s |
+  | 40,000 | **35.83 s** | **3.02 s** | 1.56 s |
+
+  Python was linear all along; this was not. Fixed with an open-addressed hash index over `entries`,
+  which stays the ordered array everything else reads — insertion order, `keys()`, display and
+  serialisation are untouched. **Only string keys are indexed, deliberately**: `value_equal_narrow`
+  gives numbers cross-type equality (`1 == 1.0 ==` a bignum holding 1), so a numeric hash would have
+  to agree across three representations and getting that subtly wrong means a key that is present but
+  cannot be found — a correctness bug, not a slow one. A string can only ever equal another string,
+  by inspection of that same function. Below 12 entries there is no index at all, because a linear
+  scan wins there and allocates nothing.
+
+  **2. The self-hosted compiler had no jump-relaxation pass.** `chunk_patch_jump` chucked *"your
+  function is too long. seek help."* once an offset passed `0xFFFF`, so the shipped toolchain could
+  not compile a function body over 64 KB of bytecode — while the reference could, and after N11 there
+  would be no reference to fall back to. Ported from `funnylang/chunk.py`: unconditional `JUMP`/`LOOP`
+  become `JUMP_LONG`/`LOOP_LONG` with u32 offsets, and a conditional keeps its opcode (a wide version
+  would be a different instruction with different pop/keep semantics) and gets a trampoline —
+  `COND +3 / JUMP +5 / JUMP_LONG <target>`. The marking loop iterates to a fixed point because
+  widening one jump moves every later one. `JUMP_LONG`/`LOOP_LONG` were absent from the self-hosted
+  opcode table entirely, with a comment saying they were unnecessary *because* there was no such pass.
+
+  Verified the only way worth verifying it: `build/n4/relax_diff.sh` and `relax_nested.sh` compile
+  five shapes with both compilers and compare **bytes** — a taken conditional, an untaken one, a long
+  loop body, a `bail` out of one, and four large bodies in a row so that widening an early jump pushes
+  a later one over and the fixed point runs more than once. All five byte-identical, and the outputs
+  identical too.
+
+  **3. Windows could not open a file whose name is not ANSI-representable.** `filez.list_dir` returned
+  `h?llo_??_??.funny` for `héllo_🎉_中文.funny`, and `exists`/`slurp` on the real name failed with
+  "No such file or directory". Every filesystem call went through an `A` entry point —
+  `GetFileAttributesA`, `FindFirstFileA`, `fopen`, `_mkdir`, `_fullpath` — which interprets UTF-8
+  bytes in the active ANSI codepage and therefore asks the OS about a different, non-existent file.
+  Python's `pathlib` uses the wide APIs, which is why the equivalent pytest passed and nothing
+  noticed. Fixed by converting UTF-8 → UTF-16 once at the boundary in `platform.c` and calling the
+  `W` entry points; paths stay UTF-8 `char *` everywhere else, since that is the only string
+  representation the language has.
+
+  **`tests/slow/`, a second corpus directory.** The jump-widening golden generates and compiles
+  12,000-statement programs and costs about 5 seconds, so it lives apart from `tests/lang/` and CI
+  runs `funny test tests/slow` as its own step. `tests/test_hardening.py` marked its equivalents
+  `@pytest.mark.slow` for the same reason. Not optional: relaxation only happens at this size.
+
+  The timing assertions themselves (*"50k statements compiles under 10 s"*) are **not** converted —
+  a wall-clock threshold is a property of the machine, not of the program, and the scaling table
+  above is a better record of the same concern than a test that goes red on a busy runner.
+
+  293 goldens on Linux and Windows, `tests/native` 248 passed, full suite 1313 passed, bootstrap fixed
+  point byte-identical at the same size on both, MSVC `/W4 /WX` clean.

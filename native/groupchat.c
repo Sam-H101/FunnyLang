@@ -10,6 +10,54 @@
 
 #define INITIAL_GROUPCHAT_CAPACITY 4
 
+/* Below this many entries a linear scan beats a hash probe and allocates
+   nothing, which matters because most groupchats in a real program are a
+   handful of fields. Above it the index earns its keep immediately. */
+#define GROUPCHAT_INDEX_MIN 12
+/* Kept under 0.7 by rebuild_index, which is where linear probing stays cheap. */
+#define GROUPCHAT_INDEX_LOAD_NUM 7
+#define GROUPCHAT_INDEX_LOAD_DEN 10
+
+/* FNV-1a over the key's bytes. Only ever called for a string key -- see the
+   header's note: a string can only equal another string, so hashing them is
+   unambiguous in a way hashing numbers is not. */
+static uint32_t hash_string(const ObjString *s) {
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < s->byteLen; i++) {
+        h ^= (uint8_t)s->chars[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static void index_insert(ObjGroupChat *g, uint32_t hash, int entry) {
+    uint32_t mask = (uint32_t)g->indexCapacity - 1;
+    uint32_t slot = hash & mask;
+    while (g->index[slot] != -1) slot = (slot + 1) & mask;
+    g->index[slot] = (int32_t)entry;
+}
+
+/* Sized so the load factor stays under 0.7 for the *current* entry count.
+   Rebuilt rather than incrementally resized on removal, because removing an
+   entry memmoves `entries` and invalidates every position in the index --
+   removal is rare enough that rebuilding is the right trade. */
+static void rebuild_index(ObjGroupChat *g) {
+    int wanted = 8;
+    while ((long)g->count * GROUPCHAT_INDEX_LOAD_DEN >= (long)wanted * GROUPCHAT_INDEX_LOAD_NUM) wanted *= 2;
+    g->index = (int32_t *)realloc(g->index, (size_t)wanted * sizeof(int32_t));
+    g->indexCapacity = wanted;
+    for (int i = 0; i < wanted; i++) g->index[i] = -1;
+    for (int i = 0; i < g->count; i++) {
+        if (IS_STRING(g->entries[i].key)) index_insert(g, hash_string(AS_STRING(g->entries[i].key)), i);
+    }
+}
+
+static void index_drop(ObjGroupChat *g) {
+    free(g->index);
+    g->index = NULL;
+    g->indexCapacity = 0;
+}
+
 ObjGroupChat *groupchat_new(GC *gc, const GroupChatEntry *entries, int count) {
     ObjGroupChat *g = (ObjGroupChat *)malloc(sizeof(ObjGroupChat));
     g->obj.type = OBJ_GROUPCHAT;
@@ -19,12 +67,24 @@ ObjGroupChat *groupchat_new(GC *gc, const GroupChatEntry *entries, int count) {
     g->count = 0;
     g->capacity = count > 0 ? count : INITIAL_GROUPCHAT_CAPACITY;
     g->entries = (GroupChatEntry *)malloc((size_t)g->capacity * sizeof(GroupChatEntry));
+    g->index = NULL;
+    g->indexCapacity = 0;
     gc_track(gc, (Obj *)g, sizeof(ObjGroupChat));
     for (int i = 0; i < count; i++) groupchat_set(gc, g, entries[i].key, entries[i].value);
     return g;
 }
 
 GroupChatEntry *groupchat_find(ObjGroupChat *g, Value key) {
+    if (g->index != NULL && IS_STRING(key)) {
+        uint32_t mask = (uint32_t)g->indexCapacity - 1;
+        uint32_t slot = hash_string(AS_STRING(key)) & mask;
+        while (g->index[slot] != -1) {
+            GroupChatEntry *e = &g->entries[g->index[slot]];
+            if (value_equal_narrow(e->key, key)) return e;
+            slot = (slot + 1) & mask;
+        }
+        return NULL; /* every string key is in the index, so this is definitive */
+    }
     for (int i = 0; i < g->count; i++) {
         if (value_equal_narrow(g->entries[i].key, key)) return &g->entries[i];
     }
@@ -45,6 +105,14 @@ void groupchat_set(GC *gc, ObjGroupChat *g, Value key, Value value) {
     g->entries[g->count].key = key;
     g->entries[g->count].value = value;
     g->count++;
+
+    if (g->index == NULL) {
+        if (g->count >= GROUPCHAT_INDEX_MIN) rebuild_index(g);
+    } else if ((long)g->count * GROUPCHAT_INDEX_LOAD_DEN >= (long)g->indexCapacity * GROUPCHAT_INDEX_LOAD_NUM) {
+        rebuild_index(g);
+    } else if (IS_STRING(key)) {
+        index_insert(g, hash_string(AS_STRING(key)), g->count - 1);
+    }
 }
 
 bool groupchat_remove(ObjGroupChat *g, Value key) {
@@ -52,6 +120,13 @@ bool groupchat_remove(ObjGroupChat *g, Value key) {
         if (value_equal_narrow(g->entries[i].key, key)) {
             memmove(&g->entries[i], &g->entries[i + 1], (size_t)(g->count - i - 1) * sizeof(GroupChatEntry));
             g->count--;
+            /* Every position after `i` just shifted down, so the index is
+               stale in its entirety. Cheaper to rebuild than to patch, and
+               removal is rare. */
+            if (g->index != NULL) {
+                if (g->count < GROUPCHAT_INDEX_MIN) index_drop(g);
+                else rebuild_index(g);
+            }
             return true;
         }
     }
