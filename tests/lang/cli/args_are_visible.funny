@@ -1,0 +1,8 @@
+// the_args() is the program's own argv, not the runtime's. Ported from
+// tests/test_stdlib.py::test_the_args_default_empty, which could only check
+// the empty case -- the golden runner had no way to pass any.
+yo args = the_args()
+yap how_thicc(args)
+grind a in args {
+    yap a
+}

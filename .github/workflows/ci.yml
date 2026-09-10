@@ -150,6 +150,29 @@ jobs:
         shell: cmd
         run: funny.exe
 
+      # The differential step below is POSIX-only, because tests/conftest.py's
+      # native_binary fixture builds with gcc-style flags and `CC: msvc` makes
+      # it skip. That left the Windows job proving only that the code compiles
+      # and the binary starts -- and a real bug lived in that gap: the bundler
+      # keyed every module by its *absolute path* on Windows, because
+      # `filez.abs_path` returns '/' there while `filez.dir_of` returns '\',
+      # so the "strip the entry directory" prefix test never matched. Bundles
+      # stopped being reproducible across platforms and `yeet`ed executables
+      # leaked the builder's directory layout into their diagnostics.
+      #
+      # The golden corpus needs no Python and catches exactly that class of
+      # thing, so it runs on Windows too. N11 makes this the *only* kind of
+      # test step; it is here early because the hole is here now.
+      - name: Golden corpus (release)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: funny.exe test tests/lang
+
+      - name: Bootstrap fixed point (release)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: funny.exe bootstrap --verify
+
       # Builds its own native binary from native/*.c directly (not the
       # ./funny from the step above) and diffs its output against the real
       # Python VM -- NATIVE_PLAN.md N2's actual acceptance gate, not just

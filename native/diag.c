@@ -24,6 +24,7 @@ static DiagOptions derive_default_options(void) {
     const char *serious = getenv("FUNNY_SERIOUS");
     opts.serious = serious != NULL && strcmp(serious, "1") == 0;
     opts.color = platform_stdout_is_tty();
+    opts.sourceRoot = NULL;
     return opts;
 }
 
@@ -52,6 +53,24 @@ typedef struct {
     char **lines;
     int count;
 } SourceLines;
+
+/* `root` + separator + `rel`, malloc'd. No normalization: this only ever
+   joins a caller-supplied directory to a bundle key, and both are already
+   the shape the loader produced. NULL on an empty root, so the caller falls
+   back to leaving the path alone. */
+static char *path_under_root(const char *root, const char *rel) {
+    size_t rootLen = strlen(root);
+    if (rootLen == 0) return NULL;
+    bool needSep = !platform_is_path_sep(root[rootLen - 1]);
+    size_t relLen = strlen(rel);
+    char *out = (char *)malloc(rootLen + (needSep ? 1 : 0) + relLen + 1);
+    if (out == NULL) return NULL;
+    memcpy(out, root, rootLen);
+    size_t at = rootLen;
+    if (needSep) out[at++] = platform_path_sep();
+    memcpy(out + at, rel, relLen + 1);
+    return out;
+}
 
 static bool source_lines_load(const char *path, SourceLines *out) {
     out->text = NULL;
@@ -159,8 +178,18 @@ void diag_render_error(FILE *out, const ObjError *err, DiagOptions opts) {
     }
     fputc('\n', out);
 
+    /* Try the path as given first: an absolute path, or a relative one that
+       already resolves from here, is what `funny run` produces and must keep
+       working even when a sourceRoot is set. Only fall back to rooting it. */
     SourceLines src;
     bool haveSource = hasSpan && source_lines_load(err->file->chars, &src);
+    if (hasSpan && !haveSource && opts.sourceRoot != NULL && err->file->byteLen > 0) {
+        char *rooted = path_under_root(opts.sourceRoot, err->file->chars);
+        if (rooted != NULL) {
+            haveSource = source_lines_load(rooted, &src);
+            free(rooted);
+        }
+    }
     if (haveSource) {
         fputc('\n', out);
         render_snippet(out, &src, err->line, err->col, opts.color);

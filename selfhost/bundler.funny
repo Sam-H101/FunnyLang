@@ -9,6 +9,7 @@
 // triggering the other's argument handling.
 
 gimme filez
+gimme yapper
 gimme { new_buf, write_u16, write_u32, write_str } from "prelude.funny"
 gimme { parse_source } from "parser.funny"
 gimme { resolve_program, compile_program } from "compiler.funny"
@@ -51,12 +52,30 @@ flex bet resolve_import(quoted, importing_abs) {
 // A module's key in the bundle: its path relative to the *entry* file's
 // directory. That is what a quoted `gimme` inside the bundle resolves
 // against at run time, with no filesystem involved by then.
+//
+// Both sides are separator-normalised first, and the key comes out with '/'.
+// Not cosmetic: on Windows `filez.abs_path` returns forward slashes (see
+// platform_abs_path) while `filez.dir_of` and `filez.join_path` return
+// backslashes, to match what pathlib renders. So the prefix test never
+// matched there and *every* module was keyed by its absolute path --
+// `F:/my_program_lang/tests/lang/errors/x.funny` instead of `x.funny`. Three
+// things follow from that, all bad: a bundle built on Windows is not
+// byte-identical to the same bundle built anywhere else, a `yeet`ed
+// executable leaks the builder's directory layout into every diagnostic, and
+// the keys stop matching `funnylang/modules.py`, which has always used
+// `Path.relative_to(...).as_posix()`. '/' is what the reference produces, so
+// '/' is what this produces.
+flex bet normalize_seps(p) {
+    bounce yapper.replace(p, "\\", "/")
+}
+
 flex bet canonical_name(abs_path, entry_dir) {
-    yo prefix = entry_dir + "/"
-    sus (abs_path.starts_with(prefix)) {
-        bounce abs_path.slice(prefix.how_thicc(), abs_path.how_thicc())
+    yo path = normalize_seps(abs_path)
+    yo prefix = normalize_seps(entry_dir) + "/"
+    sus (path.starts_with(prefix)) {
+        bounce path.slice(prefix.how_thicc(), path.how_thicc())
     }
-    bounce abs_path
+    bounce path
 }
 
 // Every quoted (non-stdlib) `gimme` at a program's top level, including the

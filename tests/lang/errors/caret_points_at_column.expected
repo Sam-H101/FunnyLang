@@ -1,0 +1,16 @@
+!DIAG
+💀💀💀 FUNNYLANG MOMENT 💀💀💀
+
+  TypeVibeMismatch  ──  caret_points_at_column.funny:2:5
+
+     1 │ yo x = 1
+     2 │ yap x + "nope"
+       │     ^ this right here
+     3 │ 
+
+  a numba and a yapstring do NOT have the same energy.
+
+  💡 skill issue fix:  wrap the numba in to_yap(...) first, so both sides are yapstrings
+
+  🥞 stack of shame:
+       at <the big one>  caret_points_at_column.funny:2

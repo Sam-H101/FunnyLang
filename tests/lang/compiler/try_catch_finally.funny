@@ -1,0 +1,17 @@
+// TRY_PUSH / TRY_POP / CHUCK, and PLAN.md §M5's explicit requirement that a
+// `regardless` body is compiled *twice* -- once inline for the normal path
+// and once for the unwind path, which re-chucks. The second copy is why
+// "cleanup-marker" appears where it does below.
+sketchy {
+    chuck "x"
+} my_bad (e) {
+    yap e
+} regardless {
+    yap "done"
+}
+
+sketchy {
+    yap "try"
+} regardless {
+    yap "cleanup-marker"
+}

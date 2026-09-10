@@ -1,0 +1,7 @@
+
+
+yo x // this is a comment
+yo /* outer /* inner */ still outer */ y = 1
+
+
+yo z

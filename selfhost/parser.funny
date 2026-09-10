@@ -596,7 +596,12 @@ flex bet make_assign(ps, target, op, value) {
     sus (target["node"] == "Deref") {
         bounce {"node": "SetDeref", "ptr": target["ptr"], "op": op, "value": value, "line": target["line"], "col": target["col"]}
     }
-    chuck "ParserHadAStroke at " + to_yap(target["line"]) + ":" + to_yap(target["col"]) + ": that's not something you can assign to."
+    // `oops`, not a chucked string: chucking a plain string gets the default
+    // SkillIssue flavor, and this error is a ParserHadAStroke in the
+    // reference. Spelling the flavor into the message text was never the same
+    // thing -- an `!ERROR ParserHadAStroke` golden reads the flavor, not the
+    // message, and so does anything else that catches by flavor.
+    chuck oops("ParserHadAStroke", "that's not something you can assign to.", target["line"], target["col"])
 }
 
 flex bet parse_ternary(ps) {
@@ -665,7 +670,10 @@ flex bet p_check_place(ps, place) {
     sus (place["node"] == "Identifier" || place["node"] == "Index" || place["node"] == "Get") {
         bounce ghost
     }
-    chuck "ParserHadAStroke at " + to_yap(place["line"]) + ":" + to_yap(place["col"]) + ": '&' can't take the address of that -- only a variable, an index, or a property is a place."
+    // Message text copied from funnylang/parser.py verbatim, em-dash and
+    // parenthesised examples included: a diagnostic golden compares the
+    // rendered text, so "close enough" is a failing test.
+    chuck oops("ParserHadAStroke", "'&' can't take the address of that — only a variable, an index (arr[i]), or a property (obj.field) is a place.", place["line"], place["col"])
 }
 
 flex bet parse_unary(ps) {

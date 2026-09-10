@@ -205,7 +205,18 @@ def test_fmt_is_idempotent(tmp_path):
 
 
 def test_test_command_runs_lang_directory():
-    result = _run_cli("test", "tests/lang")
+    """`examples`, not `tests/lang`.
+
+    N11 grew `.expected` a directive block — !ARGS, !EXIT, !DIAG, !XRAY — so
+    that argv, exit codes, rendered diagnostics and token/AST dumps can be
+    written as goldens at all; the corpus has to replace a 1,300-test pytest
+    suite, and none of that fits in "stdout, byte for byte". `cli.py`'s runner
+    does not understand them and will not learn: it is deleted in N11 task 5.
+    So this asserts the thing that is still true of the Python CLI — it walks a
+    directory of plain goldens and passes them — over a corpus that has only
+    those. `selfhost/test.funny` is what runs the real one.
+    """
+    result = _run_cli("test", "examples")
     assert result.returncode == 0
     assert "passed" in result.stdout
 

@@ -105,42 +105,61 @@ flex bet token_repr(t) {
 }
 
 // -- the command -----------------------------------------------------------
+//
+// `xray_text` builds the report and returns it; `xray` prints it. The split
+// is not decoration: N11 turns most of the lexer, parser and compiler test
+// suite into `funny xray` goldens, and a golden needs the report as a
+// *value* it can compare, not as something that has already gone to stdout.
+// `selfhost/test.funny` imports `xray_text` directly for exactly that.
+//
+// Every line the old version `yap`ped is a `yeet_in` here, joined with "\n"
+// and given a trailing newline, so the text is byte-identical to what the
+// printing version produced.
 
-flex bet xray_pak(path) {
+flex bet xray_pak_lines(path) {
     yo bundle = load_funnypak(filez.read_bytes(path))
-    yap "entry: " + bundle["entry"]
+    yo out = ["entry: " + bundle["entry"]]
     grind i from 0 to bundle["names"].how_thicc() {
         yo name = bundle["names"][i]
         yo marker = ""
         sus (name == bundle["entry"]) {
             marker = " (entry)"
         }
-        yap "=== module: " + name + marker + " ==="
-        yap disassemble(bundle["units"][i])
+        out.yeet_in("=== module: " + name + marker + " ===")
+        out.yeet_in(disassemble(bundle["units"][i]))
     }
+    bounce out
 }
 
-flex bet xray(path, want_tokens, want_ast, want_pak) {
+flex bet xray_lines(path, want_tokens, want_ast, want_pak) {
     sus (want_pak || yapper.ends_with(path, ".funnypak")) {
-        xray_pak(path)
-        bounce 0
+        bounce xray_pak_lines(path)
     }
     sus (yapper.ends_with(path, ".funnyc")) {
-        yap disassemble(load_funnyc(filez.read_bytes(path)))
-        bounce 0
+        bounce [disassemble(load_funnyc(filez.read_bytes(path)))]
     }
     yo src = filez.slurp(path)
     sus (want_tokens) {
+        yo out = []
         grind t in tokenize(src) {
-            yap token_repr(t)
+            out.yeet_in(token_repr(t))
         }
-        bounce 0
+        bounce out
     }
     yo program = parse_program(tokenize(src))
     sus (want_ast) {
-        yap dump(program)
-        bounce 0
+        bounce [dump(program)]
     }
-    yap disassemble(compile_source(src, fax))
+    bounce [disassemble(compile_source(src, fax))]
+}
+
+flex bet xray_text(path, want_tokens, want_ast, want_pak) {
+    bounce xray_lines(path, want_tokens, want_ast, want_pak).join("\n") + "\n"
+}
+
+flex bet xray(path, want_tokens, want_ast, want_pak) {
+    grind line in xray_lines(path, want_tokens, want_ast, want_pak) {
+        yap line
+    }
     bounce 0
 }

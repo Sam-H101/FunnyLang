@@ -1,0 +1,22 @@
+// Every precedence and associativity rule tests/test_parser.py pinned, as
+// one program. The dump is the assertion: `1 + 2 * 3` has to nest as
+// (+ 1 (* 2 3)) and not (* (+ 1 2) 3).
+yo a = 1 + 2 * 3
+yo b = 2 ** 3 ** 2
+yo c = -2 ** 2
+yo d = 1 < 2 < 3
+yo e = 1 + 2 < 3 * 4
+yo f = a ? b : c ? d : e
+yo g = a |> f |> g
+yo h = a ?? b ?? c
+yo i = a fr b
+yo j = a && b
+yo k = a orr b
+yo l = a || b
+yo m = a same_energy b
+yo n = a diff_energy b
+yo o = aint a
+yo p = !a
+yo q = 10 \ 3
+yo r = a?.b?.c
+yo s = 2 ** 3

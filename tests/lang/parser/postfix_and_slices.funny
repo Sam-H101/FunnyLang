@@ -1,0 +1,16 @@
+// Postfix chains (get / call / index in any order), trailing commas, call
+// arguments spread over several lines, and every slice shape. From
+// tests/test_parser.py's postfix and slice sections.
+yo arr = [1, 2, 3]
+yo s = "hello"
+yo chain = a.b(1)[2].c
+yo trailing = f(1, 2, 3,)
+yo multiline = f(
+  1,
+  2
+)
+yo s1 = arr[1:3]
+yo s2 = arr[:2]
+yo s3 = arr[2:]
+yo s4 = s[::-1]
+yo s5 = arr[-1]

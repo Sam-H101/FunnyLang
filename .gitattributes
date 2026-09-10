@@ -3,3 +3,8 @@
 *.funnyc binary
 *.funnypak binary
 *.exe binary
+
+# The one file whose CRLF line endings ARE the test: the lexer must fold
+# "\r\n" into a single NEWLINE token. `*.funny text eol=lf` above would
+# rewrite it on checkout and the test would silently stop testing anything.
+tests/lang/lexer/crlf_newline.funny -text

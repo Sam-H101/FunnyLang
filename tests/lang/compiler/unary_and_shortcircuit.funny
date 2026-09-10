@@ -1,0 +1,17 @@
+// NEG / NOT / BNOT, and the four "evaluate the left, maybe skip the right"
+// forms, each with its own keep-the-value jump: && is JUMP_IF_FALSE_KEEP,
+// || is JUMP_IF_TRUE_KEEP, ?? is JUMP_IF_GHOST_KEEP, and ?. is
+// GET_PROP_SAFE -- except `a?.x()`, which needs the keep-jump too.
+yo x = 1
+yap -x
+yap !x
+yap ~x
+yo t = fax
+yo f = cap
+yap t && f
+yap t || f
+yo g = ghost
+yap g ?? 5
+yap g?.x
+yap g?.x()
+yap t ? 1 : 2

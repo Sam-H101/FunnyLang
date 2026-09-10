@@ -1,0 +1,88 @@
+!XRAY
+== <script> (entry) (arity 0) ==
+0000  line 3  CONST         0    ; 5
+0003          DEF_GLOBAL    1    ; "x"
+0006  line 4  GET_GLOBAL    1    ; "x"
+0009          CONST         2    ; 10
+0012          GT
+0013          JUMP_IF_FALSE 9
+0016  line 5  CONST         3    ; "big"
+0019          YAP           1 1
+0022  line 4  JUMP          25
+0025  line 6  GET_GLOBAL    1    ; "x"
+0028          CONST         4    ; 3
+0031          GT
+0032          JUMP_IF_FALSE 9
+0035  line 7  CONST         5    ; "mid"
+0038          YAP           1 1
+0041  line 6  JUMP          6
+0044  line 9  CONST         6    ; "small"
+0047          YAP           1 1
+0050  line 11 CONST         7    ; 0
+0053          DEF_GLOBAL    8    ; "n"
+0056  line 12 GET_GLOBAL    8    ; "n"
+0059          CONST         2    ; 10
+0062          LT
+0063          JUMP_IF_FALSE 14
+0066  line 13 GET_GLOBAL    8    ; "n"
+0069          CONST         9    ; 1
+0072          ADD
+0073          SET_GLOBAL    8    ; "n"
+0076          POP
+0077  line 12 LOOP          24
+0080  line 15 CONST         7    ; 0
+0083          CONST         9    ; 1
+0086          CONST         2    ; 10
+0089          GET_LOCAL     1
+0091          CONST         7    ; 0
+0094          GE
+0095          GET_LOCAL     0
+0097          GET_LOCAL     2
+0099          LT
+0100          BAND
+0101          GET_LOCAL     1
+0103          CONST         7    ; 0
+0106          LT
+0107          GET_LOCAL     0
+0109          GET_LOCAL     2
+0111          GT
+0112          BAND
+0113          BOR
+0114          JUMP_IF_FALSE 19
+0117          GET_LOCAL     0
+0119  line 16 GET_LOCAL     3
+0121          YAP           1 1
+0124  line 15 POP
+0125          GET_LOCAL     0
+0127          GET_LOCAL     1
+0129          ADD
+0130          SET_LOCAL     0
+0132          POP
+0133          LOOP          47
+0136          POP
+0137          POP
+0138          POP
+0139  line 18 CONST         10    ; "a"
+0142          CONST         11    ; "b"
+0145          BUILD_STASH   2
+0148          ITER_NEW
+0149          ITER_NEXT     9
+0152  line 19 GET_LOCAL     1
+0154          YAP           1 1
+0157  line 18 POP
+0158          LOOP          12
+0161          POP
+0162  line 21 FAX
+0163          JUMP_IF_FALSE 23
+0166  line 22 FAX
+0167          JUMP_IF_FALSE 6
+0170          JUMP          16
+0173          JUMP          0
+0176  line 23 CAP
+0177          JUMP_IF_FALSE 6
+0180          JUMP          3
+0183          JUMP          0
+0186  line 21 LOOP          27
+0189          GHOST
+0190          RETURN
+

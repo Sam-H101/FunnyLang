@@ -39,7 +39,14 @@ SAME_STDOUT = [
     ("xray", ["xray", "examples/hello.funny"]),
     ("xray --tokens", ["xray", "examples/hello.funny", "--tokens"]),
     ("xray --ast", ["xray", "examples/hello.funny", "--ast"]),
-    ("test tests/lang", ["test", "tests/lang"]),
+    # `examples`, not `tests/lang`: the latter now holds goldens using
+    # `.expected` directives (!ARGS, !EXIT, !DIAG, !XRAY) that only the native
+    # runner understands, because the Python one is being deleted in N11 and
+    # did not grow them. Comparing there would compare a feature against its
+    # absence. test_native_test_runner.py does the real `funny test`
+    # differential, over a staged corpus of the goldens both can express; this
+    # entry only needs to prove the *subcommand* dispatches identically.
+    ("test examples", ["test", "examples"]),
     ("test examples", ["test", "examples"]),
     ("fmt --check", ["fmt", "examples/fizzbuzz.funny", "--check"]),
 ]

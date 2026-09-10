@@ -1,0 +1,21 @@
+!XRAY
+== <script> (entry) (arity 0) ==
+0000  line 6  GHOST
+0001          YAP           1 1
+0004  line 7  FAX
+0005          YAP           1 1
+0008  line 8  CAP
+0009          YAP           1 1
+0012  line 9  CONST         0    ; "hi"
+0015          YAP           1 1
+0018  line 10 CONST         0    ; "hi"
+0021          YAP           1 1
+0024  line 11 CONST         1    ; 14
+0027          YAP           1 1
+0030  line 12 CONST         2    ; 1
+0033          CONST         3    ; 0
+0036          DIV
+0037          YAP           1 1
+0040          GHOST
+0041          RETURN
+

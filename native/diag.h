@@ -20,6 +20,15 @@
 typedef struct {
     bool serious; /* professional wording: --serious, or FUNNY_SERIOUS=1 */
     bool color;   /* ANSI colour */
+    /* Directory the source snippet's path is resolved against. NULL means
+       the process's working directory, which is right for `funny run` and
+       wrong for bytecode compiled somewhere else: a bundle stores each
+       module under a key relative to the *entry's* directory, so an error in
+       `tests/lang/err_caret.funny` names itself `err_caret.funny` and cannot
+       be found from the repository root. A caller that knows where the
+       bundle came from says so here and gets its caret line back. Borrowed,
+       not owned -- it must outlive the diag_render_error call. */
+    const char *sourceRoot;
 } DiagOptions;
 
 /* The defaults before any command-line flag is applied: `serious` from

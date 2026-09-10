@@ -1,0 +1,24 @@
+// if/elif/else jump counts, the backwards LOOP opcode both loop forms emit,
+// the iterator protocol for `grind ... in`, and break/continue as jumps.
+yo x = 5
+sus (x > 10) {
+    yap "big"
+} kinda_sus (x > 3) {
+    yap "mid"
+} nah {
+    yap "small"
+}
+yo n = 0
+bruh (n < 10) {
+    n += 1
+}
+grind i from 0 to 10 {
+    yap i
+}
+grind item in ["a", "b"] {
+    yap item
+}
+bruh (fax) {
+    sus (fax) { bail }
+    sus (cap) { nvm }
+}

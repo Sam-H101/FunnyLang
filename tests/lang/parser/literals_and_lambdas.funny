@@ -1,0 +1,11 @@
+// Template strings alternate literal and expression parts; stash, groupchat
+// and empty-groupchat literals; both lambda bodies and the variadic form.
+yo name = "sam"
+yo age = 3
+yo t = `yo {name}, you are {age}`
+yo st = [1, 2, 3]
+yo gc = {"a": 1, "b": 2}
+yo empty = {}
+yo f = lowkey (x) => x + 1
+yo g = lowkey (x) { bounce x * 2 }
+yo h = lowkey (...rest) => rest

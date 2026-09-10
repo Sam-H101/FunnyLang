@@ -2275,3 +2275,155 @@ gets an entry explaining what changed and why.
   workflow itself is written but unrun — it needs a tag and a GitHub runner matrix — so CI is what
   will confirm the rest. Said plainly rather than claimed.
 
+
+- **N11 task 2 · the pytest suite, test by test, with a disposition.** Task 2 says "no silent
+  deletions", so before a single `.py` is removed here is what is in `tests/` and what replaces it.
+  The suite is **469 test functions**, which `pytest` expands to **1,313 collected tests** through
+  `@parametrize`; the table counts *functions*, because that is the unit a replacement is written
+  against. Classifier: `build/n4/survey_pytest.py`, an AST walk that folds local string constants
+  before deciding, since most of `test_stdlib.py` hoists its source into a `src = (...)` local and a
+  naive reading calls that "not mechanical". **131 tests (27%) are already `.funny`/`.expected`
+  goldens wearing a `pytest` disguise** — `assert run_funny("...") == "..."`, with expected output a
+  person wrote as a specification, which is exactly the distinction drawn when "grow the goldens"
+  was chosen over "freeze today's output".
+
+  | file | fns | disposition |
+  |---|---:|---|
+  | `test_stdlib.py` | 82 | → `tests/lang/` goldens. 72 convert as-is; the rest need argv or an exit code, so they wait on the `.expected` directives below. |
+  | `test_vm.py` | 53 | → `tests/lang/` goldens; 40 convert as-is, the rest are error identity → `!ERROR <Flavor>`, which the runner already understands. |
+  | `test_squads.py` | 26 | → goldens; 18 as-is, 8 assert on emitted op sequences → `funny xray` disassembly goldens. |
+  | `test_lexer.py` | 46 | → `funny xray --tokens` goldens. It prints `Token(YO, 'yo', 1:1)` per line — the same kind/lexeme/value/position tuple the `lex`/`lex_kinds` helpers assert on. |
+  | `test_parser.py` | 81 | → `funny xray --ast` goldens. `--ast` prints the s-expression `dump_ast` produces (`(program (yo x (+ 1 2)) (yap x))`), so the 19 explicit `dump_ast` comparisons are a copy-paste and the `isinstance` ones become the shape of that s-expression. |
+  | `test_compiler.py` | 40 | → `funny xray` disassembly goldens; const-pool tag assertions become the `; 14` comments the disassembler already emits. |
+  | `test_resolver.py` | 30 | → `!ERROR` goldens (`WhoDis`, `ImmutableVibes`, `ParserHadAStroke` are all observable from outside) plus scope/shadowing behaviour goldens. |
+  | `test_serializer.py` | 12 | → a round-trip test written in FunnyLang against `selfhost/`'s own emitter, plus `funny xray --pak`. |
+  | `test_errors.py` | 10 | → diagnostic goldens; needs the runner to compare **stderr**, since a rendered diagnostic is the thing under test. |
+  | `test_modules.py` | 16 | → multi-file goldens under `tests/lang/modules/`; `funny test` already links a test through `build_bundle`, so a `gimme "sibling.funny"` works today. `FUNNYPATH` resolution needs `computer.env`, added in N8 task 6. |
+  | `test_hardening.py` | 10 | → goldens for the cycle-printing and Unicode cases; the five jump-widening tests become disassembly goldens; the "50k statements under 10s" budget becomes a `.funny` test using `clock`. |
+  | `test_cli.py` | 34 | → `.funny` tests driving the real binary through `sus.run_program`. Already mirrored by `tests/native/test_native_cli.py`, which is itself `pytest` and dies in task 5 — the port is from the *native* file, not the Python one. |
+  | `test_packager.py` | 8 | → `funny yeet` tests, ported from `tests/native/test_native_yeet.py` for the same reason. |
+  | `test_bootstrap.py` | 3 | → `funny bootstrap --verify`, already an N9 CI step and a strictly stronger check than two of these three. |
+  | `test_fuzz.py` | 2 | → `tests/fuzz.funny`, a seeded generator using `rizz`. A fuzzer that is not reproducible is a bug report you cannot act on, so the seed is fixed and printed. |
+  | `test_selfhost_*.py` (7 files) | 16 | **Dropped, and this is the one real loss.** Every one compares the Python implementation against `selfhost/` — the same source through two front ends, diffed. Delete Python and there is no second side to diff against; nothing can "replace" a differential test whose other half is gone. What remains is the bootstrap fixed point (`stage3` and `stage4` byte-identical), which checks the same compiler against itself rather than against an oracle. Weaker in kind, and worth saying so plainly rather than filing it under "replaced by". |
+
+  **Two mechanism gaps this survey exposed**, both prerequisites for task 1 rather than task 1 itself:
+
+  1. **`.expected` needs directives.** Today a golden is stdout-only, and the runner passes `[]` for
+     argv and ignores the exit code, so a whole class of test cannot be expressed. `!ERROR <Flavor>`
+     already establishes the pattern of a first-line directive; it generalises to `!ARGS`, `!EXIT`,
+     `!STDERR` and `!XRAY <flags>`. The primitives are all present — `sus.run_bytecode` has taken an
+     argv stash and returned a `code` since N8 — it is the runner that does not use them.
+  2. **A test cannot import a module above it.** A `.funnypak`'s keys are relative to the entry's
+     directory, so `tests/lang/foo.funny` cannot `gimme "../../selfhost/lexer.funny"` (logged
+     earlier in this section, in both implementations). That blocks the tidiest form of the lexer and
+     parser goldens — importing the front end and printing its output — which is why they go through
+     `funny xray` instead. That is not a workaround so much as the better test: it asserts on the
+     shipped command's output rather than on an internal call.
+
+- **N11 task 1 · `.expected` directives, and the first goldens that need them.** The survey above
+  said a golden could only ever be "stdout, byte for byte", plus the one special case of a first line
+  reading `!ERROR <Flavor>`. That is enough for a language test and nothing else: a program that
+  needs argv, or whose exit code *is* the assertion, or that is testing how a diagnostic **renders**
+  rather than which flavor it is, could not be written down at all. With a 1,313-test suite being
+  replaced by this corpus, "cannot be written down" means "coverage quietly lost", so the `!ERROR`
+  idea was generalised instead of special-cased further: any run of leading `!` lines in a
+  `.expected` is a directive block, and the body is what follows.
+
+  `!ARGS a b "two words"` · `!EXIT 3` · `!ERROR SkillIssue` · `!DIAG [serious]` · `!XRAY <flags>` ·
+  `!STDOUT`. An unrecognised directive **fails the test** rather than being read as body text —
+  quietly comparing against a line the author meant as an instruction turns a typo into a passing
+  test, which is the worst outcome on offer.
+
+  Three things had to exist under it:
+
+  1. **`sus.run_bytecode` returns `diag`** — the rendered §4.2 diagnostic as *text*, produced into a
+     `tmpfile()` by `diag_render_error` instead of printed. Colour is forced off so a golden cannot
+     depend on whether the machine running it has a terminal; `serious` is a caller option rather
+     than the process default, because the two renderings are different outputs and both need
+     testing. Third argument is an options groupchat, so the surface grew by one optional parameter.
+  2. **`DiagOptions.sourceRoot`** — without it a `!DIAG` golden loses its caret line, which is
+     exactly what `tests/test_errors.py::test_caret_points_at_correct_column` is *for*. A bundle
+     stores each module under a key relative to the entry's directory, so an error in
+     `tests/lang/errors/x.funny` names itself `x.funny` and cannot be found from the repository root.
+     The path is tried as given first, so `funny run` is unchanged, and only then rooted.
+  3. **`selfhost/xray.funny` returns its report instead of printing it** — `xray_lines`/`xray_text`
+     build the text, `xray` prints it. A golden needs the report as a value it can compare. This is
+     what carries the lexer, parser and compiler tests across: `funny test` imports `xray_text`
+     directly (both files live in `selfhost/`, so the bundle-key limitation does not bite).
+
+  **The differential against the Python `funny test` had to be narrowed, and that is not a dodge.**
+  `cli.py`'s runner does not understand the new directives and will not learn them — it is deleted in
+  task 5. Comparing the two over a corpus containing them compares a feature against its absence, so
+  `test_native_test_runner.py` now stages a copy of `tests/lang` and `examples` with the native-only
+  *goldens* removed and runs both over that. It copies the trees whole and deletes `.expected` files,
+  rather than picking pairs: a `.funny` with no golden is ignored by both runners but is still there
+  to be imported, and `examples/modules/main.funny` needs `mathstuff.funny`, which has no golden of
+  its own. The `test_native_cli.py` subcommand case moved to `examples` for the same reason.
+
+  **First goldens: 14, all verified against the Python oracle rather than captured.** Seven under
+  `tests/lang/lexer/` (`!XRAY --tokens`) and five under `tests/lang/parser/` (`!XRAY --ast`) were
+  diffed line by line against `funnylang.lexer` and `funnylang.ast_nodes.dump_ast` — 0 differences.
+  That check is only possible *now*, while the oracle still exists, which is the whole reason N11 is
+  ordered last. They cover every keyword (all 46), every operator including both maximal-munch
+  cases, all five number bases and float forms, string escapes down to the NUL, comment and newline
+  collapsing, CRLF folding, and the full precedence, associativity, pointer, slice, postfix,
+  assignment-target, literal and lambda tables. One `.gitattributes` exception was needed:
+  `tests/lang/lexer/crlf_newline.funny -text`, because `*.funny text eol=lf` would rewrite the file
+  whose CRLF *is* the test.
+
+  **Two product findings fell out, neither introduced here.**
+  - **`yapper.is_letter` is ASCII-only natively**, so `yapper.is_letter("中")` is `cap` where Python
+    says `fax`, and therefore `yo 変数 = 1` is a `LexerSaidNah` natively and lexes fine in Python.
+    This is the N4 AGENT CHOICE logged in `native/yapper.h` coming due: `native/unicode_tbl.c` and
+    its generator were deferred N4 → N5 → still absent, and `tools/` today holds only `bin2c.funny`.
+    **Nothing in the 1,313-test pytest suite catches it** — that suite runs the *Python* VM — and no
+    program in `tests/native/programs/` classifies a non-ASCII character either. Written up in
+    `tests/lang/lexer/README.md` with the goldens that go in when the tables land. This makes N11
+    task 3 bigger than "port a generator": the generator does not exist and never did.
+  - **`funny xray` exits 0 on a lexer error**, and the diagnostic labels the file `cli.funny` rather
+    than the file being x-rayed. Found while generating goldens; not fixed here.
+
+- **N11 task 1 (cont.) · a Windows bundler bug, found by running the new goldens on Windows.** The
+  first `!DIAG` golden passed on Linux and failed on MSVC, and the difference was the path inside the
+  diagnostic: `caret_points_at_column.funny` against
+  `F:/my_program_lang/tests/lang/errors/caret_points_at_column.funny`. Not a diagnostics bug —
+  **every module in every bundle built on Windows was keyed by its absolute path.**
+
+  `selfhost/bundler.funny`'s `canonical_name` strips the entry directory with a
+  `starts_with(entry_dir + "/")` test. On Windows `filez.abs_path` returns forward slashes (a
+  deliberate normalisation in `platform_abs_path`, with a comment saying the rest of the runtime
+  stays POSIX-style) while `filez.dir_of` and `filez.join_path` return **backslashes** — they were
+  changed to the native separator during N9 to match what `pathlib` renders. Each change is
+  defensible alone; together the prefix never matches and the strip silently does nothing.
+
+  Three consequences, none of which announce themselves: a `.funnypak` built on Windows is not
+  byte-identical to the same bundle built anywhere else; a `yeet`ed executable carries the builder's
+  directory layout into every diagnostic it ever prints; and the keys stop matching
+  `funnylang/modules.py`, which has always used `Path.relative_to(...).as_posix()`. Fixed by
+  normalising both sides before the comparison and emitting `/` — the reference's own format.
+  Verified by building the same file on both platforms: identical SHA-256, and
+  `bootstrap --verify` now reports the same 256,003 bytes on Windows as on Linux.
+
+  **Why it survived: `tests/native/` never runs on Windows.** `tests/conftest.py`'s `native_binary`
+  fixture builds with gcc-style flags, so `CC: msvc` makes it raise and every test skip; ci.yml's
+  differential steps are `if: runner.os != 'Windows'` for that reason. The Windows job proved the
+  code compiles and the binary starts, and nothing else. Rather than teach a fixture that gets
+  deleted in task 5 how to drive `cl`, the Windows job now runs `funny.exe test tests/lang` and
+  `funny.exe bootstrap --verify` — no Python, catches this class of bug, and is the shape *every*
+  CI step takes after N11 anyway.
+
+- **N11 task 1 (cont.) · seven compiler goldens, and what a disassembly golden cannot see.**
+  `tests/lang/compiler/` covers the opcode-level assertions of `tests/test_compiler.py`: the full
+  binary-operator table, the unary ops, all four short-circuit forms with their distinct keep-jumps
+  (`&&`→JUMP_IF_FALSE_KEEP, `||`→JUMP_IF_TRUE_KEEP, `??`→JUMP_IF_GHOST_KEEP, `?.`→GET_PROP_SAFE),
+  if/elif/else, both loop forms, the iterator protocol, break/continue, CALL vs INVOKE, upvalue
+  capture, the default-parameter ghost prologue, and `regardless` being compiled twice. All seven
+  diffed clean against `funnylang.disasm.disassemble`.
+
+  A golden of this shape asserts *more* than the pytest it replaces, which mostly checked
+  `"OPCODE" in ops`; the golden pins the offsets, the operands and the constant-pool comments too.
+  What it cannot see is proto **metadata** that the disassembler does not print: `is_variadic`,
+  `default_count`, `upvalue_count`. Those are covered behaviourally instead — `tests/lang/variadics.funny`
+  and the closure goldens exercise them — which is weaker than a direct structural assertion and is
+  recorded here rather than papered over. Printing them would change `funny xray`'s output format and
+  break its byte-identity with the Python disassembler, which is not a trade worth making for this.

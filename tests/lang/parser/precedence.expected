@@ -1,0 +1,2 @@
+!XRAY --ast
+(program (yo a (+ 1 (* 2 3))) (yo b (** 2 (** 3 2))) (yo c (** (- 2) 2)) (yo d (< (< 1 2) 3)) (yo e (< (+ 1 2) (* 3 4))) (yo f (?: a b (?: c d e))) (yo g (|> (|> a f) g)) (yo h (?? (?? a b) c)) (yo i (&& a b)) (yo j (&& a b)) (yo k (|| a b)) (yo l (|| a b)) (yo m (== a b)) (yo n (!= a b)) (yo o (! a)) (yo p (! a)) (yo q (\ 10 3)) (yo r (safe-get (safe-get a b) c)) (yo s (** 2 3)))

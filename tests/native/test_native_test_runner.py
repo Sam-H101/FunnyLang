@@ -15,6 +15,7 @@ for instead of burying the name in a `SkillIssue`).
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -61,11 +62,51 @@ def _python(target: str, cwd: Path = ROOT):
     return result
 
 
+# Directives the native runner understands and cli.py never will. N11 grows
+# the golden corpus to replace the pytest suite, and some of what it has to
+# replace -- argv, exit codes, the *rendering* of a diagnostic, token and AST
+# dumps -- cannot be written as bare stdout. `selfhost/test.funny` gained a
+# `.expected` directive block for it; the Python runner is being deleted, so
+# it did not.
+#
+# That makes the two runners genuinely different programs on those files, and
+# comparing them there would be comparing a feature against its absence. The
+# differential still has to mean something, so it runs over the subset both
+# can express, staged into a tmp tree that preserves the layout -- which keeps
+# the walk-order property this test is also checking.
+NATIVE_ONLY_DIRECTIVES = ("!ARGS", "!EXIT", "!DIAG", "!XRAY", "!STDOUT")
+
+
+def _is_shared_golden(expected: Path) -> bool:
+    head = expected.read_text(encoding="utf-8").split("\n", 1)[0]
+    return not head.startswith(NATIVE_ONLY_DIRECTIVES)
+
+
+@pytest.fixture(scope="session")
+def shared_corpus(tmp_path_factory):
+    """The corpus with the native-only *goldens* removed, structure intact.
+
+    Copies both trees whole and then deletes only the offending `.expected`
+    files, rather than copying the pairs it wants. A `.funny` left without a
+    golden is ignored by both runners (see
+    test_a_funny_file_with_no_golden_is_ignored) but is still there to be
+    imported -- `examples/modules/main.funny` needs `mathstuff.funny`, which
+    has no golden of its own and vanished when this picked files pair by pair.
+    """
+    root = tmp_path_factory.mktemp("shared_corpus")
+    for source in ("tests/lang", "examples"):
+        shutil.copytree(ROOT / source, root / source)
+    for expected in sorted(root.rglob("*.expected")):
+        if not _is_shared_golden(expected):
+            expected.unlink()
+    return root
+
+
 @pytest.mark.parametrize("target", ["tests/lang", "examples", "."])
-def test_matches_the_python_cli_over_the_real_corpus(native_binary, test_pak, target):
+def test_matches_the_python_cli_over_the_real_corpus(native_binary, test_pak, shared_corpus, target):
     """Every PASS/FAIL line, the blank line, the count, and the exit code."""
-    mine = _native(native_binary, test_pak, target)
-    theirs = _python(target)
+    mine = _native(native_binary, test_pak, target, cwd=shared_corpus)
+    theirs = _python(target, cwd=shared_corpus)
     assert mine.stdout == theirs.stdout
     assert mine.returncode == theirs.returncode == 0
 

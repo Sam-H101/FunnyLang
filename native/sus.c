@@ -27,6 +27,85 @@ static char *dup_cstr(const char *s) {
     return out;
 }
 
+/* The §4.2 diagnostic for `err`, rendered into memory instead of onto stderr,
+   so a test written in FunnyLang can compare it byte for byte.
+
+   Colour is forced off: a golden must not depend on whether the machine
+   running it has a terminal attached. `serious` is the caller's choice
+   rather than the process default for the opposite reason -- the two modes
+   are different renderings and both need testing, so the test says which one
+   it means instead of inheriting FUNNY_SERIOUS from whoever ran it.
+
+   Same tmpfile() trick as the stdout capture above, and for the same reason:
+   diag_render_error takes a plain FILE * and open_memstream is POSIX-only.
+   Returns NULL if the temp file could not be opened, which reads as `ghost`
+   on the FunnyLang side -- indistinguishable from "no error was raised", but
+   a test that asked for a diagnostic and got none fails either way. */
+static char *capture_diagnostic(const ObjError *err, size_t *outLen, bool serious,
+                                const char *sourceRoot) {
+    FILE *tmp = tmpfile();
+    if (tmp == NULL) return NULL;
+
+    DiagOptions opts;
+    opts.serious = serious;
+    opts.color = false;
+    opts.sourceRoot = sourceRoot;
+    diag_render_error(tmp, err, opts);
+
+    fflush(tmp);
+    long end = ftell(tmp);
+    if (end <= 0) {
+        fclose(tmp);
+        return NULL;
+    }
+    size_t n = (size_t)end;
+    char *text = (char *)malloc(n + 1);
+    rewind(tmp);
+    n = fread(text, 1, n, tmp);
+    text[n] = '\0';
+    fclose(tmp);
+    *outLen = n;
+    return text;
+}
+
+/* sus.render_diag(err, opts?) -- the §4.2 diagnostic for an error you are
+   *holding*, as text.
+
+   `sus.run_bytecode`'s `diag` covers an error that escaped a child VM, and
+   that is most of them; it cannot cover an error raised while the program was
+   being *compiled*, because there is no child yet. `funny test` hits exactly
+   that: a golden for a parse or resolve error is caught by the runner's own
+   `my_bad`, and without this there is no way to turn what it caught back into
+   the text a person would have seen. Same options as run_bytecode's third
+   argument, and the same reasons: colour off so a golden does not depend on
+   having a terminal, `serious` chosen by the caller, `source_dir` for the
+   caret line when the recorded path is relative to a bundle entry. */
+static Value m_render_diag(VM *vm, Value *a, int argc) {
+    if (!(IS_OBJ(a[0]) && AS_OBJ(a[0])->type == OBJ_ERROR)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'render_diag' needs an error, not a %s.",
+                        vm_type_name(a[0]));
+        return GHOST_VAL;
+    }
+
+    bool serious = false;
+    char *sourceRoot = NULL;
+    if (argc > 1 && IS_OBJ(a[1]) && AS_OBJ(a[1])->type == OBJ_GROUPCHAT) {
+        ObjGroupChat *o = (ObjGroupChat *)AS_OBJ(a[1]);
+        GroupChatEntry *e = groupchat_find(o, OBJ_VAL(string_new(&vm->gc, "serious", 7)));
+        if (e != NULL) serious = value_is_truthy(e->value);
+        e = groupchat_find(o, OBJ_VAL(string_new(&vm->gc, "source_dir", 10)));
+        if (e != NULL && IS_STRING(e->value)) sourceRoot = dup_cstr(AS_STRING(e->value)->chars);
+    }
+
+    size_t len = 0;
+    char *text = capture_diagnostic((const ObjError *)AS_OBJ(a[0]), &len, serious, sourceRoot);
+    free(sourceRoot);
+    if (text == NULL) return GHOST_VAL;
+    Value out = OBJ_VAL(string_new(&vm->gc, text, (uint32_t)len));
+    free(text);
+    return out;
+}
+
 static Value m_type_of(VM *vm, Value *a, int argc) {
     (void)argc;
     const char *name = vm_type_name(a[0]);
@@ -92,6 +171,21 @@ static Value m_dump(VM *vm, Value *a, int argc) {
  * stderr is *not* redirected: an uncaught error is reported through the
  * returned `flavor`/`message` rather than by printing a diagnostic, so
  * there is nothing for the child to write there.
+ *
+ * `diag` is that diagnostic anyway, as text -- the same §4.2 rendering
+ * `funny run` prints on stderr, produced here into a second temp file and
+ * handed back instead of printed. It exists because the *rendering* is a
+ * thing worth testing (caret column, hint, roast, the presence or absence of
+ * a stack of shame), and with the Python suite gone the only way to test it
+ * is from inside the language. `ghost` when nothing was raised.
+ *
+ * Optional third argument: a groupchat of options, both affecting `diag`
+ * only. `serious` chooses which of the two renderings to produce -- both are
+ * worth testing, so the caller says which it means rather than inheriting
+ * FUNNY_SERIOUS from whoever ran the test. `source_dir` is where the
+ * snippet's source file is looked up when the recorded path does not resolve
+ * from the working directory, which is the normal case for a bundle: module
+ * keys are relative to the entry's directory, not to wherever it is run.
  */
 static Value m_run_bytecode(VM *vm, Value *a, int argc) {
     if (!(IS_OBJ(a[0]) && AS_OBJ(a[0])->type == OBJ_STASH)) {
@@ -110,6 +204,18 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
             return GHOST_VAL;
         }
         data[i] = (uint8_t)AS_INT(b);
+    }
+
+    /* Copied out of the caller's heap, because the child VM runs -- and can
+       collect -- between here and the render. */
+    bool serious = false;
+    char *sourceRoot = NULL;
+    if (argc > 2 && IS_OBJ(a[2]) && AS_OBJ(a[2])->type == OBJ_GROUPCHAT) {
+        ObjGroupChat *o = (ObjGroupChat *)AS_OBJ(a[2]);
+        GroupChatEntry *e = groupchat_find(o, OBJ_VAL(string_new(&vm->gc, "serious", 7)));
+        if (e != NULL) serious = value_is_truthy(e->value);
+        e = groupchat_find(o, OBJ_VAL(string_new(&vm->gc, "source_dir", 10)));
+        if (e != NULL && IS_STRING(e->value)) sourceRoot = dup_cstr(AS_STRING(e->value)->chars);
     }
 
     /* Program args for the child's own the_args(). Read out of the caller's
@@ -153,6 +259,8 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
     size_t outLen = 0;
     char *flavor = NULL;
     char *message = NULL;
+    char *diagText = NULL;
+    size_t diagLen = 0;
     int64_t exitCode = 0;
 
     if (!unit && !pak) {
@@ -184,6 +292,7 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
                 flavor = dup_cstr(e->flavor->chars);
                 message = dup_cstr(e->message->chars);
                 exitCode = strcmp(e->flavor->chars, "ComputerExploded") == 0 ? 69 : 1;
+                diagText = capture_diagnostic(e, &diagLen, serious, sourceRoot);
             }
         }
     }
@@ -204,12 +313,16 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
                   flavor != NULL ? OBJ_VAL(string_new(&vm->gc, flavor, (uint32_t)strlen(flavor))) : GHOST_VAL);
     groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "message", 7)),
                   message != NULL ? OBJ_VAL(string_new(&vm->gc, message, (uint32_t)strlen(message))) : GHOST_VAL);
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "diag", 4)),
+                  diagText != NULL ? OBJ_VAL(string_new(&vm->gc, diagText, (uint32_t)diagLen)) : GHOST_VAL);
     groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "code", 4)), INT_VAL(exitCode));
     gc_pop_temp(&vm->gc);
 
     free(outText);
     free(flavor);
     free(message);
+    free(diagText);
+    free(sourceRoot);
     return OBJ_VAL(out);
 }
 
@@ -436,7 +549,8 @@ static const SusEntry SUS_FUNCTIONS[] = {
     {"is_a", m_is_a, 2, 2},
     {"stack_trace", m_stack_trace, 0, 0},
     {"dump", m_dump, 1, 1},
-    {"run_bytecode", m_run_bytecode, 1, 2},
+    {"run_bytecode", m_run_bytecode, 1, 3},
+    {"render_diag", m_render_diag, 1, 2},
     {"run_program", m_run_program, 1, 3},
     {"new_session", m_new_session, 0, 0},
     {"run_in", m_run_in, 2, 3},

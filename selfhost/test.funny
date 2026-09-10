@@ -20,6 +20,7 @@ gimme filez
 gimme sus
 gimme yapper
 gimme { build_bundle, emit_funnypak } from "bundler.funny"
+gimme { xray_text } from "xray.funny"
 
 // A guard against a symlink loop, not a real depth limit.
 deadass MAX_WALK_DEPTH = 64
@@ -75,15 +76,151 @@ flex bet find_pairs(dir_path) {
     bounce found
 }
 
+// -- `.expected` directives -------------------------------------------------
+//
+// A golden used to be stdout and nothing else, plus the one special case of a
+// first line reading `!ERROR <Flavor>`. That covers a surprising amount, and
+// then stops dead: a program that needs argv, or whose exit code is the point,
+// or that is testing the *rendering* of a diagnostic rather than its flavor,
+// simply cannot be written down. N11 replaces a 1,300-test pytest suite with
+// this corpus, so "cannot be written down" means "coverage silently lost".
+//
+// So the `!ERROR` idea generalises: any run of leading `!` lines is a
+// directive block, and the body is whatever follows it.
+//
+//     !ARGS a b "two words"   argv for the program (the_args())
+//     !EXIT 3                 required exit code (dip(n), or 1 / 69 on error)
+//     !ERROR SkillIssue       required error flavor; body ignored
+//     !DIAG                   body is the rendered diagnostic, funny mode
+//     !DIAG serious           ... serious mode
+//     !XRAY --tokens          body is `funny xray --tokens` output; not run
+//     !STDOUT                 body starts here (only needed if it begins "!")
+//
+// An unrecognised directive fails the test rather than being treated as body
+// text. The alternative -- quietly comparing against a line the author meant
+// as an instruction -- turns a typo into a passing test, which is the worst
+// outcome available.
+flex bet parse_directives(golden) {
+    yo spec = {
+        "args": [],
+        "exit": ghost,
+        "error": ghost,
+        "diag": cap,
+        "serious": cap,
+        "xray": ghost,
+        "body": golden,
+        "bad": ghost,
+    }
+    yo lines = yapper.lines(golden)
+    yo taken = 0
+    grind i from 0 to lines.how_thicc() {
+        yo line = lines[i]
+        sus (!yapper.starts_with(line, "!")) {
+            bail
+        }
+        taken += 1
+        yo name = line
+        yo rest = ""
+        yo sp = yapper.index_of(line, " ")
+        sus (sp >= 0) {
+            name = yapper.slice(line, 0, sp)
+            rest = yapper.trim(yapper.slice(line, sp + 1))
+        }
+        sus (name == "!ARGS") {
+            spec["args"] = split_args(rest)
+        } kinda_sus (name == "!EXIT") {
+            spec["exit"] = to_int(rest)
+        } kinda_sus (name == "!ERROR") {
+            spec["error"] = rest
+        } kinda_sus (name == "!DIAG") {
+            spec["diag"] = fax
+            spec["serious"] = rest == "serious"
+        } kinda_sus (name == "!XRAY") {
+            spec["xray"] = rest
+        } kinda_sus (name == "!STDOUT") {
+            // Nothing to record: its whole job is to end the block.
+        } nah {
+            spec["bad"] = "unknown directive " + name
+            bounce spec
+        }
+    }
+    // `lines` drops the separators, so the body is rebuilt from the original
+    // text rather than re-joined -- a golden's trailing newline is part of
+    // what it asserts, and re-joining would guess at it.
+    yo skip = 0
+    grind i from 0 to taken {
+        yo nl = yapper.index_of(yapper.slice(golden, skip), "\n")
+        sus (nl < 0) {
+            skip = golden.how_thicc()
+            bail
+        }
+        skip += nl + 1
+    }
+    spec["body"] = yapper.slice(golden, skip)
+    bounce spec
+}
+
+// Whitespace-separated, with "..." grouping a single argument that contains
+// spaces. No escape sequences: an argument with a quote in it has never come
+// up, and inventing a quoting language for a test header is how test headers
+// become their own thing to debug.
+flex bet split_args(text) {
+    yo out = []
+    yo cur = []
+    yo inQuote = cap
+    grind ch in text.chars() {
+        sus (ch == "\"") {
+            inQuote = !inQuote
+        } kinda_sus ((ch == " " || ch == "\t") fr !inQuote) {
+            sus (cur.how_thicc() > 0) {
+                out.yeet_in(cur.join(""))
+                cur = []
+            }
+        } nah {
+            cur.yeet_in(ch)
+        }
+    }
+    sus (cur.how_thicc() > 0) {
+        out.yeet_in(cur.join(""))
+    }
+    bounce out
+}
+
 // Returns [ok, detail]. `detail` is only read when ok is cap.
 flex bet run_one_test(path) {
     yo golden = filez.slurp(yapper.slice(path, 0, path.how_thicc() - 6) + ".expected")
+    yo spec = parse_directives(golden)
+    sus (spec["bad"] != ghost) {
+        bounce [cap, spec["bad"]]
+    }
 
-    sus (yapper.starts_with(golden, "!ERROR")) {
-        yo wanted = yapper.trim(yapper.slice(yapper.lines(golden)[0], 6))
+    // Not run at all: the report *is* the subject. This is what carries the
+    // lexer, parser and compiler tests across from pytest, which asserted on
+    // token streams, AST dumps and op sequences.
+    sus (spec["xray"] != ghost) {
+        yo flags = split_args(spec["xray"])
+        yo actual = ghost
+        sketchy {
+            actual = xray_text(path, has(flags, "--tokens"), has(flags, "--ast"), has(flags, "--pak"))
+        } my_bad (e) {
+            bounce [cap, "xray failed: " + e.flavor + ": " + e.message]
+        }
+        sus (actual == spec["body"]) {
+            bounce [fax, ""]
+        }
+        bounce [cap, "expected " + py_repr_str(spec["body"]) + ", got " + py_repr_str(actual)]
+    }
+
+    // `source_dir` so a `!DIAG` golden gets its caret line: the bundle stores
+    // each module under a key relative to the entry's directory, so the path
+    // in the error does not resolve from wherever `funny test` was run.
+    yo opts = {"serious": spec["serious"], "source_dir": filez.dir_of(path)}
+
+    sus (spec["error"] != ghost) {
+        yo wanted = spec["error"]
         yo got = ghost
         sketchy {
-            yo r = sus.run_bytecode(compile_to_bytes(path), [])
+            yo r = sus.run_bytecode(compile_to_bytes(path), spec["args"], opts)
             got = r["flavor"]
         } my_bad (e) {
             // A compile-time failure -- an undefined variable, a const
@@ -98,19 +235,57 @@ flex bet run_one_test(path) {
     }
 
     yo actual = ghost
+    yo code = 0
+    yo rendered = ghost
     sketchy {
-        yo r = sus.run_bytecode(compile_to_bytes(path), [])
-        sus (r["flavor"] != ghost) {
+        yo r = sus.run_bytecode(compile_to_bytes(path), spec["args"], opts)
+        code = r["code"]
+        rendered = r["diag"]
+        // An error is only a surprise when the golden did not ask for one.
+        // A `!DIAG` golden is *about* the error, and an `!EXIT` golden may be
+        // asserting the 1 or 69 that an uncaught one produces.
+        sus (r["flavor"] != ghost fr !spec["diag"] fr spec["exit"] == ghost) {
             bounce [cap, "unexpected error: " + r["flavor"] + ": " + r["message"]]
         }
         actual = r["out"]
     } my_bad (e) {
-        bounce [cap, "unexpected error: " + e.flavor + ": " + e.message]
+        // A *compile-time* failure: a parse or resolve error, raised before
+        // there was a child VM to run, so `run_bytecode` never got the chance
+        // to render anything. `sus.render_diag` turns the error we are
+        // holding into the same text. This is not a rare corner -- half of
+        // what a diagnostics golden wants to pin (caret column, no stack of
+        // shame on a compile error, the exact wording) only happens here.
+        sus (spec["diag"]) {
+            rendered = sus.render_diag(e, opts)
+        } nah {
+            bounce [cap, "unexpected error: " + e.flavor + ": " + e.message]
+        }
     }
-    sus (actual == golden) {
+
+    sus (spec["exit"] != ghost fr code != spec["exit"]) {
+        bounce [cap, "expected exit " + to_yap(spec["exit"]) + ", got " + to_yap(code)]
+    }
+
+    sus (spec["diag"]) {
+        sus (rendered == ghost) {
+            bounce [cap, "expected a diagnostic, but nothing was raised"]
+        }
+        actual = rendered
+    }
+
+    sus (actual == spec["body"]) {
         bounce [fax, ""]
     }
-    bounce [cap, "expected " + py_repr_str(golden) + ", got " + py_repr_str(actual)]
+    bounce [cap, "expected " + py_repr_str(spec["body"]) + ", got " + py_repr_str(actual)]
+}
+
+flex bet has(stash, name) {
+    grind s in stash {
+        sus (s == name) {
+            bounce fax
+        }
+    }
+    bounce cap
 }
 
 // Linked, not just compiled: a test program may `gimme "sibling.funny"`,

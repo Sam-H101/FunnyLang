@@ -1,0 +1,69 @@
+!XRAY
+== bet add (arity 2) ==
+0000  line 12 GET_LOCAL     0
+0002          GET_LOCAL     1
+0004          ADD
+0005          RETURN
+0006  line 11 GHOST
+0007          RETURN
+
+== bet <lowkey> (arity 0) ==
+0000  line 20 GET_UPVAL     0
+0002          CONST         3    ; 1
+0005          ADD
+0006          SET_UPVAL     0
+0008          POP
+0009  line 21 GET_UPVAL     0
+0011          RETURN
+0012  line 19 GHOST
+0013          RETURN
+
+== bet counter (arity 0) ==
+0000  line 18 CONST         7    ; 0
+0003  line 19 CLOSURE       8    ; proto #1 [local:0]
+0008          RETURN
+0009  line 17 GHOST
+0010          RETURN
+
+== bet greet (arity 2) ==
+0000  line 25 GET_LOCAL     1
+0002          GHOST
+0003          EQ
+0004          JUMP_IF_FALSE 6
+0007          CONST         11    ; "yo"
+0010          SET_LOCAL     1
+0012          POP
+0013  line 26 GET_LOCAL     1
+0015          RETURN
+0016  line 25 GHOST
+0017          RETURN
+
+== bet variadic (arity 0) ==
+0000  line 30 GET_LOCAL     0
+0002          RETURN
+0003  line 29 GHOST
+0004          RETURN
+
+== <script> (entry) (arity 0) ==
+0000  line 9  IMPORT        0 2
+0004          DEF_GLOBAL    0    ; "mafs"
+0007  line 11 CLOSURE       1    ; proto #0
+0010          DEF_GLOBAL    2    ; "add"
+0013  line 14 GET_GLOBAL    2    ; "add"
+0016          CONST         3    ; 1
+0019          CONST         4    ; 2
+0022          CALL          2
+0024          YAP           1 1
+0027  line 15 GET_GLOBAL    0    ; "mafs"
+0030          CONST         5    ; 16
+0033          INVOKE        6 1    ; "sqrt"
+0037          YAP           1 1
+0040  line 17 CLOSURE       9    ; proto #2
+0043          DEF_GLOBAL    10    ; "counter"
+0046  line 25 CLOSURE       12    ; proto #3
+0049          DEF_GLOBAL    13    ; "greet"
+0052  line 29 CLOSURE       14    ; proto #4
+0055          DEF_GLOBAL    15    ; "variadic"
+0058          GHOST
+0059          RETURN
+

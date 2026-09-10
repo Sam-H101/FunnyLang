@@ -1,0 +1,31 @@
+// Each function gets its own proto, so the disassembly below shows them all:
+// arity, upvalue count, variadic flag and default-parameter prologue are
+// visible in the headers rather than only in the Python `FunctionProto`
+// fields tests/test_compiler.py used to reach into.
+//
+// `add(1, 2)` is a plain CALL; `mafs.sqrt(16)` is an INVOKE. `counter`'s
+// lambda captures `n`, so its body uses GET_UPVAL and SET_UPVAL. `greet`
+// opens with the "was this argument left out?" ghost check.
+gimme mafs
+
+bet add(a, b) {
+    bounce a + b
+}
+yap add(1, 2)
+yap mafs.sqrt(16)
+
+bet counter() {
+    yo n = 0
+    bounce lowkey () => {
+        n += 1
+        bounce n
+    }
+}
+
+bet greet(name, greeting = "yo") {
+    bounce greeting
+}
+
+bet variadic(...rest) {
+    bounce rest
+}
