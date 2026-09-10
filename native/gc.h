@@ -27,7 +27,20 @@ struct GC {
     Obj *objects;
     size_t bytesAllocated;
     size_t nextGC; /* collect when bytesAllocated exceeds this */
-    bool stressMode; /* FUNNY_GC_STRESS=1: collect on every allocation */
+    /* FUNNY_GC_STRESS: collect every `stressPeriod` *safepoints* rather than
+       waiting for the byte threshold -- a safepoint being a call to
+       gc_maybe_collect, which is every allocation site plus the top of the
+       dispatch loop. 0 is off; 1 (the documented value) collects at every
+       one of them.
+
+       A larger period costs proportionally less and still finds a missing
+       root: an unrooted object only has to survive `stressPeriod` safepoints
+       to be collected out from under the C local holding it. That is what
+       lets CI run the whole corpus under stress rather than a chosen few --
+       at 1, compiling a single trivial golden with the self-hosted compiler
+       takes 2.8 s against 0.005 s without. */
+    unsigned stressPeriod;
+    unsigned stressCounter;
 
     Obj **grayStack;
     int grayCount;
@@ -72,8 +85,8 @@ void gc_mark_object(GC *gc, Obj *obj);
 
 /* Runs a full mark-sweep collection right now, unconditionally. */
 void gc_collect(GC *gc);
-/* What allocators call instead: collects only if stressMode is set or the
-   heap has grown past nextGC since the last collection. */
+/* What allocators call instead: collects when the stress period comes round,
+   or when the heap has grown past nextGC since the last collection. */
 void gc_maybe_collect(GC *gc);
 
 #endif /* FUNNY_GC_H */

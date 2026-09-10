@@ -24,7 +24,16 @@ void gc_init(GC *gc) {
     gc->objects = NULL;
     gc->bytesAllocated = 0;
     gc->nextGC = INITIAL_NEXT_GC;
-    gc->stressMode = getenv("FUNNY_GC_STRESS") != NULL;
+    /* Any non-empty value turns stress on, as it always did. A positive
+       integer sets the period; anything else means 1, so FUNNY_GC_STRESS=1
+       and FUNNY_GC_STRESS=yes both still collect on every allocation. */
+    const char *stress = getenv("FUNNY_GC_STRESS");
+    gc->stressPeriod = 0;
+    gc->stressCounter = 0;
+    if (stress != NULL && stress[0] != '\0') {
+        long period = strtol(stress, NULL, 10);
+        gc->stressPeriod = period > 0 ? (unsigned)period : 1u;
+    }
 
     gc->grayStack = NULL;
     gc->grayCount = 0;
@@ -351,7 +360,12 @@ void gc_collect(GC *gc) {
 }
 
 void gc_maybe_collect(GC *gc) {
-    if (gc->stressMode || gc->bytesAllocated > gc->nextGC) {
+    if (gc->stressPeriod != 0 && ++gc->stressCounter >= gc->stressPeriod) {
+        gc->stressCounter = 0;
+        gc_collect(gc);
+        return;
+    }
+    if (gc->bytesAllocated > gc->nextGC) {
         gc_collect(gc);
     }
 }

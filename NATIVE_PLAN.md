@@ -2990,3 +2990,39 @@ gets an entry explaining what changed and why.
   machine — so it compiles the *code* in the Apple branch and never the *headers* that branch
   includes. A harness that stubs a platform cannot test that platform's headers. Written into the
   script rather than left to be rediscovered.
+
+- **`FUNNY_GC_STRESS` over the whole corpus was unusable, and that is N11's doing.** The Ubuntu job
+  sat for hours. Not a hang — the log ending mid-corpus was a 4 KB stdout buffer flush, not the point
+  it stopped.
+
+  The cause is a change in *what* is under stress. The old differential suite had Python compile each
+  program and the C VM merely run it, so stress covered execution. `funny test` compiles each golden
+  itself, with the self-hosted compiler — a large FunnyLang program and by far the biggest allocator
+  in the system — so stress now covers compilation too. Measured: one trivial golden takes **2.8 s**
+  under stress against **0.005 s** without. That is 550×, per test, 376 times, and the goldens that
+  drive the whole toolchain are far worse again.
+
+  **`FUNNY_GC_STRESS` gained a period rather than the corpus losing tests.** `=1` still means every
+  safepoint — the documented value, what every note here says, and what you want when hunting one
+  specific missing root. `=N` collects every Nth, which still finds an unrooted object (it only has
+  to survive N safepoints to be collected out from under the C local holding it) at 1/N of the cost.
+  Any non-empty value still turns it on, so `=0` and `=yes` behave as they always did.
+
+  | | whole corpus |
+  |---|---|
+  | no stress | 8.6 s |
+  | `FUNNY_GC_STRESS=200` | 26.3 s, 376/376 |
+  | `FUNNY_GC_STRESS=50` | 80.8 s, 376/376 |
+  | `FUNNY_GC_STRESS=1` | hours |
+
+  CI uses 50, over **all 376 goldens** rather than a hand-picked few — better coverage than before,
+  in a minute and a half.
+
+  **Checked that the cheaper stress still works, rather than assuming.**
+  `build/n4/gc_root_canary.py` deliberately removes the `gc_push_temp` protecting the result
+  groupchat in `sus.run_bytecode`, rebuilds, and runs the corpus: period 50 catches it exactly as
+  period 1 does, both dumping core. Then it puts the root back and rebuilds. Making a check cheaper
+  is worth nothing if it stops finding the bug it exists for.
+
+  **Every job also gained a `timeout-minutes`.** The failure being fixed is "sat for hours", and a
+  job that cannot say when it has gone wrong will do it again for some other reason.

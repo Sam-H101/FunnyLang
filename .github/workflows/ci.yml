@@ -32,6 +32,10 @@ jobs:
     # everything the toolchain can do with the binary it just built.
     name: native (${{ matrix.os }}, ${{ matrix.cc }})
     runs-on: ${{ matrix.os }}
+    # A ceiling, not an estimate: the whole job is minutes. If it is ever
+    # anywhere near this, something has gone wrong and sitting there for six
+    # hours helps nobody.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -152,13 +156,25 @@ jobs:
           funny.exe --version || exit /b 1
           funny.exe test tests\lang || exit /b 1
 
-      # The collector's own stress mode: collect at every safe point rather
-      # than on the usual schedule. Slow, which is why it is one job and not
-      # every job.
+      # The collector's own stress mode, at a period rather than at every
+      # safepoint. `FUNNY_GC_STRESS=1` collects at *every* one, which is what
+      # you want when hunting a specific missing root and is unusable across a
+      # corpus: `funny test` compiles each golden with the self-hosted
+      # compiler, so stress covers compilation as well as execution, and one
+      # trivial golden goes from 0.005 s to 2.8 s. Measured over all 376:
+      #
+      #     no stress             8.6 s
+      #     FUNNY_GC_STRESS=200  26.3 s
+      #     FUNNY_GC_STRESS=50   80.8 s
+      #     FUNNY_GC_STRESS=1    hours
+      #
+      # 50 still finds an unrooted object -- it only has to survive 50
+      # safepoints to be collected out from under the C local holding it --
+      # and covers the whole corpus rather than a chosen few.
       - name: The corpus under FUNNY_GC_STRESS
         if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc'
         env:
-          FUNNY_GC_STRESS: "1"
+          FUNNY_GC_STRESS: "50"
         run: |
           set -eu
           ./build.sh
@@ -172,6 +188,7 @@ jobs:
     name: no-python (debian, cc only)
     runs-on: ubuntu-latest
     container: debian:12
+    timeout-minutes: 20
 
     env:
       FUNNY_NO_NET: "1"
@@ -258,6 +275,7 @@ jobs:
     # binary that the blob is inside.
     name: generated artifacts are not stale
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
