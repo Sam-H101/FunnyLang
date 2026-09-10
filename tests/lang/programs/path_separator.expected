@@ -1,0 +1,7 @@
+separator is one character: fax
+it is / or backslash: fax
+join uses it throughout: fax
+dir_of splits on it: fax
+base_of splits on it: fax
+round trip: fax
+forward slashes still split: fax

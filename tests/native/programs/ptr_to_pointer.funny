@@ -1,8 +1,0 @@
-// Pointers to pointers need no special support: a pointa is an ordinary
-// value, so `&p` and `**pp` work by composition (PLAN.md §3.10).
-yo v = 5
-yo p1 = &v
-yo p2 = &p1
-yap **p2
-**p2 = 42
-yap v

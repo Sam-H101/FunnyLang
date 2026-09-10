@@ -1,0 +1,29 @@
+// The one thing modules_filez.funny cannot assert, because it normalises
+// separators away so that one `.expected` works on every platform: that
+// `join_path` actually uses the *platform's* separator, and that `dir_of`
+// and `base_of` split on the same one.
+//
+// The expectation is derived rather than hard-coded -- `join_path("a", "b")`
+// is asked what the separator is, and everything else is checked against
+// that answer. So this golden is identical on Windows and POSIX while still
+// failing if the three functions ever stop agreeing with each other.
+gimme filez
+gimme yapper
+
+yo sep = yapper.slice(filez.join_path("a", "b"), 1, 2)
+yap "separator is one character: " + to_yap(sep.how_thicc() == 1)
+yap "it is / or backslash: " + to_yap(sep == "/" || sep == "\\")
+
+yo joined = filez.join_path("a", "b", "c.txt")
+yap "join uses it throughout: " + to_yap(joined == "a" + sep + "b" + sep + "c.txt")
+yap "dir_of splits on it: " + to_yap(filez.dir_of(joined) == "a" + sep + "b")
+yap "base_of splits on it: " + to_yap(filez.base_of(joined) == "c.txt")
+
+// A round trip through all three, which is the property that actually
+// matters and holds regardless of which character it is.
+yo rebuilt = filez.join_path(filez.dir_of(joined), filez.base_of(joined))
+yap "round trip: " + to_yap(rebuilt == joined)
+
+// Forward slashes are accepted as input on every platform, so a path typed
+// POSIX-style still splits correctly even where the separator is not "/".
+yap "forward slashes still split: " + to_yap(filez.base_of("a/b/c.txt") == "c.txt")

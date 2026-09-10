@@ -2842,3 +2842,41 @@ gets an entry explaining what changed and why.
   `bootstrap/STAGE0.md` loses its "while the Python implementation still exists" escape hatch and
   gains the real recovery procedure: check out the last commit whose blob works, build it, compile
   the current `selfhost/` with it, and let `bootstrap --verify` prove the fixed point.
+
+- **N11 task 5 · `funnylang/` is gone.** Deleted after a final `pytest` run reporting
+  `1313 passed` with its own exit status checked (not a pipeline's — that mistake has been made
+  three times in this plan and each time the pipe was `tail`):
+
+  - `funnylang/` — 33 files: the lexer, parser, resolver, compiler, VM, serializer, packager,
+    diagnostics and the whole `stdlib/`.
+  - `tests/*.py` — 22 files, 469 test functions, 1,313 collected tests.
+  - `tests/native/` — the differential suite. Its *corpus* survives as `tests/lang/programs/`.
+  - `tests/conftest.py`, `pyproject.toml`, `tests/golden/hello.disasm`.
+  - The Python entries in `.gitignore`. Keeping `__pycache__/` and `.pytest_cache/` there would
+    quietly hide the exact thing CI now checks for.
+
+  **`find . -name '*.py'` returns nothing.** Building needs a C compiler; testing needs the binary
+  that build produces. Verified on both platforms after the deletion, from a tree with no Python in
+  it: **376/376 goldens**, `tests/slow` and `examples` green, the bootstrap fixed point byte-identical
+  at 272,112 bytes, `yeet` producing a working executable, the REPL answering, and the whole sequence
+  again under `env -i` with no PATH at all.
+
+  **Three goldens needed adjusting once the reference was no longer beside them**, each recorded in
+  `tests/lang/programs/README.md`. All three were invisible to the differential suite for the same
+  structural reason: it ran *both* implementations on the same machine in the same process
+  environment, so a platform- or environment-dependent answer matched itself.
+  - `join_path` and friends use the OS separator, so the path assertions now print through a
+    normaliser — and `path_separator.funny` pins the separator by *deriving* the expectation from
+    `join_path` rather than hard-coding either answer.
+  - Windows' `GetTempFileName` truncates a temp-file prefix to three characters.
+  - `filez.exists(computer.exe_path())` is a property of the host process, not the language: the
+    reference itself answered `fax` when run as a script and `cap` when run from stdin. Two captures
+    of the same program disagreeing is the signal that the question was wrong.
+
+**N11 acceptance, checked:**
+- `find . -name '*.py'` returns nothing. ✔
+- CI is green with no Python installed on any runner — the `no-python` container job is now the
+  ordinary case rather than the special one, and it asserts there is no `.py` in the repository as
+  well as none on PATH. ✔
+- The coverage gap is written down in §9, file by file, with dispositions and with the four things
+  genuinely not covered named. ✔

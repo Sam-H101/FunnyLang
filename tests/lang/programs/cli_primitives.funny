@@ -27,7 +27,11 @@ sketchy {
 yo exe = computer.exe_path()
 yap what_is_it(exe)
 yap exe.how_thicc() > 0
-yap filez.exists(exe)
+// `filez.exists(exe)` is deliberately not asked. It is a property of the
+// host process rather than of the language: the reference answered `fax`
+// when run as a script and `cap` when run from stdin, because it reported
+// argv[0]. The native runtime always names a real file, so the question is
+// only interesting where the answer is unstable.
 yap filez.is_dir(filez.dir_of(exe))
 
 // -- filez.temp_file ------------------------------------------------------
@@ -35,7 +39,11 @@ yo tmp = filez.temp_file("cliprims")
 yap what_is_it(tmp)
 yap filez.exists(tmp)
 yap filez.is_file(tmp)
-yap yapper.contains(filez.base_of(tmp), "cliprims")
+// Three characters, not the whole prefix: Windows' GetTempFileName truncates
+// a prefix to three, so `temp_file("cliprims")` yields `cliXXXX.tmp` there
+// and `cliprimsXXXX` elsewhere. The part that matters -- the caller's prefix
+// reaching the name at all -- holds on both.
+yap yapper.contains(filez.base_of(tmp), "cli")
 // Two calls never collide.
 yo tmp2 = filez.temp_file("cliprims")
 yap tmp != tmp2

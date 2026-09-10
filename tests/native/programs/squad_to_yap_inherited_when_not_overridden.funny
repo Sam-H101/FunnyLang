@@ -1,8 +1,0 @@
-squad Animal {
-    spawn(name) { me.name = name }
-    bet to_yap() { bounce `Animal({me.name})` }
-}
-squad Dog inherits Animal {
-    spawn(name) { og.spawn(name) }
-}
-yap Dog("rex")

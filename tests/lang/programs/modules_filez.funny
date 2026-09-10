@@ -1,4 +1,11 @@
 gimme filez
+gimme yapper
+
+// Rewrites the OS path separator to "/" so a path-shaped result can be
+// compared on every platform.
+flex bet slashed(p) {
+    bounce yapper.replace(p, "\\", "/")
+}
 
 yo dir = filez.join_path("build", "n4", "filez_scratch")
 filez.mkdir(dir)
@@ -64,18 +71,25 @@ sketchy {
 yo abs1 = filez.abs_path(f1)
 yap abs1.contains("hello.txt")
 
-yap filez.dir_of("a/b/c.txt")
-yap filez.dir_of("c.txt")
-yap filez.dir_of("/a/b")
-yap filez.dir_of("/a")
-yap filez.base_of("a/b/c.txt")
-yap filez.base_of("/a/b/")
-yap filez.ext_of("a/b/c.tar.gz")
-yap filez.ext_of("a/.hidden")
-yap filez.ext_of("a/noext")
-yap filez.join_path("a", "b", "c.txt")
-yap filez.join_path("a/", "b")
-yap filez.join_path("a", "/root", "b")
+// These print through `slashed`, which rewrites the OS separator to "/".
+// join_path and dir_of use the platform's own separator on purpose -- they
+// match what pathlib renders -- so the raw strings differ between platforms
+// and a single `.expected` cannot hold both. What is being asserted is which
+// component each function picks, and that survives the rewrite intact. The
+// separator itself is pinned in path_separator.funny, which derives the
+// expectation instead of hard-coding it.
+yap slashed(filez.dir_of("a/b/c.txt"))
+yap slashed(filez.dir_of("c.txt"))
+yap slashed(filez.dir_of("/a/b"))
+yap slashed(filez.dir_of("/a"))
+yap slashed(filez.base_of("a/b/c.txt"))
+yap slashed(filez.base_of("/a/b/"))
+yap slashed(filez.ext_of("a/b/c.tar.gz"))
+yap slashed(filez.ext_of("a/.hidden"))
+yap slashed(filez.ext_of("a/noext"))
+yap slashed(filez.join_path("a", "b", "c.txt"))
+yap slashed(filez.join_path("a/", "b"))
+yap slashed(filez.join_path("a", "/root", "b"))
 
 // join_path builds with the *OS* separator, and dir_of/base_of split on it
 // again -- so this round trip holds on every platform even though the

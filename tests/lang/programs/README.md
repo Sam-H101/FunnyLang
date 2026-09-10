@@ -18,7 +18,7 @@ closures, deep recursion, globals and locals, squads, pointers, bignums,
 string and collection methods, every stdlib module, error flavors and GC
 stress.
 
-## What was dropped, and one line that was changed
+## Three places where a captured golden could not stay as captured
 
 `modules_internet.funny` is not here. Its output depends on `FUNNY_NO_NET` and
 on whether the host can reach the network, so it is not a golden in any
@@ -31,3 +31,22 @@ is set. CI runs part of this corpus under `env -i`, where PATH genuinely is
 unset, so the assertion was about the ambient environment rather than about
 the language. The half that matters — a name nothing sets reads back as
 `ghost` — is still there.
+
+`modules_filez.funny` and `cli_primitives.funny` print through a `slashed`
+helper or assert three characters of a temp-file prefix rather than eight.
+Both differences are platform-correct and were invisible to the differential
+suite, which ran *both* implementations on the same machine -- a
+backslash-separated path matched a backslash-separated one, and a
+slash-separated path matched a slash-separated one. `join_path` uses the
+OS separator on purpose, and Windows'
+`GetTempFileName` truncates a prefix to three characters. The separator itself
+is not left untested — `path_separator.funny` pins it by *deriving* the
+expectation from `join_path` rather than hard-coding either answer, so one
+golden holds on every platform and still fails if the path functions stop
+agreeing with each other.
+
+`cli_primitives.funny` also stopped asking `filez.exists(computer.exe_path())`.
+That is a property of the host process, not of the language: the reference
+answered `fax` when run as a script and `cap` when run from stdin, because it
+reported `argv[0]`. Two captures of the same program disagreed, which is
+exactly the signal that the question was wrong.

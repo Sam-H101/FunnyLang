@@ -1,8 +1,0 @@
-yo arr = [10, 20, 30, 40]
-yo p = &arr[0]
-yo end = &arr[4]
-bruh (p < end) {
-    yap *p
-    p = p + 1
-}
-yap end - &arr[1]

@@ -1,7 +1,0 @@
-squad A { spawn() { } }
-yo a = A()
-sketchy {
-    a.does_not_exist()
-} my_bad (e) {
-    yap "caught:", e.flavor
-}
