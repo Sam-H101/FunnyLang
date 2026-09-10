@@ -2,9 +2,7 @@ name: ci
 
 on:
   # No filter on push (deliberately): every ordinary branch push runs the
-  # full suite. Releases moved to their own workflow (release.yml) when the
-  # PyInstaller path was replaced by the native build -- freezing CPython to
-  # ship a binary stopped making sense once the runtime stopped being Python.
+  # full suite. Releases live in their own workflow (release.yml).
   push:
   pull_request:
   workflow_dispatch:
@@ -13,96 +11,33 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# release-build/release-publish need to create a GitHub Release and upload
-# assets to it; everything else only needs default read access.
 permissions:
   contents: read
 
+# NATIVE_PLAN.md N11 task 4: nothing here installs, invokes, or depends on
+# Python. There used to be a `ci` job that ran a 1,313-test pytest suite and a
+# `package` job that pip-installed the implementation; both went with
+# `funnylang/` itself. What replaces them is the golden corpus -- 324
+# `.funny`/`.expected` pairs run by `funny test`, which is FunnyLang -- and
+# the bootstrap fixed point.
+#
+# The `no-python` job below is no longer the special case it was written as.
+# It is kept anyway, because "there is no interpreter on this machine at all"
+# is a stronger statement than "we did not happen to call one".
+
 jobs:
-  ci:
-    name: ci (${{ matrix.os }}, py${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12"]
-
-    # Everything below runs under bash on every runner so the flow is one
-    # script rather than three dialects.
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dev dependencies
-        run: python -m pip install --upgrade pip pytest pytest-cov pyinstaller
-
-      # Editable install, not just the dev deps: tests/test_bootstrap.py runs
-      # `python -m funnylang` from a tmp_path cwd, so the repo root is not on
-      # sys.path and an uninstalled package is invisible there.
-      - name: Install the package
-        run: python -m pip install -e .
-
-      # `python -m pytest` (not bare `pytest`) so the repo root lands on
-      # sys.path -- tests/test_cli.py and friends shell out to
-      # `python -m funnylang`. FUNNY_NO_NET keeps the `internet` stdlib
-      # module's tests hermetic in CI.
-      - name: Run the test suite
-        env:
-          FUNNY_NO_NET: "1"
-        run: python -m pytest -q
-
-      # The self-hosting fixed point: the FunnyLang compiler written in
-      # FunnyLang (selfhost/) must reproduce itself byte for byte.
-      - name: Verify self-hosting bootstrap
-        run: python -m funnylang bootstrap --verify
-
-      # Freeze a real standalone executable and prove it runs with no Python
-      # on its PATH assumptions beyond what's baked into the stub.
-      - name: Build a native executable
-        run: python -m funnylang yeet examples/hello.funny -o hello-exe/hello
-
-      # `-o` is used literally, with no platform-specific extension appended
-      # (that only happens when `-o` is omitted), so the output file is
-      # exactly `hello-exe/hello` on every OS.
-      - name: Run the frozen executable
-        shell: bash
-        run: |
-          chmod +x ./hello-exe/hello
-          ./hello-exe/hello
-
-      - name: Upload the executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: funnylang-hello-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: hello-exe/
-          retention-days: 7
-
   native:
-    # NATIVE_PLAN.md N0: proves the C toolchain builds native/*.c clean, with
-    # -Werror, on all three OSes -- MSVC on Windows, gcc/clang (whichever
-    # `cc` resolves to) on Linux/macOS. Since N2, also runs the differential
-    # test suite (tests/native/) against the Python VM on Linux/macOS --
-    # not Windows yet, since that suite invokes `cc` directly (with gcc/
-    # clang-style flags) rather than going through build.bat's MSVC-specific
-    # invocation, so it just skips itself there for now (see test_n2_
-    # differential.py's own FileNotFoundError handling).
+    # Builds native/*.c clean with -Werror on all three OSes -- MSVC on
+    # Windows, gcc and clang on Linux, clang on macOS -- and then runs
+    # everything the toolchain can do with the binary it just built.
     name: native (${{ matrix.os }}, ${{ matrix.cc }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # N9 task 4: both compilers on each POSIX runner, not just whatever
-        # `cc` resolves to -- gcc and clang disagree about enough warnings
-        # that -Werror only means something if both have seen the code.
+        # Both compilers on the Linux runner, not just whatever `cc` resolves
+        # to: gcc and clang disagree about enough warnings that -Werror only
+        # means something if both have seen the code.
         include:
           - { os: windows-latest, cc: msvc }
           - { os: ubuntu-latest, cc: gcc }
@@ -114,6 +49,9 @@ jobs:
 
     env:
       CC: ${{ matrix.cc }}
+      # The `internet` module's goldens are property checks, but nothing in
+      # CI should reach the network to run them.
+      FUNNY_NO_NET: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -121,16 +59,6 @@ jobs:
       - name: Set up MSVC
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Set up Python
-        if: runner.os != 'Windows'
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install pytest
-        if: runner.os != 'Windows'
-        run: python -m pip install --upgrade pip pytest
 
       - name: Build (release)
         if: runner.os != 'Windows'
@@ -141,99 +69,112 @@ jobs:
         shell: cmd
         run: build.bat
 
-      - name: Run it (release)
+      # From here down the two branches differ only in `./funny` vs
+      # `funny.exe`, so they are written once each rather than twice with a
+      # shell shim. Everything runs on every platform: a Windows-only bug
+      # lived for a while in the gap where these steps used to be POSIX-only
+      # (the bundler keyed every module by its absolute path there), and two
+      # more turned up the week the gap was closed.
+      - name: Everything the toolchain does
         if: runner.os != 'Windows'
-        run: ./funny
+        run: |
+          set -eu
+          ./funny --version
+          ./funny run examples/hello.funny
+          ./funny run examples/modules/main.funny
+          ./funny build examples/modules/main.funny -o built.funnypak
+          ./funny run built.funnypak
+          ./funny test tests/lang
+          ./funny test tests/slow
+          ./funny test examples
+          ./funny xray examples/hello.funny
+          ./funny xray examples/hello.funny --tokens
+          ./funny xray examples/hello.funny --ast
+          ./funny fmt examples/fizzbuzz.funny --check
+          ./funny bootstrap --verify
 
-      - name: Run it (release)
+      - name: Everything the toolchain does
         if: runner.os == 'Windows'
         shell: cmd
-        run: funny.exe
+        run: |
+          funny.exe --version || exit /b 1
+          funny.exe run examples\hello.funny || exit /b 1
+          funny.exe run examples\modules\main.funny || exit /b 1
+          funny.exe build examples\modules\main.funny -o built.funnypak || exit /b 1
+          funny.exe run built.funnypak || exit /b 1
+          funny.exe test tests\lang || exit /b 1
+          funny.exe test tests\slow || exit /b 1
+          funny.exe test examples || exit /b 1
+          funny.exe xray examples\hello.funny || exit /b 1
+          funny.exe xray examples\hello.funny --tokens || exit /b 1
+          funny.exe xray examples\hello.funny --ast || exit /b 1
+          funny.exe fmt examples\fizzbuzz.funny --check || exit /b 1
+          funny.exe bootstrap --verify || exit /b 1
 
-      # The differential step below is POSIX-only, because tests/conftest.py's
-      # native_binary fixture builds with gcc-style flags and `CC: msvc` makes
-      # it skip. That left the Windows job proving only that the code compiles
-      # and the binary starts -- and a real bug lived in that gap: the bundler
-      # keyed every module by its *absolute path* on Windows, because
-      # `filez.abs_path` returns '/' there while `filez.dir_of` returns '\',
-      # so the "strip the entry directory" prefix test never matched. Bundles
-      # stopped being reproducible across platforms and `yeet`ed executables
-      # leaked the builder's directory layout into their diagnostics.
-      #
-      # The golden corpus needs no Python and catches exactly that class of
-      # thing, so it runs on Windows too. N11 makes this the *only* kind of
-      # test step; it is here early because the hole is here now.
-      - name: Golden corpus (release)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: funny.exe test tests/lang
-
-      # Separate directory, separate step: these generate and compile programs
-      # big enough to be worth several seconds each, so they stay out of the
-      # ordinary corpus run. Not optional -- jump relaxation only happens at
-      # this size, and it did not exist at all until N11.
-      - name: Golden corpus, slow (release)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: funny.exe test tests/slow
-
-      - name: Bootstrap fixed point (release)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: funny.exe bootstrap --verify
-
-      # Builds its own native binary from native/*.c directly (not the
-      # ./funny from the step above) and diffs its output against the real
-      # Python VM -- NATIVE_PLAN.md N2's actual acceptance gate, not just
-      # "did it compile."
-      - name: Differential test against the Python VM
+      # A yeeted executable is the runtime stub plus a bundle, so it is the
+      # one artifact whose correctness cannot be checked from inside the
+      # language -- running it needs a process.
+      - name: Yeet a standalone binary, then run it
         if: runner.os != 'Windows'
+        run: |
+          set -eu
+          ./funny yeet examples/hello.funny -o hello_standalone
+          ./hello_standalone
+
+      - name: Yeet a standalone binary, then run it
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          funny.exe yeet examples\hello.funny -o hello_standalone.exe || exit /b 1
+          hello_standalone.exe || exit /b 1
+
+      # The REPL reads stdin, so it gets a scripted session rather than a tty.
+      - name: The REPL
+        if: runner.os != 'Windows'
+        run: printf 'yo x = 5\nx + 3\n.exit\n' | ./funny vibe
+
+      # ASan/UBSan (MSVC only has ASan -- see build.bat's own comment). The
+      # corpus runs under them too: a use-after-free in the collector is
+      # exactly the kind of thing that only shows up with real work to do.
+      - name: Build (debug, sanitizers) and run the corpus under them
+        if: runner.os != 'Windows'
+        run: |
+          set -eu
+          ./build.sh debug
+          ./funny --version
+          ./funny test tests/lang
+
+      - name: Build (debug, ASan) and run the corpus under it
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          build.bat debug || exit /b 1
+          funny.exe --version || exit /b 1
+          funny.exe test tests\lang || exit /b 1
+
+      # The collector's own stress mode: collect at every safe point rather
+      # than on the usual schedule. Slow, which is why it is one job and not
+      # every job.
+      - name: The corpus under FUNNY_GC_STRESS
+        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc'
         env:
-          FUNNY_NO_NET: "1"
-        run: python -m pytest tests/native/ -v
-
-      - name: Differential test against the Python VM (under FUNNY_GC_STRESS)
-        if: runner.os != 'Windows'
-        env:
-          FUNNY_NO_NET: "1"
           FUNNY_GC_STRESS: "1"
-        run: python -m pytest tests/native/ -v
-
-      # ASan/UBSan (MSVC only has ASan -- see build.bat's own comment).
-      # Nothing in main.c can trip either yet; this exists so the debug
-      # build path itself is proven working before there's anything real
-      # for it to catch.
-      - name: Build (debug, sanitizers)
-        if: runner.os != 'Windows'
-        run: ./build.sh debug
-
-      - name: Run it (debug)
-        if: runner.os != 'Windows'
-        run: ./funny
-
-      - name: Build (debug, ASan)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: build.bat debug
-
-      - name: Run it (debug)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: funny.exe
+        run: |
+          set -eu
+          ./build.sh
+          ./funny test tests/lang
 
   no-python:
-    # NATIVE_PLAN.md N9 task 3 -- the single most important job here. A
-    # container with a C compiler and *nothing else*: no Python, no pip, no
+    # NATIVE_PLAN.md N9 task 3, and now N11's whole point made concrete: a
+    # container with a C compiler and *nothing else*. No Python, no pip, no
     # interpreter at all. If this passes, "FunnyLang needs no Python" is a
     # fact about the artifact rather than a claim in a README.
-    #
-    # `funnylang/` and every other .py file is deleted from the checkout
-    # before anything runs, so an accidental dependency on the Python
-    # implementation fails loudly instead of quietly working on a machine
-    # that happens to have it.
     name: no-python (debian, cc only)
     runs-on: ubuntu-latest
     container: debian:12
+
+    env:
+      FUNNY_NO_NET: "1"
 
     steps:
       - name: Install a C compiler and nothing else
@@ -257,59 +198,49 @@ jobs:
           done
           echo "no python, no pip."
 
-      - name: Delete every .py file from the checkout
+      # Since N11 there should be nothing to find. Checked rather than
+      # assumed: a `.py` creeping back in is exactly the kind of thing that
+      # happens quietly.
+      - name: Prove there is no .py in the repository either
         run: |
           set -eu
-          find . -name '*.py' -delete
-          rm -rf funnylang
-          if find . -name '*.py' | grep -q .; then echo "FAIL: a .py survived"; exit 1; fi
-          echo "funnylang/ and every .py file are gone."
+          if find . -name '*.py' | grep -q .; then
+            echo "FAIL: a .py file is in the tree:"
+            find . -name '*.py'
+            exit 1
+          fi
+          echo "no .py files anywhere."
 
       - name: Build from C source alone
         run: ./build.sh
 
-      - name: funny --version
-        run: ./funny --version
-
-      - name: Run a source file
-        run: ./funny run examples/hello.funny
-
-      - name: Run a multi-module program
-        run: ./funny run examples/modules/main.funny
-
-      - name: Build a bundle, then run it
+      - name: Everything the toolchain does
         run: |
+          set -eu
+          ./funny --version
+          ./funny run examples/hello.funny
+          ./funny run examples/modules/main.funny
           ./funny build examples/modules/main.funny -o built.funnypak
           ./funny run built.funnypak
-
-      - name: The golden corpus
-        env:
-          FUNNY_NO_NET: "1"
-        run: |
           ./funny test tests/lang
           ./funny test tests/slow
           ./funny test examples
-
-      - name: xray and fmt
-        run: |
           ./funny xray examples/hello.funny
           ./funny xray examples/hello.funny --ast
           ./funny fmt examples/fizzbuzz.funny --check
+          ./funny bootstrap --verify
 
       - name: Yeet a standalone binary, then run it
         run: |
+          set -eu
           ./funny yeet examples/hello.funny -o hello_standalone
           ./hello_standalone
 
-      # The REPL reads stdin, so it gets a scripted session rather than a tty.
       - name: The REPL
         run: printf 'yo x = 5\nx + 3\n.exit\n' | ./funny vibe
 
-      - name: The self-hosting fixed point
-        run: ./funny bootstrap --verify
-
-      # Belt and braces: rerun the whole sequence with an *empty environment*
-      # and no PATH at all, which also rules out shelling out to anything.
+      # Belt and braces: rerun the sequence with an *empty environment* and no
+      # PATH at all, which also rules out shelling out to anything.
       - name: Again, with no PATH at all
         run: |
           set -eu
@@ -318,59 +249,36 @@ jobs:
           env -i FUNNY_NO_NET=1 ./funny test tests/lang
           env -i FUNNY_NO_NET=1 ./funny bootstrap --verify
 
-  package:
-    name: package (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-
-    defaults:
-      run:
-        shell: bash
-
+  regenerated-artifacts:
+    # Two files in the tree are generated and checked in: the embedded
+    # toolchain blob and the Unicode tables. A checked-in artifact is only
+    # safe while something notices when it stops matching its sources, and
+    # `tests/native/test_native_selfhost.py` used to be what noticed for the
+    # blob -- in Python. This is the replacement, and it needs only the
+    # binary that the blob is inside.
+    name: generated artifacts are not stale
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Build
+        run: ./build.sh
 
-      # Exercises the real packaging path: pyproject metadata, the
-      # packages-find config, and the `funny` console script landing on PATH.
-      - name: Install the package
+      - name: The embedded toolchain matches selfhost/
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .
+          set -eu
+          ./funny build selfhost/cli.funny -o /tmp/cli.funnypak
+          ./funny run tools/bin2c.funny /tmp/cli.funnypak /tmp/toolchain_blob.c toolchain_blob
+          if ! cmp -s /tmp/toolchain_blob.c native/toolchain_blob.c; then
+            echo "FAIL: native/toolchain_blob.c is stale -- selfhost/ changed without it being"
+            echo "regenerated. See bootstrap/STAGE0.md."
+            exit 1
+          fi
+          echo "toolchain_blob.c is current."
 
-      - name: funny --version
-        run: funny --version
-
-      # Runs every examples/*.funny that has a matching .expected and diffs
-      # the output, via the installed script rather than `python -m funnylang`.
-      - name: Run the example suite
-        env:
-          FUNNY_NO_NET: "1"
-        run: funny test examples
-
-      # A .funnypak must resolve its own imports with no filesystem access,
-      # so build the module tree and run it from a directory where the
-      # sources are not reachable by relative import.
-      - name: Build and run a linked .funnypak
-        run: |
-          mkdir -p pak-out
-          funny build examples/modules/main.funny -o pak-out/main.funnypak
-          cd pak-out
-          funny run main.funnypak
-
-  # NATIVE_PLAN.md N0 task 6: an *interim* release, cut before any of the C
-  # runtime exists, so a download here works today. This freezes the real
-  # `funny` CLI (funnylang/__main__.py -- compiler, parser, VM, REPL, the
-  # works) with PyInstaller, which is a different target than `funny yeet`
-  # (packager.py's stub_main.py): `yeet` only ever runs one already-linked
-  # program baked in at freeze time, which would make for a deeply
-  # misleading "start writing FunnyLang" download. N10 replaces this whole
-  # job wholesale once N1-N9 land and the C runtime can do the same job
-  # without Python installed anywhere in the chain.
+      # The Unicode tables are deliberately *not* checked here. Regenerating
+      # them downloads UnicodeData.txt from unicode.org, so a CI job that did
+      # it would go red when that host is slow, and would go red again the day
+      # Unicode ships a release -- neither of which is a fault in this
+      # repository. `tools/gen_unicode.funny` records its source URL in the
+      # file it writes; regenerating is a deliberate act.

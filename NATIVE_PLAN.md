@@ -2775,3 +2775,32 @@ gets an entry explaining what changed and why.
   missed, so the diagnostic read *"i read this three times. it's still not code."* instead of
   *"you can't assign to that. that's not a place."* Eleven overridden roasts across the lexer, parser
   and resolver are now copied verbatim; that is all of them.
+
+- **N11 task 4 · CI without Python.** The `ci` job (a 1,313-test pytest suite across three OSes and
+  three Python versions) and the `package` job (pip-installing the implementation) are gone with the
+  thing they tested. What replaces them is what the artifact can already do: the golden corpus run by
+  `funny test`, which is FunnyLang, plus the bootstrap fixed point.
+
+  The `native` job now runs **the same sequence on every platform** rather than a POSIX-only
+  differential and a Windows build-and-start. That gap is where three real bugs lived — the absolute-
+  path bundle keys, the ANSI filename handling, and `mkdir -p` on another drive — so closing it is
+  not tidying. The corpus also runs under the sanitiser build and, on one runner, under
+  `FUNNY_GC_STRESS`: a use-after-free in the collector only shows up with real work to do.
+
+  `no-python` is unchanged except for one addition — it now asserts there is no `.py` **in the
+  repository**, not just none on PATH. It stops being the special case it was written as and becomes
+  the ordinary one, and is kept because "there is no interpreter on this machine at all" is a
+  stronger statement than "we did not happen to call one".
+
+  A new `regenerated-artifacts` job replaces what `tests/native/test_native_selfhost.py` used to do
+  in Python: relink `selfhost/`, regenerate the blob, and compare. Making that work needed a small
+  fix to `tools/bin2c.funny`, which recorded **the path it was invoked with** in the file it wrote —
+  so two byte-identical regenerations differed in a comment, which is exactly what breaks a staleness
+  check. The path of a scratch file is not provenance; the procedure in `bootstrap/STAGE0.md` is.
+  Same mistake, same fix, as `gen_unicode.funny`'s source note.
+
+  The Unicode tables are deliberately **not** checked for staleness in CI: regenerating them
+  downloads `UnicodeData.txt`, so the job would go red when unicode.org is slow, and again the day
+  Unicode ships a release — neither of which is a fault in this repository.
+
+  `release.yml` needed no changes at all: it has been Python-free since N9.
