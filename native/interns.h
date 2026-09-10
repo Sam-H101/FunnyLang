@@ -16,24 +16,42 @@
  * `bounce`: the worker is a *program*, not a function, and inventing a
  * calling convention for it would mean a second way to enter FunnyLang code.
  *
- * A1 hands back a numba handle and `wait_up` blocks. That is a complete and
- * useful feature on its own, and it proves isolation and the deep copy
- * before any suspension machinery exists to confuse a diagnosis. A2 replaces
- * the handle with an `otw`.
+ * `interns.hire` hands back an `otw` (A2) and `interns.wait_up` blocks on
+ * one. Blocking is deliberate for now: it proves isolation and the deep copy
+ * before any suspension machinery exists to confuse a diagnosis, and it is a
+ * complete, useful feature on its own -- `everybody` over four hires already
+ * uses four cores.
  *
- * Handles are small integers rather than heap objects, following the same
- * reasoning `sus`'s REPL sessions already record: it keeps them out of the
- * collector entirely, which matters more here, because the thing on the
- * other end of the handle is running on another thread.
+ * Interns are numbered per hiring VM, and that number never leaves this file:
+ * an `otw` is the only handle FunnyLang ever sees, and an `otw` is not one of
+ * the things that can cross to a worker (see portable.h), so an intern can
+ * never be handed a colleague's ticket. Small integers rather than pointers
+ * because the thing on the other end is running on another thread, and
+ * keeping it out of the collector entirely is what makes that safe.
  */
 #ifndef FUNNY_INTERNS_H
 #define FUNNY_INTERNS_H
+
+#include <stdbool.h>
 
 #include "value.h"
 
 struct VM;
 
 Value interns_build(struct VM *vm);
+
+struct ObjOtw;
+
+/* Has the worker behind this `otw` finished? Never blocks. False for an `otw`
+   nobody is working on. A5's event loop asks this; `wait_up` does not need
+   to. */
+bool interns_ready(struct VM *vm, struct ObjOtw *p);
+
+/* Joins the worker behind this `otw` and settles it -- fulfilled with what
+   the worker delivered, rejected with the error that killed it. Replays what
+   the worker printed to the waiting VM's streams first. A no-op on an `otw`
+   that has already settled. */
+void interns_collect(struct VM *vm, struct ObjOtw *p);
 
 /* Joins every intern hired by `vm` that nobody waited on, and releases them.
    Called when a VM finishes -- by the runner, by `sus.run_bytecode`, and by a

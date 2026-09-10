@@ -13,6 +13,7 @@
 #include "groupchat.h"
 #include "modules.h"
 #include "object.h"
+#include "otw.h"
 #include "platform.h"
 #include "portable.h"
 #include "runner.h"
@@ -45,7 +46,15 @@ typedef struct Intern {
     PlatformThread thread;
     bool spawned;
     bool joined;
-    bool retired; /* waited on; the slot survives only to say so */
+    bool retired; /* collected; the slot survives only to say so */
+
+    /* Set by the worker as the very last thing it does, under g_lock, with a
+       broadcast on g_wake. It is what lets the owning thread ask "is this one
+       finished?" without committing to a join that might never return --
+       which is the whole difference between A1's blocking `wait_up` and the
+       event loop A5 builds on top of it. `joined` is not a substitute: it
+       says the *waiter* has collected, not that the worker has finished. */
+    bool done;
 
     char *label; /* the path it was hired from, for messages */
 
@@ -70,6 +79,10 @@ typedef struct Intern {
    process so a stray one is reported as not-yours rather than silently
    naming somebody else's worker. */
 static PlatformMutex g_lock;
+/* Broadcast whenever a worker finishes. A5's loop sleeps on this rather than
+   polling, and a timed wait on it is how A6 combines "wake when a worker is
+   done" with "wake when the next timer is due" in one call. */
+static PlatformCond g_wake;
 static bool g_ready = false;
 static Intern **g_interns = NULL;
 static int g_internCount = 0;
@@ -97,6 +110,7 @@ static int g_cacheCapacity = 0;
 static void registry_init(void) {
     if (g_ready) return;
     platform_mutex_init(&g_lock);
+    platform_cond_init(&g_wake);
     g_ready = true;
 }
 
@@ -199,6 +213,15 @@ static void intern_body(void *userdata) {
     else if (unit) chunk_free_unit(unit);
     vm_destroy(&child);
     free(loadErr);
+
+    /* Last, and only now: everything this Intern carries is written above,
+       and `done` is the flag that says it is safe to read. The lock is not
+       held anywhere across a join, so announcing here cannot deadlock with a
+       thread waiting for this one. */
+    platform_mutex_lock(&g_lock);
+    in->done = true;
+    platform_cond_broadcast(&g_wake);
+    platform_mutex_unlock(&g_lock);
 }
 
 /* -- getting the worker's bytecode ----------------------------------------- */
@@ -450,28 +473,67 @@ static Value m_hire(VM *vm, Value *a, int argc) {
         vm_throw_native(vm, "ComputerExploded", "couldn't start a thread for that intern: %s", errbuf);
         return GHOST_VAL;
     }
-    return INT_VAL(id);
+    /* A2: what the caller gets is an `otw`, not the id. The id never leaves
+       this file now, which retires A1's stolen-ticket problem outright -- an
+       `otw` is not one of the things that can cross to a worker, so an intern
+       cannot be handed one at all. */
+    return OBJ_VAL(otw_for_intern(&vm->gc, id));
 }
 
-/* Joins, replays what the worker printed, and hands back what it delivered --
-   or re-raises what killed it, with its own original flavor (§2.4: wrapping a
-   worker's TypeVibeMismatch in a concurrency-specific flavor would tell you
-   less than the flavor already did). */
-static Value wait_for(VM *vm, int id, bool *ok) {
-    *ok = false;
+/* -- settling an otw ------------------------------------------------------
+ *
+ * The worker never touches the `otw`. It fills in its own Intern -- plain
+ * malloc'd memory, no collector involved -- and says `done` under g_lock; the
+ * owning VM's thread does everything below, on its own heap. otw.h explains
+ * why that is not the cross-thread mutation §2.4 expected, and why it is a
+ * better answer than the one that was expected.
+ */
+
+/* True if the worker behind `p` has finished, without waiting for it. False
+   for an `otw` with no worker, which A2 never produces and A5's loop will. */
+bool interns_ready(VM *vm, ObjOtw *p) {
+    if (!g_ready || p->internId == 0) return false;
     platform_mutex_lock(&g_lock);
-    Intern *in = intern_at(vm, id);
+    Intern *in = intern_at(vm, p->internId);
+    bool ready = in != NULL && in->done;
+    platform_mutex_unlock(&g_lock);
+    return ready;
+}
+
+/* Joins the worker behind `p` and settles it -- fulfilled with what the
+   worker delivered, or rejected with the error that killed it, carrying its
+   own original flavor (§2.4: wrapping a worker's TypeVibeMismatch in a
+   concurrency-specific flavor would tell you less than the flavor already
+   did). Whatever the worker printed is replayed first.
+ *
+ * Idempotent: an already-settled `otw` is left exactly as it is. */
+void interns_collect(VM *vm, ObjOtw *p) {
+    if (p->state != OTW_PENDING) return;
+    if (!g_ready || p->internId == 0) {
+        gc_push_temp(&vm->gc, OBJ_VAL(p));
+        ObjError *e = error_new(&vm->gc, "LeftOnRead", "nobody is working on that otw, so it is never going to settle.",
+                                NULL, NULL, 0, 0, NULL, GHOST_VAL, NULL, 0);
+        otw_reject(p, OBJ_VAL(e));
+        gc_pop_temp(&vm->gc);
+        return;
+    }
+
+    platform_mutex_lock(&g_lock);
+    Intern *in = intern_at(vm, p->internId);
     platform_mutex_unlock(&g_lock);
 
     /* The Intern outlives the lock safely: entries are only ever removed by
        the owning VM's own teardown, which is this thread. */
-    if (in == NULL) {
-        vm_throw_native(vm, "OutOfPocket", "you've got no intern #%d.", id);
-        return GHOST_VAL;
-    }
-    if (in->retired) {
-        vm_throw_native(vm, "OutOfPocket", "you already waited on intern #%d.", id);
-        return GHOST_VAL;
+    if (in == NULL || in->retired) {
+        /* Unreachable while an `otw` is the only thing holding an id and it
+           settles on the first collect. Left as a real answer anyway, since
+           "the intern vanished" must never be silence. */
+        gc_push_temp(&vm->gc, OBJ_VAL(p));
+        ObjError *e = error_new(&vm->gc, "LeftOnRead", "that intern is already gone.", NULL, NULL, 0, 0, NULL,
+                                GHOST_VAL, NULL, 0);
+        otw_reject(p, OBJ_VAL(e));
+        gc_pop_temp(&vm->gc);
+        return;
     }
 
     if (in->spawned && !in->joined) {
@@ -482,43 +544,48 @@ static Value wait_for(VM *vm, int id, bool *ok) {
     if (in->outText != NULL) fwrite(in->outText, 1, in->outLen, vm->out);
     if (in->errText != NULL) fwrite(in->errText, 1, in->errLen, vm->err);
 
+    gc_push_temp(&vm->gc, OBJ_VAL(p)); /* everything below allocates */
     if (in->flavor != NULL) {
-        /* Copied out before the release, and passed through "%s" -- a
-           worker's message is user text and may well contain a percent. */
-        char *flavor = in->flavor;
-        char *message = in->message;
-        in->flavor = NULL;
-        in->message = NULL;
-        in->retired = true;
-        intern_release(in);
-        vm_throw_native(vm, flavor, "%s", message != NULL ? message : "it fell over.");
-        free(flavor);
-        free(message);
-        return GHOST_VAL;
+        ObjError *e = error_new(&vm->gc, in->flavor, in->message != NULL ? in->message : "it fell over.", NULL, NULL, 0,
+                                0, NULL, GHOST_VAL, NULL, 0);
+        otw_reject(p, OBJ_VAL(e));
+    } else {
+        otw_fulfill(p, portable_to_value(vm, in->result));
     }
+    gc_pop_temp(&vm->gc);
 
-    Value out = portable_to_value(vm, in->result);
     in->retired = true;
     intern_release(in);
-    *ok = true;
-    return out;
+}
+
+/* `wait_up(x)` -- block until `x` has an answer, and be that answer.
+ *
+ * A value that is not an `otw` is simply itself: there is nothing to wait
+ * for, and answering "that's not an intern" would make every helper that
+ * might or might not be asynchronous need to know which it was. A4's
+ * `await_fr` takes the same position for the same reason. */
+static Value settle_and_read(VM *vm, Value v) {
+    if (!(IS_OBJ(v) && AS_OBJ(v)->type == OBJ_OTW)) return v;
+    ObjOtw *p = (ObjOtw *)AS_OBJ(v);
+    interns_collect(vm, p);
+    if (p->state == OTW_REJECTED) {
+        vm_rethrow(vm, p->error);
+        return GHOST_VAL;
+    }
+    return p->value;
 }
 
 static Value m_wait_up(VM *vm, Value *a, int argc) {
     (void)argc;
-    if (!IS_INT(a[0])) {
-        vm_throw_native(vm, "TypeVibeMismatch", "'wait_up' needs an intern, not a %s.", vm_type_name(a[0]));
-        return GHOST_VAL;
-    }
-    bool ok = false;
-    return wait_for(vm, (int)AS_INT(a[0]), &ok);
+    return settle_and_read(vm, a[0]);
 }
 
 /* Waits on all of them, in the order given, and hands back a stash of what
    each delivered. In order rather than in finishing order, because §5 rules
    out a golden whose output depends on which thread got there first -- and
    because a caller that wanted finishing order would have to be told which
-   result was whose anyway. */
+   result was whose anyway. All of them are already *running*; the order here
+   is only the order they are collected in. */
 static Value m_everybody(VM *vm, Value *a, int argc) {
     (void)argc;
     if (!(IS_OBJ(a[0]) && AS_OBJ(a[0])->type == OBJ_STASH)) {
@@ -526,35 +593,25 @@ static Value m_everybody(VM *vm, Value *a, int argc) {
                         vm_type_name(a[0]));
         return GHOST_VAL;
     }
-    ObjStash *handles = (ObjStash *)AS_OBJ(a[0]);
-    int count = handles->count;
-    int *ids = (int *)malloc((size_t)(count > 0 ? count : 1) * sizeof(int));
-    for (int i = 0; i < count; i++) {
-        if (!IS_INT(handles->items[i])) {
-            free(ids);
-            vm_throw_native(vm, "TypeVibeMismatch", "'everybody' needs a stash of interns; #%d is a %s.", i,
-                            vm_type_name(handles->items[i]));
-            return GHOST_VAL;
-        }
-        ids[i] = (int)AS_INT(handles->items[i]);
-    }
 
     ObjStash *out = stash_new(&vm->gc, NULL, 0);
     gc_push_temp(&vm->gc, OBJ_VAL(out));
-    for (int i = 0; i < count; i++) {
-        bool ok = false;
-        Value v = wait_for(vm, ids[i], &ok);
-        if (!ok) {
+    /* Re-read the source stash each time round: settling runs FunnyLang's
+       collector, and `a[0]` is a rooted Value, but the ObjStash pointer read
+       once before the loop would be no less valid -- it is re-read because
+       the count is what matters and a worker's own `yap` may not change it,
+       but nothing here should depend on that being true. */
+    for (int i = 0; i < ((ObjStash *)AS_OBJ(a[0]))->count; i++) {
+        Value v = settle_and_read(vm, ((ObjStash *)AS_OBJ(a[0]))->items[i]);
+        if (vm->hadError) {
             gc_pop_temp(&vm->gc);
-            free(ids);
-            return GHOST_VAL; /* the error is already pending */
+            return GHOST_VAL;
         }
         gc_push_temp(&vm->gc, v);
         stash_push(&vm->gc, out, v);
         gc_pop_temp(&vm->gc);
     }
     gc_pop_temp(&vm->gc);
-    free(ids);
     return OBJ_VAL(out);
 }
 
@@ -721,6 +778,7 @@ void interns_shutdown(void) {
     g_cacheCapacity = 0;
     platform_mutex_unlock(&g_lock);
 
+    platform_cond_destroy(&g_wake);
     platform_mutex_destroy(&g_lock);
     g_ready = false;
 }

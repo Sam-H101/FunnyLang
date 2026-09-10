@@ -439,3 +439,48 @@ spec contradiction, and every wrong turn worth not repeating.
   gather; every way to misuse a handle; and interns hiring interns. 382/382 on Linux (gcc) and
   Windows (MSVC `/W4 /WX`), 382/382 under `FUNNY_GC_STRESS=50`, and the interns corpus clean under
   ASan+UBSan **and under ThreadSanitizer** (`build/a1/sanitize.sh`).
+
+- **A2 · `otw`. Done.** `native/otw.{h,c}`: a value type with three states -- pending, fulfilled,
+  rejected -- that `what_is_it` answers `"otw"` for. `interns.hire` returns one, `interns.wait_up`
+  drives one to settled, and the A1 goldens passed the change **unmodified** except the two that
+  named a handle, which is the "no behaviour change" the milestone asked for.
+
+  **The cross-thread mutation the plan expected turned out not to be needed, and removing it is
+  strictly better.** §2.4 says settling from a worker thread is "the only cross-thread mutation in
+  the design and is mutex-guarded". It cannot be: settling means putting a `Value` on a heap, and a
+  heap belongs to one collector on one thread (§2.2) -- a worker settling an `otw` directly would be
+  the exact thing `portable.c` exists to prevent. So the worker fills in its own `Intern` (plain
+  malloc'd memory, no collector) and sets `done` under the registry mutex with a broadcast; the
+  owning thread notices and settles the `otw` itself, on its own heap, at a moment of its choosing.
+  **No FunnyLang value is ever touched by two threads, and no lock protects one anywhere.** That is
+  a stronger invariant than the one the plan was willing to settle for.
+
+  **Choices worth recording:**
+  - **The interns registry gained a condition variable, `g_wake`**, broadcast by each worker as it
+    finishes. Nothing uses it yet -- `wait_up` joins -- but it is the mechanism A5's loop sleeps on
+    instead of polling, and a *timed* wait on it is how A6 says "wake when a worker finishes, or
+    when the next timer is due" in one call.
+  - **No subscriber list yet.** A2's brief includes "with subscribers", but a subscriber is a task
+    and there are no tasks until A3, nothing to suspend until A4, and nothing to resume until A5. A
+    dead field is worse than a later edit.
+  - **`wait_up` on a value that is not an `otw` is that value.** §2.4 calls `wait_up(x)` "block
+    until settled"; a value that is already here is settled. The alternative -- rejecting it -- would
+    force every helper that *might* be asynchronous to know which it was, and A4's acceptance
+    already requires `await_fr` on a plain value to behave this way. The two now agree.
+  - **`vm_rethrow` (new, `vm.h`)** raises an `ObjError` that already exists instead of rebuilding one
+    from a flavor and a message. It is `OP_CHUCK`'s own stamping logic: a worker's error is rebuilt
+    on this heap with no position, so the position it acquires is the **awaiting** site -- which is
+    what A4 wants for `await_fr` too.
+  - **`LeftOnRead` added to `error.c`'s table now**, because `interns_collect` needs an answer for an
+    `otw` nobody is working on. `CantWaitRightNow` is still not added: A4 is where something raises
+    it. That keeps the total at the two §2.4 allows.
+  - **An `otw` prints its state**: `<otw pending>`, `<otw done 42>`, `<otw rejected KeyGhosted>`. A
+    bare `<otw>` would make the only question anybody asks of one unanswerable without awaiting it.
+  - **`portable.c` picks "a"/"an"** by the type name's first letter, so the rejection reads "an otw"
+    rather than "a otw". It also fixes "a error" and "a iterator", which were already wrong.
+
+  **Acceptance, met:** `tests/lang/interns/otw_states.funny` covers all three states, the display
+  form of each, `what_is_it`, settling being final and idempotent, a rejected `otw` re-raising every
+  time, an `otw` being refused at the worker boundary, and awaiting plain values. 383/383 on Linux
+  (gcc) and Windows (MSVC `/W4 /WX`), 383/383 under `FUNNY_GC_STRESS=50`, and `tests/lang/interns`
+  clean under ASan+UBSan and ThreadSanitizer.

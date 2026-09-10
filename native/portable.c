@@ -142,10 +142,14 @@ static PortableValue *copy_value(Value v, CopyTrail *trail, char *errbuf, size_t
     /* Everything else references a heap, and there is no second copy of that
        heap to reference. Name the type: someone who just handed a closure to
        a thread needs to know which of their arguments was the problem. */
+    const char *name = vm_type_name(v);
+    /* "an otw", "an error", "an iterator" -- the type names are the ones a
+       user typed, so the sentence should read like one. */
+    const char *article = strchr("aeiouAEIOU", name[0]) != NULL && name[0] != '\0' ? "an" : "a";
     snprintf(errbuf, errbuf_len,
-             "a %s can't be handed to an intern -- it belongs to this heap. "
+             "%s %s can't be handed to an intern -- it belongs to this heap. "
              "ghost, boolski, numba, yapstring, and stash/groupchat of those can cross.",
-             vm_type_name(v));
+             article, name);
     return NULL;
 }
 

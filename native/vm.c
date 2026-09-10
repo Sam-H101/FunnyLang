@@ -29,6 +29,7 @@
 #include "iterator.h"
 #include "mafs.h"
 #include "modules.h"
+#include "otw.h"
 #include "numfmt.h"
 #include "opcodes.h"
 #include "pointa.h"
@@ -122,6 +123,7 @@ static const char *type_name_of(Value v) {
             case OBJ_SQUAD: return "squad";
             case OBJ_INSTANCE: return ((ObjInstance *)AS_OBJ(v))->squad->name->chars;
             case OBJ_MODULE: return "module";
+            case OBJ_OTW: return "otw";
             default: return "object";
         }
     }
@@ -308,6 +310,31 @@ static char *display_value_rec(VM *vm, Value v, SeenStack *seen) {
     }
     if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_ITERATOR) {
         return dup_str("<iterator>");
+    }
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_OTW) {
+        /* An `otw` shows its state, and a settled one shows what it settled
+           to -- printing a bare `<otw>` for all three would make the one
+           question anybody asks of one unanswerable without awaiting it,
+           which is exactly what you do not want to have to do while
+           debugging. Rejected shows the flavor rather than the whole
+           diagnostic: the message can be a paragraph. */
+        ObjOtw *p = (ObjOtw *)AS_OBJ(v);
+        if (p->state == OTW_PENDING) return dup_str("<otw pending>");
+        if (p->state == OTW_REJECTED) {
+            const char *flavor = "error";
+            if (IS_OBJ(p->error) && AS_OBJ(p->error)->type == OBJ_ERROR) {
+                flavor = ((ObjError *)AS_OBJ(p->error))->flavor->chars;
+            }
+            char buf[160];
+            snprintf(buf, sizeof buf, "<otw rejected %s>", flavor);
+            return dup_str(buf);
+        }
+        char *inner = repr_value_rec(vm, p->value, seen);
+        size_t n = strlen(inner);
+        char *buf = (char *)malloc(n + 20);
+        snprintf(buf, n + 20, "<otw done %s>", inner);
+        free(inner);
+        return buf;
     }
     if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STASH) {
         ObjStash *s = (ObjStash *)AS_OBJ(v);
@@ -935,6 +962,42 @@ static void vm_throw_rich(VM *vm, const char *flavor, const char *roast, const c
 
 static void vm_throw(VM *vm, const char *flavor, const char *message) {
     vm_throw_rich(vm, flavor, NULL, NULL, message);
+}
+
+/* Raises an error that already exists, rather than building a new one from a
+   flavor and a message.
+
+   It is OP_CHUCK's own logic, minus the pop: an error carrying no position
+   yet gets this site stamped onto it, and one that already has a position
+   keeps it. `interns.wait_up` is the first caller -- a worker's error is
+   built on the worker's thread, in plain memory, and rebuilt on this heap
+   with no position, so the position it ends up with is the *awaiting* site.
+   That is the honest answer to "where did this go wrong from here", and A4's
+   `await_fr` wants exactly the same thing. */
+void vm_rethrow(VM *vm, Value errValue) {
+    if (vm->hadError) return;
+    if (!(IS_OBJ(errValue) && AS_OBJ(errValue)->type == OBJ_ERROR)) {
+        vm_throw(vm, "SkillIssue", "that isn't an error, so there's nothing to re-raise.");
+        return;
+    }
+    gc_push_temp(&vm->gc, errValue); /* string_new and build_trace both allocate */
+    ObjError *e = (ObjError *)AS_OBJ(errValue);
+    if (e->line == 0 && vm->currentFrameIndex >= 0) {
+        Frame *f = &vm->frames[vm->currentFrameIndex];
+        chunk_line_for_offset(f->closure->proto, vm->currentInstrStart, &e->line, &e->col);
+    }
+    if (e->file->byteLen == 0 && vm->unit != NULL && vm->unit->sourceName != NULL) {
+        e->file = string_new(&vm->gc, vm->unit->sourceName, (uint32_t)strlen(vm->unit->sourceName));
+    }
+    if (e->rawTraceCount == 0) {
+        int traceCount;
+        char **trace = build_trace(vm, &traceCount);
+        e->rawTrace = trace; /* adopted -- error_free owns it from here */
+        e->rawTraceCount = traceCount;
+    }
+    gc_pop_temp(&vm->gc);
+    vm->pendingError = errValue;
+    vm->hadError = true;
 }
 
 static void vm_throw_fmt(VM *vm, const char *flavor, const char *fmt, ...) {

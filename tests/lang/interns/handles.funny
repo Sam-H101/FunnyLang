@@ -1,12 +1,8 @@
-// ASYNC_PLAN.md A1: a handle is a numba, and every way of misusing one has
-// its own answer rather than a crash.
+// ASYNC_PLAN.md A1/A2: every way of misusing `hire`, `everybody` and the
+// worker protocol has its own answer rather than a crash.
 //
-// The interesting case is the last one. A numba is one of the things that
-// *can* cross to a worker, so an intern can be handed a colleague's ticket --
-// and two threads joining the same thread is undefined behaviour, not a race
-// the collector would ever catch. Handles are therefore numbered per hiring
-// VM, so a stolen ticket names the thief's own intern (or nobody) rather than
-// somebody else's thread, and the hazard cannot be reached at all.
+// `wait_up` is not in here: waiting on something that is not an `otw` is
+// legal and is that thing, which otw_states.funny covers.
 gimme interns
 gimme filez
 
@@ -23,34 +19,29 @@ flex bet oopsie(thunk) {
     }
 }
 
-// Never hired.
-oopsie(lowkey () => interns.wait_up(999))
-
-// Hired, waited on, waited on again.
-yo h = interns.hire(src, "once")
-yap interns.wait_up(h)
-oopsie(lowkey () => interns.wait_up(h))
-
-// Not a handle at all.
-oopsie(lowkey () => interns.wait_up("no"))
+// Hiring needs a path.
 oopsie(lowkey () => interns.hire(42))
-oopsie(lowkey () => interns.everybody("not a stash"))
-oopsie(lowkey () => interns.everybody([1, "two"]))
+oopsie(lowkey () => interns.hire(ghost))
 
-// The worker protocol only means anything inside a worker.
+// Gathering needs a stash.
+oopsie(lowkey () => interns.everybody("not a stash"))
+oopsie(lowkey () => interns.everybody(ghost))
+
+// The worker protocol only means anything inside a worker: the top-level
+// program has no assignment and nobody to deliver to.
 oopsie(lowkey () => interns.assignment())
 oopsie(lowkey () => interns.deliver(1))
 
-// Somebody else's intern. The parent hires two: one to be waited on, and one
-// that is handed the other's number and tries to collect on it.
-deadass THIEF = "gimme interns\nsketchy {\n    interns.wait_up(interns.assignment())\n    interns.deliver(\"stole it\")\n} my_bad (e) {\n    interns.deliver(e.flavor + \": \" + e.message)\n}\n"
-yo thief_src = filez.temp_file() + ".funny"
-filez.yeet_out(thief_src, THIEF)
+// And a worker cannot deliver what cannot cross back.
+deadass GREEDY = "gimme interns\ninterns.deliver(interns)\n"
+yo greedy = filez.temp_file() + ".funny"
+filez.yeet_out(greedy, GREEDY)
+oopsie(lowkey () => interns.wait_up(interns.hire(greedy, ghost)))
 
-yo victim = interns.hire(src, "mine")
-yo thief = interns.hire(thief_src, victim)
-yap interns.wait_up(thief)
-yap interns.wait_up(victim)
+// Interns are numbered per hiring VM and that number never leaves the
+// runtime, so this program and its worker can both have a "#1" without
+// either being able to name the other's.
+yap interns.wait_up(interns.hire(src, "mine"))
 
 filez.obliterate(src)
-filez.obliterate(thief_src)
+filez.obliterate(greedy)

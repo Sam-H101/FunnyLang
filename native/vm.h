@@ -292,6 +292,11 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc);
    squad's `to_yap` magic method, if it has one -- a real call back into
    FunnyLang code, exactly like the callback-taking stash methods. */
 void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...);
+
+/* Raises an ObjError that already exists instead of building one. An error
+   with no position yet is stamped with the current site, so a worker's error
+   re-raised by `interns.wait_up` points at the line that waited. */
+void vm_rethrow(VM *vm, Value errValue);
 /* Same, but with PLAN.md §4.1's site-specific roast -- the comedic line
    funny-mode diagnostics print instead of the message. Only for the stdlib
    throw sites whose Python counterpart passes an explicit `roast=`; the
