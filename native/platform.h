@@ -224,4 +224,66 @@ void platform_http_response_free(PlatformHttpResponse *resp);
 /* Raw TCP connect-and-time (no HTTP involved) for internet.ping(). */
 bool platform_tcp_ping(const char *host, int port, int timeoutMs, double *outMs);
 
+/* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
+ *
+ * `interns` runs each worker on a real OS thread, in its own VM with its own
+ * heap; nothing above this header knows whether that is pthreads or Win32.
+ *
+ * The three types are opaque *fixed-size storage*, not pointers to something
+ * malloc'd. Two reasons. A mutex that has to be allocated has an allocation
+ * failure path, and a mutex you cannot create is not a failure any caller can
+ * do anything useful about. And these want to sit inside other structs -- an
+ * `otw` needs one to be settled from a worker thread -- where a bare member
+ * is far easier to reason about than an owned pointer with a lifetime.
+ *
+ * The sizes below are deliberately generous, and platform.c asserts each one
+ * against the real underlying type at compile time. Getting this wrong is
+ * therefore a build error on the platform in question, not a stack smash
+ * discovered later. */
+
+typedef struct { _Alignas(16) unsigned char opaque[64]; } PlatformThread;
+typedef struct { _Alignas(16) unsigned char opaque[64]; } PlatformMutex;
+typedef struct { _Alignas(16) unsigned char opaque[64]; } PlatformCond;
+
+/* The body a thread runs. Returns nothing: a worker's *result* travels back
+   through memory the caller owns, guarded by the caller's own mutex, because
+   a thread return value would have to be a void* and this layer does not
+   want an ownership question it cannot answer. */
+typedef void (*PlatformThreadFn)(void *userdata);
+
+/* Starts `fn(userdata)` on a new thread. False if the OS refused, with a
+   reason in errbuf. `userdata` must outlive the thread -- nothing is copied.
+   Every started thread must be joined; there is deliberately no detach, so
+   a leaked thread is a bug rather than a supported mode. */
+bool platform_thread_start(PlatformThread *thread, PlatformThreadFn fn, void *userdata,
+                           char *errbuf, size_t errbuf_len);
+
+/* Blocks until the thread's function has returned, then releases the OS
+   handle. Calling it twice on one thread is undefined; call it exactly once. */
+void platform_thread_join(PlatformThread *thread);
+
+/* An identifier for the calling thread, equal across calls on one thread and
+   different between live threads. Only ever compared, never interpreted --
+   it exists so an assertion can say "this must run on the loop thread". */
+uint64_t platform_thread_id(void);
+
+void platform_mutex_init(PlatformMutex *m);
+void platform_mutex_destroy(PlatformMutex *m);
+void platform_mutex_lock(PlatformMutex *m);
+void platform_mutex_unlock(PlatformMutex *m);
+
+void platform_cond_init(PlatformCond *c);
+void platform_cond_destroy(PlatformCond *c);
+/* Atomically releases `m`, waits for a signal, and reacquires `m` before
+   returning. Spurious wakeups are permitted by both backends, so every
+   caller must re-check its predicate in a loop -- this layer does not
+   pretend otherwise. */
+void platform_cond_wait(PlatformCond *c, PlatformMutex *m);
+/* As above, bounded. Returns false if the deadline passed without a signal.
+   A spurious wakeup can still return true, so the predicate loop applies
+   here too. */
+bool platform_cond_wait_ms(PlatformCond *c, PlatformMutex *m, int timeoutMs);
+void platform_cond_signal(PlatformCond *c);
+void platform_cond_broadcast(PlatformCond *c);
+
 #endif /* FUNNY_PLATFORM_H */

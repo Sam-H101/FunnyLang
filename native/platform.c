@@ -47,6 +47,7 @@ typedef SOCKET SockFd;
 #else
 #include <dirent.h>
 #include <fcntl.h>
+#include <pthread.h>   /* ASYNC_PLAN.md A0: threads behind platform.h */
 #include <limits.h>
 #include <netdb.h>
 #include <poll.h>
@@ -1864,3 +1865,169 @@ bool platform_tcp_ping(const char *host, int port, int timeoutMs, double *outMs)
     *outMs = (platform_monotonic_seconds() - start) * 1000.0;
     return true;
 }
+
+/* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
+ *
+ * platform.h declares these as opaque fixed-size storage. The static
+ * assertions below are what makes that safe: if a platform's real handle
+ * does not fit, the build stops here with a readable message instead of
+ * writing past the struct at run time.
+ */
+#ifdef _WIN32
+
+typedef struct {
+    HANDLE handle;
+    PlatformThreadFn fn;
+    void *userdata;
+} Win32Thread;
+
+_Static_assert(sizeof(Win32Thread) <= sizeof(PlatformThread), "PlatformThread storage too small");
+_Static_assert(sizeof(SRWLOCK) <= sizeof(PlatformMutex), "PlatformMutex storage too small");
+_Static_assert(sizeof(CONDITION_VARIABLE) <= sizeof(PlatformCond), "PlatformCond storage too small");
+
+/* SRWLOCK rather than CRITICAL_SECTION: it needs no initialisation call that
+   can fail, is smaller, and this code never recurses on a lock -- a
+   recursive acquire would be a bug worth crashing on rather than tolerating. */
+static SRWLOCK *win_mutex(PlatformMutex *m) { return (SRWLOCK *)m->opaque; }
+static CONDITION_VARIABLE *win_cond(PlatformCond *c) { return (CONDITION_VARIABLE *)c->opaque; }
+
+static DWORD WINAPI win_thread_trampoline(LPVOID param) {
+    Win32Thread *t = (Win32Thread *)param;
+    t->fn(t->userdata);
+    return 0;
+}
+
+bool platform_thread_start(PlatformThread *thread, PlatformThreadFn fn, void *userdata,
+                           char *errbuf, size_t errbuf_len) {
+    Win32Thread *t = (Win32Thread *)thread->opaque;
+    t->fn = fn;
+    t->userdata = userdata;
+    t->handle = CreateThread(NULL, 0, win_thread_trampoline, t, 0, NULL);
+    if (t->handle == NULL) {
+        set_errbuf_win32(errbuf, errbuf_len, GetLastError());
+        return false;
+    }
+    return true;
+}
+
+void platform_thread_join(PlatformThread *thread) {
+    Win32Thread *t = (Win32Thread *)thread->opaque;
+    if (t->handle == NULL) return;
+    WaitForSingleObject(t->handle, INFINITE);
+    CloseHandle(t->handle);
+    t->handle = NULL;
+}
+
+uint64_t platform_thread_id(void) { return (uint64_t)GetCurrentThreadId(); }
+
+void platform_mutex_init(PlatformMutex *m) { InitializeSRWLock(win_mutex(m)); }
+void platform_mutex_destroy(PlatformMutex *m) { (void)m; /* SRWLOCK needs none */ }
+void platform_mutex_lock(PlatformMutex *m) { AcquireSRWLockExclusive(win_mutex(m)); }
+void platform_mutex_unlock(PlatformMutex *m) { ReleaseSRWLockExclusive(win_mutex(m)); }
+
+void platform_cond_init(PlatformCond *c) { InitializeConditionVariable(win_cond(c)); }
+void platform_cond_destroy(PlatformCond *c) { (void)c; /* likewise */ }
+
+void platform_cond_wait(PlatformCond *c, PlatformMutex *m) {
+    SleepConditionVariableSRW(win_cond(c), win_mutex(m), INFINITE, 0);
+}
+
+bool platform_cond_wait_ms(PlatformCond *c, PlatformMutex *m, int timeoutMs) {
+    if (timeoutMs < 0) timeoutMs = 0;
+    if (SleepConditionVariableSRW(win_cond(c), win_mutex(m), (DWORD)timeoutMs, 0)) return true;
+    return GetLastError() != ERROR_TIMEOUT;
+}
+
+void platform_cond_signal(PlatformCond *c) { WakeConditionVariable(win_cond(c)); }
+void platform_cond_broadcast(PlatformCond *c) { WakeAllConditionVariable(win_cond(c)); }
+
+#else
+
+typedef struct {
+    pthread_t handle;
+    PlatformThreadFn fn;
+    void *userdata;
+    bool started;
+} PosixThread;
+
+_Static_assert(sizeof(PosixThread) <= sizeof(PlatformThread), "PlatformThread storage too small");
+_Static_assert(sizeof(pthread_mutex_t) <= sizeof(PlatformMutex), "PlatformMutex storage too small");
+_Static_assert(sizeof(pthread_cond_t) <= sizeof(PlatformCond), "PlatformCond storage too small");
+
+static pthread_mutex_t *posix_mutex(PlatformMutex *m) { return (pthread_mutex_t *)m->opaque; }
+static pthread_cond_t *posix_cond(PlatformCond *c) { return (pthread_cond_t *)c->opaque; }
+
+static void *posix_thread_trampoline(void *param) {
+    PosixThread *t = (PosixThread *)param;
+    t->fn(t->userdata);
+    return NULL;
+}
+
+bool platform_thread_start(PlatformThread *thread, PlatformThreadFn fn, void *userdata,
+                           char *errbuf, size_t errbuf_len) {
+    PosixThread *t = (PosixThread *)thread->opaque;
+    t->fn = fn;
+    t->userdata = userdata;
+    t->started = false;
+    int rc = pthread_create(&t->handle, NULL, posix_thread_trampoline, t);
+    if (rc != 0) {
+        set_errbuf(errbuf, errbuf_len, rc); /* pthread_create returns the errno itself */
+        return false;
+    }
+    t->started = true;
+    return true;
+}
+
+void platform_thread_join(PlatformThread *thread) {
+    PosixThread *t = (PosixThread *)thread->opaque;
+    if (!t->started) return;
+    pthread_join(t->handle, NULL);
+    t->started = false;
+}
+
+/* pthread_t is opaque and not required to be an integer, so it is hashed
+   rather than cast. Only ever compared for equality, never interpreted. */
+uint64_t platform_thread_id(void) {
+    pthread_t self = pthread_self();
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char *bytes = (const unsigned char *)&self;
+    for (size_t i = 0; i < sizeof self; i++) {
+        h ^= bytes[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+void platform_mutex_init(PlatformMutex *m) { pthread_mutex_init(posix_mutex(m), NULL); }
+void platform_mutex_destroy(PlatformMutex *m) { pthread_mutex_destroy(posix_mutex(m)); }
+void platform_mutex_lock(PlatformMutex *m) { pthread_mutex_lock(posix_mutex(m)); }
+void platform_mutex_unlock(PlatformMutex *m) { pthread_mutex_unlock(posix_mutex(m)); }
+
+void platform_cond_init(PlatformCond *c) { pthread_cond_init(posix_cond(c), NULL); }
+void platform_cond_destroy(PlatformCond *c) { pthread_cond_destroy(posix_cond(c)); }
+
+void platform_cond_wait(PlatformCond *c, PlatformMutex *m) {
+    pthread_cond_wait(posix_cond(c), posix_mutex(m));
+}
+
+/* CLOCK_REALTIME, not monotonic: pthread_cond_timedwait's deadline is
+   against the condvar's clock attribute, which defaults to CLOCK_REALTIME on
+   both Linux and macOS. Using a monotonic deadline here without also setting
+   the attribute would make every wait return immediately. */
+bool platform_cond_wait_ms(PlatformCond *c, PlatformMutex *m, int timeoutMs) {
+    if (timeoutMs < 0) timeoutMs = 0;
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeoutMs / 1000;
+    deadline.tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    return pthread_cond_timedwait(posix_cond(c), posix_mutex(m), &deadline) != ETIMEDOUT;
+}
+
+void platform_cond_signal(PlatformCond *c) { pthread_cond_signal(posix_cond(c)); }
+void platform_cond_broadcast(PlatformCond *c) { pthread_cond_broadcast(posix_cond(c)); }
+
+#endif

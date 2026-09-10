@@ -48,7 +48,14 @@ fi
 #                         working.) There is no -ldl on macOS.
 #   -framework Security   macOS: Secure Transport, part of the OS. No
 #   -framework CoreFoundation                dlopen, no third-party dependency.
-LIBS=(-lm)
+#   -pthread              ASYNC_PLAN.md A0: `interns` runs each worker on a
+#                         real OS thread. Both gcc and clang take it as a
+#                         compile *and* link flag on Linux and macOS, and it
+#                         does more than -lpthread -- it also defines
+#                         _REENTRANT. glibc >= 2.34 folded pthreads into libc
+#                         so the link half is often a no-op now, which is not
+#                         a reason to leave it off the older ones.
+LIBS=(-lm -pthread)
 case "$(uname -s)" in
     Darwin) LIBS+=(-framework Security -framework CoreFoundation) ;;
     *) LIBS+=(-ldl) ;;
