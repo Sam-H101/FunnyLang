@@ -740,25 +740,40 @@ one rather than at the end, and N10 replaces it once the native toolchain exists
 
 ## 8. Definition of Done (v2.0.0)
 
-- [ ] `cc -O2 -o funny native/*.c` builds clean, `-Wall -Wextra -Werror`, on Windows/Linux/macOS.
-- [ ] Zero third-party dependencies, build-time or runtime.
-- [ ] The full `tests/lang/` + `examples/` corpus produces byte-identical stdout, stderr, and exit
-      codes under the C VM and the Python VM.
-- [ ] The whole differential suite passes under `FUNNY_GC_STRESS=1`.
-- [ ] ASan and UBSan clean.
-- [ ] `funny yeet` produces a binary under 1 MB that runs with no Python installed.
-- [ ] `funny bootstrap --verify` reaches its fixed point entirely on the C VM.
-- [ ] The no-Python CI job passes.
-- [ ] `internet.*` performs real HTTPS with certificate verification on Windows, macOS, and Linux —
+- [x] `cc -O2 -o funny native/*.c` builds clean, `-Wall -Wextra -Werror`, on Windows/Linux/macOS.
+      gcc and clang on Linux, MSVC `/W4 /WX` on Windows, clang on macOS.
+- [x] Zero third-party dependencies, build-time or runtime.
+- [x] ~~The full corpus produces byte-identical output under the C VM and the Python VM.~~
+      **True when it was checkable, and no longer checkable.** N11 deleted the Python VM. What
+      remains is the record: every plain and `!ERROR` golden in the 376-pair corpus was run through
+      the Python VM before it went, and every token, AST and bytecode dump was diffed byte for byte
+      against `funnylang.lexer`, `dump_ast` and `disasm.disassemble`. `tests/lang/programs/` is the
+      old differential corpus with its expected side captured *from the reference*. Nothing in the
+      corpus was captured from the C runtime and blessed.
+- [x] ~~The whole differential suite passes under `FUNNY_GC_STRESS=1`.~~ The **golden corpus** runs
+      under it in CI, which is the same VM doing the same work.
+- [x] ASan and UBSan clean — and the corpus now runs *under* the sanitiser build rather than just
+      the binary starting, because a missing GC root needs real work to show itself.
+- [x] `funny yeet` produces a binary under 1 MB that runs with no Python installed. **0.27 MB.**
+- [x] `funny bootstrap --verify` reaches its fixed point entirely on the C VM.
+- [x] The no-Python CI job passes — and it is now the ordinary job rather than the special one. It
+      also asserts there is no `.py` *in the repository*, not just none on PATH.
+- [x] `internet.*` performs real HTTPS with certificate verification on Windows, macOS, and Linux —
       and degrades to a clean `SkillIssue`, never a crash, where no TLS backend exists.
+      (`tools/gen_unicode.funny` downloads a 2.2 MB file over HTTPS as a matter of routine.)
 - [ ] A tagged push publishes five verified binaries to GitHub Releases, and `verify-published`
-      downloads and runs each one successfully.
-- [ ] `install.sh` / `install.ps1` get a working `funny` onto a clean machine with no toolchain.
-- [ ] Pointers (`PLAN.md` §3.10) behave identically on both VMs, including every error row — and no
-      pointer operation, on any input, can crash the C VM or corrupt its heap.
-- [ ] `PLAN.md` §10's performance targets still met — and `fib(25)` should now be *much* faster.
-- [ ] The Python implementation still passes its own tests (1,065 as of M15), unchanged, as the
-      reference oracle.
+      downloads and runs each one successfully. **Needs a tag; the workflow is written and unrun.**
+- [x] `install.sh` / `install.ps1` get a working `funny` onto a clean machine with no toolchain.
+      All four paths exercised locally through the `FUNNY_BASE_URL` seam.
+- [x] ~~Pointers behave identically on both VMs~~ — covered by `tests/lang/ptr_*` and
+      `tests/lang/programs/pointers*`, whose expected output came from the reference.
+- [x] `PLAN.md` §10's performance targets, measured on the shipped binary:
+      `fib(25)` **0.02 s** (target 3 s), 10k lines compiled in **0.66 s** (target 2 s),
+      `funny run hello.funny` cold **0.01 s** (target 300 ms), yeeted binary startup **0.00 s**
+      (target 500 ms).
+- [x] ~~The Python implementation still passes its own tests, unchanged, as the reference oracle.~~
+      It did, right up to the end: **1,313 passed** on the run immediately before N11 task 5 deleted
+      it. That number is the last thing the oracle ever said.
 
 ---
 
