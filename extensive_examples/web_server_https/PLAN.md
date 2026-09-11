@@ -1,9 +1,10 @@
 # FunnyLang — HTTPS Web Server Plan (`extensive_examples/web_server_https/`)
 
-> **Status:** built. H0–H4 and H6 done and verified on Linux (WSL2) and Windows 11; the macOS
-> backend (H5) is written but has not been compiled or run — there is no Mac here, and CI builds
-> macOS when the branch is pushed. Branch `feature/https-web-server`, cut from
-> `feature/async-threading`. §5 has the state of each milestone, §9 every deviation.
+> **Status:** built. Every milestone done: verified by hand on Linux (WSL2) and Windows 11, and by
+> CI on all three platforms — the macOS backend, which could not be run here, compiled and passed
+> the golden on `macos-latest`, and MSVC builds it clean under `/W4 /WX`. Branch
+> `feature/https-web-server`, cut from `feature/async-threading`. §5 has the state of each
+> milestone, §9 every deviation.
 > **Prerequisite:** `ASYNC_PLAN.md` complete (it is — A0–A7), and `extensive_examples/web_server/`
 > in the tree, since this example is that one grown up: TLS on the wire, many threads behind the
 > door, and a real site instead of a route list.
@@ -439,8 +440,9 @@ whole, and the first one should stay the simple one.
 
 ### H5 — macOS (Secure Transport, server side)
 - [x] Server side with `SecPKCS12Import` (into a temporary keychain); client side with an anchored
-      trust evaluation. **Written, not compiled or run.**
-- [ ] CI job green — needs the branch pushed.
+      trust evaluation. Written without a Mac to try it on.
+- [x] CI job green: `macos-latest` builds it with `-Werror` and passes the golden, and the corpus
+      under ASan/UBSan.
 
 ### H6 — docs
 - [x] README with the tour, the measurements, the "what it is not".

@@ -161,7 +161,7 @@ handles doing the ordinary calls.
 |---|---|---|---|
 | Linux / BSD | OpenSSL, `dlopen`'d at run time | `PKCS12_parse` | built and run: the golden, curl, `openssl s_client` |
 | Windows | Schannel (SSPI) | `PFXImportCertStore` | built with llvm-mingw and run natively on Windows 11: the golden, curl, `openssl s_client` |
-| macOS | Secure Transport | `SecPKCS12Import` into a temporary keychain | written; **not yet compiled or run** — there is no Mac here, and CI runs when the branch is pushed |
+| macOS | Secure Transport | `SecPKCS12Import` into a temporary keychain | built and run in CI (`macos-latest`): the golden, and the corpus under ASan/UBSan; never run on a Mac by hand |
 
 PKCS#12 is the one identity format all three import natively. The committed `certs/site.p12` is
 encrypted with PBE-SHA1-3DES and a SHA-1 MAC, the one PKCS#12 encoding all three read out of the box.
