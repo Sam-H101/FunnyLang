@@ -1,0 +1,21 @@
+// ASYNC_PLAN.md A4: what `async_ngl` and `await_fr` compile to.
+//
+// `await_fr` is one byte with no operands -- what is being awaited is
+// whatever the expression under it left on the stack, and the opcode replaces
+// it with what it settles to.
+//
+// `async_ngl` emits no code at all. It is a *flag on the proto*, which the
+// disassembler prints in the header: calling the closure is what makes a task
+// and returns an `otw`, and that decision belongs to the runtime, not to a
+// different instruction sequence.
+async_ngl bet twice(n) {
+    bounce n * 2
+}
+
+bet plain(n) {
+    bounce n * 2
+}
+
+yo p = twice(21)
+yap await_fr p
+yap await_fr twice(1) + await_fr twice(2)

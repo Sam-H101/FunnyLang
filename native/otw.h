@@ -30,6 +30,8 @@
 #ifndef FUNNY_OTW_H
 #define FUNNY_OTW_H
 
+#include <stdbool.h>
+
 #include "object.h"
 #include "value.h"
 
@@ -53,6 +55,14 @@ typedef struct ObjOtw {
        born settled. A4's tasks and A6's timers add their own sources; this
        stays the worker one. */
     int internId;
+
+    /* Has anything ever awaited this? Not a state -- it says nothing about
+       whether the value arrived -- but the loop needs it at exit: an `otw`
+       that *rejected* and that nobody ever looked at is an error thrown into
+       the void, and §3.4's "no silent truncation" rule says that must not
+       vanish. A fulfilled one nobody looked at is fine; starting work you do
+       not need the answer to is a legitimate thing to do. */
+    bool awaited;
 } ObjOtw;
 
 /* Born pending, waiting on nothing. */

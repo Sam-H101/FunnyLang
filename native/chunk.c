@@ -208,7 +208,9 @@ CompiledUnit *chunk_load_funnyc(const uint8_t *data, size_t len, GC *gc, char **
         p->name = r_str(&r, &nameLen);
         p->arity = r_u8(&r);
         p->defaultCount = r_u8(&r);
-        p->isVariadic = r_u8(&r) != 0;
+        uint8_t protoFlags = r_u8(&r);
+        p->isVariadic = (protoFlags & 1) != 0;
+        p->isAsync = (protoFlags & 2) != 0;
         p->upvalueCount = r_u8(&r);
         p->maxStack = r_u16(&r);
         p->localCount = r_u8(&r);

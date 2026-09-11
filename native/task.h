@@ -90,6 +90,23 @@ typedef struct Task {
        positions start naming whichever file the *scheduler* was in. */
     CompiledUnit *unit;
     const char *currentModuleName;
+
+    /* -- scheduling (A4) --------------------------------------------------
+       The `otw` this task settles when it finishes, and the one it is
+       suspended on. Both are GC objects on this VM's heap, and both are
+       rooted by task_mark -- an `otw` whose only reference is the task that
+       will fulfil it is exactly the case that would otherwise be swept. */
+    struct ObjOtw *result;
+    struct ObjOtw *awaiting;
+
+    /* How many `vm_execute` calls are running this task, nested on the C
+       stack. One is the task's own; more means a native function called back
+       into FunnyLang (`stash.sort_by`'s comparator, `combo`, a squad's magic
+       method) and §3.1's boundary applies -- that C frame cannot be saved, so
+       `await_fr` under it raises `CantWaitRightNow` instead of corrupting the
+       frame stack. `nativeName` is which one, so the message can say. */
+    int reentry;
+    const char *nativeName;
 } Task;
 
 /* A fresh task with its own empty stack and frames. Not registered anywhere

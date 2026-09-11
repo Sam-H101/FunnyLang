@@ -489,6 +489,16 @@ static Value m_hire(VM *vm, Value *a, int argc) {
  * better answer than the one that was expected.
  */
 
+/* Is there a worker thread behind this `otw` at all? The loop asks before
+   deciding that a waiting task is stuck forever. */
+bool interns_has_worker(VM *vm, ObjOtw *p) {
+    if (!g_ready || p->internId == 0) return false;
+    platform_mutex_lock(&g_lock);
+    bool found = intern_at(vm, p->internId) != NULL;
+    platform_mutex_unlock(&g_lock);
+    return found;
+}
+
 /* True if the worker behind `p` has finished, without waiting for it. False
    for an `otw` with no worker, which A2 never produces and A5's loop will. */
 bool interns_ready(VM *vm, ObjOtw *p) {
@@ -567,6 +577,7 @@ void interns_collect(VM *vm, ObjOtw *p) {
 static Value settle_and_read(VM *vm, Value v) {
     if (!(IS_OBJ(v) && AS_OBJ(v)->type == OBJ_OTW)) return v;
     ObjOtw *p = (ObjOtw *)AS_OBJ(v);
+    p->awaited = true;
     interns_collect(vm, p);
     if (p->state == OTW_REJECTED) {
         vm_rethrow(vm, p->error);

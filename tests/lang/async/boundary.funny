@@ -1,0 +1,75 @@
+// ASYNC_PLAN.md §3.1: the suspension boundary is real, and it is enforced.
+//
+// The VM keeps its own stack and frames rather than using the C stack, which
+// is what makes a task suspendable at all -- its whole state is a slice of
+// two arrays. But `vm_call_value` re-enters the interpreter *on the C stack*,
+// which is how a native function calls back into FunnyLang: a sort
+// comparator, `combo`, a squad's magic method. A task cannot suspend across
+// one of those, because that C frame cannot be saved.
+//
+// §3.1 is blunt about what matters here: "a silent wrong answer here would be
+// the worst defect this plan could ship". So it is an error, it names the
+// callback, and this golden is what proves it stays that way.
+gimme interns
+
+flex bet caught(thunk) {
+    sketchy {
+        yap "NO ERROR: " + to_yap(thunk())
+    } my_bad (e) {
+        yap e.flavor + ": " + e.message
+    }
+}
+
+async_ngl bet later(n) {
+    bounce n * 2
+}
+
+// Inside a stash callback.
+async_ngl bet in_glow_up() {
+    bounce [1, 2, 3].glow_up(lowkey (x) => await_fr later(x))
+}
+caught(lowkey () => await_fr in_glow_up())
+
+async_ngl bet in_vibe_check() {
+    bounce [1, 2, 3].vibe_check(lowkey (x) => await_fr later(x) > 2)
+}
+caught(lowkey () => await_fr in_vibe_check())
+
+async_ngl bet in_squish() {
+    bounce [1, 2, 3].squish(lowkey (acc, x) => acc + await_fr later(x), 0)
+}
+caught(lowkey () => await_fr in_squish())
+
+// Inside a `combo`.
+async_ngl bet in_combo() {
+    yo f = combo(lowkey (x) => await_fr later(x))
+    bounce f(3)
+}
+caught(lowkey () => await_fr in_combo())
+
+// Inside a squad's to_yap, reached by the display path itself.
+squad Loud {
+    spawn() { }
+    bet to_yap() { bounce to_yap(await_fr later(1)) }
+}
+async_ngl bet in_to_yap() {
+    bounce to_yap(Loud())
+}
+caught(lowkey () => await_fr in_to_yap())
+
+// The boundary is about *suspending*, not about async. Awaiting something
+// already settled inside a callback is fine -- nothing has to be paused.
+async_ngl bet settled_in_callback() {
+    yo ready = later(5)
+    yo value = await_fr ready
+    bounce [1, 2].glow_up(lowkey (x) => x + await_fr value)
+}
+caught(lowkey () => await_fr settled_in_callback())
+
+// And *starting* an async function inside a callback is fine too: making a
+// task and an `otw` suspends nothing.
+async_ngl bet start_in_callback() {
+    yo promises = [1, 2].glow_up(lowkey (x) => later(x))
+    bounce await_fr promises[0] + await_fr promises[1]
+}
+caught(lowkey () => await_fr start_in_callback())

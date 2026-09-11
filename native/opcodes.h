@@ -85,6 +85,10 @@ typedef enum {
     OP_PTR_PROP = 77,
     OP_DEREF = 78,
     OP_SET_DEREF = 79,
+    /* ASYNC_PLAN.md A4. Replaces the `otw` on top of the stack with what it
+       settles to, suspending this task until it does. No operands: what is
+       being awaited is whatever the expression under it left behind. */
+    OP_AWAIT = 80,
 } Op;
 
 #endif /* FUNNY_OPCODES_H */

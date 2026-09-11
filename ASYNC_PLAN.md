@@ -317,15 +317,15 @@ signal available.
 
 ## 8. Definition of Done
 
-- [ ] `async_ngl` and `await_fr` are out of `RESERVED_FUTURE` and do what their names say.
+- [x] `async_ngl` and `await_fr` are out of `RESERVED_FUTURE` and do what their names say. **(A4)**
 - [x] `interns` runs real OS threads; a worker's crash or error surfaces in the parent as a normal
       FunnyLang error, never as a runtime abort. **(A1)**
 - [x] The existing 376 goldens pass unchanged, under `FUNNY_GC_STRESS=50` and ASan. **(A3)**
-- [ ] New goldens for every hazard in §3, not just every feature in §6.
+- [x] New goldens for every hazard in §3, not just every feature in §6. **(A1-A5)**
 - [x] TSan clean on the worker tests. **(A1)**
-- [ ] `await_fr` inside a native callback raises a clear error naming the callback.
+- [x] `await_fr` inside a native callback raises a clear error naming the callback. **(A4)**
 - [x] A value that cannot cross the worker boundary is rejected with a message that says why. **(A1)**
-- [ ] `CantWaitRightNow` and `LeftOnRead` are the *only* additions to §4.1's flavor taxonomy.
+- [x] `CantWaitRightNow` and `LeftOnRead` are the *only* additions to §4.1's flavor taxonomy. **(A2, A4)**
 - [ ] MSVC `/W4 /WX`, gcc and clang `-Wall -Wextra -Werror` clean; the corpus green on Linux,
       Windows and macOS.
 - [ ] `funny bootstrap --verify` still reaches its fixed point — the self-hosted compiler must be
@@ -522,3 +522,85 @@ spec contradiction, and every wrong turn worth not repeating.
   program that awaits ten thousand things should not hold ten thousand 256-slot stacks; the Task
   itself survives, so a stale reference finds a `TASK_DONE` with nothing in it rather than freed
   memory.
+
+- **A4 · `async_ngl` and `await_fr` in the language, and A5 · the event loop. Done, together.**
+  They are one commit because A4 without A5 is a runtime that hangs: the moment `await_fr` can
+  suspend a task, something has to decide what runs next. Splitting them would have meant shipping a
+  deliberately broken intermediate state and writing throwaway scaffolding to hide it. §7's order is
+  otherwise followed exactly.
+
+  ```funny
+  async_ngl bet fetch_both() {
+      yo a = interns.hire("slow_job.funny", 21)
+      yo b = interns.hire("slow_job.funny", 21)
+      bounce await_fr a + await_fr b
+  }
+  yap await_fr fetch_both()      // 42
+  ```
+
+  `async_ngl` and `await_fr` are out of `selfhost/parser.funny`'s `RESERVED_FUTURE`; `vibin`,
+  `yield_lol`, `match_this` and `when` stay in it. Calling an `async_ngl bet` makes a task and hands
+  back an `otw` without running the body; `OP_AWAIT` (80) replaces the `otw` on the stack with what
+  it settles to, suspending the task if it has not.
+
+  **The proto's variadic byte became a flags byte rather than the format gaining a field.** Bit 0 is
+  variadic, bit 1 is async. Every value any older toolchain ever wrote is 0 or 1, so it reads back
+  identically -- **no bytecode version bump, and the self-hosting bootstrap needs no special dance**.
+  A new field would have meant a runtime that could not read the blob it needs in order to build the
+  toolchain that writes the new format, which is a circle with no cheap way out.
+
+  **Choices worth recording:**
+  - **`await_fr` is at unary precedence**, so §1's own `await_fr a + await_fr b` means
+    `(await_fr a) + (await_fr b)`, and `await_fr f()` awaits the call's result rather than the
+    callee.
+  - **`async_ngl lowkey (...) => ...` works too.** A lambda is a FuncDecl with different spelling as
+    far as `compile_closure` is concerned, so supporting it cost one parser branch.
+  - **`async_ngl` on a squad *method* is refused, with its own message.** A method is reached through
+    `INVOKE`, which has its own call path; only the plain-call path was taught to make a task. The
+    parser says "wrap one in an async_ngl bet outside the squad" rather than letting the generic
+    "a squad body only has 'spawn' and 'bet' methods in it" stand, which is true and useless there.
+  - **§3.1 is enforced with a re-entry count on the Task, and the error names the callback.** One
+    `vm_execute` is the task's own; more means a native function called back into FunnyLang, and
+    that C frame cannot be saved. The offender's name is threaded through every native call site, so
+    it says `can't 'await_fr' inside 'glow_up'` rather than "inside a native callback".
+    `tests/lang/async/boundary.funny` pins all five paths that reach it -- `glow_up`, `vibe_check`,
+    `squish`, `combo`, a squad's `to_yap` -- **and the two that must stay legal**: awaiting an
+    already-settled `otw` inside a callback (nothing needs pausing), and *starting* an async
+    function inside one (making a task suspends nothing).
+  - **The loop picks tasks in creation order and never preempts.** §5 rules out a golden that
+    depends on which thread got there first; a scheduler that picked at random would make the
+    language's own ordering unassertable too. `tests/lang/async/ordering.funny` writes the policy
+    down as a test rather than leaving it to be discovered.
+  - **`OP_AWAIT` rewinds `ip` to itself before suspending**, so resuming re-runs the instruction and
+    finds the `otw` settled. Cheaper to reason about than a resume point that has to push the value
+    itself, and it makes a spurious wake-up harmless.
+  - **A task's error settles its `otw`; it does not propagate to whoever happens to be running.**
+    Task zero is the exception -- its error *is* the program's error.
+  - **`vm_run_repl_unit` goes through the loop too**, with task zero put back into RUNNING each
+    input. `await_fr` at a REPL prompt would otherwise hand back a ghost and never run the task,
+    because `vm_call_value` has nowhere to report a suspension to.
+
+  **`LeftOnRead` covers both of the things §2.4's table names, and deliberately not a third.**
+  A task waiting on an `otw` that nothing can settle -- a deadlock -- is told so *in the waiting
+  task*, at its own `await_fr`. An `async_ngl bet` that **rejected** and that nobody ever awaited is
+  reported at exit and sets the exit code, because that is an error thrown into the void and §3.4's
+  "no silent truncation" rule applies. A **fulfilled** `otw` nobody awaited is *not* reported: §1's
+  own example leaves one behind, and starting work you do not need the answer to is a legitimate
+  thing to do. The plan's wording ("an `otw` left unawaited at exit") would have made
+  fire-and-forget impossible.
+
+  **The dropped-rejection report goes in the error's roast, not just its message.** §4.2 renders the
+  roast by default and the message only under `--serious`; a diagnostic that said "left on read" and
+  left you to go looking would barely be a report. It carries the dropped error's flavor, message
+  and `file:line`, and a hint saying what to do about it.
+
+  **Acceptance, met:** `tests/lang/parser/async_forms.funny` (`!XRAY --ast`) and
+  `tests/lang/compiler/async_forms.funny` (`!XRAY`) pin both forms through the toolchain -- the
+  disassembler now prints `async_ngl` in a proto's header, since the flag is otherwise invisible in
+  a disassembly. `basics` covers awaiting plain values, unary precedence, defaults, the lambda form
+  and three levels of nesting; `errors` covers a rejection crossing three tasks, an `otw` re-raising
+  every time, and a task catching its own failure; `left_on_read` covers a self-deadlock and a
+  mutual one; `left_on_read_dropped` is the `!DIAG` + `!EXIT 1` golden. 391/391 on Linux (gcc) and
+  Windows (MSVC `/W4 /WX`), 391/391 under `FUNNY_GC_STRESS=50`, the whole corpus clean under
+  ASan+UBSan, `tests/lang/async` and `tests/lang/interns` clean under ThreadSanitizer, and the
+  bootstrap fixed point byte-identical on both platforms.

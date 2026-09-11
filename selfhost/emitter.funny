@@ -38,7 +38,12 @@ flex bet write_proto_bytes(buf, proto) {
     write_str(buf, proto["name"])
     write_u8(buf, proto["arity"])
     write_u8(buf, proto["default_count"])
-    write_u8(buf, proto["is_variadic"] ? 1 : 0)
+    // PLAN.md §5.2's variadic byte is a *flags* byte from ASYNC_PLAN.md A4
+    // on: bit 0 is variadic, bit 1 is async. Deliberately not a new field
+    // and not a version bump -- every value an older toolchain ever wrote
+    // is 0 or 1, which reads back identically, so the new runtime runs old
+    // bytecode and the self-hosting bootstrap needs no special dance.
+    write_u8(buf, (proto["is_variadic"] ? 1 : 0) + (proto["is_async"] ? 2 : 0))
     write_u8(buf, proto["upvalue_count"])
     write_u16(buf, proto["max_stack"])
     write_u8(buf, proto["local_count"])

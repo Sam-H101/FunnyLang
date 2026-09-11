@@ -1,0 +1,7 @@
+CantWaitRightNow: can't 'await_fr' inside 'glow_up' -- it called back into your code from the runtime, and that can't be paused. await before the call, or after it.
+CantWaitRightNow: can't 'await_fr' inside 'vibe_check' -- it called back into your code from the runtime, and that can't be paused. await before the call, or after it.
+CantWaitRightNow: can't 'await_fr' inside 'squish' -- it called back into your code from the runtime, and that can't be paused. await before the call, or after it.
+CantWaitRightNow: can't 'await_fr' inside 'combo' -- it called back into your code from the runtime, and that can't be paused. await before the call, or after it.
+CantWaitRightNow: can't 'await_fr' inside 'to_yap' -- it called back into your code from the runtime, and that can't be paused. await before the call, or after it.
+NO ERROR: [11, 12]
+NO ERROR: 6

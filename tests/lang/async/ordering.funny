@@ -1,0 +1,49 @@
+// ASYNC_PLAN.md A5: what the loop guarantees, and what it does not.
+//
+// Tasks are picked in creation order and a task runs until it awaits
+// something that has not settled. That is the whole scheduling policy, and it
+// is written down here rather than left to be discovered, because §5 rules
+// out a golden that depends on timing -- so the *language's* own ordering had
+// better be something a golden can assert.
+gimme interns
+
+yo log = []
+
+async_ngl bet tick(name) {
+    log.yeet_in(name + ":start")
+    bounce name
+}
+
+// Nothing runs at the call: three tasks exist and none of them has begun.
+yo a = tick("a")
+yo b = tick("b")
+yo c = tick("c")
+yap log
+
+// Awaiting `c` runs `a` and `b` first -- they were created first and the loop
+// takes them in order. This is the observable consequence of "creation
+// order", and it is why a program that needs a particular order should say so
+// with `await_fr` rather than hope.
+yap await_fr c
+yap log
+
+// The entry program keeps running until it awaits something pending: a task
+// created here has not started by the next line.
+log = []
+async_ngl bet quiet() {
+    log.yeet_in("ran")
+    bounce ghost
+}
+quiet()
+log.yeet_in("entry still going")
+yap log
+
+// And work created but never awaited is still drained before the program
+// exits (§3.4) -- which is only visible from *inside* the task, because by
+// the time it runs the entry program has nothing left to print with.
+async_ngl bet late() {
+    yap "late ran, after the entry program finished"
+    bounce ghost
+}
+late()
+yap "entry done"

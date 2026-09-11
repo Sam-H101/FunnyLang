@@ -25,6 +25,12 @@ typedef struct {
 typedef enum {
     VM_OK,
     VM_ERROR,
+    /* ASYNC_PLAN.md A4: the running task hit an `await_fr` on something that
+       has not settled and gave up the interpreter. Only ever returned to the
+       event loop -- a nested `vm_execute` (a native callback re-entering
+       FunnyLang) can never produce it, because §3.1's boundary refuses to
+       suspend there in the first place. */
+    VM_SUSPENDED,
 } VmResult;
 
 /* A method bound to a receiver (PLAN.md §3.9's per-type instance methods --

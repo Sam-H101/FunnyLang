@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "gc.h"
+#include "otw.h"
 #include "vm.h"
 
 /* Same starting sizes vm_init has always used for task zero. A task made by
@@ -36,6 +37,10 @@ Task *task_new(int id) {
     t->pendingError = GHOST_VAL;
     t->unit = NULL;
     t->currentModuleName = NULL;
+    t->result = NULL;
+    t->awaiting = NULL;
+    t->reentry = 0;
+    t->nativeName = NULL;
     return t;
 }
 
@@ -85,6 +90,12 @@ void task_restore(VM *vm, Task *t) {
 }
 
 void task_mark(GC *gc, Task *t) {
+    /* Both first, because they are live even for a TASK_DONE task whose
+       arrays have been freed: `result` is what a still-pending awaiter is
+       holding, and it may be the only reference to the value the task
+       returned. */
+    if (t->result != NULL) gc_mark_object(gc, (Obj *)t->result);
+    if (t->awaiting != NULL) gc_mark_object(gc, (Obj *)t->awaiting);
     for (int i = 0; i < t->stackCount; i++) gc_mark_value(gc, t->stack[i]);
     for (int i = 0; i < t->frameCount; i++) gc_mark_object(gc, (Obj *)t->frames[i].closure);
     for (int i = 0; i < t->openUpvalueCount; i++) gc_mark_object(gc, (Obj *)t->openUpvalues[i]);

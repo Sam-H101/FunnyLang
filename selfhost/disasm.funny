@@ -99,7 +99,12 @@ flex bet line_at(proto, ip) {
 }
 
 flex bet disassemble_proto(unit, proto, label) {
-    yo out = ["== " + label + " (arity " + to_yap(proto["arity"]) + ") =="]
+    // ASYNC_PLAN.md A4: `async_ngl` emits no code -- it is a flag on the
+    // proto, and calling the closure is what makes a task. So the header is
+    // the only place a disassembly can show it, and without it the one thing
+    // that distinguishes an async function is invisible in `funny xray`.
+    yo tag = proto["is_async"] ? "async_ngl " : ""
+    yo out = ["== " + tag + label + " (arity " + to_yap(proto["arity"]) + ") =="]
     yo code = proto["code"]
     yo ip = 0
     yo last_shown_line = ghost

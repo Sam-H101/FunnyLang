@@ -42,6 +42,10 @@ Value interns_build(struct VM *vm);
 
 struct ObjOtw;
 
+/* Is there a worker behind this `otw` at all? The event loop asks before
+   concluding that a task waiting on it can never be woken. */
+bool interns_has_worker(struct VM *vm, struct ObjOtw *p);
+
 /* Has the worker behind this `otw` finished? Never blocks. False for an `otw`
    nobody is working on. A5's event loop asks this; `wait_up` does not need
    to. */

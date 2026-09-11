@@ -1,0 +1,42 @@
+!XRAY
+== async_ngl bet twice (arity 1) ==
+0000  line 12 GET_LOCAL     0
+0002          CONST         0    ; 2
+0005          MUL
+0006          RETURN
+0007  line 11 GHOST
+0008          RETURN
+
+== bet plain (arity 1) ==
+0000  line 16 GET_LOCAL     0
+0002          CONST         0    ; 2
+0005          MUL
+0006          RETURN
+0007  line 15 GHOST
+0008          RETURN
+
+== <script> (entry) (arity 0) ==
+0000  line 11 CLOSURE       1    ; proto #0
+0003          DEF_GLOBAL    2    ; "twice"
+0006  line 15 CLOSURE       3    ; proto #1
+0009          DEF_GLOBAL    4    ; "plain"
+0012  line 19 GET_GLOBAL    2    ; "twice"
+0015          CONST         5    ; 21
+0018          CALL          1
+0020          DEF_GLOBAL    6    ; "p"
+0023  line 20 GET_GLOBAL    6    ; "p"
+0026          AWAIT
+0027          YAP           1 1
+0030  line 21 GET_GLOBAL    2    ; "twice"
+0033          CONST         7    ; 1
+0036          CALL          1
+0038          AWAIT
+0039          GET_GLOBAL    2    ; "twice"
+0042          CONST         0    ; 2
+0045          CALL          1
+0047          AWAIT
+0048          ADD
+0049          YAP           1 1
+0052          GHOST
+0053          RETURN
+

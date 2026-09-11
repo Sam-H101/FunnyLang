@@ -103,7 +103,8 @@ flex bet fmt_stmt(f, node, depth) {
         bounce ghost
     }
     sus (kind == "FuncDecl") {
-        fmt_block(f, node["body"], depth, "bet " + node["name"] + "(" + fmt_params(node["params"], node["variadic"]) + ") ")
+        yo head = node["is_async"] ? "async_ngl bet " : "bet "
+        fmt_block(f, node["body"], depth, head + node["name"] + "(" + fmt_params(node["params"], node["variadic"]) + ") ")
         bounce ghost
     }
     sus (kind == "Block") {
@@ -272,6 +273,9 @@ flex bet fmt_expr(node) {
     sus (kind == "Unary") {
         bounce node["op"] + fmt_expr(node["operand"])
     }
+    sus (kind == "Await") {
+        bounce "await_fr " + fmt_expr(node["value"])
+    }
     sus (kind == "AddressOf") {
         bounce "&" + fmt_expr(node["place"])
     }
@@ -342,12 +346,13 @@ flex bet fmt_expr(node) {
     }
     sus (kind == "Lambda") {
         yo params = fmt_params(node["params"], node["variadic"])
+        yo head = node["is_async"] ? "async_ngl lowkey (" : "lowkey ("
         sus (node["is_expr_body"]) {
-            bounce "lowkey (" + params + ") => " + fmt_expr(node["body"])
+            bounce head + params + ") => " + fmt_expr(node["body"])
         }
         yo inner = new_fmt()
         fmt_stmts(inner, node["body"]["statements"], 1)
-        bounce "lowkey (" + params + ") {\n" + inner["lines"].join("\n") + "\n}"
+        bounce head + params + ") {\n" + inner["lines"].join("\n") + "\n}"
     }
     sus (kind == "Me") {
         bounce "me"

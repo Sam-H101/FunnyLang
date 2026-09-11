@@ -15,6 +15,7 @@ static ObjOtw *alloc_otw(GC *gc) {
     p->value = GHOST_VAL;
     p->error = GHOST_VAL;
     p->internId = 0;
+    p->awaited = false;
     gc_track(gc, (Obj *)p, sizeof(ObjOtw));
     return p;
 }

@@ -29,10 +29,11 @@
 #include "iterator.h"
 #include "mafs.h"
 #include "modules.h"
-#include "otw.h"
 #include "numfmt.h"
 #include "opcodes.h"
 #include "pointa.h"
+#include "loop.h"
+#include "otw.h"
 #include "squad.h"
 #include "task.h"
 #include "stash.h"
@@ -47,6 +48,7 @@
    wrapper -- both placed early, right after dup_str, since every other
    helper in this file wants them -- need to call it. */
 static void vm_throw(VM *vm, const char *flavor, const char *message);
+static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut);
 /* Same, but carrying N6's site-specific roast/hint (NULL for either means
    "use the flavor's default"). */
 static void vm_throw_rich(VM *vm, const char *flavor, const char *roast, const char *hint, const char *message);
@@ -680,7 +682,13 @@ Task *vm_task_spawn(VM *vm) {
 }
 
 void vm_task_switch(VM *vm, Task *to) {
-    if (to == vm->currentTask) return;
+    if (to == vm->currentTask) {
+        /* Already in. Still mark it running: the loop resumes a READY task
+           by switching to it, and the one that just suspended and was picked
+           straight back up would otherwise stay READY while it ran. */
+        to->state = TASK_RUNNING;
+        return;
+    }
     if (vm->currentTask != NULL) {
         task_save(vm, vm->currentTask);
         if (vm->currentTask->state == TASK_RUNNING) vm->currentTask->state = TASK_READY;
@@ -707,6 +715,14 @@ void vm_task_retire(VM *vm, Task *t) {
     t->openUpvalueCapacity = 0;
     t->pendingError = GHOST_VAL;
     t->unit = NULL;
+}
+
+/* Runs the task the loop has just switched in, from wherever it left off.
+   Always `baseFrameCount` 0: this is a task's own outermost execute, which is
+   also what makes §3.1's re-entry check (`reentry != 1`) mean what it says. */
+VmResult vm_resume_task(VM *vm, Task *t, Value *resultOut) {
+    (void)t; /* vm_task_switch already made it the running one */
+    return vm_execute(vm, 0, resultOut);
 }
 
 /* -- the import-loading stack ---------------------------------------------
@@ -815,7 +831,16 @@ static void mark_vm_roots(GC *gc, void *userdata) {
        next. */
     for (int i = 0; i < vm->taskCount; i++) {
         Task *t = vm->tasks[i];
-        if (t != NULL && t != vm->currentTask) task_mark(gc, t);
+        if (t == NULL) continue;
+        if (t != vm->currentTask) {
+            task_mark(gc, t);
+            continue;
+        }
+        /* The running task's stack and frames are the VM's own, walked
+           below -- but its `otw`s are not anywhere else. A task that has
+           dropped its own promise from the stack still has to settle it. */
+        if (t->result != NULL) gc_mark_object(gc, (Obj *)t->result);
+        if (t->awaiting != NULL) gc_mark_object(gc, (Obj *)t->awaiting);
     }
     for (int i = 0; i < vm->stackCount; i++) gc_mark_value(gc, vm->stack[i]);
     for (int i = 0; i < vm->frameCount; i++) gc_mark_object(gc, (Obj *)vm->frames[i].closure);
@@ -917,6 +942,42 @@ void vm_define_builtin(VM *vm, ObjString *name, Value value) {
 
 static Frame *current_frame(VM *vm) {
     return &vm->frames[vm->frameCount - 1];
+}
+
+/* `async_ngl bet f(...)` called: instead of pushing a frame on *this* task,
+   make a new one, move the already-bound arguments onto its stack, and hand
+   the caller an `otw`. The body does not run yet -- the loop starts it -- so
+   an async function that is never awaited still gets its chance, and one
+   whose caller awaits immediately is only a scheduling hop slower than a
+   plain call.
+
+   `argStart` is where the bound arguments begin on the caller's stack; the
+   callee occupies `argStart - 1`, as it does for a plain call. */
+static void start_async_call(VM *vm, ObjClosure *closure, int argStart) {
+    int slots = vm->stackCount - argStart;
+    Task *t = vm_task_spawn(vm);
+    if (t->stackCapacity < slots) {
+        t->stackCapacity = slots;
+        t->stack = (Value *)realloc(t->stack, (size_t)t->stackCapacity * sizeof(Value));
+    }
+    memcpy(t->stack, &vm->stack[argStart], (size_t)slots * sizeof(Value));
+    t->stackCount = slots;
+    frame_init(&t->frames[0], closure, 0);
+    t->frameCount = 1;
+    t->currentFrameIndex = 0;
+    /* The module the call was made from, not the one the loop happens to be
+       in when this task first runs -- that is what its error positions and
+       its relative imports resolve against. */
+    t->unit = vm->unit;
+    t->currentModuleName = vm->currentModuleName;
+    t->state = TASK_READY;
+
+    /* The caller's callee+args slots go now: the values are on the new task's
+       stack, which task_mark roots, so nothing is unreachable in between. */
+    vm->stackCount = argStart - 1;
+    ObjOtw *promise = otw_new(&vm->gc);
+    t->result = promise;
+    push(vm, OBJ_VAL(promise));
 }
 
 static void push_frame(VM *vm, ObjClosure *closure, int slotBase) {
@@ -1775,7 +1836,10 @@ static void call_bound_native(VM *vm, ObjBoundNative *bn, int argc, int argStart
        while it's still running -- without this, the receiver (e.g. the
        stash glow_up is iterating) could be swept out from under it. */
     for (int i = 0; i <= argc; i++) gc_push_temp(&vm->gc, args[i]);
+    const char *priorNative = vm->currentTask->nativeName;
+    vm->currentTask->nativeName = bn->name;
     Value result = bn->fn(vm, args, argc + 1);
+    vm->currentTask->nativeName = priorNative;
     for (int i = 0; i <= argc; i++) gc_pop_temp(&vm->gc);
     if (vm->hadError) return; /* the dispatch loop's top-of-loop check unwinds */
     push(vm, result);
@@ -1847,7 +1911,10 @@ static void call_native_fn(VM *vm, ObjNativeFn *nf, int argc, int argStart) {
     for (int i = 0; i < argc; i++) args[i] = vm->stack[argStart + i];
     vm->stackCount = argStart - 1;
     for (int i = 0; i < argc; i++) gc_push_temp(&vm->gc, args[i]);
+    const char *priorNative = vm->currentTask->nativeName;
+    vm->currentTask->nativeName = nf->name;
     Value result = nf->fn(vm, args, argc);
+    vm->currentTask->nativeName = priorNative;
     for (int i = 0; i < argc; i++) gc_pop_temp(&vm->gc);
     if (vm->hadError) return;
     push(vm, result);
@@ -1920,6 +1987,10 @@ static void do_call(VM *vm, int argc) {
        fresh copy the way funnylang/vm.py does -- same end state, one
        array move instead of a pop/extend pair. */
     bind_args_in_place(vm, closure->proto, argStart, argc);
+    if (closure->proto->isAsync) {
+        start_async_call(vm, closure, argStart);
+        return;
+    }
     memmove(&vm->stack[argStart - 1], &vm->stack[argStart], (size_t)(vm->stackCount - argStart) * sizeof(Value));
     vm->stackCount--; /* the callee slot is now the first arg slot */
     push_frame(vm, closure, argStart - 1);
@@ -2047,7 +2118,10 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
     /* See call_bound_native's own comment: the receiver/args must stay
        GC-rooted for the whole call now that they're off vm->stack. */
     for (int i = 0; i <= argc; i++) gc_push_temp(&vm->gc, args[i]);
+    const char *priorNative = vm->currentTask->nativeName;
+    vm->currentTask->nativeName = name->chars;
     Value result = fn(vm, args, argc + 1);
+    vm->currentTask->nativeName = priorNative;
     for (int i = 0; i <= argc; i++) gc_pop_temp(&vm->gc);
     if (vm->hadError) return;
     push(vm, result);
@@ -2589,7 +2663,23 @@ static uint32_t read_u32(const uint8_t *code, uint32_t ip) {
    at the true top level) notices hadError still set on its own next
    iteration and retries unwinding at its own, lower base, rather than
    this nested call silently swallowing or misattributing the error. */
+/* The body of vm_execute. Split out only so vm_execute itself can keep the
+   task's re-entry count honest around every exit path -- `return` appears a
+   dozen times in here and a counter maintained by hand at each of them would
+   be wrong within a month. */
+static VmResult vm_execute_inner(VM *vm, int baseFrameCount, Value *resultOut);
+
 static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
+    Task *task = vm->currentTask;
+    task->reentry++;
+    VmResult result = vm_execute_inner(vm, baseFrameCount, resultOut);
+    /* Not `task` again: a suspension switched nothing (the loop does that),
+       but a *nested* execute always returns on the same task it started. */
+    vm->currentTask->reentry--;
+    return result;
+}
+
+static VmResult vm_execute_inner(VM *vm, int baseFrameCount, Value *resultOut) {
     if (resultOut != NULL) *resultOut = GHOST_VAL;
     for (;;) {
         if (vm->hadError) {
@@ -2938,6 +3028,54 @@ static VmResult vm_execute(VM *vm, int baseFrameCount, Value *resultOut) {
                                             frame->closure->moduleGlobals, frame->closure->moduleExports,
                                             frame->closure->unit);
                 push(vm, OBJ_VAL(c));
+                break;
+            }
+            case OP_AWAIT: {
+                /* Awaiting something that is not an `otw` is that thing.
+                   There is nothing to wait for, and rejecting it would make
+                   every helper that *might* be asynchronous need callers who
+                   know which it was. `interns.wait_up` agrees. */
+                Value awaited = peek(vm, 0);
+                if (!(IS_OBJ(awaited) && AS_OBJ(awaited)->type == OBJ_OTW)) break;
+                ObjOtw *promise = (ObjOtw *)AS_OBJ(awaited);
+                promise->awaited = true;
+                if (promise->state == OTW_PENDING) {
+                    Task *task = vm->currentTask;
+                    if (task->reentry != 1) {
+                        /* §3.1. This task's own vm_execute is not the only
+                           one on the C stack: a native function called back
+                           into FunnyLang and we are underneath it. That C
+                           frame cannot be saved, so suspending here would
+                           either lose it or corrupt the frame stack. Say so,
+                           and name the callback. */
+                        if (task->nativeName != NULL) {
+                            vm_throw_native(vm, "CantWaitRightNow",
+                                            "can't 'await_fr' inside '%s' -- it called back into your code from "
+                                            "the runtime, and that can't be paused. await before the call, or "
+                                            "after it.",
+                                            task->nativeName);
+                        } else {
+                            vm_throw_native(vm, "CantWaitRightNow",
+                                            "can't 'await_fr' in here -- the runtime called back into your code "
+                                            "and that can't be paused. await outside the callback.");
+                        }
+                        break;
+                    }
+                    /* Rewound, so resuming re-runs this very instruction and
+                       finds the `otw` settled. Cheaper to reason about than a
+                       resume point that has to push the value itself, and it
+                       makes a spurious wake-up harmless. */
+                    frame->ip = vm->currentInstrStart;
+                    task->awaiting = promise;
+                    task->state = TASK_WAITING;
+                    return VM_SUSPENDED;
+                }
+                pop(vm);
+                if (promise->state == OTW_REJECTED) {
+                    vm_rethrow(vm, promise->error);
+                    break;
+                }
+                push(vm, promise->value);
                 break;
             }
             case OP_RETURN: {
@@ -3318,9 +3456,21 @@ VmResult vm_run_repl_unit(VM *vm, CompiledUnit *unit, FILE *out, Value *valueOut
     FunctionProto *entryProto = &unit->protos[unit->entryProto];
     ObjClosure *entryClosure =
         closure_new(&vm->gc, entryProto, NULL, 0, vm->sessionGlobals, vm->sessionExports, unit);
-    gc_push_temp(&vm->gc, OBJ_VAL(entryClosure));
-    Value result = vm_call_value(vm, OBJ_VAL(entryClosure), NULL, 0);
-    gc_pop_temp(&vm->gc);
+    /* Through the loop, not vm_call_value (ASYNC_PLAN.md A4): `await_fr` at a
+       REPL prompt suspends task zero, and a vm_call_value that swallowed the
+       suspension would hand back a ghost and never run the task. Task zero is
+       reused across inputs -- it is the session -- so it is put back into
+       RUNNING each time rather than left DONE from the last line. */
+    push_frame(vm, entryClosure, 0);
+    Task *entry = vm->currentTask;
+    entry->state = TASK_RUNNING;
+    Value result = GHOST_VAL;
+    VmResult loopResult = loop_run(vm, entry, &result);
+    if (loopResult == VM_ERROR && !vm->hadError) {
+        /* loop_run's own LeftOnRead: it sets pendingError without going
+           through a throw site. */
+        vm->hadError = true;
+    }
 
     if (vm->hadError) {
         vm->uncaughtError = vm->pendingError;
@@ -3347,7 +3497,11 @@ VmResult vm_run(VM *vm, CompiledUnit *unit, FILE *out) {
     ObjClosure *entryClosure = closure_new(&vm->gc, entryProto, NULL, 0, freshGlobals, freshExports, unit);
     push_frame(vm, entryClosure, 0);
 
-    VmResult result = vm_execute(vm, 0, NULL);
+    /* Not vm_execute directly (ASYNC_PLAN.md A5): the entry program is task
+       zero, and when it awaits, somebody has to run the other tasks. The loop
+       also drains whatever is still outstanding after the entry returns --
+       `funny run` does not exit with work in flight. */
+    VmResult result = loop_run(vm, vm->currentTask, NULL);
     if (result == VM_ERROR) vm->uncaughtError = vm->pendingError;
     return result;
 }
@@ -3423,7 +3577,11 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
         Value full[257];
         full[0] = bn->receiver;
         for (int i = 0; i < argc; i++) full[i + 1] = args[i];
-        return bn->fn(vm, full, argc + 1);
+        const char *priorNative = vm->currentTask->nativeName;
+        vm->currentTask->nativeName = bn->name;
+        Value out = bn->fn(vm, full, argc + 1);
+        vm->currentTask->nativeName = priorNative;
+        return out;
     }
     if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_NATIVE_FN) {
         ObjNativeFn *nf = (ObjNativeFn *)AS_OBJ(callee);
@@ -3434,7 +3592,11 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
             vm_throw_wrong_homies(vm, nf->name, wantBuf, argc);
             return GHOST_VAL;
         }
-        return nf->fn(vm, args, argc);
+        const char *priorNative = vm->currentTask->nativeName;
+        vm->currentTask->nativeName = nf->name;
+        Value out = nf->fn(vm, args, argc);
+        vm->currentTask->nativeName = priorNative;
+        return out;
     }
     if (IS_OBJ(callee) && AS_OBJ(callee)->type == OBJ_COMBO) {
         ObjCombo *combo = (ObjCombo *)AS_OBJ(callee);
@@ -3453,8 +3615,19 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc) {
         if (!closure_arity_ok(vm, closure->proto, argc)) return GHOST_VAL;
         int baseFrameCount = vm->frameCount;
         int slotBase = vm->stackCount;
+        push(vm, callee); /* the slot start_async_call expects to drop */
         for (int i = 0; i < argc; i++) push(vm, args[i]);
-        bind_args_in_place(vm, closure->proto, slotBase, argc);
+        bind_args_in_place(vm, closure->proto, slotBase + 1, argc);
+        if (closure->proto->isAsync) {
+            /* An async function called from inside a native one -- `combo`,
+               a sort comparator. It still only makes a task and an `otw`;
+               nothing suspends, so §3.1 has no quarrel with it. */
+            start_async_call(vm, closure, slotBase + 1);
+            return pop(vm);
+        }
+        memmove(&vm->stack[slotBase], &vm->stack[slotBase + 1],
+                (size_t)(vm->stackCount - slotBase - 1) * sizeof(Value));
+        vm->stackCount--;
         push_frame(vm, closure, slotBase);
         Value result;
         vm_execute(vm, baseFrameCount, &result); /* VM_ERROR: vm->hadError stays set for the caller to notice */

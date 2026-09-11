@@ -1,0 +1,29 @@
+// ASYNC_PLAN.md A4: `async_ngl` and `await_fr` in the grammar.
+//
+// Both keywords have been lexed since the beginning and rejected by the
+// parser with "isn't implemented yet" (RESERVED_FUTURE). This is the shape
+// they parse to now. `vibin`, `yield_lol`, `match_this` and `when` are still
+// in that list and still rejected -- generators reuse the same task machinery
+// and are a separate feature, not something to smuggle in here.
+//
+// `await_fr` sits at unary precedence, so `await_fr a + await_fr b` is
+// `(await_fr a) + (await_fr b)` and `await_fr f()` awaits what the call
+// returned rather than the callee.
+async_ngl bet fetch(id, retries = 3) {
+    bounce await_fr id + retries
+}
+
+flex async_ngl bet exported(x) {
+    bounce await_fr x
+}
+
+bet ordinary() {
+    bounce 1
+}
+
+yo lam = async_ngl lowkey (x) => await_fr x
+yo plain = lowkey (x) => x
+
+yap await_fr fetch(1) + await_fr fetch(2)
+yap await_fr fetch(1) * 2
+yap await_fr await_fr fetch(1)
