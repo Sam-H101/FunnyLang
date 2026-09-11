@@ -101,6 +101,15 @@ TLS is the only place that touches an OS library: WinHTTP on Windows, `Security.
 macOS, and OpenSSL `dlopen`'d at run time on Linux/BSD — so the binary still builds and runs on a
 machine with no OpenSSL installed. Certificate verification is mandatory and has no opt-out.
 
+The server side of TLS (`internet.open_secure_shop`, `handshake`, `tls_info`, and `slide_into` with
+a pinned CA) uses the same three stacks, but talks to them directly — WinHTTP cannot listen, so
+Windows goes to Schannel through SSPI. Each backend implements a handful of `tlsb_*` functions in
+`platform.c`, and a mutex-guarded side table maps socket handles to TLS sessions, which is what lets
+`platform_socket_recv`/`send`/`close` and `platform_poll_sockets` do the right thing for an encrypted
+handle without `internet.c` knowing it is one. The table's lock guards the table only: a session is
+only ever touched by the thread that owns its connection. Server identities are PKCS#12 on every
+platform. `extensive_examples/web_server_https/PLAN.md` has the design.
+
 ## The GC contract
 
 `gc.c` is a mark-and-sweep collector over every heap object. The rules a C function has to follow:

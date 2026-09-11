@@ -1,6 +1,9 @@
 # FunnyLang — HTTPS Web Server Plan (`extensive_examples/web_server_https/`)
 
-> **Status:** in progress. Branch `feature/https-web-server`, cut from `feature/async-threading`.
+> **Status:** built. H0–H4 and H6 done and verified on Linux (WSL2) and Windows 11; the macOS
+> backend (H5) is written but has not been compiled or run — there is no Mac here, and CI builds
+> macOS when the branch is pushed. Branch `feature/https-web-server`, cut from
+> `feature/async-threading`. §5 has the state of each milestone, §9 every deviation.
 > **Prerequisite:** `ASYNC_PLAN.md` complete (it is — A0–A7), and `extensive_examples/web_server/`
 > in the tree, since this example is that one grown up: TLS on the wire, many threads behind the
 > door, and a real site instead of a route list.
@@ -373,7 +376,7 @@ extensive_examples/web_server_https/
   store.funny         config and activity files: load (custom → default), save, seal/unseal
   security.funny      constant-time compare, CSRF, session cookies, rate-window math
   crypto.funny        SHA-256 and base64, in FunnyLang
-  json.funny          a JSON parser (the writer stays in http.funny)
+  json.funny          a JSON reader and writer (the writer moved here from http.funny, §9)
   data/
     config.default.json
   web/
@@ -385,6 +388,7 @@ extensive_examples/web_server_https/
     ca.pem, site.p12  committed test material, clearly labelled, loopback names only
   test_server.funny   the whole thing over real TLS on loopback, from one program
   test_server.expected
+  test_client.funny   the golden's client, hired as interns (not a golden itself)
 ```
 
 `http.funny` is copied from `web_server/`, not imported from it — the two examples should each read
@@ -395,48 +399,52 @@ whole, and the first one should stay the simple one.
 ## 5. Milestones
 
 ### H0 — the listener that does not block, and `the_script()`
-- [ ] Non-blocking listener in `platform_tcp_listen`; `EAGAIN` → `PLATFORM_SOCKET_TIMEOUT` in
+- [x] Non-blocking listener in `platform_tcp_listen`; `EAGAIN` → `PLATFORM_SOCKET_TIMEOUT` in
       `platform_tcp_accept`; accepted fd set blocking. Existing `web_server/` test still green.
-- [ ] `the_script()` builtin, through `cli.funny` / `test.funny` / `interns.hire`; blob
+- [x] `the_script()` builtin, through `cli.funny` / `test.funny` / `interns.hire`; blob
       regenerated; `funny bootstrap --verify` green.
-- [ ] A many-thread accept test: several workers, one listener, loopback connections, every one
-      answered exactly once.
+- [x] A many-thread accept test: `tests/lang/interns/shared_listener` — four workers, one listener,
+      forty loopback connections, every one answered exactly once.
 
 ### H1 — TLS server on Linux (OpenSSL, `dlopen`)
-- [ ] `open_secure_shop` (PKCS#12), `handshake`, `tls_info`; side table; `hold_up` honours pending.
-- [ ] `slide_into` with `{"tls", "ca", "server_name"}`.
-- [ ] Cipher list, min version, options from §2.5.
-- [ ] `rizz.entropy`.
-- [ ] `certs/make_cert.sh` and the committed test material.
-- [ ] Verified in WSL with `curl --cacert`, `curl --tls-max 1.1` (must fail), and
-      `openssl s_client -tls1_2` / `-tls1_3`.
+- [x] `open_secure_shop` (PKCS#12), `handshake`, `tls_info`; side table; `hold_up` honours pending.
+- [x] `slide_into` with `{"tls", "ca", "server_name"}`.
+- [x] Cipher list, min version, options from §2.5.
+- [x] `rizz.entropy`.
+- [x] `certs/make_cert.sh` and the committed test material.
+- [x] Verified in WSL with `curl --cacert`, `curl --tls-max 1.1` (refused), `openssl s_client`
+      with `-tls1_2` and `-tls1_3` (both verify), and with a CBC suite and an RSA-key-exchange suite
+      (both refused).
 
 ### H2 — the site's back end, and its front end
-- [ ] `json.funny`, `crypto.funny` (checked against known SHA-256 / base64 vectors), `store.funny`,
-      `security.funny`, `static.funny`, `http.funny`, `routes.funny`.
-- [ ] `web/` — the four pages, the stylesheet, the scripts.
-- [ ] `data/config.default.json`; customization written on change; activity file flushed.
+- [x] `json.funny`, `crypto.funny` (checked against the FIPS 180-4 and RFC 4648 vectors, and against
+      `sha256sum`), `store.funny`, `security.funny`, `static.funny`, `http.funny`, `routes.funny`.
+- [x] `web/` — the four pages, a 404, the stylesheet, the scripts (`node --check` clean).
+- [x] `data/config.default.json`; customization written on change; activity file flushed.
 
 ### H3 — the keeper, and 24 threads
-- [ ] `keeper.funny`, `keeper_client.funny`, `worker.funny`, `redirect.funny`, `server.funny`,
+- [x] `keeper.funny`, `keeper_client.funny`, `worker.funny`, `redirect.funny`, `server.funny`,
       `serve.funny`.
-- [ ] `--threads N`, `--seconds N`, `--requests N`, `--data DIR`, `--host`, `--http-port`.
-- [ ] Shutdown: keeper says "stop", workers drain in-flight tasks (the `web_server/` 5 s grace),
+- [x] `--threads N`, `--seconds N`, `--requests N`, `--data DIR`, `--host`, `--http-port`,
+      `--no-http`, `--pfx`, `--pfx-password`, `--public-host`.
+- [x] Shutdown: keeper says "stop", workers drain in-flight tasks (the `web_server/` 5 s grace),
       the keeper flushes the activity file, main awaits every worker.
-- [ ] Measured: 200 requests, 50 at a time, all answered; `/slow`-style waiting on one thread does
-      not delay another; the numbers go in the README.
+- [x] Measured (README): 1 thread against 24 on bursts of 200, 1,000 and 400 requests, all
+      answered; forty silent connections held open do not slow a normal request down.
 
 ### H4 — Windows (Schannel)
-- [ ] Server and client sides; PKCS#12 import; the same checks from a Windows shell.
-- [ ] `test_server.funny` green on Windows.
+- [x] Server and client sides; PKCS#12 import; the same curl and `openssl s_client` checks from a
+      Windows shell, against a build cross-compiled with llvm-mingw and run natively.
+- [x] `test_server.funny` green on Windows.
 
 ### H5 — macOS (Secure Transport, server side)
-- [ ] Server side with `SecPKCS12Import`; client side with an anchored trust evaluation.
-- [ ] CI job green.
+- [x] Server side with `SecPKCS12Import` (into a temporary keychain); client side with an anchored
+      trust evaluation. **Written, not compiled or run.**
+- [ ] CI job green — needs the branch pushed.
 
 ### H6 — docs
-- [ ] README with the tour, the measurements, the "what it is not".
-- [ ] `STDLIB.md` (`internet` additions, `rizz.entropy`, `the_script`), `NATIVE.md` (the side table,
+- [x] README with the tour, the measurements, the "what it is not".
+- [x] `STDLIB.md` (`internet` additions, `rizz.entropy`, `the_script`), `NATIVE.md` (the side table,
       the three backends), `CHANGELOG.md`.
 
 ---
@@ -528,3 +536,50 @@ order-independent facts, or force an order.
 - **H1 · the test leaf certificate is valid for 825 days, not ten years.** Apple rejects a TLS
   server certificate issued after 2019 with a longer validity, private CAs included. The committed
   leaf therefore expires in December 2028, and `certs/make_cert.sh` regenerates it in one command.
+- **H0 · ADDITION · SIGPIPE is ignored.** Found while designing the TLS writes: nothing handled it,
+  so on Linux a client that hung up while a response was being written killed the whole process —
+  `web_server/` included. Ignored once, under `pthread_once`, at the first socket operation; the write
+  then fails with EPIPE, which `holler_back` already reports as a broken connection.
+- **H1 · OpenSSL is loaded under `pthread_once`.** The client path's lazy `dlopen` was a race once
+  interns existed. The server symbols are resolved from the same handle: `dlsym` on a `dlopen`ed
+  library also searches the libraries it pulled in, which is how `PKCS12_parse` (libcrypto) is found
+  through libssl.
+- **H1 · a TLS session's socket is non-blocking for its whole life**, not just the handshake. Reads
+  and writes loop over WANT_READ/WANT_WRITE themselves, so a plain socket's blocking semantics are
+  kept at the API while a handshake step can return "not yet".
+- **H2 · the JSON writer moved to `json.funny`**, beside the new parser, instead of staying in
+  `http.funny`. The two directions belong together, and the keeper needs both without HTTP.
+- **H2 · `read_request` is `async_ngl` and takes `read_more(ms)`**, where `web_server/`'s took a
+  blocking callback. Waiting for the next chunk has to be an `await_fr` or a slow client holds the
+  whole thread; the timeout is the time left before the request's own deadline.
+- **H2 · the keeper records auth and settings events itself.** Only it knows whether a sign-in or a
+  password change succeeded, so it writes those entries; a worker's `done` message carries only page
+  views. The plan had every event going through `done`.
+- **H2 · passwords are hashed on the worker**, never sent to the keeper: the keeper gets the hash.
+  The one thread everybody shares should not be the one doing the arithmetic.
+- **H3 · keeper connections are pooled per worker**, where the plan said one connection per query.
+  Tasks on one thread only switch at an `await_fr`, so a pool needs no lock, and it roughly halves the
+  per-request cost of talking to the keeper.
+- **H3 · the activity file is flushed every quarter second when dirty**, not once a second, so
+  Ctrl-C loses less. Each entry's JSON text is kept beside it, so a flush joins strings instead of
+  re-serializing thousands of entries.
+- **H3 · the golden's client is its own file**, `test_client.funny`, rather than a program in a string
+  constant as `web_server/`'s test does. It is several hundred lines, and a program in a string is one
+  nobody can read.
+- **H4 · Schannel's private key is persisted while the listener is open.** `PKCS12_NO_PERSIST_KEY`
+  would keep it in memory only, but Schannel does its private-key work in LSASS, which cannot see a
+  key that lives only inside this process. The key is imported into this user's key store and
+  deleted when the listener closes; a process killed mid-run leaves one behind.
+- **H4 · verified with llvm-mingw, not MSVC.** There is no MSVC on this machine; the Windows build
+  that was run is `x86_64-w64-mingw32-gcc -Wall -Wextra -Werror`, cross-compiled in WSL and run
+  natively. CI's `build.bat` (MSVC `/W4 /WX`) compiles the same code and has not seen it yet.
+- **H4 · on Windows and macOS a pinned-CA client verifies after the handshake**, where OpenSSL
+  verifies during it. Schannel's manual validation and Secure Transport's break-on-server-auth both
+  hand the chain back once the peer has shown it; no application data is sent before the check, so
+  nothing is exposed, but the server sees a completed handshake followed by a hang-up.
+- **H4 · Git's curl on Windows needs `--ssl-no-revoke`** against this server: it is built on Schannel,
+  which checks revocation, and the test CA publishes no revocation list. Nothing here is wrong; the
+  README says so.
+- **H5 · Secure Transport imports the identity into a temporary keychain** with a random password,
+  deleted when the listener closes, rather than the user's login keychain. Secure Transport tops out
+  at TLS 1.2.

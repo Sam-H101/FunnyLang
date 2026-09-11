@@ -2,6 +2,38 @@
 
 All notable changes to FunnyLang are documented here.
 
+## [Unreleased] — HTTPS
+
+A FunnyLang program can now be an HTTPS server, and `extensive_examples/web_server_https/` is one: a
+small site with sign-in, settings and an activity log, served over TLS 1.2+ by 24 acceptor threads,
+with everything above the TLS record layer written in FunnyLang. Design and deviations:
+[extensive_examples/web_server_https/PLAN.md](extensive_examples/web_server_https/PLAN.md).
+
+### Added
+- **`internet.open_secure_shop(port, host, {"pfx", "password"})`** — a listener with a TLS identity
+  from a PKCS#12 file. TLS 1.2 minimum, forward-secret AEAD suites only, no renegotiation or
+  compression. OpenSSL (`dlopen`'d) on Linux/BSD, Schannel on Windows, Secure Transport on macOS.
+- **`internet.handshake(conn)`** — the server-side handshake one step at a time, so a slow client
+  costs its own task and nobody else's; **`internet.tls_info(conn)`** — the negotiated version and
+  cipher.
+- **`internet.slide_into(host, port, {"tls", "server_name", "ca", "timeout_ms"})`** — a verified TLS
+  client, optionally trusting exactly one CA. A bare timeout as the third argument still works.
+- TLS connections are ordinary handles: `hear_them_out`, `holler_back`, `kick_out` and `hold_up`
+  work on them unchanged, and `hold_up` knows about plaintext the TLS library is already holding.
+- **`rizz.entropy(n)`** — bytes from the operating system's CSPRNG, as hex.
+- **`the_script()`** — the running program's own absolute path (inside an intern, its hire path), so
+  a program can find the files beside it from any working directory. The command line and
+  `funny test` pass it down, which regenerated `native/toolchain_blob.c`.
+
+### Changed
+- **Listeners are non-blocking**, so several interns can accept from one: a thread that loses the
+  race gets `ghost` from `next_customer(listener, 0)` instead of sitting in `accept()` with its tasks
+  frozen until the next connection. `tests/lang/interns/shared_listener` is the golden.
+- **SIGPIPE is ignored** on POSIX. A write to a connection the peer has dropped now fails with a
+  `SkillIssue` instead of killing the process.
+- OpenSSL is loaded under `pthread_once`: two threads reaching TLS for the first time at the same
+  moment could previously both run the lazy `dlopen`.
+
 ## [Unreleased] — concurrency
 
 `async_ngl` and `await_fr` are real, and `gimme interns` runs work on real OS threads. Two of
