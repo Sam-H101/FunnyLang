@@ -583,3 +583,12 @@ order-independent facts, or force an order.
 - **H5 · Secure Transport imports the identity into a temporary keychain** with a random password,
   deleted when the listener closes, rather than the user's login keychain. Secure Transport tops out
   at TLS 1.2.
+- **H4 · MSVC needed `advapi32.lib` named.** The first CI run compiled `platform.c` clean under
+  `/W4 /WX` and then failed to link: `CryptAcquireContextW` (used to delete a legacy-CSP key when a
+  listener closes) lives in advapi32, which llvm-mingw links by default and MSVC does not. Fixed with
+  one more `#pragma comment(lib, …)` beside the others — the local cross-build could not have caught it.
+- **Branch · master's squash of the concurrency work was merged in, not rebased onto.** `master`
+  received `feature/async-threading` as one squash commit, whose tree is byte-identical to the
+  commit this branch was cut from; every conflict was the same change arriving twice and was resolved
+  to this branch's side, leaving the merged tree identical to the tested one. A merge kept the pushed
+  history intact, where a rebase would have needed a force-push.
