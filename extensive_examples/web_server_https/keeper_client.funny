@@ -1,0 +1,95 @@
+// keeper_client.funny — a worker's side of the keeper protocol.
+//
+// One JSON object per line each way, over loopback, after the shared secret
+// as the first line of every connection. Connections are kept in a small pool
+// per worker: a task takes one, asks, and puts it back. Tasks on one thread
+// only switch at an `await_fr`, and nothing here awaits between taking a
+// connection and owning it, so the pool needs no lock -- the same argument the
+// whole single-threaded event loop rests on.
+
+gimme internet
+gimme yapper
+gimme clock
+gimme { to_json, parse_json } from "json.funny"
+
+deadass POOL_MAX = 16
+deadass ANSWER_MS = 10000
+
+flex bet keeper_link(port, secret) {
+    bounce {"port": port, "secret": secret, "idle": []}
+}
+
+// One line from `conn`, without the newline, or `ghost` if none arrives in
+// `ms` or the other end hangs up. The keeper answers each request with exactly
+// one line and never speaks unasked, so nothing is ever left over.
+flex async_ngl bet read_line(conn, ms) {
+    yo buf = ""
+    yo deadline = clock.now() + ms / 1000.0
+    bruh (!yapper.contains(buf, "\n")) {
+        yo left = to_int((deadline - clock.now()) * 1000.0)
+        sus (left <= 0) {
+            bounce ghost
+        }
+        sus (!await_fr internet.hold_up(conn, left)) {
+            bounce ghost
+        }
+        yo chunk = internet.hear_them_out(conn, 65536, 0)
+        sus (chunk == "") {
+            bounce ghost
+        }
+        sus (chunk != ghost) {
+            buf = buf + chunk
+        }
+    }
+    bounce yapper.slice(buf, 0, yapper.index_of(buf, "\n"))
+}
+
+bet dial(link) {
+    yo conn = internet.slide_into("127.0.0.1", link["port"], 2000)
+    internet.holler_back(conn, link["secret"] + "\n")
+    bounce conn
+}
+
+async_ngl bet exchange(conn, text) {
+    internet.holler_back(conn, text)
+    bounce await_fr read_line(conn, ANSWER_MS)
+}
+
+// The keeper's answer to `msg`, as a groupchat. A pooled connection may have
+// gone stale, so a failure on one gets a single retry on a fresh connection;
+// a failure on a fresh one is the keeper being gone, and is an error.
+flex async_ngl bet ask_keeper(link, msg) {
+    yo text = to_json(msg) + "\n"
+    yo attempts = 0
+    bruh (attempts < 2) {
+        attempts += 1
+        yo pooled = link["idle"].how_thicc() > 0
+        yo conn = pooled ? link["idle"].yoink() : dial(link)
+        yo line = ghost
+        sketchy {
+            line = await_fr exchange(conn, text)
+        } my_bad (e) {
+            line = ghost
+        }
+        sus (line != ghost) {
+            sus (link["idle"].how_thicc() < POOL_MAX) {
+                link["idle"].yeet_in(conn)
+            } nah {
+                internet.kick_out(conn)
+            }
+            bounce parse_json(line)
+        }
+        internet.kick_out(conn)
+        sus (!pooled) {
+            bail
+        }
+    }
+    chuck oops("SkillIssue", "the keeper isn't answering")
+}
+
+flex bet close_link(link) {
+    grind conn in link["idle"] {
+        internet.kick_out(conn)
+    }
+    link["idle"] = []
+}

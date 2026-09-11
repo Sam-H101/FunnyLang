@@ -1,0 +1,504 @@
+// keeper.funny — the one thread that owns everything that changes.
+//
+// Twenty-four worker threads each have their own heap, so none of them can
+// hold the config, the sessions or the activity log for the others. This
+// intern does. It is also the only thread that ever touches data/, which is
+// what guarantees two threads never write the same file at once.
+//
+// It listens on a loopback port the main thread opened for it, and speaks one
+// JSON object per line in each direction. The first line of every connection
+// must be the secret it was hired with; anything else is hung up on. Every
+// request is handled by a plain function with no `await_fr` in it, so each one
+// runs start to finish before any other task on this thread gets a turn --
+// which is why none of the state below needs a lock.
+//
+// PLAN.md §2.3 has the whole protocol.
+
+gimme internet
+gimme interns
+gimme clock
+gimme yapper
+gimme { to_json, try_parse_json } from "json.funny"
+gimme { ct_equal, new_token, window_hit, window_count, prune_windows } from "security.funny"
+gimme { load_config, save_config, public_user, setting, seal, unseal, load_activity, save_activity,
+        activity_entry, activity_view, default_config_path, custom_config_path, activity_path,
+        ACTIVITY_CAP, THEMES, PAGE_SIZES, LANDINGS } from "store.funny"
+
+yo JOB = interns.assignment()
+yo SECRET = JOB["secret"]
+yo DEFAULT_PATH = default_config_path(JOB["example_dir"])
+yo CUSTOM_PATH = custom_config_path(JOB["data_dir"])
+yo ACTIVITY_PATH = activity_path(JOB["data_dir"])
+
+yo LOADED = load_config(DEFAULT_PATH, CUSTOM_PATH)
+yo CONFIG = LOADED["config"]
+yo SOURCE = LOADED["source"]
+// The committed defaults, kept to answer one question: is this user still
+// on the password everybody who read the README knows?
+yo DEFAULT_USERS = load_config(DEFAULT_PATH, "")["config"]["users"]
+
+yo LOG = load_activity(ACTIVITY_PATH)
+yo ENTRIES = LOG["entries"]
+yo LINES = LOG["lines"]
+yo NEXT_ID = 1
+sus (ENTRIES.how_thicc() > 0) {
+    NEXT_ID = to_int(ENTRIES[ENTRIES.how_thicc() - 1].get("id", 0)) + 1
+}
+
+yo SESSION_SECONDS = setting(CONFIG, "security", "session_minutes", 120) * 60
+yo RATE_REQUESTS = setting(CONFIG, "security", "rate_requests", 300)
+yo RATE_WINDOW = setting(CONFIG, "security", "rate_window_seconds", 10)
+yo LOGIN_FAILURES = setting(CONFIG, "security", "login_failures", 5)
+yo LOGIN_WINDOW = setting(CONFIG, "security", "login_window_seconds", 300)
+
+// A hash no password produces, compared against when the username does not
+// exist, so "no such user" costs the same as "wrong password".
+deadass NOBODY_HASH = "sha256:" + "0" * 64
+
+yo SESSIONS = {}
+yo RATE = {}
+yo LOGIN_FAILS = {}
+yo SERVED = 0
+yo STOPPING = cap
+yo QUIT = cap
+yo DIRTY = cap
+yo SUBSCRIBERS = []
+
+// -- activity -------------------------------------------------------------------
+
+bet record(user, action, detail, status, thread, ip, agent) {
+    yo entry = activity_entry(NEXT_ID, user, action, detail, status, thread, ip, agent)
+    NEXT_ID += 1
+    ENTRIES.yeet_in(entry)
+    LINES.yeet_in(to_json(entry))
+    sus (ENTRIES.how_thicc() > ACTIVITY_CAP) {
+        ENTRIES.yoink_at(0)
+        LINES.yoink_at(0)
+    }
+    DIRTY = fax
+}
+
+bet record_from(msg, user, action, detail, status) {
+    record(user, action, detail, status, msg.get("thread", 0), msg.get("ip", ""), msg.get("agent", ""))
+}
+
+// -- sessions -------------------------------------------------------------------
+
+bet session_of(sid) {
+    sus (what_is_it(sid) != "yapstring" || !SESSIONS.has(sid)) {
+        bounce ghost
+    }
+    yo s = SESSIONS[sid]
+    yo now = clock.now()
+    sus (now - s["seen"] > SESSION_SECONDS || !CONFIG["users"].has(s["user"])) {
+        SESSIONS.remove(sid)
+        bounce ghost
+    }
+    s["seen"] = now
+    bounce s
+}
+
+bet on_default_password(name) {
+    sus (!DEFAULT_USERS.has(name)) {
+        bounce cap
+    }
+    bounce DEFAULT_USERS[name]["password"] == CONFIG["users"][name]["password"]
+}
+
+bet session_view(s) {
+    yo name = s["user"]
+    bounce {
+        "user": public_user(name, CONFIG["users"][name]),
+        "csrf": s["csrf"],
+        "default_password": on_default_password(name),
+    }
+}
+
+bet customize() {
+    save_config(CUSTOM_PATH, CONFIG)
+    SOURCE = "custom"
+}
+
+bet refuse(status, error) {
+    bounce {"ok": cap, "status": status, "error": error}
+}
+
+// -- the operations ---------------------------------------------------------------
+
+bet op_begin(msg) {
+    yo hit = window_hit(RATE, msg.get("ip", ""), clock.now(), RATE_WINDOW, RATE_REQUESTS)
+    sus (!hit["allowed"]) {
+        bounce {"ok": fax, "allowed": cap, "retry_after": hit["retry_after"], "stop": STOPPING}
+    }
+    yo s = session_of(msg.get("sid", ghost))
+    bounce {"ok": fax, "allowed": fax, "session": s == ghost ? ghost : session_view(s), "stop": STOPPING}
+}
+
+bet op_login(msg) {
+    yo ip = msg.get("ip", "")
+    yo now = clock.now()
+    sus (window_count(LOGIN_FAILS, ip, now, LOGIN_WINDOW) >= LOGIN_FAILURES) {
+        record_from(msg, "anonymous", "login_blocked", "too many failed sign-ins from this address", 429)
+        bounce refuse(429, "too many failed sign-ins from here. try again in a few minutes.")
+    }
+    yo name = msg.get("username", "")
+    yo users = CONFIG["users"]
+    yo known = what_is_it(name) == "yapstring" && users.has(name)
+    yo expected = known ? users[name]["password"] : NOBODY_HASH
+    // Compared either way, so an unknown name and a wrong password take the
+    // same path and the same time.
+    yo matches = ct_equal(expected, msg.get("hash", ""))
+    sus (!known || !matches) {
+        window_hit(LOGIN_FAILS, ip, now, LOGIN_WINDOW, LOGIN_FAILURES)
+        // The name somebody typed is not recorded unless it is a real
+        // account: a mistyped username is sometimes a password.
+        record_from(msg, known ? name : "anonymous", "login_failed", known ? "wrong password" : "no such user", 401)
+        bounce refuse(401, "that username and password don't match.")
+    }
+    yo sid = new_token()
+    SESSIONS[sid] = {"user": name, "csrf": new_token(), "created": now, "seen": now}
+    record_from(msg, name, "login", "signed in", 200)
+    yo view = session_view(SESSIONS[sid])
+    view["ok"] = fax
+    view["sid"] = sid
+    view["max_age"] = SESSION_SECONDS
+    bounce view
+}
+
+bet op_logout(msg) {
+    yo s = session_of(msg.get("sid", ghost))
+    sus (s == ghost) {
+        bounce {"ok": fax}
+    }
+    SESSIONS.remove(msg["sid"])
+    record_from(msg, s["user"], "logout", "signed out", 200)
+    bounce {"ok": fax}
+}
+
+bet op_profile(msg) {
+    yo s = session_of(msg.get("sid", ghost))
+    sus (s == ghost) {
+        bounce refuse(401, "sign in first.")
+    }
+    yo user = CONFIG["users"][s["user"]]
+    yo profile = user["profile"]
+    yo changed = []
+    grind field in ["display_name", "email"] {
+        yo value = msg.get(field, ghost)
+        sus (what_is_it(value) == "yapstring" && value != unseal(profile.get(field, ghost))) {
+            profile[field] = seal(value)
+            changed.yeet_in(field)
+        }
+    }
+    sus (changed.how_thicc() > 0) {
+        customize()
+        record_from(msg, s["user"], "profile_update", "changed " + changed.join(", "), 200)
+    }
+    bounce {"ok": fax, "changed": changed, "user": public_user(s["user"], user)}
+}
+
+bet op_defaults(msg) {
+    yo s = session_of(msg.get("sid", ghost))
+    sus (s == ghost) {
+        bounce refuse(401, "sign in first.")
+    }
+    yo user = CONFIG["users"][s["user"]]
+    yo prefs = user["defaults"]
+    yo changed = []
+    sus (THEMES.contains(msg.get("theme", ghost)) && prefs["theme"] != msg["theme"]) {
+        prefs["theme"] = msg["theme"]
+        changed.yeet_in("theme")
+    }
+    sus (PAGE_SIZES.contains(msg.get("page_size", ghost)) && prefs["page_size"] != msg["page_size"]) {
+        prefs["page_size"] = msg["page_size"]
+        changed.yeet_in("page size")
+    }
+    sus (LANDINGS.contains(msg.get("landing", ghost)) && prefs["landing"] != msg["landing"]) {
+        prefs["landing"] = msg["landing"]
+        changed.yeet_in("landing page")
+    }
+    sus (changed.how_thicc() > 0) {
+        customize()
+        record_from(msg, s["user"], "defaults_update", "changed " + changed.join(", "), 200)
+    }
+    bounce {"ok": fax, "changed": changed, "user": public_user(s["user"], user)}
+}
+
+bet op_password(msg) {
+    yo s = session_of(msg.get("sid", ghost))
+    sus (s == ghost) {
+        bounce refuse(401, "sign in first.")
+    }
+    yo name = s["user"]
+    yo user = CONFIG["users"][name]
+    sus (!ct_equal(user["password"], msg.get("current_hash", ""))) {
+        record_from(msg, name, "password_change_failed", "current password was wrong", 403)
+        bounce refuse(403, "your current password isn't right.")
+    }
+    user["password"] = msg["new_hash"]
+    // Every other session of this user ends: a password change is often
+    // somebody locking out whoever else had it.
+    grind sid in SESSIONS.keys() {
+        sus (sid != msg["sid"] && SESSIONS[sid]["user"] == name) {
+            SESSIONS.remove(sid)
+        }
+    }
+    customize()
+    record_from(msg, name, "password_change", "changed password", 200)
+    bounce {"ok": fax}
+}
+
+bet op_activity(msg) {
+    yo s = session_of(msg.get("sid", ghost))
+    sus (s == ghost) {
+        bounce refuse(401, "sign in first.")
+    }
+    yo viewer = s["user"]
+    yo admin = CONFIG["users"][viewer]["role"] == "admin"
+    yo page_size = CONFIG["users"][viewer]["defaults"].get("page_size", 25)
+    sus (!PAGE_SIZES.contains(page_size)) {
+        page_size = 25
+    }
+    yo want_user = admin ? msg.get("user", "") : viewer
+    yo want_action = msg.get("action", "")
+    yo users = {}
+    yo actions = {}
+    yo matching = []
+    grind i from ENTRIES.how_thicc() - 1 to -1 step -1 {
+        yo e = ENTRIES[i]
+        yo who = e.get("user", "anonymous")
+        sus (!admin && who != viewer) {
+            nvm
+        }
+        users[who] = fax
+        actions[e.get("action", "")] = fax
+        sus ((want_user == "" || who == want_user) && (want_action == "" || e.get("action", "") == want_action)) {
+            matching.yeet_in(e)
+        }
+    }
+    yo total = matching.how_thicc()
+    yo pages = total == 0 ? 1 : (total + page_size - 1) \ page_size
+    yo page = to_int(msg.get("page", 1))
+    sus (page < 1) {
+        page = 1
+    }
+    sus (page > pages) {
+        page = pages
+    }
+    yo views = []
+    grind e in matching.slice((page - 1) * page_size, page * page_size) {
+        views.yeet_in(activity_view(e))
+    }
+    bounce {
+        "ok": fax,
+        "entries": views,
+        "total": total,
+        "page": page,
+        "pages": pages,
+        "page_size": page_size,
+        "all_users": admin,
+        "users": users.keys().sort(),
+        "actions": actions.keys().sort(),
+    }
+}
+
+// A request finished on some worker: the log line goes to whoever is
+// watching, and a page view goes in the activity log.
+bet op_done(msg) {
+    SERVED += 1
+    yo line = msg.get("line", ghost)
+    sus (what_is_it(line) == "yapstring") {
+        broadcast(line)
+    }
+    yo event = msg.get("event", ghost)
+    sus (what_is_it(event) == "groupchat") {
+        record_from(msg, event.get("user", "anonymous"), event.get("action", "view"), event.get("detail", ""),
+                    event.get("status", 0))
+    }
+    sus (JOB["budget"] != ghost && SERVED >= JOB["budget"]) {
+        STOPPING = fax
+    }
+    bounce {"ok": fax, "stop": STOPPING}
+}
+
+bet op_stats(msg) {
+    bounce {
+        "ok": fax,
+        "served": SERVED,
+        "sessions": SESSIONS.how_thicc(),
+        "activity": ENTRIES.how_thicc(),
+        "config": SOURCE,
+        "stop": STOPPING,
+    }
+}
+
+bet broadcast(line) {
+    yo alive = []
+    grind sub in SUBSCRIBERS {
+        sketchy {
+            internet.holler_back(sub, line + "\n")
+            alive.yeet_in(sub)
+        } my_bad (e) {
+            internet.kick_out(sub)
+        }
+    }
+    SUBSCRIBERS = alive
+}
+
+bet handle(msg) {
+    yo op = msg.get("op", "")
+    sus (op == "begin") {
+        bounce op_begin(msg)
+    }
+    sus (op == "done") {
+        bounce op_done(msg)
+    }
+    sus (op == "ping") {
+        bounce {"ok": fax, "stop": STOPPING}
+    }
+    sus (op == "login") {
+        bounce op_login(msg)
+    }
+    sus (op == "logout") {
+        bounce op_logout(msg)
+    }
+    sus (op == "profile") {
+        bounce op_profile(msg)
+    }
+    sus (op == "defaults") {
+        bounce op_defaults(msg)
+    }
+    sus (op == "password") {
+        bounce op_password(msg)
+    }
+    sus (op == "activity") {
+        bounce op_activity(msg)
+    }
+    sus (op == "stats") {
+        bounce op_stats(msg)
+    }
+    sus (op == "stop") {
+        STOPPING = fax
+        bounce {"ok": fax, "stop": fax}
+    }
+    sus (op == "quit") {
+        STOPPING = fax
+        QUIT = fax
+        bounce {"ok": fax}
+    }
+    bounce refuse(400, "no such operation: " + to_yap(op))
+}
+
+// -- connections ----------------------------------------------------------------
+
+async_ngl bet session(conn) {
+    yo buffer = ""
+    yo authed = cap
+    yo keep_open = cap
+    sketchy {
+        bruh (fax) {
+            yo nl = yapper.index_of(buffer, "\n")
+            sus (nl < 0) {
+                sus (yapper.byte_len(buffer) > 1048576) {
+                    bail
+                }
+                yo ready = await_fr internet.hold_up(conn, 1000)
+                sus (!ready) {
+                    sus (QUIT) {
+                        bail
+                    }
+                    nvm
+                }
+                yo chunk = internet.hear_them_out(conn, 65536, 0)
+                sus (chunk == "") {
+                    bail
+                }
+                sus (chunk != ghost) {
+                    buffer = buffer + chunk
+                }
+                nvm
+            }
+            yo line = yapper.slice(buffer, 0, nl)
+            buffer = yapper.slice(buffer, nl + 1, buffer.how_thicc())
+            sus (!authed) {
+                sus (!ct_equal(line, SECRET)) {
+                    bail
+                }
+                authed = fax
+                nvm
+            }
+            yo msg = try_parse_json(line)
+            yo reply = ghost
+            sus (what_is_it(msg) != "groupchat") {
+                reply = refuse(400, "that wasn't a JSON object")
+            } kinda_sus (msg.get("op", "") == "subscribe") {
+                // From here this connection only ever receives: log lines,
+                // one per request, until the keeper quits.
+                internet.holler_back(conn, to_json({"ok": fax}) + "\n")
+                SUBSCRIBERS.yeet_in(conn)
+                keep_open = fax
+                bail
+            } nah {
+                sketchy {
+                    reply = handle(msg)
+                } my_bad (e) {
+                    reply = refuse(500, e.flavor + ": " + e.message)
+                }
+            }
+            internet.holler_back(conn, to_json(reply) + "\n")
+        }
+    } my_bad (e) {
+        keep_open = cap
+    }
+    sus (!keep_open) {
+        internet.kick_out(conn)
+    }
+}
+
+// Writes the activity file at most once a second, and only when there is
+// something new: a busy server would otherwise rewrite it on every request.
+// Also where stale sessions and rate windows are swept up.
+async_ngl bet flusher() {
+    yo last_sweep = clock.now()
+    bruh (!QUIT) {
+        await_fr clock.chill(250)
+        sus (DIRTY) {
+            DIRTY = cap
+            save_activity(ACTIVITY_PATH, LINES)
+        }
+        yo now = clock.now()
+        sus (now - last_sweep > 60) {
+            last_sweep = now
+            prune_windows(RATE, now, RATE_WINDOW)
+            prune_windows(LOGIN_FAILS, now, LOGIN_WINDOW)
+            grind sid in SESSIONS.keys() {
+                sus (now - SESSIONS[sid]["seen"] > SESSION_SECONDS) {
+                    SESSIONS.remove(sid)
+                }
+            }
+        }
+    }
+    sus (DIRTY) {
+        save_activity(ACTIVITY_PATH, LINES)
+    }
+}
+
+bet main() {
+    yo listener = JOB["listener"]
+    yo flushing = flusher()
+    bruh (!QUIT) {
+        sus (await_fr internet.hold_up(listener, 200)) {
+            yo c = internet.next_customer(listener, 0)
+            sus (c != ghost) {
+                session(c["conn"])
+            }
+        }
+    }
+    await_fr flushing
+    grind sub in SUBSCRIBERS {
+        internet.kick_out(sub)
+    }
+    interns.deliver({"served": SERVED, "activity": ENTRIES.how_thicc(), "config": SOURCE})
+}
+
+main()

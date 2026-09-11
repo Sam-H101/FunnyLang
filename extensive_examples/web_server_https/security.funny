@@ -1,0 +1,204 @@
+// security.funny — the small pieces the rest of the server leans on.
+//
+// Constant-time comparison, tokens, the session cookie, rate windows and
+// input validation. Pure functions over values -- no sockets, no files, no
+// threads -- so test_server.funny can check every one of them directly.
+
+gimme rizz
+gimme yapper
+
+// -- comparing secrets ------------------------------------------------------------
+
+// Whether two strings are equal, looking at every character of both whatever
+// it finds. `==` stops at the first difference, and how long it took then
+// says how much of a guessed token was right. An interpreter cannot promise
+// true constant time, but this removes the early exit, which is the leak
+// that matters. Lengths are not secret: tokens here are all 64 hex digits.
+flex bet ct_equal(a, b) {
+    sus (what_is_it(a) != "yapstring" || what_is_it(b) != "yapstring") {
+        bounce cap
+    }
+    yo n = a.how_thicc()
+    yo m = b.how_thicc()
+    yo longest = n > m ? n : m
+    yo diff = n ^ m
+    grind i from 0 to longest {
+        yo x = i < n ? a.code_at(i) : 0
+        yo y = i < m ? b.code_at(i) : 0
+        diff = diff | (x ^ y)
+    }
+    bounce diff == 0
+}
+
+// -- tokens -----------------------------------------------------------------
+
+// 32 bytes from the operating system's CSPRNG, as 64 hex digits. Session ids,
+// CSRF tokens and the keeper's secret. Never rizz.roll: that is a clock-seeded
+// dice roller.
+flex bet new_token() {
+    bounce rizz.entropy(32)
+}
+
+flex bet looks_like_token(s) {
+    sus (what_is_it(s) != "yapstring" || s.how_thicc() != 64) {
+        bounce cap
+    }
+    grind ch in s {
+        sus (!yapper.contains("0123456789abcdef", ch)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+// -- the session cookie ---------------------------------------------------------
+
+// `__Host-` makes the browser itself enforce Secure, Path=/ and no Domain: the
+// cookie can only ever have been set by this origin over HTTPS. HttpOnly keeps
+// it away from script; SameSite=Strict keeps it off every cross-site request.
+flex deadass SESSION_COOKIE = "__Host-sid"
+
+flex bet session_cookie(sid, max_age_seconds) {
+    bounce SESSION_COOKIE + "=" + sid + "; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=" +
+           to_yap(max_age_seconds)
+}
+
+flex bet cleared_session_cookie() {
+    bounce SESSION_COOKIE + "=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"
+}
+
+flex bet cookies_of(headers) {
+    yo out = {}
+    yo raw = headers.get("cookie", "")
+    grind part in yapper.split(raw, ";") {
+        yo p = yapper.trim(part)
+        yo eq = yapper.index_of(p, "=")
+        sus (eq > 0) {
+            yo name = yapper.slice(p, 0, eq)
+            // First one wins: a second cookie of the same name is either a
+            // mistake or an attempt to shadow the real one.
+            sus (!out.has(name)) {
+                out[name] = yapper.slice(p, eq + 1, p.how_thicc())
+            }
+        }
+    }
+    bounce out
+}
+
+flex bet session_id_of(headers) {
+    yo sid = cookies_of(headers).get(SESSION_COOKIE, ghost)
+    sus (looks_like_token(sid)) {
+        bounce sid
+    }
+    bounce ghost
+}
+
+// -- rate windows ---------------------------------------------------------------
+
+// A fixed window per key: `limit` hits in `window` seconds, then refusals until
+// the window rolls over. Coarser than a sliding window and far cheaper, which
+// is the right trade inside a single-threaded keeper.
+flex bet window_hit(table, key, now, window, limit) {
+    yo slot = table.get(key, ghost)
+    sus (slot == ghost || now - slot["start"] >= window) {
+        slot = {"start": now, "count": 0}
+        table[key] = slot
+    }
+    slot["count"] += 1
+    yo retry = to_int(slot["start"] + window - now) + 1
+    bounce {"allowed": slot["count"] <= limit, "retry_after": retry}
+}
+
+// How many hits `key` has in its current window, without adding one.
+flex bet window_count(table, key, now, window) {
+    yo slot = table.get(key, ghost)
+    sus (slot == ghost || now - slot["start"] >= window) {
+        bounce 0
+    }
+    bounce slot["count"]
+}
+
+// Drops every window that has rolled over, so a table keyed by client address
+// cannot grow without bound.
+flex bet prune_windows(table, now, window) {
+    grind key in table.keys() {
+        sus (now - table[key]["start"] >= window) {
+            table.remove(key)
+        }
+    }
+}
+
+// -- validating what people type ---------------------------------------------------
+
+flex bet valid_username(s) {
+    sus (what_is_it(s) != "yapstring" || s.how_thicc() < 1 || s.how_thicc() > 32) {
+        bounce cap
+    }
+    grind ch in s {
+        sus (!yapper.contains("abcdefghijklmnopqrstuvwxyz0123456789_-", ch)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+// Deliberately simple: one @, something either side, a dot after it, no
+// spaces, no angle brackets, at most 254 characters. The only check that
+// really proves an address is sending mail to it, which a demo does not do.
+flex bet valid_email(s) {
+    sus (what_is_it(s) != "yapstring" || s.how_thicc() < 3 || s.how_thicc() > 254) {
+        bounce cap
+    }
+    sus (s == "") {
+        bounce cap
+    }
+    yo at = yapper.index_of(s, "@")
+    sus (at < 1 || at != s.how_thicc() - 1 - yapper.index_of(yapper.reverse(s), "@")) {
+        bounce cap
+    }
+    yo domain = yapper.slice(s, at + 1, s.how_thicc())
+    sus (domain == "" || yapper.starts_with(domain, ".") || yapper.ends_with(domain, ".")) {
+        bounce cap
+    }
+    grind ch in s {
+        sus (ch == " " || ch == "<" || ch == ">" || ch == "\"" || ch.code_at(0) < 0x20) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+// Free text from a form: trimmed, no control characters, at most `max`
+// characters. `ghost` when it is not a yapstring or too long, so the caller
+// answers 400 rather than quietly storing something different.
+flex bet clean_text(s, max) {
+    sus (what_is_it(s) != "yapstring") {
+        bounce ghost
+    }
+    yo out = []
+    grind ch in yapper.trim(s) {
+        sus (ch.code_at(0) >= 0x20 && ch.code_at(0) != 0x7F) {
+            out.yeet_in(ch)
+        }
+    }
+    yo text = out.join("")
+    sus (text.how_thicc() > max) {
+        bounce ghost
+    }
+    bounce text
+}
+
+// A new password: 10 to 128 characters. Length is the only rule; composition
+// rules make passwords worse (NIST SP 800-63B).
+flex bet password_problem(pw) {
+    sus (what_is_it(pw) != "yapstring") {
+        bounce "a password has to be text"
+    }
+    sus (pw.how_thicc() < 10) {
+        bounce "at least 10 characters, please"
+    }
+    sus (pw.how_thicc() > 128) {
+        bounce "128 characters is plenty"
+    }
+    bounce ghost
+}

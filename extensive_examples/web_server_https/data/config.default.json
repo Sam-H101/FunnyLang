@@ -1,0 +1,45 @@
+{
+  "site": {
+    "name": "FunnyLang Secure",
+    "tagline": "A web site, over TLS, on two dozen threads, written in FunnyLang."
+  },
+  "tls": {
+    "pfx": "certs/site.p12",
+    "password": "b64:ZnVubnlsYW5n"
+  },
+  "security": {
+    "session_minutes": 120,
+    "rate_requests": 300,
+    "rate_window_seconds": 10,
+    "login_failures": 5,
+    "login_window_seconds": 300
+  },
+  "users": {
+    "admin": {
+      "role": "admin",
+      "password": "sha256:2bd1dfbc7cccadce9437ce45cd0c8f7433816882effe3a3978461972acc3ca5a",
+      "profile": {
+        "display_name": "b64:QWRtaW4=",
+        "email": "b64:YWRtaW5AbG9jYWxob3N0"
+      },
+      "defaults": {
+        "theme": "system",
+        "page_size": 25,
+        "landing": "/activity"
+      }
+    },
+    "demo": {
+      "role": "user",
+      "password": "sha256:2bd1dfbc7cccadce9437ce45cd0c8f7433816882effe3a3978461972acc3ca5a",
+      "profile": {
+        "display_name": "b64:RGVtbyBVc2Vy",
+        "email": "b64:ZGVtb0Bsb2NhbGhvc3Q="
+      },
+      "defaults": {
+        "theme": "system",
+        "page_size": 25,
+        "landing": "/settings"
+      }
+    }
+  }
+}

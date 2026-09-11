@@ -1,0 +1,4 @@
+# Written by the running server (store.funny). config.default.json is the only
+# file in here that belongs in version control.
+config.custom.json
+activity.json

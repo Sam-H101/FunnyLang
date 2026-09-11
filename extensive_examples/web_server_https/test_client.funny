@@ -1,0 +1,208 @@
+// test_client.funny — the other end of test_server.funny's conversations.
+//
+// Hired as an intern, so it is a real client on its own OS thread, talking to
+// the real server over loopback. It trusts exactly one CA -- the committed
+// test one -- through slide_into's `ca` option, so every request here also
+// proves the certificate chain and the host name check out.
+//
+// Not a golden itself (there is no .expected beside it): test_server.funny is
+// the golden, and prints what this reports.
+
+gimme internet
+gimme interns
+gimme yapper
+gimme { parse_json, to_json } from "json.funny"
+
+yo JOB = interns.assignment()
+
+bet tls_conn() {
+    bounce internet.slide_into("127.0.0.1", JOB["port"], {"tls": fax, "server_name": "localhost", "ca": JOB["ca"],
+                                                           "timeout_ms": 15000})
+}
+
+// Everything the server says until it hangs up. Connection: close is the
+// only kind this server does, so the end of the reply is the end of the socket.
+bet read_all(conn) {
+    yo got = []
+    bruh (fax) {
+        yo chunk = ghost
+        sketchy {
+            chunk = internet.hear_them_out(conn, 65536, 15000)
+        } my_bad (e) {
+            chunk = ""
+        }
+        sus (chunk == ghost || chunk == "") {
+            bail
+        }
+        got.yeet_in(chunk)
+    }
+    internet.kick_out(conn)
+    bounce got.join("")
+}
+
+bet parse_reply(text) {
+    yo split_at = yapper.index_of(text, "\r\n\r\n")
+    sus (split_at < 0) {
+        bounce {"status": 0, "headers": {}, "body": text}
+    }
+    yo lines = yapper.split(yapper.slice(text, 0, split_at), "\r\n")
+    yo status = to_int(yapper.split(lines[0], " ")[1])
+    yo headers = {}
+    grind i from 1 to lines.how_thicc() {
+        yo colon = yapper.index_of(lines[i], ":")
+        sus (colon > 0) {
+            headers[yapper.whisper(yapper.slice(lines[i], 0, colon))] = yapper.trim(yapper.slice(lines[i], colon + 1, lines[i].how_thicc()))
+        }
+    }
+    bounce {"status": status, "headers": headers, "body": yapper.slice(text, split_at + 4, text.how_thicc())}
+}
+
+// One request over its own TLS connection. `extra` is a groupchat of headers.
+bet request(method, path, extra = ghost, body = "") {
+    yo conn = tls_conn()
+    yo lines = [method + " " + path + " HTTP/1.1", "Host: localhost:" + to_yap(JOB["port"]), "User-Agent: test_client",
+                "Connection: close"]
+    sus (extra != ghost) {
+        grind name in extra.keys() {
+            lines.yeet_in(name + ": " + extra[name])
+        }
+    }
+    sus (body != "" || method == "POST") {
+        lines.yeet_in("Content-Length: " + to_yap(yapper.byte_len(body)))
+    }
+    internet.holler_back(conn, lines.join("\r\n") + "\r\n\r\n" + body)
+    bounce parse_reply(read_all(conn))
+}
+
+bet json_body(reply) {
+    sketchy {
+        bounce parse_json(reply["body"])
+    } my_bad (e) {
+        bounce {}
+    }
+}
+
+bet post(path, value, extra = ghost) {
+    yo headers = {"Content-Type": "application/json"}
+    sus (extra != ghost) {
+        headers.merge(extra)
+    }
+    bounce request("POST", path, headers, to_json(value))
+}
+
+// -- the scripted conversation ----------------------------------------------------
+
+bet conversation() {
+    yo out = []
+    bet say(...parts) {
+        out.yeet_in(parts.glow_up(lowkey (p) => to_yap(p)).join(" "))
+    }
+
+    yo health = request("GET", "/api/health")
+    yo tls = json_body(health).get("tls", "")
+    say("health:", health["status"], "over TLS 1.2 or newer:", tls == "TLSv1.2" || tls == "TLSv1.3")
+
+    yo home = request("GET", "/")
+    yo h = home["headers"]
+    say("home page:", home["status"], h.get("content-type", ""))
+    say("  HSTS:", h.get("strict-transport-security", ""))
+    say("  CSP:", yapper.starts_with(h.get("content-security-policy", ""), "default-src 'self'"),
+        "nosniff:", h.get("x-content-type-options", "") == "nosniff", "frames:", h.get("x-frame-options", ""))
+
+    yo gated = request("GET", "/settings")
+    say("settings, signed out:", gated["status"], gated["headers"].get("location", ""))
+    say("/../etc/passwd:", request("GET", "/../etc/passwd")["status"], "/.env:", request("GET", "/.env")["status"],
+        "/js/:", request("GET", "/js/")["status"])
+    say("POST to a page:", request("POST", "/")["status"])
+
+    say("sign in, wrong password:", post("/api/login", {"username": "admin", "password": "nope"})["status"])
+    say("sign in, not JSON:", request("POST", "/api/login", {"Content-Type": "text/plain"}, "admin")["status"])
+    say("sign in, from another origin:", post("/api/login", {"username": "admin", "password": "funnylang"},
+                                               {"Origin": "https://evil.example"})["status"])
+    yo login = post("/api/login", {"username": "admin", "password": "funnylang"})
+    yo cookie = login["headers"].get("set-cookie", "")
+    say("sign in:", login["status"], "still on the default password:", json_body(login).get("default_password", ghost))
+    say("  cookie is __Host-, Secure, HttpOnly, SameSite=Strict:",
+        yapper.starts_with(cookie, "__Host-sid=") && yapper.contains(cookie, "; Secure") &&
+        yapper.contains(cookie, "; HttpOnly") && yapper.contains(cookie, "; SameSite=Strict"))
+    yo sid = yapper.slice(cookie, 0, yapper.index_of(cookie, ";"))
+    yo csrf = json_body(login).get("csrf", "")
+    yo auth = {"Cookie": sid}
+    yo with_token = {"Cookie": sid, "X-CSRF-Token": csrf}
+
+    say("settings, signed in:", request("GET", "/settings", auth)["status"])
+    say("profile without the CSRF token:",
+        post("/api/profile", {"display_name": "Tester", "email": "tester@example.com"}, auth)["status"])
+    yo profile = post("/api/profile", {"display_name": "Tester", "email": "tester@example.com"}, with_token)
+    say("profile:", profile["status"], "changed", json_body(profile).get("changed", []))
+    say("profile, bad email:", post("/api/profile", {"display_name": "Tester", "email": "nope"}, with_token)["status"])
+    yo prefs = post("/api/defaults", {"theme": "dark", "page_size": 10, "landing": "/settings"}, with_token)
+    say("defaults:", prefs["status"], "changed", json_body(prefs).get("changed", []))
+    say("password too short:", post("/api/password", {"current": "funnylang", "new": "short"}, with_token)["status"])
+    say("password, wrong current one:",
+        post("/api/password", {"current": "not-it-at-all", "new": "correct horse battery"}, with_token)["status"])
+    say("password:", post("/api/password", {"current": "funnylang", "new": "correct horse battery"}, with_token)["status"])
+
+    yo whoami = json_body(request("GET", "/api/me", auth))
+    say("me:", whoami["user"]["display_name"], whoami["user"]["email"], whoami["user"]["defaults"],
+        "default password:", whoami["default_password"])
+
+    yo activity = json_body(request("GET", "/api/activity", auth))
+    yo mine = {}
+    grind e in activity.get("entries", []) {
+        mine[e["action"]] = fax
+    }
+    yo expected = ["login", "profile_update", "defaults_update", "password_change", "password_change_failed"]
+    yo all_there = expected.all(lowkey (a) => mine.has(a))
+    say("activity shows:", all_there, "page size", activity.get("page_size", 0), "addresses unsealed:",
+        activity["entries"][0]["ip"])
+
+    say("sign out:", post("/api/logout", {}, with_token)["status"], "then me:", request("GET", "/api/me", auth)["status"])
+
+    yo tries = []
+    grind i from 0 to 5 {
+        tries.yeet_in(post("/api/login", {"username": "demo", "password": "wrong-wrong"})["status"])
+    }
+    say("five more wrong passwords:", tries)
+
+    // Plain http, on the redirect port: a 301 to the same path, and no page.
+    yo plain = internet.slide_into("127.0.0.1", JOB["http_port"], 5000)
+    internet.holler_back(plain, "GET /activity?page=2 HTTP/1.1\r\nHost: localhost:" + to_yap(JOB["http_port"]) + "\r\n\r\n")
+    yo moved = parse_reply(read_all(plain))
+    say("plain http:", moved["status"], "to https, same path:",
+        moved["headers"].get("location", "") == "https://localhost:" + to_yap(JOB["port"]) + "/activity?page=2",
+        "body:", moved["body"] == "")
+
+    // Plain http sent to the TLS port gets a refused handshake, not a page.
+    yo raw = internet.slide_into("127.0.0.1", JOB["port"], 5000)
+    internet.holler_back(raw, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    say("plain http on the TLS port gets a page:", yapper.starts_with(read_all(raw), "HTTP/"))
+
+    // And a client that trusts some other name is refused before any HTTP.
+    yo refused = cap
+    sketchy {
+        internet.slide_into("127.0.0.1", JOB["port"], {"tls": fax, "server_name": "example.com", "ca": JOB["ca"]})
+    } my_bad (e) {
+        refused = fax
+    }
+    say("a client expecting example.com is refused:", refused)
+    bounce out
+}
+
+// Many page views at once, for the across-threads check. How many came back
+// 200 is the answer; which threads served them is luck and is not reported.
+bet views() {
+    yo ok = 0
+    grind i from 0 to JOB["count"] {
+        sus (request("GET", "/")["status"] == 200) {
+            ok += 1
+        }
+    }
+    bounce ok
+}
+
+sus (JOB["script"] == "conversation") {
+    interns.deliver(conversation())
+} nah {
+    interns.deliver(views())
+}

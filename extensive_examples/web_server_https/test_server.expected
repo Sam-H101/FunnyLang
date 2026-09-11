@@ -1,0 +1,103 @@
+-- sha-256 and base64 --
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
+ZnVubnlsYW5n funnylang w6nwn5KA
+not base64: ghost ghost ghost
+-- json --
+{"a":[1,2.5,-300.0,true,false,null],"b":"x\né😀"}
+refused: ghost ghost ghost ghost
+-- http --
+request: GET /a b {"x": "1", "y": "\u00e9"} {"a": "1"}
+body: hello
+no Host: 400
+HTTP/2.0: 505
+unknown method: 501
+absolute target: 400
+chunked body: 501
+body too big: 413
+two lengths: 400
+folded header: 400
+bad escape: 400
+encoded NUL: 400
+request line too long: 414
+too many headers: 431
+hung up: ghost
+a header that tries to add another: cap
+-- the path guard --
+/ -> /web/index.html
+/settings -> /web/settings.html
+/css/site.css -> /web/css/site.css
+/js/api.js -> /web/js/api.js
+/favicon.svg -> /web/favicon.svg
+/../etc/passwd refused
+/css/../../x.css refused
+/.env refused
+/.git/config refused
+/css/ refused
+/a\b.css refused
+/c:/x.css refused
+/x.exe refused
+/%2e%2e/x.css refused
+-- secrets --
+compare: fax cap cap cap
+session cookie must be a token: fax ghost
+email: fax cap cap cap
+password: at least 10 characters, please ghost
+three a window: [fax, fax, fax, cap, cap] fax
+-- data at rest, as committed --
+users: default ["admin", "demo"]
+password: sha256: fax
+email: b64:YWRtaW5AbG9jYWxob3N0 -> admin@localhost
+seal round trip: über ✓ b64:dGVzdGVyQGV4YW1wbGUuY29t
+-- the server, over TLS --
+threads: 4 config at start: default
+health: 200 over TLS 1.2 or newer: fax
+home page: 200 text/html; charset=utf-8
+  HSTS: max-age=31536000; includeSubDomains
+  CSP: fax nosniff: fax frames: DENY
+settings, signed out: 303 /login?next=/settings
+/../etc/passwd: 404 /.env: 404 /js/: 404
+POST to a page: 405
+sign in, wrong password: 401
+sign in, not JSON: 415
+sign in, from another origin: 403
+sign in: 200 still on the default password: fax
+  cookie is __Host-, Secure, HttpOnly, SameSite=Strict: fax
+settings, signed in: 200
+profile without the CSRF token: 403
+profile: 200 changed ["display_name", "email"]
+profile, bad email: 400
+defaults: 200 changed ["theme", "page size", "landing page"]
+password too short: 400
+password, wrong current one: 403
+password: 200
+me: Tester tester@example.com {"theme": "dark", "page_size": 10, "landing": "/settings"} default password: cap
+activity shows: fax page size 10 addresses unsealed: 127.0.0.1
+sign out: 200 then me: 401
+five more wrong passwords: [401, 401, 401, 401, 429]
+plain http: 301 to https, same path: fax body: fax
+plain http on the TLS port gets a page: cap
+a client expecting example.com is refused: fax
+page views from four clients at once: 40 of 40
+every thread reported back: fax
+-- data at rest, afterwards --
+loaded first on the next start: custom
+password: sha256: fax
+display name: b64:VGVzdGVy -> Tester
+email: b64:dGVzdGVyQGV4YW1wbGUuY29t
+defaults: {"theme": "dark", "page_size": 10, "landing": "/settings"}
+demo untouched: fax
+the committed default untouched: fax
+activity.json:
+  defaults_update: 1
+  login: 1
+  login_blocked: 1
+  login_failed: 5
+  logout: 1
+  not_found: 3
+  password_change: 1
+  password_change_failed: 1
+  profile_update: 1
+  view: 42
+addresses and browsers sealed in every entry: fax

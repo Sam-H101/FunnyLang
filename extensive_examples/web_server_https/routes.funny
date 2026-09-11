@@ -1,0 +1,312 @@
+// routes.funny — what the server says back.
+//
+// Two kinds of answer. Files from web/ -- the four pages, their stylesheet and
+// scripts -- through static.funny's path guard. And /api/*, JSON in and out,
+// which is where every change actually happens: the pages are static, and
+// talk to these.
+//
+// A route gets a `ctx`: the parsed request, the session the keeper found for
+// it (or `ghost`), the client address and user agent, and the worker's keeper
+// link. It gives back {status, body, headers} and, for anything worth putting
+// in the activity log that the keeper does not record itself, an `event`.
+
+gimme yapper
+gimme clock
+gimme { to_json, try_parse_json } from "json.funny"
+gimme { html_escape } from "http.funny"
+gimme { ct_equal, session_cookie, cleared_session_cookie, valid_username, valid_email, clean_text,
+        password_problem } from "security.funny"
+gimme { hash_password, THEMES, PAGE_SIZES, LANDINGS } from "store.funny"
+gimme { static_target, read_static, PAGES } from "static.funny"
+gimme { ask_keeper } from "keeper_client.funny"
+
+// -- answers ----------------------------------------------------------------------
+
+flex bet json(status, value, extra = ghost) {
+    yo headers = {"Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"}
+    sus (extra != ghost) {
+        headers.merge(extra)
+    }
+    bounce {"status": status, "body": to_json(value), "headers": headers}
+}
+
+bet oops_json(status, error, extra = ghost) {
+    bounce json(status, {"ok": cap, "error": error}, extra)
+}
+
+bet redirect(where) {
+    bounce {"status": 303, "body": "", "headers": {"Location": where, "Cache-Control": "no-store"}}
+}
+
+bet page(status, target, body) {
+    bounce {"status": status, "body": body, "headers": {"Content-Type": target["type"], "Cache-Control": "no-cache"}}
+}
+
+// The 404 page is a file like any other; if even that is missing, a line of
+// text is still an answer.
+bet not_found(ctx) {
+    yo t = static_target(ctx["web_dir"], "/404.html")
+    yo body = t == ghost ? ghost : read_static(t)
+    sus (body == ghost) {
+        bounce {"status": 404, "body": "not found\n", "headers": {"Content-Type": "text/plain; charset=utf-8"}}
+    }
+    bounce page(404, t, body)
+}
+
+bet username_of(ctx) {
+    yo s = ctx["session"]
+    bounce s == ghost ? "anonymous" : s["user"]["username"]
+}
+
+// -- the router ---------------------------------------------------------------------
+
+flex async_ngl bet route(ctx) {
+    yo req = ctx["req"]
+    yo path = req["path"]
+    sus (yapper.starts_with(path, "/api/")) {
+        bounce await_fr api(ctx)
+    }
+    yo method = req["method"]
+    sus (method != "GET" && method != "HEAD") {
+        yo r = oops_json(405, "pages are GET and HEAD only.")
+        r["headers"]["Allow"] = "GET, HEAD"
+        bounce r
+    }
+    yo signed_in = ctx["session"] != ghost
+    // Two pages need somebody signed in, and one is pointless if somebody is.
+    sus ((path == "/settings" || path == "/activity") && !signed_in) {
+        bounce redirect("/login?next=" + path)
+    }
+    sus (path == "/login" && signed_in) {
+        bounce redirect(ctx["session"]["user"]["defaults"].get("landing", "/"))
+    }
+    yo target = static_target(ctx["web_dir"], path)
+    yo body = target == ghost ? ghost : read_static(target)
+    sus (body == ghost) {
+        yo r = not_found(ctx)
+        r["event"] = {"user": username_of(ctx), "action": "not_found", "detail": path, "status": 404}
+        bounce r
+    }
+    yo r = page(200, target, body)
+    // Page views go in the activity log; the CSS and scripts behind them
+    // would only bury it.
+    sus (PAGES.has(path) || yapper.ends_with(path, ".html")) {
+        r["event"] = {"user": username_of(ctx), "action": "view", "detail": path, "status": 200}
+    }
+    bounce r
+}
+
+// -- /api/* ---------------------------------------------------------------------------
+
+// Every state-changing request must be JSON, must come from this origin if it
+// says where it comes from, and -- once signed in -- must carry the session's
+// CSRF token in a header. A cross-site form cannot send JSON without a CORS
+// preflight this server never answers, and cannot read the token to forge
+// the header, and the cookie is SameSite=Strict besides: three locks where
+// one would usually do, because they fail in different ways.
+bet post_problem(ctx, need_csrf) {
+    yo req = ctx["req"]
+    yo headers = req["headers"]
+    sus (!yapper.starts_with(yapper.whisper(headers.get("content-type", "")), "application/json")) {
+        bounce oops_json(415, "send JSON.")
+    }
+    yo origin = headers.get("origin", ghost)
+    sus (origin != ghost && origin != "https://" + headers.get("host", "")) {
+        bounce oops_json(403, "that request came from somewhere else.")
+    }
+    sus (need_csrf) {
+        sus (ctx["session"] == ghost) {
+            bounce oops_json(401, "sign in first.")
+        }
+        sus (!ct_equal(headers.get("x-csrf-token", ""), ctx["session"]["csrf"])) {
+            bounce oops_json(403, "missing or stale CSRF token. reload the page.")
+        }
+    }
+    bounce ghost
+}
+
+bet body_of(ctx) {
+    yo value = try_parse_json(ctx["req"]["body"])
+    sus (what_is_it(value) != "groupchat") {
+        bounce ghost
+    }
+    bounce value
+}
+
+// What the keeper needs to record who did something, from where.
+bet who(ctx, msg) {
+    msg["ip"] = ctx["ip"]
+    msg["agent"] = yapper.slice(ctx["req"]["headers"].get("user-agent", ""), 0, 300)
+    msg["thread"] = ctx["thread"]
+    bounce msg
+}
+
+bet from_keeper(reply) {
+    sus (reply.get("ok", cap)) {
+        bounce ghost
+    }
+    bounce oops_json(reply.get("status", 500), reply.get("error", "that didn't work."))
+}
+
+async_ngl bet api(ctx) {
+    yo req = ctx["req"]
+    yo path = req["path"]
+    yo method = req["method"]
+    yo gets = ["/api/health", "/api/me", "/api/activity"]
+    yo posts = ["/api/login", "/api/logout", "/api/profile", "/api/defaults", "/api/password"]
+    sus (gets.contains(path) && method != "GET") {
+        bounce oops_json(405, "GET only.", {"Allow": "GET"})
+    }
+    sus (posts.contains(path) && method != "POST") {
+        bounce oops_json(405, "POST only.", {"Allow": "POST"})
+    }
+
+    sus (path == "/api/health") {
+        bounce json(200, {
+            "ok": fax,
+            "tls": ctx["tls"],
+            "thread": ctx["thread"],
+            "threads": ctx["threads"],
+            "uptime_seconds": to_int(clock.now() - ctx["started_at"]),
+        })
+    }
+
+    sus (path == "/api/me") {
+        yo s = ctx["session"]
+        sus (s == ghost) {
+            bounce oops_json(401, "not signed in.")
+        }
+        bounce json(200, {"ok": fax, "user": s["user"], "csrf": s["csrf"], "default_password": s["default_password"]})
+    }
+
+    sus (path == "/api/login") {
+        yo problem = post_problem(ctx, cap)
+        sus (problem != ghost) {
+            bounce problem
+        }
+        yo body = body_of(ctx)
+        sus (body == ghost) {
+            bounce oops_json(400, "send {\"username\": ..., \"password\": ...}.")
+        }
+        yo name = body.get("username", "")
+        yo password = body.get("password", "")
+        sus (!valid_username(name) || what_is_it(password) != "yapstring" || password.how_thicc() > 128) {
+            bounce oops_json(401, "that username and password don't match.")
+        }
+        // Hashed here, on whichever of the two dozen threads took the request,
+        // rather than in the keeper: the one thread everybody shares should
+        // not be the one doing the arithmetic.
+        yo reply = await_fr ask_keeper(ctx["link"], who(ctx, {"op": "login", "username": name,
+                                                             "hash": hash_password(password)}))
+        yo failed = from_keeper(reply)
+        sus (failed != ghost) {
+            bounce failed
+        }
+        bounce json(200, {"ok": fax, "user": reply["user"], "csrf": reply["csrf"],
+                          "default_password": reply["default_password"]},
+                    {"Set-Cookie": session_cookie(reply["sid"], reply["max_age"])})
+    }
+
+    sus (path == "/api/logout") {
+        yo problem = post_problem(ctx, fax)
+        sus (problem != ghost) {
+            bounce problem
+        }
+        await_fr ask_keeper(ctx["link"], who(ctx, {"op": "logout", "sid": ctx["sid"]}))
+        bounce json(200, {"ok": fax}, {"Set-Cookie": cleared_session_cookie()})
+    }
+
+    sus (path == "/api/profile") {
+        yo problem = post_problem(ctx, fax)
+        sus (problem != ghost) {
+            bounce problem
+        }
+        yo body = body_of(ctx)
+        sus (body == ghost) {
+            bounce oops_json(400, "send {\"display_name\": ..., \"email\": ...}.")
+        }
+        yo display = clean_text(body.get("display_name", ""), 80)
+        sus (display == ghost || display == "") {
+            bounce oops_json(400, "a display name is 1 to 80 characters.")
+        }
+        yo email = yapper.trim(to_yap(body.get("email", "")))
+        sus (!valid_email(email)) {
+            bounce oops_json(400, "that doesn't look like an email address.")
+        }
+        yo reply = await_fr ask_keeper(ctx["link"], who(ctx, {"op": "profile", "sid": ctx["sid"],
+                                                             "display_name": display, "email": email}))
+        yo failed = from_keeper(reply)
+        sus (failed != ghost) {
+            bounce failed
+        }
+        bounce json(200, {"ok": fax, "changed": reply["changed"], "user": reply["user"]})
+    }
+
+    sus (path == "/api/defaults") {
+        yo problem = post_problem(ctx, fax)
+        sus (problem != ghost) {
+            bounce problem
+        }
+        yo body = body_of(ctx)
+        sus (body == ghost) {
+            bounce oops_json(400, "send {\"theme\": ..., \"page_size\": ..., \"landing\": ...}.")
+        }
+        sus (!THEMES.contains(body.get("theme", ghost)) || !PAGE_SIZES.contains(body.get("page_size", ghost)) ||
+             !LANDINGS.contains(body.get("landing", ghost))) {
+            bounce oops_json(400, "theme is system, light or dark; page size is 10, 25, 50 or 100; landing is /, " +
+                             "/settings or /activity.")
+        }
+        yo reply = await_fr ask_keeper(ctx["link"], who(ctx, {"op": "defaults", "sid": ctx["sid"],
+                                                             "theme": body["theme"], "page_size": body["page_size"],
+                                                             "landing": body["landing"]}))
+        yo failed = from_keeper(reply)
+        sus (failed != ghost) {
+            bounce failed
+        }
+        bounce json(200, {"ok": fax, "changed": reply["changed"], "user": reply["user"]})
+    }
+
+    sus (path == "/api/password") {
+        yo problem = post_problem(ctx, fax)
+        sus (problem != ghost) {
+            bounce problem
+        }
+        yo body = body_of(ctx)
+        sus (body == ghost || what_is_it(body.get("current", ghost)) != "yapstring") {
+            bounce oops_json(400, "send {\"current\": ..., \"new\": ...}.")
+        }
+        yo fresh = body.get("new", ghost)
+        yo weak = password_problem(fresh)
+        sus (weak != ghost) {
+            bounce oops_json(400, weak + ".")
+        }
+        sus (fresh == body["current"]) {
+            bounce oops_json(400, "that's the same password.")
+        }
+        yo reply = await_fr ask_keeper(ctx["link"], who(ctx, {"op": "password", "sid": ctx["sid"],
+                                                             "current_hash": hash_password(body["current"]),
+                                                             "new_hash": hash_password(fresh)}))
+        yo failed = from_keeper(reply)
+        sus (failed != ghost) {
+            bounce failed
+        }
+        bounce json(200, {"ok": fax})
+    }
+
+    sus (path == "/api/activity") {
+        sus (ctx["session"] == ghost) {
+            bounce oops_json(401, "sign in first.")
+        }
+        yo q = req["query"]
+        yo reply = await_fr ask_keeper(ctx["link"], {"op": "activity", "sid": ctx["sid"],
+                                                     "user": q.get("user", ""), "action": q.get("action", ""),
+                                                     "page": to_int(q.get("page", "1") == "" ? "1" : q.get("page", "1"))})
+        yo failed = from_keeper(reply)
+        sus (failed != ghost) {
+            bounce failed
+        }
+        bounce json(200, reply)
+    }
+
+    bounce oops_json(404, "no such API.")
+}

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FunnyLang Secure</title>
+    <meta name="description" content="A web site served over TLS by a server written in FunnyLang.">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/css/site.css">
+    <script type="module" src="/js/landing.js"></script>
+</head>
+<body>
+    <header class="nav">
+        <div class="wrap">
+            <a class="brand" href="/"><img src="/favicon.svg" alt="">FunnyLang Secure</a>
+            <nav class="nav-links" aria-label="Main">
+                <a href="/" aria-current="page">Home</a>
+                <a href="/activity" data-needs-user hidden>Activity</a>
+                <a href="/settings" data-needs-user hidden>Settings</a>
+            </nav>
+            <div class="nav-user" data-nav-user></div>
+        </div>
+    </header>
+
+    <main>
+        <div class="wrap">
+            <section class="hero">
+                <span class="eyebrow"><span class="dot"></span><span id="live">Encrypted connection</span></span>
+                <h1>A web server, over TLS, written in FunnyLang.</h1>
+                <p>Every byte of HTTP, every session, every page you are looking at was handled by a program
+                   written in a language with <code>yap</code> for print. The TLS underneath is your
+                   operating system's own.</p>
+                <div class="actions">
+                    <a class="btn" id="cta" href="/login">Sign in</a>
+                    <a class="btn secondary" href="#how">How it works</a>
+                </div>
+            </section>
+
+            <section class="stats" aria-label="This connection">
+                <div class="stat"><div class="k">Protocol</div><div class="v" id="stat-tls">–</div></div>
+                <div class="stat"><div class="k">Answered by thread</div><div class="v" id="stat-thread">–</div></div>
+                <div class="stat"><div class="k">Threads serving</div><div class="v" id="stat-threads">–</div></div>
+                <div class="stat"><div class="k">Up for</div><div class="v" id="stat-uptime">–</div></div>
+            </section>
+
+            <section class="features" id="how">
+                <article class="card feature">
+                    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
+                    <h3>TLS 1.2 or nothing</h3>
+                    <p>Forward-secret, authenticated ciphers only. Plain HTTP gets a redirect, never a page, and
+                       Strict-Transport-Security keeps it that way.</p>
+                </article>
+                <article class="card feature">
+                    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></div>
+                    <h3>Two dozen threads</h3>
+                    <p>Twenty-four acceptors on real OS threads, each with its own event loop, and one keeper
+                       thread that owns everything shared. No locks anywhere in the FunnyLang.</p>
+                </article>
+                <article class="card feature">
+                    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 9l-4 3 4 3M16 9l4 3-4 3M13 6l-2 12"/></svg></div>
+                    <h3>FunnyLang all the way down</h3>
+                    <p>The HTTP parser, the router, sessions, CSRF, rate limits, SHA-256, base64 and JSON are all
+                       <code>.funny</code> files. Only the socket and the TLS record layer are not.</p>
+                </article>
+            </section>
+        </div>
+    </main>
+
+    <footer>
+        <div class="wrap">
+            <span>FunnyLang Secure — an example, not a product.</span>
+            <span>Served from <code>extensive_examples/web_server_https</code></span>
+        </div>
+    </footer>
+</body>
+</html>

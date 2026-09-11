@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Settings · FunnyLang Secure</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/css/site.css">
+    <script type="module" src="/js/settings.js"></script>
+</head>
+<body>
+    <header class="nav">
+        <div class="wrap">
+            <a class="brand" href="/"><img src="/favicon.svg" alt="">FunnyLang Secure</a>
+            <nav class="nav-links" aria-label="Main">
+                <a href="/">Home</a>
+                <a href="/activity" data-needs-user hidden>Activity</a>
+                <a href="/settings" data-needs-user hidden aria-current="page">Settings</a>
+            </nav>
+            <div class="nav-user" data-nav-user></div>
+        </div>
+    </header>
+
+    <main>
+        <div class="wrap">
+            <div class="page-head">
+                <h1>Settings</h1>
+                <p>Changes here are written to <code>config.custom.json</code>, which the server reads in
+                   preference to its defaults from then on.</p>
+            </div>
+
+            <div class="notice warn" id="default-password" hidden>
+                You're still using the default password that everyone who read the README knows.
+                <a href="#password">Change it</a>.
+            </div>
+
+            <div class="settings">
+                <nav class="side" aria-label="Sections">
+                    <a href="#profile">Profile</a>
+                    <a href="#defaults">Defaults</a>
+                    <a href="#password">Password</a>
+                </nav>
+
+                <div>
+                    <form class="card" id="profile" novalidate>
+                        <h2>Profile</h2>
+                        <p class="sub">Stored base64-encoded at rest. <span class="mono" id="whoami"></span></p>
+                        <div class="row">
+                            <div class="field">
+                                <label for="display_name">Display name</label>
+                                <input id="display_name" name="display_name" maxlength="80" required autocomplete="name">
+                            </div>
+                            <div class="field">
+                                <label for="email">Email</label>
+                                <input id="email" name="email" type="email" maxlength="254" required autocomplete="email">
+                            </div>
+                        </div>
+                        <div class="form-foot">
+                            <button class="btn" type="submit">Save profile</button>
+                            <span class="status" role="status" aria-live="polite"></span>
+                        </div>
+                    </form>
+
+                    <form class="card" id="defaults" novalidate>
+                        <h2>Defaults</h2>
+                        <p class="sub">How the site behaves for you.</p>
+                        <div class="row">
+                            <div class="field">
+                                <label for="theme">Theme</label>
+                                <select id="theme" name="theme">
+                                    <option value="system">Match my system</option>
+                                    <option value="light">Light</option>
+                                    <option value="dark">Dark</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="page_size">Activity rows per page</label>
+                                <select id="page_size" name="page_size">
+                                    <option value="10">10</option>
+                                    <option value="25">25</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="landing">After signing in, go to</label>
+                                <select id="landing" name="landing">
+                                    <option value="/">Home</option>
+                                    <option value="/activity">Activity</option>
+                                    <option value="/settings">Settings</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-foot">
+                            <button class="btn" type="submit">Save defaults</button>
+                            <span class="status" role="status" aria-live="polite"></span>
+                        </div>
+                    </form>
+
+                    <form class="card" id="password" novalidate>
+                        <h2>Password</h2>
+                        <p class="sub">Stored as a SHA-256 hash. Changing it signs you out everywhere else.</p>
+                        <div class="field">
+                            <label for="current">Current password</label>
+                            <input id="current" name="current" type="password" autocomplete="current-password" required>
+                        </div>
+                        <div class="row">
+                            <div class="field">
+                                <label for="new">New password</label>
+                                <input id="new" name="new" type="password" autocomplete="new-password" minlength="10" maxlength="128" required>
+                                <div class="hint">At least 10 characters. Length beats cleverness.</div>
+                            </div>
+                            <div class="field">
+                                <label for="confirm">New password, again</label>
+                                <input id="confirm" name="confirm" type="password" autocomplete="new-password" required>
+                            </div>
+                        </div>
+                        <div class="form-foot">
+                            <button class="btn" type="submit">Change password</button>
+                            <span class="status" role="status" aria-live="polite"></span>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="wrap">
+            <span>Every change on this page is recorded on the activity page.</span>
+        </div>
+    </footer>
+</body>
+</html>
