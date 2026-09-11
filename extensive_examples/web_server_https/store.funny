@@ -1,0 +1,243 @@
+// store.funny — the data files, and what "protected at rest" means here.
+//
+//   data/config.default.json   committed; never written
+//   <data>/config.custom.json  written the first time anybody changes a
+//                              password, a profile or their defaults
+//   <data>/activity.json       every action, newest last
+//
+// Load order is customization first, default second. A customization file
+// that exists and will not parse stops the server rather than falling back:
+// falling back would quietly undo a password change, which is worse than
+// refusing to start and saying why.
+//
+// PROTECTED AT REST, HONESTLY. Two treatments, and every value says which it
+// got with a prefix:
+//
+//   "sha256:…"  passwords. One-way. Unsalted, which is the project owner's
+//               call for a demo (PLAN.md §9) -- a real deployment wants a slow,
+//               salted hash like scrypt or Argon2.
+//   "b64:…"     email, display name, client addresses and user agents.
+//               Base64 is an *encoding*: it keeps a value from being read over
+//               a shoulder or matched by a grep, and nothing more. Also the
+//               owner's call, for a proof of concept. It lives behind
+//               seal()/unseal() and nowhere else, so swapping in a real cipher
+//               is a change to two functions.
+//
+// Only the keeper thread calls the functions that write, so two threads can
+// never write the same file.
+
+gimme filez
+gimme yapper
+gimme clock
+gimme { sha256_hex, base64_encode, base64_decode } from "crypto.funny"
+gimme { parse_json, to_json, to_json_pretty } from "json.funny"
+
+flex deadass SEALED = "b64:"
+flex deadass HASHED = "sha256:"
+flex deadass ROLES = ["admin", "user"]
+flex deadass THEMES = ["system", "light", "dark"]
+flex deadass PAGE_SIZES = [10, 25, 50, 100]
+flex deadass LANDINGS = ["/", "/settings", "/activity"]
+flex deadass ACTIVITY_CAP = 5000
+
+flex deadass DEFAULT_PREFS = {"theme": "system", "page_size": 25, "landing": "/activity"}
+
+// -- the two treatments -------------------------------------------------------------
+
+flex bet seal(text) {
+    bounce SEALED + base64_encode(to_yap(text))
+}
+
+// A sealed value back to text. A value without the prefix is taken as it is --
+// somebody edited the file by hand -- and a damaged one is an error rather
+// than a guess.
+flex bet unseal(value) {
+    sus (value == ghost) {
+        bounce ""
+    }
+    sus (!yapper.starts_with(value, SEALED)) {
+        bounce value
+    }
+    yo plain = base64_decode(yapper.slice(value, SEALED.how_thicc(), value.how_thicc()))
+    sus (plain == ghost) {
+        chuck oops("SkillIssue", "a sealed value in the data files is damaged: " + value)
+    }
+    bounce plain
+}
+
+flex bet hash_password(password) {
+    bounce HASHED + sha256_hex(password)
+}
+
+// -- the config ---------------------------------------------------------------------
+
+flex bet default_config_path(example_dir) {
+    bounce filez.join_path(filez.join_path(example_dir, "data"), "config.default.json")
+}
+
+flex bet custom_config_path(data_dir) {
+    bounce filez.join_path(data_dir, "config.custom.json")
+}
+
+flex bet activity_path(data_dir) {
+    bounce filez.join_path(data_dir, "activity.json")
+}
+
+// {"config", "source": "custom"|"default", "path"}.
+flex bet load_config(default_path, custom_path) {
+    sus (filez.exists(custom_path)) {
+        bounce {"config": read_config(custom_path), "source": "custom", "path": custom_path}
+    }
+    bounce {"config": read_config(default_path), "source": "default", "path": default_path}
+}
+
+bet read_config(path) {
+    yo cfg = ghost
+    sketchy {
+        cfg = parse_json(filez.slurp(path))
+    } my_bad (e) {
+        chuck oops("SkillIssue", path + " can't be read (" + e.message + "). Not starting: falling back " +
+                   "to the defaults would quietly undo any password change in it.")
+    }
+    yo problem = config_problem(cfg)
+    sus (problem != ghost) {
+        chuck oops("SkillIssue", path + " isn't a usable config: " + problem + ".")
+    }
+    bounce cfg
+}
+
+// What is wrong with a config, or `ghost`. Missing preferences are filled in
+// rather than being problems: a config written by an older version is fine.
+flex bet config_problem(cfg) {
+    sus (what_is_it(cfg) != "groupchat") {
+        bounce "it has to be a JSON object"
+    }
+    yo users = cfg.get("users", ghost)
+    sus (what_is_it(users) != "groupchat" || users.how_thicc() == 0) {
+        bounce "it needs at least one user"
+    }
+    grind name in users.keys() {
+        yo u = users[name]
+        sus (what_is_it(u) != "groupchat") {
+            bounce "user '" + name + "' isn't an object"
+        }
+        sus (!ROLES.contains(u.get("role", ""))) {
+            bounce "user '" + name + "' needs a role of admin or user"
+        }
+        yo pw = u.get("password", "")
+        sus (what_is_it(pw) != "yapstring" || !yapper.starts_with(pw, HASHED) || pw.how_thicc() != 71) {
+            bounce "user '" + name + "' needs a password of the form sha256:<64 hex digits>"
+        }
+        sus (what_is_it(u.get("profile", ghost)) != "groupchat") {
+            u["profile"] = {}
+        }
+        sus (what_is_it(u.get("defaults", ghost)) != "groupchat") {
+            u["defaults"] = {}
+        }
+        grind key in DEFAULT_PREFS.keys() {
+            sus (!u["defaults"].has(key)) {
+                u["defaults"][key] = DEFAULT_PREFS[key]
+            }
+        }
+    }
+    sus (what_is_it(cfg.get("security", ghost)) != "groupchat") {
+        cfg["security"] = {}
+    }
+    bounce ghost
+}
+
+// The whole config, pretty-printed so a person can read -- and diff -- it.
+flex bet save_config(path, cfg) {
+    cfg["customized_at"] = clock.date_yap("%Y-%m-%dT%H:%M:%S")
+    filez.yeet_out(path, to_json_pretty(cfg))
+}
+
+// What a user looks like to the pages: unsealed, and never the password hash.
+flex bet public_user(name, user) {
+    yo profile = user.get("profile", {})
+    bounce {
+        "username": name,
+        "role": user["role"],
+        "display_name": unseal(profile.get("display_name", ghost)),
+        "email": unseal(profile.get("email", ghost)),
+        "defaults": user.get("defaults", DEFAULT_PREFS),
+    }
+}
+
+flex bet setting(cfg, section, key, fallback) {
+    yo s = cfg.get(section, {})
+    sus (what_is_it(s) != "groupchat") {
+        bounce fallback
+    }
+    bounce s.get(key, fallback)
+}
+
+// -- the activity file ------------------------------------------------------------------
+//
+// A JSON array with one entry per line: valid JSON for any tool, and a diff
+// of two versions is a list of the actions in between. Each entry's text is
+// kept beside it once it is made, so saving never re-serializes five thousand
+// entries -- it joins five thousand strings.
+
+flex bet load_activity(path) {
+    sus (!filez.exists(path)) {
+        bounce {"entries": [], "lines": []}
+    }
+    yo parsed = ghost
+    sketchy {
+        parsed = parse_json(filez.slurp(path))
+    } my_bad (e) {
+        chuck oops("SkillIssue", path + " can't be read (" + e.message + "). Move it aside to start a " +
+                   "fresh log; not starting rather than overwriting it.")
+    }
+    sus (what_is_it(parsed) != "stash") {
+        chuck oops("SkillIssue", path + " should be a JSON array of entries.")
+    }
+    yo entries = parsed
+    sus (entries.how_thicc() > ACTIVITY_CAP) {
+        entries = entries.slice(entries.how_thicc() - ACTIVITY_CAP, entries.how_thicc())
+    }
+    yo lines = []
+    grind e in entries {
+        lines.yeet_in(to_json(e))
+    }
+    bounce {"entries": entries, "lines": lines}
+}
+
+flex bet save_activity(path, lines) {
+    sus (lines.how_thicc() == 0) {
+        filez.yeet_out(path, "[]\n")
+    } nah {
+        filez.yeet_out(path, "[\n" + lines.join(",\n") + "\n]\n")
+    }
+}
+
+// An entry as it is stored: who and what in the clear, where from sealed.
+flex bet activity_entry(id, user, action, detail, status, thread, ip, agent) {
+    bounce {
+        "id": id,
+        "at": clock.date_yap("%Y-%m-%dT%H:%M:%S"),
+        "user": user,
+        "action": action,
+        "detail": detail,
+        "status": status,
+        "thread": thread,
+        "ip": seal(ip),
+        "agent": seal(agent),
+    }
+}
+
+// An entry as the activity page shows it.
+flex bet activity_view(entry) {
+    bounce {
+        "id": entry.get("id", 0),
+        "at": entry.get("at", ""),
+        "user": entry.get("user", "anonymous"),
+        "action": entry.get("action", ""),
+        "detail": entry.get("detail", ""),
+        "status": entry.get("status", 0),
+        "thread": entry.get("thread", 0),
+        "ip": unseal(entry.get("ip", ghost)),
+        "agent": unseal(entry.get("agent", ghost)),
+    }
+}

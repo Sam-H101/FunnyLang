@@ -1,0 +1,53 @@
+// Many interns importing modules at the same moment.
+//
+// Every VM's module loader normalizes the path of each quoted import -- "./",
+// "..", doubled slashes -- before looking it up in the bundle. That used
+// strtok, whose cursor is one hidden variable for the whole process, so two
+// interns importing at once could walk through each other's paths and fail
+// with "'x.funny' isn't in this bundle" for a module that was right there.
+// It was rare, which is how it hid until a server started two dozen workers at
+// once (extensive_examples/web_server_https).
+//
+// This hires thirty-two interns at once, every one of which imports modules
+// by paths that need normalizing. With the bug some of them fail, some of the
+// time; without it every one answers, every time.
+gimme interns
+gimme filez
+
+yo root = filez.temp_file() + "_imports"
+yo lib = filez.join_path(root, "lib")
+yo deep = filez.join_path(lib, "deep")
+filez.mkdir(deep)
+
+yo leaf_src = filez.join_path(deep, "leaf.funny")
+filez.yeet_out(leaf_src, "flex bet leaf() { bounce \"leaf\" }\n")
+yo middle_src = filez.join_path(lib, "middle.funny")
+filez.yeet_out(middle_src, "gimme { leaf } from \"./deep/../deep/leaf.funny\"\n" +
+                           "flex bet middle() { bounce \"middle+\" + leaf() }\n")
+yo worker = filez.join_path(root, "worker.funny")
+filez.yeet_out(worker, "gimme interns\n" +
+                       "gimme { middle } from \"./lib/./middle.funny\"\n" +
+                       "gimme { leaf } from \"lib/deep/leaf.funny\"\n" +
+                       "interns.deliver(middle() + \"+\" + leaf() + \" \" + to_yap(interns.assignment()))\n")
+
+deadass CREW = 32
+yo crew = []
+grind i from 0 to CREW {
+    crew.yeet_in(interns.hire(worker, i))
+}
+yo answers = interns.everybody(crew)
+yo right = 0
+grind i from 0 to CREW {
+    sus (answers[i] == "middle+leaf+leaf " + to_yap(i)) {
+        right += 1
+    }
+}
+yap "answered:", answers.how_thicc(), "of", CREW
+yap "every answer right:", right == CREW
+
+filez.obliterate(worker)
+filez.obliterate(middle_src)
+filez.obliterate(leaf_src)
+filez.obliterate(deep)
+filez.obliterate(lib)
+filez.obliterate(root)

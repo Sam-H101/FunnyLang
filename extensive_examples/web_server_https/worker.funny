@@ -1,0 +1,232 @@
+// worker.funny — one of the acceptor threads.
+//
+// serve.funny hires two dozen of these, each handed the same secure listener.
+// Each runs the web_server/ accept loop -- await the listener, take a caller,
+// start a task for it, go round again -- so every thread is itself serving
+// many connections at once, and the kernel spreads new ones across threads.
+// The listener is non-blocking, so a thread that loses the race for a
+// connection just goes back to waiting (tests/lang/interns/shared_listener).
+//
+// A worker has its own heap and shares nothing, so everything that must be
+// the same for everybody -- sessions, the config, the activity log, the rate
+// limits, whether it is time to stop -- is a question for the keeper.
+
+gimme internet
+gimme interns
+gimme clock
+gimme yapper
+gimme { read_request, build_response, STATUS_TEXT } from "http.funny"
+gimme { route } from "routes.funny"
+gimme { session_id_of } from "security.funny"
+gimme { keeper_link, ask_keeper, close_link } from "keeper_client.funny"
+gimme { to_json } from "json.funny"
+
+yo JOB = interns.assignment()
+yo THREAD = JOB["thread"]
+yo LISTENER = JOB["listener"]
+yo LINK = keeper_link(JOB["keeper_port"], JOB["secret"])
+
+// Past this many connections in flight on one thread, new ones are closed
+// at once rather than queued: memory is finite and the other threads exist.
+deadass MAX_IN_FLIGHT = 256
+deadass HANDSHAKE_MS = 5000
+
+yo IN_FLIGHT = 0
+yo SERVED = 0
+yo STOPPING = cap
+
+bet pad2(n) {
+    yo s = to_yap(n)
+    bounce s.how_thicc() < 2 ? "0" + s : s
+}
+
+// "127.0.0.1:51150" -> "127.0.0.1"; "::1:51150" -> "::1".
+bet ip_of(peer) {
+    yo from_end = yapper.index_of(yapper.reverse(peer), ":")
+    sus (from_end < 0) {
+        bounce peer
+    }
+    bounce yapper.slice(peer, 0, peer.how_thicc() - from_end - 1)
+}
+
+// Request targets go to a terminal, so anything that is not printable ASCII
+// is shown as `?`, and a very long one is cut short.
+bet printable(s) {
+    yo out = []
+    grind ch in yapper.slice(s, 0, 120) {
+        yo cp = ch.code_at(0)
+        out.yeet_in(cp >= 0x20 && cp < 0x7F ? ch : "?")
+    }
+    bounce out.join("")
+}
+
+bet log_line(peer, tls, method, target, status, bytes, user) {
+    yo line = clock.date_yap("%H:%M:%S") + "  #" + pad2(THREAD) + "  " + peer + "  " + tls + "  " + method + " " +
+              printable(target) + "  -> " + to_yap(status) + "  " + to_yap(bytes) + "b"
+    sus (user != ghost) {
+        line = line + "  " + user
+    }
+    bounce line
+}
+
+async_ngl bet read_more(conn, ms) {
+    sus (!await_fr internet.hold_up(conn, ms)) {
+        bounce ghost
+    }
+    // `ghost` here can also mean "part of a TLS record arrived": read_request
+    // treats it as "nothing yet" and waits again, which is exactly right.
+    bounce internet.hear_them_out(conn, 65536, 0)
+}
+
+// Drives the TLS handshake a step at a time, waiting on the event loop in
+// between, so a slow client costs its own task and nobody else's.
+async_ngl bet finish_handshake(conn) {
+    yo deadline = clock.now() + HANDSHAKE_MS / 1000.0
+    bruh (!internet.handshake(conn)) {
+        yo left = to_int((deadline - clock.now()) * 1000.0)
+        sus (left <= 0) {
+            bounce cap
+        }
+        sus (!await_fr internet.hold_up(conn, left)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+async_ngl bet report(line, event, ip, agent) {
+    yo reply = await_fr ask_keeper(LINK, {"op": "done", "line": line, "event": event, "ip": ip, "agent": agent,
+                                          "thread": THREAD})
+    sus (reply.get("stop", cap)) {
+        STOPPING = fax
+    }
+}
+
+async_ngl bet serve(customer) {
+    yo conn = customer["conn"]
+    yo peer = customer["peer"]
+    yo ip = ip_of(peer)
+    sus (!await_fr finish_handshake(conn)) {
+        await_fr report(log_line(peer, "-", "-", "(handshake timed out)", 0, 0, ghost), ghost, ip, "")
+        bounce ghost
+    }
+    yo tls = "-"
+    yo info = internet.tls_info(conn)
+    sus (info != ghost) {
+        tls = info["version"]
+    }
+
+    yo req = await_fr read_request(lowkey (ms) => read_more(conn, ms))
+    sus (!req["ok"]) {
+        sus (req["status"] != ghost) {
+            yo refusal = build_response(req["status"], STATUS_TEXT.get(req["status"], "no") + "\n",
+                                        {"Content-Type": "text/plain; charset=utf-8"})
+            internet.holler_back(conn, refusal)
+            await_fr report(log_line(peer, tls, "-", "(refused)", req["status"], yapper.byte_len(refusal), ghost),
+                            ghost, ip, "")
+        }
+        bounce ghost
+    }
+
+    yo agent = req["headers"].get("user-agent", "")
+    yo sid = session_id_of(req["headers"])
+    yo begin = await_fr ask_keeper(LINK, {"op": "begin", "ip": ip, "sid": sid})
+    sus (begin.get("stop", cap)) {
+        STOPPING = fax
+    }
+    yo answer = ghost
+    sus (!begin["allowed"]) {
+        answer = {
+            "status": 429,
+            "body": to_json({"ok": cap, "error": "slow down."}),
+            "headers": {"Content-Type": "application/json; charset=utf-8", "Retry-After": to_yap(begin["retry_after"])},
+        }
+    } nah {
+        yo session = begin["session"]
+        yo ctx = {
+            "req": req,
+            "session": session,
+            "sid": session == ghost ? ghost : sid,
+            "ip": ip,
+            "thread": THREAD,
+            "threads": JOB["threads"],
+            "tls": tls,
+            "link": LINK,
+            "web_dir": JOB["web_dir"],
+            "started_at": JOB["started_at"],
+        }
+        sketchy {
+            answer = await_fr route(ctx)
+        } my_bad (e) {
+            // A route that falls over is a 500 with the flavor and message --
+            // the part about this request -- and never a stack trace.
+            answer = {
+                "status": 500,
+                "body": to_json({"ok": cap, "error": e.flavor + ": " + e.message}),
+                "headers": {"Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"},
+            }
+        }
+    }
+    yo bytes = build_response(answer["status"], answer["body"], answer["headers"], fax, req["method"] == "HEAD")
+    internet.holler_back(conn, bytes)
+    SERVED += 1
+    yo user = begin.get("session", ghost) == ghost ? ghost : begin["session"]["user"]["username"]
+    await_fr report(log_line(peer, tls, req["method"], req["target"], answer["status"], yapper.byte_len(bytes), user),
+                    answer.get("event", ghost), ip, agent)
+    bounce ghost
+}
+
+async_ngl bet handle(customer) {
+    IN_FLIGHT += 1
+    sketchy {
+        await_fr serve(customer)
+    } my_bad (e) {
+        // A refused handshake, a client that hung up half way, the keeper
+        // going away at shutdown: one line, not a stack trace.
+        sketchy {
+            await_fr report(log_line(customer["peer"], "-", "-", "(" + e.message + ")", 0, 0, ghost), ghost,
+                            ip_of(customer["peer"]), "")
+        } my_bad (ignored) {
+            vibe
+        }
+    }
+    internet.kick_out(customer["conn"])
+    IN_FLIGHT -= 1
+}
+
+bet main() {
+    yo last_ping = clock.now()
+    bruh (!STOPPING) {
+        sus (await_fr internet.hold_up(LISTENER, 250)) {
+            yo c = internet.next_customer(LISTENER, 0)
+            sus (c != ghost) {
+                sus (IN_FLIGHT >= MAX_IN_FLIGHT) {
+                    internet.kick_out(c["conn"])
+                } nah {
+                    // Not awaited: the loop is back round and accepting before
+                    // this caller has sent a byte.
+                    handle(c)
+                }
+            }
+        }
+        sus (clock.now() - last_ping >= 0.5) {
+            last_ping = clock.now()
+            sketchy {
+                STOPPING = (await_fr ask_keeper(LINK, {"op": "ping"}))["stop"]
+            } my_bad (e) {
+                // No keeper, no sessions, no log: nothing left to serve with.
+                STOPPING = fax
+            }
+        }
+    }
+    // Whatever is mid-conversation gets to finish.
+    yo waited = 0
+    bruh (IN_FLIGHT > 0 && waited < 5000) {
+        await_fr clock.chill(20)
+        waited += 20
+    }
+    close_link(LINK)
+    interns.deliver({"thread": THREAD, "served": SERVED})
+}
+
+main()

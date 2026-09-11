@@ -289,7 +289,61 @@ int platform_socket_port(int64_t sock);
    of each task sitting in its own blocking read. */
 int platform_poll_sockets(const int64_t *handles, int count, int timeoutMs, unsigned char *readyOut);
 
+/* Closes a listener or a connection. A TLS connection sends close_notify
+   first; a secure listener releases its identity. */
 void platform_socket_close(int64_t sock);
+
+/* -- TLS on the handles above (extensive_examples/web_server_https) --------
+ *
+ * The server side of TLS, and a client that can be told which one CA to
+ * trust. Same OS-native backends as platform_http_request -- dlopen'd OpenSSL,
+ * Schannel, Secure Transport -- and nothing above this header learns which.
+ *
+ * A TLS connection is still an ordinary handle: platform_socket_recv/send/
+ * close and platform_poll_sockets consult a side table and do the right
+ * thing, so code written for plain sockets works unchanged on encrypted ones.
+ * recv returns plaintext; poll reports a TLS connection ready when the
+ * session is already holding decrypted bytes, not only when the socket is
+ * readable. One difference callers must allow for: a TLS recv can report
+ * PLATFORM_SOCKET_TIMEOUT right after poll said "ready", when what arrived
+ * was only part of a record. */
+
+/* Binds and listens exactly like platform_tcp_listen, and loads a server
+   identity from a PKCS#12 file. Every connection accepted from the returned
+   listener carries a TLS session that has not handshaken yet. TLS 1.2 is the
+   minimum; renegotiation and compression are off. PLATFORM_SOCKET_NONE with a
+   reason in errbuf if the file cannot be read, the password is wrong, there
+   is no TLS library, or the port cannot be bound. */
+int64_t platform_tls_listen(const char *host, int port, int backlog, const char *pfxPath, const char *password,
+                            char *errbuf, size_t errbuf_len);
+
+/* Whether a handle carries a TLS session (a connection) or identity (a
+   listener). */
+bool platform_socket_is_tls(int64_t sock);
+
+/* One step of a server-side handshake, without blocking: 1 when it is done
+   (also for a plain connection, which has nothing to do), 0 when it needs
+   more bytes from the peer -- wait for the socket to be readable and call
+   again -- and -1 when it failed, with a reason in errbuf. */
+int platform_tls_handshake(int64_t sock, char *errbuf, size_t errbuf_len);
+
+/* The negotiated protocol ("TLSv1.3") and cipher suite, for logs. False for a
+   plain connection or one that has not finished its handshake. */
+bool platform_tls_info(int64_t sock, char *version, size_t version_len, char *cipher, size_t cipher_len);
+
+/* Dials out and completes a TLS handshake, verifying the peer's chain *and*
+   that it was issued for `serverName`. With `caPath` (a PEM file) the chain
+   must lead to exactly that CA and nothing else is trusted; without it, the
+   system trust store is used. There is deliberately no way to skip
+   verification. PLATFORM_SOCKET_NONE with a reason in errbuf on failure. */
+int64_t platform_tls_connect(const char *host, int port, int timeoutMs, const char *serverName, const char *caPath,
+                             char *errbuf, size_t errbuf_len);
+
+/* -- randomness ------------------------------------------------------------ */
+
+/* `n` bytes from the operating system's CSPRNG (BCryptGenRandom,
+   arc4random_buf, /dev/urandom). False only if the OS refused. */
+bool platform_random_bytes(unsigned char *out, size_t n);
 
 /* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
  *

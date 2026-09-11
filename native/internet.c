@@ -260,6 +260,49 @@ static Value m_open_shop(VM *vm, Value *a, int argc) {
     return INT_VAL(listener);
 }
 
+/* internet.open_secure_shop(port, host?, {"pfx": path, "password": ...}) --
+   open_shop, plus a TLS identity from a PKCS#12 file. Every connection from
+   the listener it returns carries a TLS session that has not handshaken yet:
+   drive `internet.handshake(conn)` to done before reading, exactly the way a
+   read is driven -- `hold_up` and try again -- so nothing blocks. */
+static Value m_open_secure_shop(VM *vm, Value *a, int argc) {
+    (void)argc;
+    if (!IS_INT(a[0])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'open_secure_shop' needs a port number, not a %s.",
+                        vm_type_name(a[0]));
+        return GHOST_VAL;
+    }
+    const char *host = "";
+    if (!IS_GHOST(a[1])) {
+        host = string_arg(vm, a[1], "open_secure_shop");
+        if (host == NULL) return GHOST_VAL;
+    }
+    if (!(IS_OBJ(a[2]) && AS_OBJ(a[2])->type == OBJ_GROUPCHAT)) {
+        vm_throw_native(vm, "TypeVibeMismatch",
+                        "'open_secure_shop' needs its options as a groupchat: {\"pfx\": path, \"password\": ...}.");
+        return GHOST_VAL;
+    }
+    ObjGroupChat *opts = (ObjGroupChat *)AS_OBJ(a[2]);
+    Value pfxV = opt_get(&vm->gc, opts, "pfx", GHOST_VAL);
+    if (!IS_STRING(pfxV)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'open_secure_shop' needs \"pfx\": the path to a PKCS#12 file.");
+        return GHOST_VAL;
+    }
+    Value pwV = opt_get(&vm->gc, opts, "password", GHOST_VAL);
+    if (!IS_GHOST(pwV) && !IS_STRING(pwV)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'open_secure_shop' needs \"password\" as a yapstring.");
+        return GHOST_VAL;
+    }
+    char errbuf[512];
+    int64_t listener = platform_tls_listen(host, (int)AS_INT(a[0]), 128, AS_STRING(pfxV)->chars,
+                                           IS_STRING(pwV) ? AS_STRING(pwV)->chars : "", errbuf, sizeof errbuf);
+    if (listener == PLATFORM_SOCKET_NONE) {
+        vm_throw_native(vm, "SkillIssue", "%s", errbuf);
+        return GHOST_VAL;
+    }
+    return INT_VAL(listener);
+}
+
 /* internet.next_customer(listener, timeout_ms?) -- accept, or `ghost` if
    nobody turned up in time. A timeout is deliberately not an error: a server
    loop wants to check its own shutdown flag between callers, and making that
@@ -282,6 +325,7 @@ static Value m_next_customer(VM *vm, Value *a, int argc) {
     groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "conn", 4)), INT_VAL(conn));
     groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "peer", 4)),
                   OBJ_VAL(string_new(&vm->gc, peer, (uint32_t)strlen(peer))));
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "secure", 6)), BOOL_VAL(platform_socket_is_tls(conn)));
     gc_pop_temp(&vm->gc);
     return OBJ_VAL(out);
 }
@@ -370,7 +414,35 @@ static Value m_slide_into(VM *vm, Value *a, int argc) {
         vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
         return GHOST_VAL;
     }
-    int timeoutMs = argc > 2 ? int_opt(a[2], DEFAULT_TIMEOUT_MS) : DEFAULT_TIMEOUT_MS;
+    /* The third argument is a timeout in milliseconds, as it always was, or
+       a groupchat: {"timeout_ms", "tls", "server_name", "ca"}. With "tls" the
+       connection comes back handshaken and verified -- chain and name --
+       against the system store, or against exactly the one CA in "ca". */
+    int timeoutMs = DEFAULT_TIMEOUT_MS;
+    bool tls = false;
+    const char *serverName = NULL;
+    const char *caPath = NULL;
+    if (argc > 2 && IS_OBJ(a[2]) && AS_OBJ(a[2])->type == OBJ_GROUPCHAT) {
+        ObjGroupChat *o = (ObjGroupChat *)AS_OBJ(a[2]);
+        timeoutMs = int_opt(opt_get(&vm->gc, o, "timeout_ms", GHOST_VAL), DEFAULT_TIMEOUT_MS);
+        tls = value_is_truthy(opt_get(&vm->gc, o, "tls", BOOL_VAL(false)));
+        Value sn = opt_get(&vm->gc, o, "server_name", GHOST_VAL);
+        if (IS_STRING(sn)) serverName = AS_STRING(sn)->chars;
+        Value ca = opt_get(&vm->gc, o, "ca", GHOST_VAL);
+        if (IS_STRING(ca)) caPath = AS_STRING(ca)->chars;
+    } else if (argc > 2) {
+        timeoutMs = int_opt(a[2], DEFAULT_TIMEOUT_MS);
+    }
+    if (tls) {
+        char errbuf[512];
+        int64_t secure = platform_tls_connect(host, (int)AS_INT(a[1]), timeoutMs, serverName, caPath, errbuf,
+                                              sizeof errbuf);
+        if (secure == PLATFORM_SOCKET_NONE) {
+            vm_throw_native(vm, "SkillIssue", "%s", errbuf);
+            return GHOST_VAL;
+        }
+        return INT_VAL(secure);
+    }
     int64_t conn = platform_tcp_connect(host, (int)AS_INT(a[1]), timeoutMs);
     if (conn == PLATFORM_SOCKET_NONE) {
         vm_throw_native(vm, "SkillIssue", "couldn't get through to %s:%lld.", host, (long long)AS_INT(a[1]));
@@ -405,6 +477,43 @@ static Value m_hold_up(VM *vm, Value *a, int argc) {
         if (ms >= 0) deadline = platform_monotonic_seconds() + (double)ms / 1000.0;
     }
     return OBJ_VAL(otw_for_socket(&vm->gc, sock, deadline));
+}
+
+/* internet.handshake(conn) -- one step of a server-side TLS handshake.
+   `fax` when it is done (and at once for a plain connection), `cap` when it
+   needs to hear from the client first: await `hold_up(conn)` and call again.
+   A failure -- a client offering only TLS 1.0, or plain HTTP sent to the TLS
+   port -- is a SkillIssue naming what went wrong. */
+static Value m_handshake(VM *vm, Value *a, int argc) {
+    (void)argc;
+    int64_t conn = handle_arg(vm, a[0], "handshake");
+    if (vm->hadError) return GHOST_VAL;
+    char errbuf[512];
+    int r = platform_tls_handshake(conn, errbuf, sizeof errbuf);
+    if (r < 0) {
+        vm_throw_native(vm, "SkillIssue", "%s", errbuf[0] != '\0' ? errbuf : "the TLS handshake failed.");
+        return GHOST_VAL;
+    }
+    return BOOL_VAL(r == 1);
+}
+
+/* internet.tls_info(conn) -- {"version", "cipher"} once the handshake is
+   done, `ghost` for a plain connection. */
+static Value m_tls_info(VM *vm, Value *a, int argc) {
+    (void)argc;
+    int64_t conn = handle_arg(vm, a[0], "tls_info");
+    if (vm->hadError) return GHOST_VAL;
+    char version[64];
+    char cipher[128];
+    if (!platform_tls_info(conn, version, sizeof version, cipher, sizeof cipher)) return GHOST_VAL;
+    ObjGroupChat *out = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "version", 7)),
+                  OBJ_VAL(string_new(&vm->gc, version, (uint32_t)strlen(version))));
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "cipher", 6)),
+                  OBJ_VAL(string_new(&vm->gc, cipher, (uint32_t)strlen(cipher))));
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
 }
 
 /* internet.shop_port(listener) -- which port it actually got. Only
@@ -442,6 +551,9 @@ static const InternetEntry INTERNET_FUNCTIONS[] = {
     {"speed_test", m_speed_test, 0, 0}, {"ping", m_ping, 1, 1},
     /* The listening half. */
     {"open_shop", m_open_shop, 1, 2},
+    {"open_secure_shop", m_open_secure_shop, 3, 3},
+    {"handshake", m_handshake, 1, 1},
+    {"tls_info", m_tls_info, 1, 1},
     {"slide_into", m_slide_into, 2, 3},
     {"next_customer", m_next_customer, 1, 2},
     {"hold_up", m_hold_up, 1, 2},

@@ -25,6 +25,11 @@ int funny_run_bytecode(const uint8_t *data, size_t len, char **programArgs, int 
         stash_push(&vm.gc, args, OBJ_VAL(string_new(&vm.gc, programArgs[i], (uint32_t)strlen(programArgs[i]))));
     }
     vm.programArgs = OBJ_VAL(args);
+    if (opts.scriptPath != NULL) {
+        size_t n = strlen(opts.scriptPath);
+        vm.scriptPath = (char *)malloc(n + 1);
+        memcpy(vm.scriptPath, opts.scriptPath, n + 1);
+    }
 
     FILE *errOut = opts.err != NULL ? opts.err : stderr;
     vm.err = errOut;

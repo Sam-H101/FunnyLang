@@ -1,0 +1,91 @@
+// Several interns accepting from one listener -- the shape of a pre-threaded
+// server (extensive_examples/web_server_https).
+//
+// The kernel wakes every thread that is polling a listener and hands the
+// connection to one of them. When the listener was a blocking socket, each
+// of the others then sat in accept() until the *next* connection arrived,
+// with every task on that thread frozen behind it -- and the last connection
+// of a run left a thread stuck for good, so this golden used to hang. The
+// listener is non-blocking now: a thread that loses the race gets `ghost`
+// from next_customer(listener, 0) and goes back to its loop.
+//
+// Which worker answers which call is luck, so nothing here prints it. What is
+// true in every interleaving: all forty calls answered, each by exactly one
+// worker, and every worker finished.
+gimme internet
+gimme interns
+gimme filez
+
+deadass CREW = 4
+deadass CALLS = 40
+
+deadass WORKER = "gimme internet\n" +
+    "gimme interns\n" +
+    "gimme filez\n" +
+    "yo job = interns.assignment()\n" +
+    "yo served = []\n" +
+    "async_ngl bet serve(conn) {\n" +
+    "    sus (await_fr internet.hold_up(conn, 5000)) {\n" +
+    "        yo said = internet.hear_them_out(conn, 64, 0)\n" +
+    "        sus (said != ghost && said != \"\") {\n" +
+    "            internet.holler_back(conn, \"ok \" + said)\n" +
+    "            served.yeet_in(said)\n" +
+    "        }\n" +
+    "    }\n" +
+    "    internet.kick_out(conn)\n" +
+    "}\n" +
+    "bet run() {\n" +
+    "    yo tasks = []\n" +
+    "    bruh (!filez.exists(job[\"stop\"])) {\n" +
+    "        sus (await_fr internet.hold_up(job[\"listener\"], 50)) {\n" +
+    "            yo c = internet.next_customer(job[\"listener\"], 0)\n" +
+    "            sus (c != ghost) { tasks.yeet_in(serve(c[\"conn\"])) }\n" +
+    "        }\n" +
+    "    }\n" +
+    "    grind t in tasks { await_fr t }\n" +
+    "    interns.deliver(served)\n" +
+    "}\n" +
+    "run()\n"
+
+yo worker = filez.temp_file() + "_acceptor.funny"
+filez.yeet_out(worker, WORKER)
+yo stop = filez.temp_file() + "_stop"
+
+yo listener = internet.open_shop(0, "127.0.0.1")
+yo port = internet.shop_port(listener)
+yo crew = []
+grind k from 0 to CREW {
+    crew.yeet_in(interns.hire(worker, {"listener": listener, "stop": stop}))
+}
+
+// The main thread is the client: blocking calls are fine here, because the
+// servers are other threads.
+yo answered = 0
+grind i from 0 to CALLS {
+    yo c = internet.slide_into("127.0.0.1", port, 5000)
+    internet.holler_back(c, to_yap(i))
+    yo reply = internet.hear_them_out(c, 64, 5000)
+    sus (reply == "ok " + to_yap(i)) {
+        answered += 1
+    }
+    internet.kick_out(c)
+}
+
+filez.yeet_out(stop, "stop")
+yo results = interns.everybody(crew)
+internet.close_shop(listener)
+
+yo seen = {}
+yo total = 0
+grind served in results {
+    grind said in served {
+        seen[said] = fax
+        total += 1
+    }
+}
+yap "workers:", results.how_thicc()
+yap "answered:", answered, "of", CALLS
+yap "each served exactly once:", total == CALLS && seen.how_thicc() == CALLS
+
+filez.obliterate(worker)
+filez.obliterate(stop)

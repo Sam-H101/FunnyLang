@@ -1,0 +1,103 @@
+// serve.funny — the command line.
+//
+//     funny run extensive_examples/web_server_https/serve.funny
+//     funny run extensive_examples/web_server_https/serve.funny -- 8443 --threads 24
+//
+//   PORT                 the HTTPS port (default 8443; 0 picks a free one)
+//   --host H             where to listen (default 127.0.0.1 -- loopback only)
+//   --http-port N        the plain-http redirect port (default 8080)
+//   --no-http            no plain-http listener at all
+//   --threads N          acceptor threads (default 24, 1 to 64)
+//   --data DIR           where config.custom.json and activity.json live
+//                        (default: this example's data/)
+//   --pfx FILE           a PKCS#12 identity instead of certs/site.p12
+//   --pfx-password PW    its password (default: the one in the config)
+//   --public-host H      the host name redirects send people to
+//   --seconds N          stop after N seconds
+//   --requests N         stop after N requests
+//
+// Everything interesting is in server.funny and the files it hires. This one
+// reads flags and prints.
+
+gimme filez
+gimme yapper
+gimme { run_server } from "server.funny"
+
+bet usage() {
+    yell("usage: serve.funny [PORT] [--host H] [--http-port N | --no-http] [--threads N] [--data DIR]")
+    yell("                   [--pfx FILE] [--pfx-password PW] [--public-host H] [--seconds N] [--requests N]")
+}
+
+bet main(raw_args) {
+    // `funny run x.funny -- a b` passes the `--` through; either spelling works.
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo opts = {}
+    yo takes_value = {
+        "--host": "host", "--http-port": "http_port", "--threads": "threads", "--data": "data_dir",
+        "--pfx": "pfx", "--pfx-password": "password", "--public-host": "public_host",
+        "--seconds": "seconds", "--requests": "requests",
+    }
+    yo numeric = ["http_port", "threads", "seconds", "requests"]
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--no-http") {
+            opts["http_port"] = ghost
+            i += 1
+        } kinda_sus (takes_value.has(a)) {
+            sus (i + 1 >= args.how_thicc()) {
+                yell(a + " needs a value.")
+                usage()
+                bounce 2
+            }
+            yo key = takes_value[a]
+            opts[key] = numeric.contains(key) ? to_int(args[i + 1]) : args[i + 1]
+            i += 2
+        } kinda_sus (yapper.starts_with(a, "-")) {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        } nah {
+            opts["port"] = to_int(a)
+            i += 1
+        }
+    }
+
+    yo here = filez.dir_of(the_script())
+    bet ready(info) {
+        yo shown = info["public_host"]
+        yell("serving https://" + shown + ":" + to_yap(info["https_port"]) + " on " + to_yap(info["threads"]) +
+             " threads — ctrl-c to stop")
+        sus (info["http_port"] != ghost) {
+            yell("redirecting http://" + shown + ":" + to_yap(info["http_port"]) + " to https")
+        }
+        sus (info["config"] == "custom") {
+            yell("config: " + info["config_path"] + " (customized)")
+        } nah {
+            yell("config: " + info["config_path"] + " (no customization yet)")
+            yell("sign in as admin or demo, password funnylang -- and change it on the settings page")
+        }
+    }
+
+    yo summary = ghost
+    sketchy {
+        summary = await_fr run_server(here, opts, ready, lowkey (line) => yell(line))
+    } my_bad (e) {
+        yell("couldn't start: " + e.message)
+        bounce 1
+    }
+    yell("served " + to_yap(summary["served"]) + " requests. " + to_yap(summary["activity"]) +
+         " activity entries kept. closing up.")
+    bounce 0
+}
+
+dip(main(the_args()))

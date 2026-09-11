@@ -250,12 +250,16 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
        collect -- between here and the render. */
     bool serious = false;
     char *sourceRoot = NULL;
+    char *scriptPath = NULL;
     if (argc > 2 && IS_OBJ(a[2]) && AS_OBJ(a[2])->type == OBJ_GROUPCHAT) {
         ObjGroupChat *o = (ObjGroupChat *)AS_OBJ(a[2]);
         GroupChatEntry *e = groupchat_find(o, OBJ_VAL(string_new(&vm->gc, "serious", 7)));
         if (e != NULL) serious = value_is_truthy(e->value);
         e = groupchat_find(o, OBJ_VAL(string_new(&vm->gc, "source_dir", 10)));
         if (e != NULL && IS_STRING(e->value)) sourceRoot = dup_cstr(AS_STRING(e->value)->chars);
+        /* `script`: the path the child's the_script() reports. */
+        e = groupchat_find(o, OBJ_VAL(string_new(&vm->gc, "script", 6)));
+        if (e != NULL && IS_STRING(e->value)) scriptPath = dup_cstr(AS_STRING(e->value)->chars);
     }
 
     /* Program args for the child's own the_args(). Read out of the caller's
@@ -289,6 +293,7 @@ static Value m_run_bytecode(VM *vm, Value *a, int argc) {
         stash_push(&child.gc, args, OBJ_VAL(string_new(&child.gc, childArgv[i], (uint32_t)strlen(childArgv[i]))));
     }
     child.programArgs = OBJ_VAL(args);
+    child.scriptPath = scriptPath; /* owned by the child from here; vm_destroy frees it */
 
     char *loadErr = NULL;
     CompiledUnit *unit = NULL;
@@ -479,6 +484,9 @@ static Value m_run_program(VM *vm, Value *a, int argc) {
     opts.out = vm->out;
     opts.err = vm->err;
     opts.errorLabel = label;
+    /* Optional fourth argument: the program's own path, for its the_script().
+       The CLI knows it; the bytes do not. */
+    opts.scriptPath = (argc > 3 && IS_STRING(a[3])) ? AS_STRING(a[3])->chars : NULL;
     fflush(vm->out); /* the child writes to the real stdout; keep the order right */
     int status = funny_run_bytecode(data, len, childArgv, childArgc, opts, &runMs);
 
@@ -623,7 +631,7 @@ static const SusEntry SUS_FUNCTIONS[] = {
     {"run_bytecode", m_run_bytecode, 1, 3},
     {"render_diag", m_render_diag, 1, 2},
     {"toolchain", m_toolchain, 0, 0},
-    {"run_program", m_run_program, 1, 3},
+    {"run_program", m_run_program, 1, 4},
     {"new_session", m_new_session, 0, 0},
     {"run_in", m_run_in, 2, 3},
     {"close_session", m_close_session, 1, 1},

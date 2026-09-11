@@ -1,0 +1,387 @@
+// json.funny — JSON, in both directions.
+//
+// The writer is the one from web_server/http.funny, grown a pretty-printing
+// mode for files a person might open. The parser is new: this server reads
+// JSON from three places -- request bodies from browsers, one line per message
+// from the keeper, and the two data files -- and all three go through here.
+//
+// A request body is written by whoever is on the other end of the socket, so
+// the parser assumes hostile input: it never recurses deeper than MAX_DEPTH
+// (the VM's frame limit would otherwise be a way to crash a worker), and every
+// failure is one SkillIssue naming where it went wrong, never a half-parsed
+// value.
+
+gimme yapper
+gimme mafs
+
+deadass HEX = "0123456789abcdef"
+flex deadass MAX_DEPTH = 32
+
+// -- writing -------------------------------------------------------------------
+
+flex bet to_json(value) {
+    bounce write_value(value, ghost, "")
+}
+
+// Two-space indentation, one key per line: for the files in data/, which are
+// meant to be readable -- and diffable -- by a person.
+flex bet to_json_pretty(value) {
+    bounce write_value(value, "  ", "") + "\n"
+}
+
+bet write_value(value, indent, here) {
+    sus (value == ghost) {
+        bounce "null"
+    }
+    yo kind = what_is_it(value)
+    sus (kind == "boolski") {
+        bounce value ? "true" : "false"
+    }
+    sus (kind == "numba") {
+        // JSON has no NaN or infinity; `null` is what every other encoder
+        // writes for them rather than emitting something unparseable.
+        sus (value != value || value == mafs.infinity || value == -mafs.infinity) {
+            bounce "null"
+        }
+        bounce to_yap(value)
+    }
+    sus (kind == "yapstring") {
+        bounce json_string(value)
+    }
+    yo inner = indent == ghost ? ghost : here + indent
+    sus (kind == "stash") {
+        sus (value.how_thicc() == 0) {
+            bounce "[]"
+        }
+        yo items = []
+        grind item in value {
+            items.yeet_in(write_value(item, indent, inner))
+        }
+        sus (indent == ghost) {
+            bounce "[" + items.join(",") + "]"
+        }
+        bounce "[\n" + inner + items.join(",\n" + inner) + "\n" + here + "]"
+    }
+    sus (kind == "groupchat") {
+        sus (value.how_thicc() == 0) {
+            bounce "{}"
+        }
+        yo pairs = []
+        yo sep = indent == ghost ? ":" : ": "
+        grind key in value.keys() {
+            pairs.yeet_in(json_string(to_yap(key)) + sep + write_value(value.get(key), indent, inner))
+        }
+        sus (indent == ghost) {
+            bounce "{" + pairs.join(",") + "}"
+        }
+        bounce "{\n" + inner + pairs.join(",\n" + inner) + "\n" + here + "}"
+    }
+    bounce json_string(to_yap(value))
+}
+
+flex bet json_string(s) {
+    yo out = ["\""]
+    grind ch in s {
+        yo cp = ch.code_at(0)
+        sus (ch == "\"") {
+            out.yeet_in("\\\"")
+        } kinda_sus (ch == "\\") {
+            out.yeet_in("\\\\")
+        } kinda_sus (ch == "\n") {
+            out.yeet_in("\\n")
+        } kinda_sus (ch == "\r") {
+            out.yeet_in("\\r")
+        } kinda_sus (ch == "\t") {
+            out.yeet_in("\\t")
+        } kinda_sus (cp < 0x20 || cp == 0x2028 || cp == 0x2029) {
+            // Control characters must be escaped; U+2028/2029 are legal JSON
+            // but end a line in JavaScript, and a browser is the other reader.
+            out.yeet_in("\\u" + HEX[(cp >> 12) & 0xF] + HEX[(cp >> 8) & 0xF] + HEX[(cp >> 4) & 0xF] + HEX[cp & 0xF])
+        } nah {
+            out.yeet_in(ch)
+        }
+    }
+    out.yeet_in("\"")
+    bounce out.join("")
+}
+
+// -- reading -------------------------------------------------------------------
+
+// The whole of `text` as one JSON value, or a SkillIssue saying what was wrong
+// and where. Trailing garbage after a valid value is an error, not ignored.
+flex bet parse_json(text) {
+    sus (what_is_it(text) != "yapstring") {
+        chuck oops("TypeVibeMismatch", "parse_json needs a yapstring, not a " + what_is_it(text))
+    }
+    yo st = {"cs": text.chars(), "i": 0, "n": text.how_thicc()}
+    skip_space(st)
+    yo value = read_value(st, 0)
+    skip_space(st)
+    sus (st["i"] < st["n"]) {
+        fail(st, "there's more after the end of the value")
+    }
+    bounce value
+}
+
+// The same, but `ghost` instead of an error -- for callers that treat "not
+// JSON" as just another bad request.
+flex bet try_parse_json(text) {
+    sketchy {
+        bounce parse_json(text)
+    } my_bad (e) {
+        bounce ghost
+    }
+}
+
+bet fail(st, what) {
+    chuck oops("SkillIssue", "that isn't JSON: " + what + " (at character " + to_yap(st["i"]) + ")")
+}
+
+bet peek(st) {
+    sus (st["i"] >= st["n"]) {
+        bounce ""
+    }
+    bounce st["cs"][st["i"]]
+}
+
+bet skip_space(st) {
+    yo cs = st["cs"]
+    yo i = st["i"]
+    yo n = st["n"]
+    bruh (i < n && (cs[i] == " " || cs[i] == "\n" || cs[i] == "\r" || cs[i] == "\t")) {
+        i += 1
+    }
+    st["i"] = i
+}
+
+bet expect_word(st, word, value) {
+    yo cs = st["cs"]
+    yo i = st["i"]
+    grind k from 0 to word.how_thicc() {
+        sus (i + k >= st["n"] || cs[i + k] != word[k]) {
+            fail(st, "expected '" + word + "'")
+        }
+    }
+    st["i"] = i + word.how_thicc()
+    bounce value
+}
+
+bet read_value(st, depth) {
+    sus (depth > MAX_DEPTH) {
+        fail(st, "nested deeper than " + to_yap(MAX_DEPTH))
+    }
+    yo ch = peek(st)
+    sus (ch == "{") {
+        bounce read_object(st, depth)
+    }
+    sus (ch == "[") {
+        bounce read_array(st, depth)
+    }
+    sus (ch == "\"") {
+        bounce read_string(st)
+    }
+    sus (ch == "t") {
+        bounce expect_word(st, "true", fax)
+    }
+    sus (ch == "f") {
+        bounce expect_word(st, "false", cap)
+    }
+    sus (ch == "n") {
+        bounce expect_word(st, "null", ghost)
+    }
+    sus (ch == "-" || (ch >= "0" && ch <= "9" && ch != "")) {
+        bounce read_number(st)
+    }
+    sus (ch == "") {
+        fail(st, "it ended too soon")
+    }
+    fail(st, "unexpected '" + ch + "'")
+}
+
+bet read_object(st, depth) {
+    yo out = {}
+    st["i"] += 1
+    skip_space(st)
+    sus (peek(st) == "}") {
+        st["i"] += 1
+        bounce out
+    }
+    bruh (fax) {
+        skip_space(st)
+        sus (peek(st) != "\"") {
+            fail(st, "expected a key in quotes")
+        }
+        yo key = read_string(st)
+        skip_space(st)
+        sus (peek(st) != ":") {
+            fail(st, "expected ':' after a key")
+        }
+        st["i"] += 1
+        skip_space(st)
+        out[key] = read_value(st, depth + 1)
+        skip_space(st)
+        yo next = peek(st)
+        st["i"] += 1
+        sus (next == "}") {
+            bounce out
+        }
+        sus (next != ",") {
+            st["i"] -= 1
+            fail(st, "expected ',' or '}'")
+        }
+    }
+}
+
+bet read_array(st, depth) {
+    yo out = []
+    st["i"] += 1
+    skip_space(st)
+    sus (peek(st) == "]") {
+        st["i"] += 1
+        bounce out
+    }
+    bruh (fax) {
+        skip_space(st)
+        out.yeet_in(read_value(st, depth + 1))
+        skip_space(st)
+        yo next = peek(st)
+        st["i"] += 1
+        sus (next == "]") {
+            bounce out
+        }
+        sus (next != ",") {
+            st["i"] -= 1
+            fail(st, "expected ',' or ']'")
+        }
+    }
+}
+
+bet hex4(st, at) {
+    yo value = 0
+    grind k from 0 to 4 {
+        sus (at + k >= st["n"]) {
+            fail(st, "a \\u escape needs four hex digits")
+        }
+        yo d = HEX.index_of(yapper.whisper(st["cs"][at + k]))
+        sus (d < 0) {
+            fail(st, "a \\u escape needs four hex digits")
+        }
+        value = value * 16 + d
+    }
+    bounce value
+}
+
+bet read_string(st) {
+    yo cs = st["cs"]
+    yo n = st["n"]
+    yo i = st["i"] + 1
+    yo out = []
+    bruh (fax) {
+        sus (i >= n) {
+            st["i"] = i
+            fail(st, "a string was never closed")
+        }
+        yo ch = cs[i]
+        sus (ch == "\"") {
+            st["i"] = i + 1
+            bounce out.join("")
+        }
+        sus (ch == "\\") {
+            sus (i + 1 >= n) {
+                st["i"] = i
+                fail(st, "a string was never closed")
+            }
+            yo esc = cs[i + 1]
+            sus (esc == "n") {
+                out.yeet_in("\n")
+            } kinda_sus (esc == "t") {
+                out.yeet_in("\t")
+            } kinda_sus (esc == "r") {
+                out.yeet_in("\r")
+            } kinda_sus (esc == "b") {
+                out.yeet_in(yapper.chr_of(8))
+            } kinda_sus (esc == "f") {
+                out.yeet_in(yapper.chr_of(12))
+            } kinda_sus (esc == "\"" || esc == "\\" || esc == "/") {
+                out.yeet_in(esc)
+            } kinda_sus (esc == "u") {
+                st["i"] = i
+                yo cp = hex4(st, i + 2)
+                i += 4
+                // A surrogate pair is two escapes that make one character.
+                sus (cp >= 0xD800 && cp <= 0xDBFF && i + 7 < n && cs[i + 2] == "\\" && cs[i + 3] == "u") {
+                    yo low = hex4(st, i + 4)
+                    sus (low >= 0xDC00 && low <= 0xDFFF) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00)
+                        i += 6
+                    }
+                }
+                sus (cp >= 0xD800 && cp <= 0xDFFF) {
+                    cp = 0xFFFD
+                }
+                out.yeet_in(yapper.chr_of(cp))
+            } nah {
+                st["i"] = i
+                fail(st, "'\\" + esc + "' isn't an escape JSON has")
+            }
+            i += 2
+            nvm
+        }
+        sus (ch.code_at(0) < 0x20) {
+            st["i"] = i
+            fail(st, "a raw control character inside a string")
+        }
+        out.yeet_in(ch)
+        i += 1
+    }
+}
+
+bet read_number(st) {
+    yo cs = st["cs"]
+    yo n = st["n"]
+    yo start = st["i"]
+    yo i = start
+    yo is_float = cap
+    sus (cs[i] == "-") {
+        i += 1
+    }
+    yo digits_at = i
+    bruh (i < n && cs[i] >= "0" && cs[i] <= "9") {
+        i += 1
+    }
+    sus (i == digits_at) {
+        st["i"] = i
+        fail(st, "a number needs digits")
+    }
+    sus (i < n && cs[i] == ".") {
+        is_float = fax
+        i += 1
+        yo frac_at = i
+        bruh (i < n && cs[i] >= "0" && cs[i] <= "9") {
+            i += 1
+        }
+        sus (i == frac_at) {
+            st["i"] = i
+            fail(st, "a number needs digits after its '.'")
+        }
+    }
+    sus (i < n && (cs[i] == "e" || cs[i] == "E")) {
+        is_float = fax
+        i += 1
+        sus (i < n && (cs[i] == "+" || cs[i] == "-")) {
+            i += 1
+        }
+        yo exp_at = i
+        bruh (i < n && cs[i] >= "0" && cs[i] <= "9") {
+            i += 1
+        }
+        sus (i == exp_at) {
+            st["i"] = i
+            fail(st, "a number needs digits in its exponent")
+        }
+    }
+    st["i"] = i
+    yo text = cs.slice(start, i).join("")
+    yo value = to_numba(text)
+    bounce is_float ? value * 1.0 : value
+}

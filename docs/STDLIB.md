@@ -24,6 +24,7 @@ No `gimme` needed — these are available everywhere.
 | `oops(flavor, message?, line?, col?)` | Builds an `error` value with a chosen flavor, ready to `chuck`. `flavor` must be one of `PLAN.md` §4.1's error names — the taxonomy is closed. Without a `line`, the `chuck` site is used. |
 | `dip(code?)` | Exits the process immediately with `code` (default 0). |
 | `the_args()` | The program's own extra CLI arguments (after `--`), as a `stash` of `yapstring`s. |
+| `the_script()` | The running program's own absolute path, or `ghost` when it arrived as bytes with no path. Inside an `interns` worker, the path it was hired from; in a yeeted binary, the executable. For finding the files that live beside a program whatever directory it was started from — `filez.dir_of(the_script())`. |
 | `combo(...fns)` | Composes functions left to right: `combo(f, g, h)` is `lowkey (x) => h(g(f(x)))`. |
 | `identity(x)` | Returns `x` unchanged. |
 | `range_stash(a, b?, step?)` | A `stash` of numbers from `a` (or `0`) to `b` (exclusive), stepping by `step` (default `1`). |
@@ -177,6 +178,7 @@ Free functions below; most are also `groupchat` instance methods.
 | `rizz.seed(x?)` | Seeds the RNG (for reproducible randomness); reseeds from system entropy if omitted. |
 | `rizz.uuid()` | A random UUID4 string. |
 | `rizz.gamble(odds)` | `fax` with probability `odds` (a number in `[0, 1]`), `cap` otherwise. |
+| `rizz.entropy(n?)` | `n` bytes (default 32, at most 1024) from the **operating system's CSPRNG**, as `2n` lowercase hex digits. Everything else in `rizz` is a clock-seeded generator — fine for dice, guessable as a token. Session ids, CSRF tokens and anything else secret come from here. |
 
 ## `filez` — file I/O
 
@@ -301,6 +303,27 @@ an object could not). `extensive_examples/web_server/` is a whole HTTP server bu
 | `internet.hear_them_out(conn, max_bytes?, timeout_ms?)` | One read. `""` means the other end closed; **`ghost`** means it said nothing in time. |
 | `internet.holler_back(conn, text)` | Writes all of it (looping over short writes) and returns the byte count. |
 | `internet.kick_out(conn)` / `internet.close_shop(listener)` | Close one connection / stop listening. The same call under two names, because they are different acts and a program reads better saying which it meant. |
+
+A listener is non-blocking, so several `interns` can accept from the same one: a thread that loses
+the race for a connection gets `ghost` from `next_customer(listener, 0)` and goes back to waiting.
+
+**TLS.** The same handles, encrypted. The operating system's own TLS does the work — OpenSSL
+(`dlopen`'d) on Linux/BSD, Schannel on Windows, Secure Transport on macOS — and once a connection is
+handshaken, `hear_them_out` reads plaintext, `holler_back` writes it and `hold_up` knows about bytes
+the TLS library is already holding. `extensive_examples/web_server_https/` is a whole HTTPS site built
+on them.
+
+| Function | Description |
+|---|---|
+| `internet.open_secure_shop(port, host, opts)` | Like `open_shop`, with a server identity from a **PKCS#12** file: `opts` is `{"pfx": path, "password": ...}`. TLS 1.2 is the minimum and only forward-secret AEAD suites are offered; renegotiation and compression are off. Every connection accepted from it carries a TLS session that has not handshaken yet. |
+| `internet.handshake(conn)` | One step of the server-side handshake, without blocking: `fax` when done, `cap` when it needs to hear from the client — `await_fr hold_up(conn)` and call again. A refusal (a TLS 1.0 client, plain HTTP sent to the TLS port) is a `SkillIssue` saying why. `fax` at once for a plain connection. |
+| `internet.tls_info(conn)` | `{"version", "cipher"}` for a handshaken TLS connection, `ghost` otherwise. |
+| `internet.slide_into(host, port, opts)` | With a groupchat as the third argument — `{"timeout_ms", "tls": fax, "server_name", "ca"}` — dials out over TLS and comes back handshaken and **verified**: chain and host name, against the system trust store, or against exactly the one CA in the `ca` PEM file. There is no way to turn verification off. |
+
+Next to `next_customer`'s `{conn, peer}` is `secure`, which says whether the connection came from a
+secure listener. On a TLS connection `hear_them_out(conn, n, 0)` can return `ghost` right after
+`hold_up` said "readable": what arrived was part of a record. Treat it as "nothing yet", which a loop
+built on `ghost` already does.
 
 `FUNNY_NO_NET=1` does **not** block these, with one exception: `slide_into` to a non-loopback host.
 The flag exists so a test runner does not *reach the network*, and a server binding its own

@@ -9,6 +9,7 @@
 #include "gc.h"
 #include "groupchat.h"
 #include "modules.h"
+#include "platform.h"
 #include "stash.h"
 #include "da_string.h"
 
@@ -160,6 +161,39 @@ static Value m_uuid(VM *vm, Value *a, int argc) {
     return OBJ_VAL(string_new(&vm->gc, buf, 36));
 }
 
+/* rizz.entropy(n) -- n bytes from the operating system's CSPRNG, as 2n
+   lowercase hex digits. Everything else in this module is xoshiro256**
+   seeded from the clock: fine for dice, useless for anything an attacker
+   would like to guess. Session ids and CSRF tokens come from here. */
+static Value m_entropy(VM *vm, Value *a, int argc) {
+    int64_t n = 32;
+    if (argc > 0 && !IS_GHOST(a[0])) {
+        if (!IS_INT(a[0])) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'entropy' needs a numba of bytes, not a %s.",
+                            vm_type_name(a[0]));
+            return GHOST_VAL;
+        }
+        n = AS_INT(a[0]);
+    }
+    if (n < 1 || n > 1024) {
+        vm_throw_native(vm, "OutOfPocket", "'entropy' hands out 1 to 1024 bytes at a time, not %lld.", (long long)n);
+        return GHOST_VAL;
+    }
+    unsigned char bytes[1024];
+    if (!platform_random_bytes(bytes, (size_t)n)) {
+        vm_throw_native(vm, "SkillIssue", "the operating system wouldn't hand over any randomness.");
+        return GHOST_VAL;
+    }
+    static const char HEX[] = "0123456789abcdef";
+    char hex[2049];
+    for (int64_t i = 0; i < n; i++) {
+        hex[2 * i] = HEX[bytes[i] >> 4];
+        hex[2 * i + 1] = HEX[bytes[i] & 0x0F];
+    }
+    hex[2 * n] = '\0';
+    return OBJ_VAL(string_new(&vm->gc, hex, (uint32_t)(2 * n)));
+}
+
 static Value m_gamble(VM *vm, Value *a, int argc) {
     (void)argc;
     if (!IS_NUM(a[0])) {
@@ -186,6 +220,7 @@ static const RizzEntry RIZZ_FUNCTIONS[] = {
     {"seed", m_seed, 0, 1},
     {"uuid", m_uuid, 0, 0},
     {"gamble", m_gamble, 1, 1},
+    {"entropy", m_entropy, 0, 1},
 };
 #define RIZZ_FUNCTIONS_COUNT (int)(sizeof(RIZZ_FUNCTIONS) / sizeof(RIZZ_FUNCTIONS[0]))
 

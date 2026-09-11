@@ -166,6 +166,16 @@ static void intern_body(void *userdata) {
     /* How `interns.assignment()` and `interns.deliver()` find their way back
        here from inside the worker's own code. */
     child.workerContext = in;
+    /* the_script() inside a worker is where it was hired from, made absolute
+       so the worker can find its own neighbours whatever the working
+       directory is. A path that will not resolve stays as it was given. */
+    {
+        char absPath[4096];
+        char absErr[256];
+        const char *src = platform_abs_path(in->label, absPath, sizeof absPath, absErr, sizeof absErr) ? absPath
+                                                                                                        : in->label;
+        child.scriptPath = dup_cstr(src);
+    }
 
     /* The worker's `yap` and `yell` are held rather than printed, and
        replayed by `wait_up` on the waiting thread. Two workers writing to a
@@ -295,6 +305,7 @@ static bool compile_worker(const char *path, uint8_t **outCode, size_t *outLen, 
     opts.diag = diag_default_options();
     opts.diag.color = false;
     opts.errorLabel = NULL;
+    opts.scriptPath = NULL;
     opts.out = outCap != NULL ? outCap : stdout;
     opts.err = errCap != NULL ? errCap : stderr;
     int status = funny_run_bytecode(tc, tcLen, argv, 4, opts, NULL);

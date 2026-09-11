@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign in · FunnyLang Secure</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/css/site.css">
+    <script type="module" src="/js/login.js"></script>
+</head>
+<body>
+    <header class="nav">
+        <div class="wrap">
+            <a class="brand" href="/"><img src="/favicon.svg" alt="">FunnyLang Secure</a>
+            <nav class="nav-links" aria-label="Main">
+                <a href="/">Home</a>
+            </nav>
+            <div class="nav-user" data-nav-user></div>
+        </div>
+    </header>
+
+    <main>
+        <div class="wrap auth">
+            <form class="card" id="login" novalidate>
+                <h1>Welcome back</h1>
+                <p class="sub">Sign in to see your activity and settings.</p>
+                <div class="notice bad" id="error" role="alert" aria-live="polite"></div>
+                <div class="field">
+                    <label for="username">Username</label>
+                    <input id="username" name="username" autocomplete="username" autocapitalize="none"
+                           spellcheck="false" required maxlength="32">
+                </div>
+                <div class="field">
+                    <label for="password">Password</label>
+                    <input id="password" name="password" type="password" autocomplete="current-password"
+                           required maxlength="128">
+                </div>
+                <button class="btn" type="submit" id="submit">Sign in</button>
+            </form>
+        </div>
+    </main>
+
+    <footer>
+        <div class="wrap">
+            <span>Five wrong passwords from one address and sign-in pauses for five minutes.</span>
+        </div>
+    </footer>
+</body>
+</html>

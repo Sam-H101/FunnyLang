@@ -498,7 +498,7 @@ flex bet chunk_finish(ch) {
 
 flex deadass BUILTIN_GLOBAL_NAMES = [
     "how_thicc", "what_is_it", "to_yap", "to_numba", "to_int", "sheesh",
-    "no_cap", "ask", "yell", "oops", "dip", "the_args", "combo", "identity",
+    "no_cap", "ask", "yell", "oops", "dip", "the_args", "the_script", "combo", "identity",
     "range_stash", "zip_em", "enumerate_em", "deep_clone",
 ]
 

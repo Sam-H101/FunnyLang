@@ -1,0 +1,404 @@
+// http.funny — HTTP/1.1 for a server that faces strangers.
+//
+// Grown from web_server/http.funny, and the growth is almost all refusal.
+// That parser trusted its input to be roughly HTTP; this one assumes it was
+// written by somebody hoping it is not. Every limit in LIMITS is enforced
+// while reading, before anything is buffered past it, and every way a
+// request can be malformed ends in a specific status rather than a guess.
+//
+// Nothing in here touches a socket. read_request takes a `read_more`
+// function -- an `async_ngl` one, so waiting costs only the calling task --
+// which is what lets test_server.funny drive the parser from a string.
+
+gimme yapper
+gimme clock
+
+flex deadass LIMITS = {
+    "request_line": 8192,     // the method, target and version together
+    "header_bytes": 16384,    // every header line together
+    "header_count": 64,
+    "body_bytes": 65536,
+    "head_seconds": 5,        // for the request line and headers, after the handshake
+    "body_seconds": 10,
+}
+
+flex deadass METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"]
+
+flex deadass STATUS_TEXT = {
+    200: "OK",
+    201: "Created",
+    204: "No Content",
+    301: "Moved Permanently",
+    303: "See Other",
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    408: "Request Timeout",
+    413: "Content Too Large",
+    414: "URI Too Long",
+    415: "Unsupported Media Type",
+    429: "Too Many Requests",
+    431: "Request Header Fields Too Large",
+    500: "Internal Server Error",
+    501: "Not Implemented",
+    503: "Service Unavailable",
+    505: "HTTP Version Not Supported",
+}
+
+// On every response from the HTTPS side. PLAN.md §2.5 says what each is for.
+// The CSP is strict enough that the pages in web/ may not contain a single
+// inline script or style attribute, and they do not.
+flex deadass SECURITY_HEADERS = {
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+}
+
+deadass TOKEN_CHARS = "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+// -- reading a request -----------------------------------------------------------
+
+// One request. `read_more(ms)` is awaited for more bytes: it gives back text,
+// `""` when the client hung up, or `ghost` when nothing came in `ms`.
+//
+// The answer is a groupchat. `ok` says whether it is a request; when it is not,
+// `status` is the response to send (400, 408, 413, ...) or `ghost` when the
+// client left and there is nobody to answer.
+flex async_ngl bet read_request(read_more) {
+    yo head_deadline = clock.now() + LIMITS["head_seconds"]
+    yo buffer = ""
+    yo split_at = -1
+    yo sep_len = 4
+    bruh (fax) {
+        split_at = yapper.index_of(buffer, "\r\n\r\n")
+        sep_len = 4
+        sus (split_at < 0) {
+            split_at = yapper.index_of(buffer, "\n\n")
+            sep_len = 2
+        }
+        sus (split_at >= 0) {
+            bail
+        }
+        // The limits are checked on what is buffered so far, so a client that
+        // streams headers forever is cut off at the limit, not at memory.
+        yo first_nl = yapper.index_of(buffer, "\n")
+        sus (first_nl < 0 && yapper.byte_len(buffer) > LIMITS["request_line"]) {
+            bounce refusal(414)
+        }
+        sus (yapper.byte_len(buffer) > LIMITS["request_line"] + LIMITS["header_bytes"]) {
+            bounce refusal(431)
+        }
+        yo left = ms_until(head_deadline)
+        sus (left <= 0) {
+            bounce refusal(buffer == "" ? ghost : 408)
+        }
+        yo more = await_fr read_more(left)
+        sus (more == "") {
+            bounce refusal(ghost)
+        }
+        sus (more != ghost) {
+            buffer = buffer + more
+        }
+    }
+
+    yo head = yapper.slice(buffer, 0, split_at)
+    yo body = yapper.slice(buffer, split_at + sep_len, buffer.how_thicc())
+    yo req = parse_head(head)
+    sus (!req["ok"]) {
+        bounce req
+    }
+
+    // Bodies: Content-Length only. Chunked request bodies are a feature this
+    // server does not have, and saying so beats guessing where one ends.
+    sus (req["headers"].has("transfer-encoding")) {
+        bounce refusal(501)
+    }
+    yo want = 0
+    sus (req["headers"].has("content-length")) {
+        yo raw = req["headers"]["content-length"]
+        sus (raw == "" || !all_digits(raw) || raw.how_thicc() > 9) {
+            bounce refusal(400)
+        }
+        want = to_int(raw)
+    }
+    sus (want > LIMITS["body_bytes"]) {
+        bounce refusal(413)
+    }
+    yo body_deadline = clock.now() + LIMITS["body_seconds"]
+    bruh (yapper.byte_len(body) < want) {
+        yo left = ms_until(body_deadline)
+        sus (left <= 0) {
+            bounce refusal(408)
+        }
+        yo more = await_fr read_more(left)
+        sus (more == "") {
+            bounce refusal(ghost)
+        }
+        sus (more != ghost) {
+            body = body + more
+        }
+    }
+    sus (yapper.byte_len(body) != want) {
+        // More than it said. With Connection: close there is no next request
+        // for the extra to belong to, so it is a malformed one.
+        bounce refusal(400)
+    }
+    req["body"] = body
+    bounce req
+}
+
+flex bet refusal(status) {
+    bounce {"ok": cap, "status": status}
+}
+
+bet ms_until(deadline) {
+    yo left = (deadline - clock.now()) * 1000.0
+    sus (left <= 0) {
+        bounce 0
+    }
+    bounce to_int(left) + 1
+}
+
+bet all_digits(s) {
+    grind ch in s {
+        sus (ch < "0" || ch > "9") {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+bet is_token(s) {
+    sus (s == "") {
+        bounce cap
+    }
+    grind ch in s {
+        sus (!yapper.contains(TOKEN_CHARS, ch)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+// The request line and headers, already split off from the body.
+flex bet parse_head(head) {
+    yo lines = []
+    grind raw in yapper.split(head, "\n") {
+        sus (yapper.ends_with(raw, "\r")) {
+            lines.yeet_in(yapper.slice(raw, 0, raw.how_thicc() - 1))
+        } nah {
+            lines.yeet_in(raw)
+        }
+    }
+    sus (lines.how_thicc() == 0 || lines[0] == "") {
+        bounce refusal(400)
+    }
+    sus (yapper.byte_len(lines[0]) > LIMITS["request_line"]) {
+        bounce refusal(414)
+    }
+    // Exactly three parts, separated by single spaces. Anything looser is how
+    // request smuggling starts.
+    yo parts = yapper.split(lines[0], " ")
+    sus (parts.how_thicc() != 3) {
+        bounce refusal(400)
+    }
+    yo method = parts[0]
+    yo target = parts[1]
+    yo version = parts[2]
+    sus (!is_token(method)) {
+        bounce refusal(400)
+    }
+    sus (version != "HTTP/1.1" && version != "HTTP/1.0") {
+        bounce refusal(yapper.starts_with(version, "HTTP/") ? 505 : 400)
+    }
+    sus (!METHODS.contains(method)) {
+        bounce refusal(501)
+    }
+    sus (!yapper.starts_with(target, "/") || yapper.starts_with(target, "//")) {
+        bounce refusal(400)
+    }
+
+    yo headers = {}
+    yo count = 0
+    grind i from 1 to lines.how_thicc() {
+        yo line = lines[i]
+        sus (line == "") {
+            nvm
+        }
+        // Folded continuation lines were deprecated by RFC 7230 for good
+        // reason; a server that accepts them disagrees with its neighbours.
+        sus (yapper.starts_with(line, " ") || yapper.starts_with(line, "\t")) {
+            bounce refusal(400)
+        }
+        yo colon = yapper.index_of(line, ":")
+        sus (colon <= 0) {
+            bounce refusal(400)
+        }
+        yo name = yapper.whisper(yapper.slice(line, 0, colon))
+        sus (!is_token(name)) {
+            bounce refusal(400)
+        }
+        yo value = yapper.trim(yapper.slice(line, colon + 1, line.how_thicc()))
+        count += 1
+        sus (count > LIMITS["header_count"]) {
+            bounce refusal(431)
+        }
+        sus (headers.has(name)) {
+            // Two Content-Lengths that disagree, or two Hosts, are an attempt
+            // to be read two ways. Anything else repeated is joined, per RFC.
+            sus (name == "content-length" || name == "host") {
+                sus (headers[name] != value) {
+                    bounce refusal(400)
+                }
+            } kinda_sus (name == "cookie") {
+                headers[name] = headers[name] + "; " + value
+            } nah {
+                headers[name] = headers[name] + ", " + value
+            }
+        } nah {
+            headers[name] = value
+        }
+    }
+    sus (version == "HTTP/1.1" && !headers.has("host")) {
+        bounce refusal(400)
+    }
+
+    yo path = target
+    yo query = {}
+    yo qmark = yapper.index_of(target, "?")
+    sus (qmark >= 0) {
+        path = yapper.slice(target, 0, qmark)
+        query = parse_query(yapper.slice(target, qmark + 1, target.how_thicc()))
+    }
+    yo decoded = url_decode(path)
+    sus (decoded == ghost || yapper.contains(decoded, "\u{0}")) {
+        bounce refusal(400)
+    }
+
+    bounce {
+        "ok": fax,
+        "method": method,
+        "target": target,
+        "path": decoded,
+        "query": query,
+        "version": version,
+        "headers": headers,
+        "body": "",
+    }
+}
+
+flex bet parse_query(raw) {
+    yo out = {}
+    grind pair in yapper.split(raw, "&") {
+        sus (pair == "") {
+            nvm
+        }
+        yo eq = yapper.index_of(pair, "=")
+        yo k = eq < 0 ? pair : yapper.slice(pair, 0, eq)
+        yo v = eq < 0 ? "" : yapper.slice(pair, eq + 1, pair.how_thicc())
+        yo dk = url_decode(yapper.replace(k, "+", " "))
+        yo dv = url_decode(yapper.replace(v, "+", " "))
+        sus (dk != ghost && dv != ghost) {
+            out[dk] = dv
+        }
+    }
+    bounce out
+}
+
+deadass HEX = "0123456789abcdef"
+
+// Percent-decoding, as bytes: `%C3%A9` is one character, é, not two. `ghost`
+// for a malformed escape -- a path that cannot be decoded one way is a path
+// somebody hoped would be decoded two.
+flex bet url_decode(s) {
+    sus (!yapper.contains(s, "%")) {
+        bounce s
+    }
+    yo bytes = []
+    yo out = []
+    yo i = 0
+    yo n = s.how_thicc()
+    bruh (i < n) {
+        yo ch = s[i]
+        sus (ch == "%") {
+            sus (i + 2 >= n) {
+                bounce ghost
+            }
+            yo hi = HEX.index_of(yapper.whisper(s[i + 1]))
+            yo lo = HEX.index_of(yapper.whisper(s[i + 2]))
+            sus (hi < 0 || lo < 0) {
+                bounce ghost
+            }
+            bytes.yeet_in(hi * 16 + lo)
+            i += 3
+        } nah {
+            sus (bytes.how_thicc() > 0) {
+                out.yeet_in(bytes_to_text(bytes))
+                bytes = []
+            }
+            out.yeet_in(ch)
+            i += 1
+        }
+    }
+    sus (bytes.how_thicc() > 0) {
+        out.yeet_in(bytes_to_text(bytes))
+    }
+    bounce out.join("")
+}
+
+gimme { utf8_text } from "crypto.funny"
+
+bet bytes_to_text(bytes) {
+    bounce utf8_text(bytes)
+}
+
+// -- writing a response ------------------------------------------------------------
+
+// `secure` adds SECURITY_HEADERS; the plain-http redirect listener leaves it
+// off, since HSTS over plain HTTP is ignored by browsers anyway and the rest
+// are about content that listener never serves. `head_only` answers a HEAD.
+//
+// Content-Length counts bytes, not codepoints: yapper.byte_len.
+flex bet build_response(status, body, extra_headers, secure = fax, head_only = cap) {
+    yo text = STATUS_TEXT.get(status, "Whatever")
+    yo lines = ["HTTP/1.1 " + to_yap(status) + " " + text]
+    lines.yeet_in("Content-Length: " + to_yap(yapper.byte_len(body)))
+    lines.yeet_in("Connection: close")
+    lines.yeet_in("Server: funnylang")
+    sus (secure) {
+        grind name in SECURITY_HEADERS.keys() {
+            lines.yeet_in(name + ": " + SECURITY_HEADERS[name])
+        }
+    }
+    grind name in extra_headers.keys() {
+        yo value = to_yap(extra_headers[name])
+        // A header value with a line break in it would let whatever put it
+        // there write headers of its own. Nothing here should ever do that;
+        // this makes sure nothing can.
+        sus (yapper.contains(value, "\r") || yapper.contains(value, "\n")) {
+            nvm
+        }
+        lines.yeet_in(name + ": " + value)
+    }
+    yo head = lines.join("\r\n") + "\r\n\r\n"
+    sus (head_only) {
+        bounce head
+    }
+    bounce head + body
+}
+
+flex bet html_escape(s) {
+    yo out = yapper.replace(to_yap(s), "&", "&amp;")
+    out = yapper.replace(out, "<", "&lt;")
+    out = yapper.replace(out, ">", "&gt;")
+    out = yapper.replace(out, "\"", "&quot;")
+    out = yapper.replace(out, "'", "&#39;")
+    bounce out
+}

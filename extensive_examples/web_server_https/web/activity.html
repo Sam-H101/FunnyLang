@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Activity · FunnyLang Secure</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/css/site.css">
+    <script type="module" src="/js/activity.js"></script>
+</head>
+<body>
+    <header class="nav">
+        <div class="wrap">
+            <a class="brand" href="/"><img src="/favicon.svg" alt="">FunnyLang Secure</a>
+            <nav class="nav-links" aria-label="Main">
+                <a href="/">Home</a>
+                <a href="/activity" data-needs-user hidden aria-current="page">Activity</a>
+                <a href="/settings" data-needs-user hidden>Settings</a>
+            </nav>
+            <div class="nav-user" data-nav-user></div>
+        </div>
+    </header>
+
+    <main>
+        <div class="wrap">
+            <div class="page-head">
+                <h1>Activity</h1>
+                <p id="scope">Every sign-in, page view and change, newest first — kept in
+                   <code>activity.json</code>, with addresses and browsers base64-encoded at rest.</p>
+            </div>
+
+            <form class="toolbar" id="filters">
+                <div class="field" id="user-field">
+                    <label for="user">User</label>
+                    <select id="user" name="user"><option value="">Everybody</option></select>
+                </div>
+                <div class="field">
+                    <label for="action">Action</label>
+                    <select id="action" name="action"><option value="">Everything</option></select>
+                </div>
+                <span class="spacer"></span>
+                <label class="toggle"><input type="checkbox" id="live" checked> Refresh every 5s</label>
+                <button class="btn secondary small" type="button" id="refresh">Refresh</button>
+            </form>
+
+            <div class="notice bad" id="error" role="alert"></div>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th scope="col">When</th>
+                            <th scope="col">User</th>
+                            <th scope="col">Action</th>
+                            <th scope="col">Detail</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">Thread</th>
+                            <th scope="col">From</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rows"></tbody>
+                </table>
+                <div class="empty" id="empty" hidden>Nothing here yet.</div>
+            </div>
+
+            <div class="pager">
+                <span id="summary" aria-live="polite"></span>
+                <div class="btns">
+                    <button class="btn secondary small" type="button" id="prev">Newer</button>
+                    <button class="btn secondary small" type="button" id="next">Older</button>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="wrap">
+            <span>Admins see everybody; everyone else sees themselves.</span>
+        </div>
+    </footer>
+</body>
+</html>

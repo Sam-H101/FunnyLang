@@ -1,0 +1,121 @@
+// redirect.funny — the plain-http listener, which only ever says 301.
+//
+// Somebody typing the address without "https://" still gets to the site, and
+// no page is ever served without encryption: every request here, whatever it
+// asks for, is answered with a redirect to the same path on the HTTPS port.
+// Strict-Transport-Security on the HTTPS side then tells the browser never to
+// come this way again.
+//
+// One thread is plenty for a listener whose every answer is two lines long.
+
+gimme internet
+gimme interns
+gimme clock
+gimme yapper
+gimme { read_request, build_response, STATUS_TEXT } from "http.funny"
+gimme { keeper_link, ask_keeper, close_link } from "keeper_client.funny"
+
+yo JOB = interns.assignment()
+yo LISTENER = JOB["listener"]
+yo LINK = keeper_link(JOB["keeper_port"], JOB["secret"])
+yo STOPPING = cap
+yo IN_FLIGHT = 0
+yo SERVED = 0
+
+deadass HOST_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789.-"
+
+// The host to send people to. The one they asked for, if it is a plain host
+// name or IPv4 address -- that is the name their certificate check will be
+// against -- and otherwise the configured one. Checked character by
+// character, because it goes into a header.
+bet host_for(req) {
+    yo raw = yapper.whisper(req["headers"].get("host", ""))
+    yo colon = yapper.index_of(raw, ":")
+    yo name = colon >= 0 ? yapper.slice(raw, 0, colon) : raw
+    sus (name == "" || name.how_thicc() > 253) {
+        bounce JOB["public_host"]
+    }
+    grind ch in name {
+        sus (!yapper.contains(HOST_CHARS, ch)) {
+            bounce JOB["public_host"]
+        }
+    }
+    bounce name
+}
+
+async_ngl bet read_more(conn, ms) {
+    sus (!await_fr internet.hold_up(conn, ms)) {
+        bounce ghost
+    }
+    bounce internet.hear_them_out(conn, 65536, 0)
+}
+
+async_ngl bet serve(customer) {
+    yo conn = customer["conn"]
+    yo req = await_fr read_request(lowkey (ms) => read_more(conn, ms))
+    yo status = 301
+    yo bytes = ghost
+    yo target = "-"
+    sus (!req["ok"]) {
+        sus (req["status"] == ghost) {
+            bounce ghost
+        }
+        status = req["status"]
+        bytes = build_response(status, STATUS_TEXT.get(status, "no") + "\n",
+                               {"Content-Type": "text/plain; charset=utf-8"}, cap)
+    } nah {
+        target = req["target"]
+        yo port = JOB["https_port"]
+        yo where = "https://" + host_for(req) + (port == 443 ? "" : ":" + to_yap(port)) + target
+        bytes = build_response(301, "", {"Location": where}, cap, req["method"] == "HEAD")
+    }
+    internet.holler_back(conn, bytes)
+    SERVED += 1
+    yo line = clock.date_yap("%H:%M:%S") + "  http  " + customer["peer"] + "  " +
+              (req["ok"] ? req["method"] + " " + yapper.slice(target, 0, 120) : "(refused)") + "  -> " + to_yap(status)
+    yo reply = await_fr ask_keeper(LINK, {"op": "done", "line": line})
+    sus (reply.get("stop", cap)) {
+        STOPPING = fax
+    }
+    bounce ghost
+}
+
+async_ngl bet handle(customer) {
+    IN_FLIGHT += 1
+    sketchy {
+        await_fr serve(customer)
+    } my_bad (e) {
+        vibe
+    }
+    internet.kick_out(customer["conn"])
+    IN_FLIGHT -= 1
+}
+
+bet main() {
+    yo last_ping = clock.now()
+    bruh (!STOPPING) {
+        sus (await_fr internet.hold_up(LISTENER, 250)) {
+            yo c = internet.next_customer(LISTENER, 0)
+            sus (c != ghost) {
+                handle(c)
+            }
+        }
+        sus (clock.now() - last_ping >= 0.5) {
+            last_ping = clock.now()
+            sketchy {
+                STOPPING = (await_fr ask_keeper(LINK, {"op": "ping"}))["stop"]
+            } my_bad (e) {
+                STOPPING = fax
+            }
+        }
+    }
+    yo waited = 0
+    bruh (IN_FLIGHT > 0 && waited < 5000) {
+        await_fr clock.chill(20)
+        waited += 20
+    }
+    close_link(LINK)
+    interns.deliver({"served": SERVED})
+}
+
+main()

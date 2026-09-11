@@ -106,7 +106,9 @@ int main(int argc, char **argv) {
        program and no compiler, and `sus.toolchain()` is `ghost` there. */
     sus_set_toolchain(cliBytes, cliLen);
 
-    RunnerOptions opts = {diag, NULL, NULL, NULL};
+    /* No script path: this run is the toolchain itself, which finds the
+       user's program from argv and passes *its* path down to sus.run_program. */
+    RunnerOptions opts = {diag, NULL, NULL, NULL, NULL};
     int status = funny_run_bytecode(cliBytes, cliLen, argv + 1, argc - 1, opts, NULL);
     free(owned);
     /* Interns are joined as each VM is destroyed; this is the last sweep --

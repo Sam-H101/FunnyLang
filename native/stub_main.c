@@ -90,6 +90,9 @@ int main(int argc, char **argv) {
     opts.errorLabel = NULL;
     opts.out = NULL; /* stdout/stderr: a yeeted program is the top level */
     opts.err = NULL;
+    /* A yeeted program *is* its executable, so that is its the_script(). */
+    char selfPath[4096];
+    opts.scriptPath = platform_executable_path(selfPath, sizeof selfPath) ? selfPath : NULL;
 
     /* The diagnostic flags still apply to a shipped program's own errors;
        everything else on the command line belongs to the program. */

@@ -125,6 +125,13 @@ struct VM {
        [])` default. */
     Value programArgs;
 
+    /* the_script(): the absolute path of the program this VM is running,
+       malloc'd and owned here, or NULL when nobody said (a REPL session, a
+       program handed over as raw bytes). Set by whoever knows: the CLI through
+       `sus.run_program`, `funny test` through `sus.run_bytecode`, `interns`
+       from its hire path, a yeeted binary from its own executable. */
+    char *scriptPath;
+
     /* The module currently executing, borrowed -- swapped by vm_run_module
        for the duration of an import and restored afterwards, so error
        positions and stack traces name the file the code actually came
