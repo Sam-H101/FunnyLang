@@ -592,3 +592,27 @@ order-independent facts, or force an order.
   commit this branch was cut from; every conflict was the same change arriving twice and was resolved
   to this branch's side, leaving the merged tree identical to the tested one. A merge kept the pushed
   history intact, where a rebase would have needed a force-push.
+- **CI · the golden had a race of its own.** macOS and Windows CI failed intermittently on one line:
+  the scripted client checked that its own actions were on page one of the activity log, but as an
+  admin it sees everybody's, and the four crowd clients were adding forty anonymous page views at
+  the same moment. On a busy runner enough landed in between to push its entries onto page two.
+  The check now asks for `?user=admin`: seven entries, always on one page of ten. Reproduced locally
+  by running four copies at once (4 failures in 20 on Windows before, 0 in 32 after).
+- **Runtime · the module loader's `strtok` was a process-wide race.** Stressing further turned up a
+  rarer failure: a worker dying at start-up with "'http.funny' isn't in this bundle" for a module
+  that was in its bundle. `normalize_module_path` in `native/modules.c` split import paths with
+  `strtok`, whose cursor is one hidden variable shared by every thread; with the keeper, the redirect
+  and the workers all importing modules at the same moment, one thread's `strtok(NULL, …)` carried on
+  through another thread's string. It predates this branch — any program hiring several interns that
+  import modules could hit it — and the web server was simply the first thing to start enough of
+  them at once. Replaced with a hand-written splitter (`modules.c` may not branch per platform, so
+  not `strtok_r`/`strtok_s`); the same pattern in `platform.c`'s `lexical_normalize` became
+  `strtok_r`. `tests/lang/interns/concurrent_imports` hires thirty-two interns that all import by
+  paths needing normalization.
+- **H3 · `run_server` did not fail safely, which turned that race into a hang.** Every intern runs
+  until the keeper tells it to stop, and a VM that ends joins every intern it hired. When one worker
+  died, `await_fr` on it threw out of `run_server` before the keeper was told to quit, the test
+  ended with that error, and its teardown waited forever for a keeper nobody would stop. Now each
+  intern's failure is collected rather than raised, the keeper is told to stop as soon as anything
+  fails, everything winds down normally, and only then is the first failure raised. Found with a
+  temporary file-based trace across every thread and gdb backtraces of a stalled run.

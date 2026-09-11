@@ -147,7 +147,10 @@ bet conversation() {
     say("me:", whoami["user"]["display_name"], whoami["user"]["email"], whoami["user"]["defaults"],
         "default password:", whoami["default_password"])
 
-    yo activity = json_body(request("GET", "/api/activity", auth))
+    // Filtered to admin: the crowd clients are adding anonymous page views
+    // at the same moment, and on a busy machine enough of them land in
+    // between to push these seven entries off a ten-row first page.
+    yo activity = json_body(request("GET", "/api/activity?user=admin", auth))
     yo mine = {}
     grind e in activity.get("entries", []) {
         mine[e["action"]] = fax

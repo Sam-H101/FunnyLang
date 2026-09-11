@@ -18,6 +18,15 @@
 // its --requests budget, a test. Workers ask the keeper twice a second and
 // wind down when it says so; this thread waits for all of them, then tells
 // the keeper to quit, which flushes the activity file.
+//
+// FAILING SAFELY. Every intern here runs until the keeper tells it to stop,
+// and a VM that ends waits for every intern it hired. So an error that left
+// this function early -- a worker that fell over, a hire that failed -- used
+// to leave the keeper and the other workers running with nobody left to stop
+// them, and the program hung in its own teardown. Now nothing leaves early:
+// each intern's failure is collected rather than raised, the keeper is told to
+// stop the moment anything fails, everything winds down as it would anyway,
+// and only then is the first failure raised.
 
 gimme internet
 gimme interns
@@ -101,6 +110,18 @@ async_ngl bet deadline_watch(info, seconds, state) {
     }
 }
 
+// Waits for an intern without letting its failure cut the waiting short: the
+// error goes into `failures`, to be raised once everything has wound down,
+// and the answer is `ghost`.
+async_ngl bet collect(otw, failures) {
+    sketchy {
+        bounce await_fr otw
+    } my_bad (e) {
+        failures.yeet_in(e)
+        bounce ghost
+    }
+}
+
 // Runs the whole server until something stops it. `on_ready(info)` is called
 // once everything is listening -- info has the ports, the thread count and
 // which config was loaded -- and `on_log(line)` once per request.
@@ -146,39 +167,6 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
     yo public_host = opts["public_host"] ??
                      ((host == "127.0.0.1" || host == "" || host == ghost || host == "0.0.0.0") ? "localhost" : host)
 
-    yo keeper = interns.hire(filez.join_path(example_dir, "keeper.funny"), {
-        "listener": keeper_listener,
-        "secret": secret,
-        "example_dir": example_dir,
-        "data_dir": data_dir,
-        "budget": opts["requests"],
-    })
-    yo started_at = clock.now()
-    yo worker_src = filez.join_path(example_dir, "worker.funny")
-    yo web_dir = filez.join_path(example_dir, "web")
-    yo workers = []
-    grind k from 1 to threads + 1 {
-        workers.yeet_in(interns.hire(worker_src, {
-            "listener": https,
-            "keeper_port": keeper_port,
-            "secret": secret,
-            "thread": k,
-            "threads": threads,
-            "web_dir": web_dir,
-            "started_at": started_at,
-        }))
-    }
-    yo redirect = ghost
-    sus (http != ghost) {
-        redirect = interns.hire(filez.join_path(example_dir, "redirect.funny"), {
-            "listener": http,
-            "https_port": https_port,
-            "public_host": public_host,
-            "keeper_port": keeper_port,
-            "secret": secret,
-        })
-    }
-
     yo info = {
         "https_port": https_port,
         "http_port": http_port,
@@ -190,28 +178,98 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
         "keeper_port": keeper_port,
         "secret": secret,
     }
-    yo state = {"done": cap}
-    yo pump = log_pump(keeper_port, secret, on_log, state)
-    yo watch = opts["seconds"] == ghost ? ghost : deadline_watch(info, opts["seconds"], state)
-    on_ready(info)
 
+    // From the first hire on, nothing may leave this function early: see
+    // "failing safely" at the top.
+    yo failures = []
+    yo keeper = ghost
+    yo workers = []
+    yo redirect = ghost
+    sketchy {
+        keeper = interns.hire(filez.join_path(example_dir, "keeper.funny"), {
+            "listener": keeper_listener,
+            "secret": secret,
+            "example_dir": example_dir,
+            "data_dir": data_dir,
+            "budget": opts["requests"],
+        })
+        yo started_at = clock.now()
+        yo worker_src = filez.join_path(example_dir, "worker.funny")
+        yo web_dir = filez.join_path(example_dir, "web")
+        grind k from 1 to threads + 1 {
+            workers.yeet_in(interns.hire(worker_src, {
+                "listener": https,
+                "keeper_port": keeper_port,
+                "secret": secret,
+                "thread": k,
+                "threads": threads,
+                "web_dir": web_dir,
+                "started_at": started_at,
+            }))
+        }
+        sus (http != ghost) {
+            redirect = interns.hire(filez.join_path(example_dir, "redirect.funny"), {
+                "listener": http,
+                "https_port": https_port,
+                "public_host": public_host,
+                "keeper_port": keeper_port,
+                "secret": secret,
+            })
+        }
+    } my_bad (e) {
+        failures.yeet_in(e)
+    }
+
+    yo state = {"done": cap}
+    yo pump = ghost
+    yo watch = ghost
+    sus (failures.how_thicc() == 0) {
+        pump = log_pump(keeper_port, secret, on_log, state)
+        watch = opts["seconds"] == ghost ? ghost : deadline_watch(info, opts["seconds"], state)
+        sketchy {
+            on_ready(info)
+        } my_bad (e) {
+            failures.yeet_in(e)
+        }
+    }
+    sus (failures.how_thicc() > 0 && keeper != ghost) {
+        await_fr stop_server(info)
+    }
+
+    // Wind down. Each worker stops when the keeper says so; if one falls
+    // over instead, the rest are told to stop straight away rather than
+    // serving on while this waits for the one that is not coming back.
     yo per_thread = []
     grind w in workers {
-        per_thread.yeet_in((await_fr w)["served"])
+        yo result = await_fr collect(w, failures)
+        sus (result == ghost) {
+            await_fr stop_server(info)
+            per_thread.yeet_in(0)
+        } nah {
+            per_thread.yeet_in(result["served"])
+        }
     }
     sus (redirect != ghost) {
-        await_fr redirect
+        await_fr collect(redirect, failures)
     }
-    yo link = keeper_link(keeper_port, secret)
-    sketchy {
-        await_fr ask_keeper(link, {"op": "quit"})
-    } my_bad (e) {
-        vibe
+    yo kept = {"served": 0, "activity": 0, "config": ghost}
+    sus (keeper != ghost) {
+        yo link = keeper_link(keeper_port, secret)
+        sketchy {
+            await_fr ask_keeper(link, {"op": "quit"})
+        } my_bad (e) {
+            vibe
+        }
+        close_link(link)
+        yo answer = await_fr collect(keeper, failures)
+        sus (answer != ghost) {
+            kept = answer
+        }
     }
-    close_link(link)
-    yo kept = await_fr keeper
     state["done"] = fax
-    await_fr pump
+    sus (pump != ghost) {
+        await_fr pump
+    }
     sus (watch != ghost) {
         await_fr watch
     }
@@ -220,5 +278,8 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
         internet.close_shop(http)
     }
     internet.close_shop(keeper_listener)
+    sus (failures.how_thicc() > 0) {
+        chuck failures[0]
+    }
     bounce {"served": kept["served"], "per_thread": per_thread, "activity": kept["activity"], "config": kept["config"]}
 }
