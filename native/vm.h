@@ -212,6 +212,11 @@ struct VM {
        interns.c and nothing here needs to see inside it. */
     void *inbox;
 
+    /* This VM's row in the thread-status table (status.h), or -1. One VM is
+       one thread, so a row per VM is a row per thread -- which is what makes
+       a dump of "what is everybody waiting on" possible at all. */
+    int statusSlot;
+
     /* Where the dispatch loop currently is, refreshed at the top of every
        iteration -- vm_throw() (callable from deep inside an arithmetic
        helper, not just the dispatch switch itself) needs this to build a

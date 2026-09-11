@@ -2385,11 +2385,21 @@ bool platform_replace_file(const char *from, const char *to, char *errbuf, size_
 
 #ifdef _WIN32
 
+static volatile LONG g_dumpRequested = 0;
+static void (*g_rawDump)(void) = NULL;
 static volatile LONG g_interrupted = 0;
 static INIT_ONCE g_interruptOnce = INIT_ONCE_STATIC_INIT;
 
 static BOOL WINAPI console_ctrl_handler(DWORD type) {
-    if (type != CTRL_C_EVENT && type != CTRL_BREAK_EVENT) return FALSE;
+    if (type == CTRL_BREAK_EVENT) {
+        /* RUNTIME_PLAN.md R9: Ctrl-Break asks what every thread is
+           waiting on, the way SIGQUIT does on POSIX. It is not an
+           interrupt and must not shut anything down. */
+        InterlockedExchange(&g_dumpRequested, 1);
+        if (g_rawDump != NULL) g_rawDump();
+        return TRUE;
+    }
+    if (type != CTRL_C_EVENT) return FALSE;
     /* FALSE the second time: the default action is to end the process, which
        is what somebody pressing Ctrl-C again is asking for. */
     return InterlockedExchange(&g_interrupted, 1) == 0;
@@ -2423,6 +2433,59 @@ static void interrupt_handler(int sig) {
 void platform_on_interrupt(void) { signal(SIGINT, interrupt_handler); }
 
 bool platform_interrupt_seen(void) { return g_interrupted != 0; }
+
+#endif
+
+/* -- the thread dump's own plumbing (RUNTIME_PLAN.md R9) ------------------ */
+
+#ifdef _WIN32
+
+
+void platform_write_stderr_raw(const char *text) {
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD written = 0;
+    if (h != INVALID_HANDLE_VALUE) WriteFile(h, text, (DWORD)strlen(text), &written, NULL);
+}
+
+void platform_on_dump_request(void (*rawDump)(void)) {
+    g_rawDump = rawDump;
+    /* The same console handler answers both events; installing it twice is
+       what INIT_ONCE is there to prevent. */
+    InitOnceExecuteOnce(&g_interruptOnce, interrupt_install_cb, NULL, NULL);
+}
+
+bool platform_take_dump_request(void) { return InterlockedExchange(&g_dumpRequested, 0) != 0; }
+
+#else
+
+static volatile sig_atomic_t g_dumpRequested = 0;
+static void (*g_rawDump)(void) = NULL;
+
+/* Two things, both safe here: set a flag, and write bytes. The flag is for
+   the threads that do reach a wait point and can print a proper, locked
+   table; the write is for the program where none of them ever will. */
+static void dump_handler(int sig) {
+    (void)sig;
+    g_dumpRequested = 1;
+    if (g_rawDump != NULL) g_rawDump();
+}
+
+void platform_on_dump_request(void (*rawDump)(void)) {
+    g_rawDump = rawDump;
+    signal(SIGQUIT, dump_handler);
+}
+
+bool platform_take_dump_request(void) {
+    if (g_dumpRequested == 0) return false;
+    g_dumpRequested = 0;
+    return true;
+}
+
+void platform_write_stderr_raw(const char *text) {
+    size_t len = strlen(text);
+    ssize_t wrote = write(2, text, len);
+    (void)wrote; /* a diagnostic that cannot be written is not worth an error */
+}
 
 #endif
 

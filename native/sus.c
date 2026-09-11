@@ -15,6 +15,7 @@
 #include "modules.h"
 #include "squad.h"
 #include "stash.h"
+#include "status.h"
 #include "da_string.h"
 #include "value.h"
 #include "vm.h"
@@ -633,6 +634,31 @@ typedef struct {
     int maxArity;
 } SusEntry;
 
+/* sus.threads() -- the thread table as data, for a program's own health
+   endpoint. The same rows the signal dump prints, so a server can answer
+   "what is everybody doing" over HTTP without anybody having to be at the
+   terminal with a keyboard (RUNTIME_PLAN.md R9). */
+static Value m_threads(VM *vm, Value *a, int argc) {
+    (void)a;
+    (void)argc;
+    StatusRow rows[256];
+    int count = status_snapshot(rows, 256);
+    ObjStash *out = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    for (int i = 0; i < count; i++) {
+        ObjGroupChat *g = groupchat_new(&vm->gc, NULL, 0);
+        gc_push_temp(&vm->gc, OBJ_VAL(g));
+        groupchat_set(&vm->gc, g, OBJ_VAL(string_new(&vm->gc, "id", 2)), INT_VAL(rows[i].id));
+        groupchat_set(&vm->gc, g, OBJ_VAL(string_new(&vm->gc, "doing", 5)),
+                      OBJ_VAL(string_new(&vm->gc, rows[i].text, (uint32_t)strlen(rows[i].text))));
+        groupchat_set(&vm->gc, g, OBJ_VAL(string_new(&vm->gc, "intern", 6)), BOOL_VAL(rows[i].isWorker));
+        stash_push(&vm->gc, out, OBJ_VAL(g));
+        gc_pop_temp(&vm->gc);
+    }
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
+}
+
 static const SusEntry SUS_FUNCTIONS[] = {
     {"type_of", m_type_of, 1, 1},
     {"fields_of", m_fields_of, 1, 1},
@@ -646,6 +672,7 @@ static const SusEntry SUS_FUNCTIONS[] = {
     {"new_session", m_new_session, 0, 0},
     {"run_in", m_run_in, 2, 3},
     {"close_session", m_close_session, 1, 1},
+    {"threads", m_threads, 0, 0},
 };
 #define SUS_FUNCTIONS_COUNT (int)(sizeof(SUS_FUNCTIONS) / sizeof(SUS_FUNCTIONS[0]))
 

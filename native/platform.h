@@ -430,6 +430,26 @@ void platform_on_interrupt(void);
    once set -- it is a latch, not a queue. */
 bool platform_interrupt_seen(void);
 
+
+/* -- the thread dump's own plumbing (RUNTIME_PLAN.md R9) ------------------- */
+
+/* Starts watching for a dump request: SIGQUIT (Ctrl-\) on POSIX,
+   CTRL_BREAK_EVENT on Windows. `rawDump` is called from inside the handler
+   itself when one arrives, so a program in which no thread ever reaches a
+   wait point still gets its dump. Idempotent, and installed by the runtime at
+   start-up -- a hang is not something you get to prepare for in advance. */
+void platform_on_dump_request(void (*rawDump)(void));
+
+/* Has one arrived since the last time this was asked? Reading it clears it,
+   so each request produces one dump. */
+bool platform_take_dump_request(void);
+
+/* One write of a NUL-terminated string to standard error, with no buffering
+   and no locking -- `write(2)` / `WriteFile`. The only output call that is
+   safe from inside a signal handler, which is where the last-resort thread
+   dump has to happen. */
+void platform_write_stderr_raw(const char *text);
+
 /* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
  *
  * `interns` runs each worker on a real OS thread, in its own VM with its own

@@ -36,6 +36,7 @@
 #include "loop.h"
 #include "otw.h"
 #include "squad.h"
+#include "status.h"
 #include "task.h"
 #include "stash.h"
 #include "da_string.h"
@@ -670,6 +671,7 @@ void vm_init(VM *vm) {
     memset(vm->rngState, 0, sizeof vm->rngState);
     vm->rngSeeded = false;
     vm->inbox = NULL;
+    vm->statusSlot = -1;
     vm->liveStreams = false;
 
     vm->unit = NULL;
@@ -695,6 +697,8 @@ void vm_init(VM *vm) {
     vm->ownedUnits = NULL;
     vm->ownedUnitCount = 0;
     vm->ownedUnitCapacity = 0;
+    /* Last, so the row exists for every wait this VM will ever do. */
+    status_register(vm, "vm");
 }
 
 /* -- tasks ---------------------------------------------------------------- */
@@ -803,6 +807,7 @@ void vm_destroy(VM *vm) {
     /* Then the inbox, and anything still in it. After the join, because a
        worker that is still running can still post to its parent. */
     interns_vm_teardown(vm);
+    status_leave(vm);
 
     for (int i = 0; i < vm->loadingCount; i++) free(vm->loadingModules[i]);
     free(vm->loadingModules);

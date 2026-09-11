@@ -474,6 +474,7 @@ environment that most needs its tests to run.
 | `sus.run_bytecode(bytes, args?)` | Runs a compiled program in a fresh, isolated VM with stdout captured. Returns `{out, flavor, message, code}`. |
 | `sus.run_program(bytes, args?, label?)` | Runs a compiled program the way the top level does: output straight through, a full diagnostic on error. Returns `{code, ms}`. |
 | `sus.new_session()` / `sus.run_in(id, bytes, args?)` / `sus.close_session(id)` | A VM kept alive between runs — a REPL. `run_in` returns `{repr, flavor, message, code}`; `repr` is the last expression's rendering. |
+| `sus.threads()` | What every thread in this process is doing, as a `stash` of `groupchat`s with `id`, `doing` and `intern`. The same table `SIGQUIT` (Ctrl-`\`) on POSIX, or Ctrl-Break on Windows, prints to stderr — for a program that would rather answer the question over its own health endpoint. |
 | `sus.dump(x)` | Prints `x`'s `repr`-style form and returns it unchanged (like `sheesh`, under a different name for reflection-flavored code). |
 
 Note: `sus` is also the `if` keyword. As a bare `gimme sus`, it's unambiguously the stdlib module

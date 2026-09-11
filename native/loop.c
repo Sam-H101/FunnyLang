@@ -9,6 +9,7 @@
 #include "gc.h"
 #include "interns.h"
 #include "platform.h"
+#include "status.h"
 #include "otw.h"
 #include "task.h"
 
@@ -240,6 +241,10 @@ static int next_deadline_ms(VM *vm, double now) {
  * worker that has already finished is a join that returns immediately. Only
  * when none of that moves anything does this block. */
 static bool wake_waiters(VM *vm) {
+    /* Whoever gets here first prints the whole table: a locked, tidy one,
+       unlike the torn copy the signal handler writes for the case where
+       nobody reaches a wait point at all (RUNTIME_PLAN.md R9). */
+    if (platform_take_dump_request()) status_dump(vm->err);
     double now = platform_monotonic_seconds();
     bool moved = fire_due_timers(vm, now);
     if (settle_ready_sockets(vm, now)) moved = true;
@@ -308,6 +313,8 @@ static bool wake_waiters(VM *vm) {
         }
         if (timeout < 0) timeout = 60000;
         unsigned char *ready = (unsigned char *)calloc((size_t)w.count, 1);
+        status_set(vm, "loop: %d tasks; waiting on %d socket%s (up to %dms)", vm->taskCount, w.count,
+                   w.count == 1 ? "" : "s", timeout);
         platform_poll_sockets(w.handles, w.count, timeout, ready);
         free(ready);
         free_sockets(&w);
@@ -322,6 +329,8 @@ static bool wake_waiters(VM *vm) {
         /* One wait covers a worker finishing, a message being posted (both
            broadcast on the same condition variable) and the next
            deadline (the timeout). */
+        status_set(vm, "loop: %d tasks; waiting for an intern or a message (up to %dms)", vm->taskCount,
+                   deadlineMs);
         interns_wait_any(vm, deadlineMs);
         return true;
     }
@@ -329,12 +338,14 @@ static bool wake_waiters(VM *vm) {
         /* Only a Ctrl-C left to wait for. Sleeping the thread in short slices
            is exactly right: there is no task that could run, no thread that
            could finish, and a flag that only this loop will notice. */
+        status_set(vm, "loop: %d tasks; waiting for Ctrl-C", vm->taskCount);
         platform_sleep_seconds((double)MIXED_WAIT_CAP_MS / 1000.0);
         return true;
     }
     if (deadlineMs >= 0) {
         /* Only timers left. Sleeping the whole thread is exactly right here:
            there is no task that could run and no thread that could finish. */
+        status_set(vm, "loop: %d tasks; sleeping %dms until the next timer", vm->taskCount, deadlineMs);
         platform_sleep_seconds((double)deadlineMs / 1000.0);
         return true;
     }

@@ -474,7 +474,7 @@ docs/STDLIB.md docs/LANGUAGE.md docs/NATIVE.md CHANGELOG.md   every milestone
 - [x] Toolchain blob regenerated; `bootstrap --verify` fixed point
 
 ### R9 — thread dump
-- [ ] Status slots at every wait point; `SIGQUIT`/`CTRL_BREAK`; `--dump-on-stall`; `sus.threads()`
+- [x] Status slots at every wait point; `SIGQUIT`/`CTRL_BREAK`; `--dump-on-stall`; `sus.threads()`
 
 ---
 
@@ -733,6 +733,32 @@ way. A blank line *inside* a chain is normalized away, like every other blank li
 
 *The toolchain blob was regenerated twice*, once per parser change, and `bootstrap --verify` was a
 byte-identical fixed point both times.
+
+**R9.** Built as specified, with three decisions the plan left to whoever built it.
+
+*A row belongs to a VM, not to a thread id.* One VM is one thread, so keying the table by `VM *`
+gives exactly the same set of rows while avoiding thread-local storage altogether -- the same
+argument `vm.h` already makes for `workerContext`, and it means `status_set` is an array index
+rather than a search. A VM takes its row in `vm_init` and gives it back in `vm_destroy`.
+
+*Ctrl-Break on Windows no longer means "interrupt".* R5's console handler claimed both `CTRL_C_EVENT`
+and `CTRL_BREAK_EVENT` for `until_ctrl_c`; the plan gives Ctrl-Break to the dump, so the handler was
+narrowed to Ctrl-C. This changes behaviour R5 shipped three commits ago, which is worth saying out
+loud: a Windows program that was relying on Ctrl-Break to shut it down tidily now gets a thread dump
+instead, and Ctrl-C still does what it did.
+
+*"in native: filez.slurp" is not implemented, deliberately.* The plan's example line shows it, and
+the information is right there in the task's own `nativeName` -- but the thread that prints the dump
+would have to read another thread's task while that thread is running, which is precisely the
+cross-thread read the whole runtime is built to avoid, and ThreadSanitizer would be right to
+complain. The alternative, writing the row on every native call, puts an `snprintf` on the hottest
+path in the interpreter for a line nobody reads unless the program hangs. What the rows say instead
+is what each thread is *waiting* on, which is the question a hang actually poses.
+
+*The golden checks one row's shape.* How many threads exist at any instant, and what each is doing,
+is timing-dependent by nature; `tests/lang/stdlib/sus_threads` asserts the row count for a program
+that hired nobody, the three keys, and their types. The signal path is checked by hand, because a
+golden cannot press Ctrl-\.
 
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in

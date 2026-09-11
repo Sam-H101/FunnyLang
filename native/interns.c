@@ -16,6 +16,7 @@
 #include "object.h"
 #include "otw.h"
 #include "platform.h"
+#include "status.h"
 #include "portable.h"
 #include "runner.h"
 #include "stash.h"
@@ -727,6 +728,7 @@ void interns_collect(VM *vm, ObjOtw *p) {
     }
 
     if (in->spawned && !in->joined) {
+        status_set(vm, "joining intern #%d (%s)", in->id, in->label != NULL ? in->label : "?");
         platform_thread_join(&in->thread);
         in->joined = true;
     }
@@ -1102,6 +1104,8 @@ void interns_join_owned_by(VM *vm) {
         platform_mutex_unlock(&g_lock);
         if (pending == NULL) break;
 
+        status_set(vm, "joining intern #%d (%s) at teardown", pending->id,
+                   pending->label != NULL ? pending->label : "?");
         platform_thread_join(&pending->thread);
         pending->joined = true;
     }

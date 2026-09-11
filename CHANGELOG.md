@@ -37,6 +37,33 @@ yap json.spill(doc, {"pretty": fax})   // indented, one key per line
 - Going out, NaN and infinity become `null`, `U+2028`/`U+2029` are escaped for the browser on the
   other end, a `blob` becomes base64 text, and a value containing itself is `OutOfPocket`.
 
+### Added: a dump of what every thread is waiting on
+
+A hung program is the failure mode threads add, and it is the one a stack trace cannot help with:
+nothing crashed, so there is nothing to print. Every thread now keeps one line of plain text,
+updated wherever it is about to wait for something, and there are three ways to read them:
+
+```
+-- what every thread is waiting on --
+  #1 loop: 3 tasks; waiting on 2 sockets (up to 25ms) (0.0s ago)
+  #2 [intern] joining intern #4 (worker.funny) (12.4s ago)
+--
+```
+
+- **`SIGQUIT`** (Ctrl-`\`) on POSIX, **Ctrl-Break** on Windows. The next thread to reach a wait
+  point prints the whole table. If every thread is stuck in a join with nowhere to notice, the
+  signal handler writes the table itself, unlocked and marked "may be torn" — a torn diagnostic
+  beats none.
+- **`funny --dump-on-stall 30 run x.funny`** starts a watchdog that prints the table when no thread
+  has touched its line for thirty seconds.
+- **`sus.threads()`** returns the same rows as data, so a server can answer "what is everybody
+  doing" over its own health endpoint instead of somebody having to be at the terminal when it
+  hangs.
+
+The rows are plain C — a fixed buffer each, no allocation, no `Value` — because a diagnostic that
+needs the collector, or the lock the program is already stuck on, is one you cannot get when you
+need it.
+
 ### Changed: kinder parser errors, and a line can start with `.`
 
 **A keyword used as a name says which keyword it is, and what it is for.** `yo me = 1` used to
