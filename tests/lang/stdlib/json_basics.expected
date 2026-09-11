@@ -1,0 +1,17 @@
+groupchat
+1
+numba
+[fax, cap, ghost]
+text
+{"a":1,"b":[true,false,null],"c":"text"}
+numba
+2.5
+1000.0
+42
+-7
+123456789012345678901234567890
+a
+b
+"line\nbreak"
+[]
+{}

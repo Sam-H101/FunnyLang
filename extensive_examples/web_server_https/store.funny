@@ -30,7 +30,7 @@ gimme filez
 gimme yapper
 gimme clock
 gimme { sha256_hex, base64_encode, base64_decode } from "crypto.funny"
-gimme { parse_json, to_json, to_json_pretty } from "json.funny"
+gimme json
 
 flex deadass SEALED = "b64:"
 flex deadass HASHED = "sha256:"
@@ -94,7 +94,7 @@ flex bet load_config(default_path, custom_path) {
 bet read_config(path) {
     yo cfg = ghost
     sketchy {
-        cfg = parse_json(filez.slurp(path))
+        cfg = json.parse(filez.slurp(path))
     } my_bad (e) {
         chuck oops("SkillIssue", path + " can't be read (" + e.message + "). Not starting: falling back " +
                    "to the defaults would quietly undo any password change in it.")
@@ -149,7 +149,7 @@ flex bet config_problem(cfg) {
 // The whole config, pretty-printed so a person can read -- and diff -- it.
 flex bet save_config(path, cfg) {
     cfg["customized_at"] = clock.date_yap("%Y-%m-%dT%H:%M:%S")
-    filez.yeet_out(path, to_json_pretty(cfg))
+    filez.yeet_out(path, json.spill(cfg, {"pretty": fax}))
 }
 
 // What a user looks like to the pages: unsealed, and never the password hash.
@@ -185,7 +185,7 @@ flex bet load_activity(path) {
     }
     yo parsed = ghost
     sketchy {
-        parsed = parse_json(filez.slurp(path))
+        parsed = json.parse(filez.slurp(path))
     } my_bad (e) {
         chuck oops("SkillIssue", path + " can't be read (" + e.message + "). Move it aside to start a " +
                    "fresh log; not starting rather than overwriting it.")
@@ -199,7 +199,7 @@ flex bet load_activity(path) {
     }
     yo lines = []
     grind e in entries {
-        lines.yeet_in(to_json(e))
+        lines.yeet_in(json.spill(e))
     }
     bounce {"entries": entries, "lines": lines}
 }

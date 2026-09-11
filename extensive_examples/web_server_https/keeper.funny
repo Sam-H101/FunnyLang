@@ -18,7 +18,17 @@ gimme internet
 gimme interns
 gimme clock
 gimme yapper
-gimme { to_json, try_parse_json } from "json.funny"
+gimme json
+
+// json.parse raises on anything that isn't JSON. A body that is not JSON is
+// just a bad request, so this is the "no" answer rather than an unwind.
+bet try_parse(text) {
+    sketchy {
+        bounce json.parse(text)
+    } my_bad (e) {
+        bounce ghost
+    }
+}
 gimme { ct_equal, new_token, window_hit, window_count, prune_windows } from "security.funny"
 gimme { load_config, save_config, public_user, setting, seal, unseal, load_activity, save_activity,
         activity_entry, activity_view, default_config_path, custom_config_path, activity_path,
@@ -70,7 +80,7 @@ bet record(user, action, detail, status, thread, ip, agent) {
     yo entry = activity_entry(NEXT_ID, user, action, detail, status, thread, ip, agent)
     NEXT_ID += 1
     ENTRIES.yeet_in(entry)
-    LINES.yeet_in(to_json(entry))
+    LINES.yeet_in(json.spill(entry))
     sus (ENTRIES.how_thicc() > ACTIVITY_CAP) {
         ENTRIES.yoink_at(0)
         LINES.yoink_at(0)
@@ -427,14 +437,14 @@ async_ngl bet session(conn) {
                 authed = fax
                 nvm
             }
-            yo msg = try_parse_json(line)
+            yo msg = try_parse(line)
             yo reply = ghost
             sus (what_is_it(msg) != "groupchat") {
                 reply = refuse(400, "that wasn't a JSON object")
             } kinda_sus (msg.get("op", "") == "subscribe") {
                 // From here this connection only ever receives: log lines,
                 // one per request, until the keeper quits.
-                internet.holler_back(conn, to_json({"ok": fax}) + "\n")
+                internet.holler_back(conn, json.spill({"ok": fax}) + "\n")
                 SUBSCRIBERS.yeet_in(conn)
                 keep_open = fax
                 bail
@@ -445,7 +455,7 @@ async_ngl bet session(conn) {
                     reply = refuse(500, e.flavor + ": " + e.message)
                 }
             }
-            internet.holler_back(conn, to_json(reply) + "\n")
+            internet.holler_back(conn, json.spill(reply) + "\n")
         }
     } my_bad (e) {
         keep_open = cap

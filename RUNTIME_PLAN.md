@@ -463,11 +463,11 @@ docs/STDLIB.md docs/LANGUAGE.md docs/NATIVE.md CHANGELOG.md   every milestone
       down in the CHANGELOG entry
 
 ### R6 — atomic replace
-- [ ] `platform_replace_file`; `filez.replace`; `yeet_out_atomic`, `write_blob_atomic`; goldens
+- [x] `platform_replace_file`; `filez.replace`; `yeet_out_atomic`, `write_blob_atomic`; goldens
 
 ### R7 — `json`
-- [ ] `json.parse`, `json.spill`; the example's `json.funny` goldens moved to `tests/lang/stdlib/`
-- [ ] `extensive_examples/web_server_https` switched to it (its `json.funny` deleted)
+- [x] `json.parse`, `json.spill`; the example's `json.funny` goldens moved to `tests/lang/stdlib/`
+- [x] `extensive_examples/web_server_https` switched to it (its `json.funny` deleted)
 
 ### R8 — parser
 - [ ] Keyword-as-name messages; leading-dot continuation; `fmt` keeps it
@@ -671,6 +671,48 @@ appeared to hang with no output. The program was fine: the shell had captured th
 PID, so the signal went nowhere, and stdout redirected to a file is block-buffered, so a program
 that never exits never flushes. Capturing the PID properly made it pass first time. The lesson is
 about the harness, not the runtime.
+
+**R6.** Built as specified, with two details the plan left open.
+
+*The temporary file is `<target>.tmp-<random hex>`, in the target's own directory.* The plan says
+"in the same directory" and this is what that means in practice: `filez.temp_file` makes its file
+in the OS temp directory, which is very often a different filesystem, and a rename across
+filesystems fails. The random suffix is eight bytes from the OS, so two programs writing the same
+file at the same moment do not collide on the temporary one.
+
+*The POSIX side flushes the directory too.* `rename(2)` is atomic to any reader the moment it
+returns, which is the half the plan asks for; surviving a power cut also needs the directory entry
+on the disk, or the data is safely written under a name that still points at the old file. That is
+a best-effort `fsync` on the directory: a filesystem that will not open its own directory is not a
+reason to report a write that did happen as a failure.
+
+*A golden cannot cut the power.* What `tests/lang/stdlib/filez_atomic` checks is the visible half:
+the contents afterwards, that overwriting works, that a move really moves, and that replacing from
+a file that is not there is an error rather than a silent no-op.
+
+**R7.** Built as specified, and moving the example onto it changed four things about the example.
+
+*`try_parse_json` has no module equivalent, so the example keeps a five-line one.* The plan's API
+is `parse` and `spill`; "parse, or `ghost` if it isn't JSON" is a policy about request bodies, not
+a second parser, and the three files that want it say so in five lines each. Putting it in the
+module would mean every caller deciding which of two parse functions they meant.
+
+*The example's own nesting test moved from 40 brackets to 600.* Its old parser gave up at 32, the
+module gives up at 512, and a test that demonstrates refusal has to exceed the limit it is testing.
+
+*`routes.funny` had a function called `json`.* A file cannot both `gimme json` and define one, so
+the helper that builds a JSON response is now `json_reply`. Worth recording as the cost of taking
+a common word for a module name -- and it is the right word, so the rename is the cheaper side.
+
+*The module's pretty form ends with a newline, matching the example's `to_json_pretty`.* It is
+what the mode is for: a file a person opens and diffs, and every tool complains about one that
+does not end in a newline. `spill` without `{"pretty": fax}` adds nothing.
+
+*Two smaller choices the plan left open.* An integer too large for a fixnum becomes a bignum
+rather than a double, so a document full of large ids round-trips exactly -- `numba` is
+arbitrary-precision and there is no reason to throw that away at the JSON boundary. And a
+groupchat key that is not a yapstring is written as the text it displays as, because JSON keys are
+strings and refusing to write an otherwise ordinary groupchat would be worse.
 
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in

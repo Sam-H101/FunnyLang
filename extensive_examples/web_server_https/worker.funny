@@ -19,7 +19,7 @@ gimme { read_request, build_response, STATUS_TEXT } from "http.funny"
 gimme { route } from "routes.funny"
 gimme { session_id_of } from "security.funny"
 gimme { keeper_link, ask_keeper, close_link } from "keeper_client.funny"
-gimme { to_json } from "json.funny"
+gimme json
 
 yo JOB = interns.assignment()
 yo THREAD = JOB["thread"]
@@ -138,7 +138,7 @@ async_ngl bet serve(customer) {
     sus (!begin["allowed"]) {
         answer = {
             "status": 429,
-            "body": to_json({"ok": cap, "error": "slow down."}),
+            "body": json.spill({"ok": cap, "error": "slow down."}),
             "headers": {"Content-Type": "application/json; charset=utf-8", "Retry-After": to_yap(begin["retry_after"])},
         }
     } nah {
@@ -162,7 +162,7 @@ async_ngl bet serve(customer) {
             // the part about this request -- and never a stack trace.
             answer = {
                 "status": 500,
-                "body": to_json({"ok": cap, "error": e.flavor + ": " + e.message}),
+                "body": json.spill({"ok": cap, "error": e.flavor + ": " + e.message}),
                 "headers": {"Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"},
             }
         }

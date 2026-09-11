@@ -288,11 +288,47 @@ Free functions below; most are also `groupchat` instance methods.
 | `filez.read_blob(path)` | Reads a whole file as a `blob` — one allocation rather than one per byte. |
 | `filez.write_blob(path, b)` | Writes a `blob` to `path`; returns the byte count. |
 | `filez.append_blob(path, b)` | Appends a `blob` to `path`; returns the byte count. |
+| `filez.replace(from, to)` | Moves `from` over `to` in one step. A reader sees the old file or the new one, never half of either. Both must be on the same filesystem. |
+| `filez.yeet_out_atomic(path, text)` | Writes `text` beside `path`, flushes it to the disk, then `replace`s it into place; returns the codepoint count. A crash mid-write leaves the old file. |
+| `filez.write_blob_atomic(path, b)` | The same for a `blob`; returns the byte count. |
 | `filez.make_executable(path)` | Marks `path` runnable (the executable bits on POSIX; a no-op on Windows). |
 | `filez.temp_file(prefix?)` | Creates an empty file in the OS temp directory and returns its path. Yours to `obliterate`. |
 | `filez.abs_path(path)` | The absolute, resolved form of `path`. |
 | `filez.join_path(...parts)` | Joins path components with the OS separator. |
 | `filez.dir_of(path)` / `filez.base_of(path)` / `filez.ext_of(path)` | The parent directory / filename / extension of `path`. |
+
+## `json` — JSON, both ways
+
+```funny
+gimme json
+
+yo doc = json.parse("{\"name\": \"sam\", \"tags\": [1, 2]}")
+yap doc["name"]                        // sam
+yap json.spill(doc)                    // {"name":"sam","tags":[1,2]}
+yap json.spill(doc, {"pretty": fax})   // indented, one key per line
+```
+
+The mapping is the whole specification: `null` is `ghost`, `true`/`false` are `boolski`, an object
+is an insertion-ordered `groupchat`, an array is a `stash`, and **an integer stays an integer** —
+a `numba` is arbitrary-precision, so a document full of large ids round-trips exactly instead of
+losing its low digits to a double. `2.5` and `1e3` are floats.
+
+The parser assumes hostile input, because a request body is written by whoever is on the other end
+of the socket. It never nests deeper than 512, never hands back a half-built value, and reports
+every failure as one `SkillIssue` naming the character it gave up at — a string that was never
+closed, a raw control character inside one, an escape JSON does not have, or anything at all after
+the end of the value.
+
+| Function | Description |
+|---|---|
+| `json.parse(text)` | The whole of `text` as one value. Trailing text after a valid value is an error, not ignored. |
+| `json.spill(value, opts?)` | `value` as JSON. `{"pretty": fax}` indents two spaces, puts one key per line, and ends with a newline — the form meant for a file a person opens. |
+
+Going out: NaN and infinity are written as `null`, because JSON has neither and the alternative is
+emitting something nothing can read back. `U+2028` and `U+2029` are escaped, since they are legal
+JSON but end a line in JavaScript and a browser is usually the other reader. A `blob` becomes
+base64 text — JSON has no bytes — and does not come back as a blob, because nothing in the text
+says it was one. A value that contains itself is `OutOfPocket`.
 
 ## `clock` — time
 

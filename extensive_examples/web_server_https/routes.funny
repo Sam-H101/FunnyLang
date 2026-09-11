@@ -12,7 +12,17 @@
 
 gimme yapper
 gimme clock
-gimme { to_json, try_parse_json } from "json.funny"
+gimme json
+
+// json.parse raises on anything that isn't JSON. A body that is not JSON is
+// just a bad request, so this is the "no" answer rather than an unwind.
+bet try_parse(text) {
+    sketchy {
+        bounce json.parse(text)
+    } my_bad (e) {
+        bounce ghost
+    }
+}
 gimme { html_escape } from "http.funny"
 gimme { ct_equal, session_cookie, cleared_session_cookie, valid_username, valid_email, clean_text,
         password_problem } from "security.funny"
@@ -22,16 +32,18 @@ gimme { ask_keeper } from "keeper_client.funny"
 
 // -- answers ----------------------------------------------------------------------
 
-flex bet json(status, value, extra = ghost) {
+// Named json_reply rather than json: `json` is a stdlib module now, and a
+// file cannot both import one and define a function with its name.
+flex bet json_reply(status, value, extra = ghost) {
     yo headers = {"Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"}
     sus (extra != ghost) {
         headers.merge(extra)
     }
-    bounce {"status": status, "body": to_json(value), "headers": headers}
+    bounce {"status": status, "body": json.spill(value), "headers": headers}
 }
 
 bet oops_json(status, error, extra = ghost) {
-    bounce json(status, {"ok": cap, "error": error}, extra)
+    bounce json_reply(status, {"ok": cap, "error": error}, extra)
 }
 
 bet redirect(where) {
@@ -126,7 +138,7 @@ bet post_problem(ctx, need_csrf) {
 }
 
 bet body_of(ctx) {
-    yo value = try_parse_json(ctx["req"]["body"])
+    yo value = try_parse(ctx["req"]["body"])
     sus (what_is_it(value) != "groupchat") {
         bounce ghost
     }
@@ -162,7 +174,7 @@ async_ngl bet api(ctx) {
     }
 
     sus (path == "/api/health") {
-        bounce json(200, {
+        bounce json_reply(200, {
             "ok": fax,
             "tls": ctx["tls"],
             "thread": ctx["thread"],
@@ -176,7 +188,7 @@ async_ngl bet api(ctx) {
         sus (s == ghost) {
             bounce oops_json(401, "not signed in.")
         }
-        bounce json(200, {"ok": fax, "user": s["user"], "csrf": s["csrf"], "default_password": s["default_password"]})
+        bounce json_reply(200, {"ok": fax, "user": s["user"], "csrf": s["csrf"], "default_password": s["default_password"]})
     }
 
     sus (path == "/api/login") {
@@ -202,7 +214,7 @@ async_ngl bet api(ctx) {
         sus (failed != ghost) {
             bounce failed
         }
-        bounce json(200, {"ok": fax, "user": reply["user"], "csrf": reply["csrf"],
+        bounce json_reply(200, {"ok": fax, "user": reply["user"], "csrf": reply["csrf"],
                           "default_password": reply["default_password"]},
                     {"Set-Cookie": session_cookie(reply["sid"], reply["max_age"])})
     }
@@ -213,7 +225,7 @@ async_ngl bet api(ctx) {
             bounce problem
         }
         await_fr ask_keeper(ctx["link"], who(ctx, {"op": "logout", "sid": ctx["sid"]}))
-        bounce json(200, {"ok": fax}, {"Set-Cookie": cleared_session_cookie()})
+        bounce json_reply(200, {"ok": fax}, {"Set-Cookie": cleared_session_cookie()})
     }
 
     sus (path == "/api/profile") {
@@ -239,7 +251,7 @@ async_ngl bet api(ctx) {
         sus (failed != ghost) {
             bounce failed
         }
-        bounce json(200, {"ok": fax, "changed": reply["changed"], "user": reply["user"]})
+        bounce json_reply(200, {"ok": fax, "changed": reply["changed"], "user": reply["user"]})
     }
 
     sus (path == "/api/defaults") {
@@ -263,7 +275,7 @@ async_ngl bet api(ctx) {
         sus (failed != ghost) {
             bounce failed
         }
-        bounce json(200, {"ok": fax, "changed": reply["changed"], "user": reply["user"]})
+        bounce json_reply(200, {"ok": fax, "changed": reply["changed"], "user": reply["user"]})
     }
 
     sus (path == "/api/password") {
@@ -290,7 +302,7 @@ async_ngl bet api(ctx) {
         sus (failed != ghost) {
             bounce failed
         }
-        bounce json(200, {"ok": fax})
+        bounce json_reply(200, {"ok": fax})
     }
 
     sus (path == "/api/activity") {
@@ -305,7 +317,7 @@ async_ngl bet api(ctx) {
         sus (failed != ghost) {
             bounce failed
         }
-        bounce json(200, reply)
+        bounce json_reply(200, reply)
     }
 
     bounce oops_json(404, "no such API.")

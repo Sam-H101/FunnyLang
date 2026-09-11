@@ -11,7 +11,7 @@
 gimme internet
 gimme interns
 gimme yapper
-gimme { parse_json, to_json } from "json.funny"
+gimme json
 
 yo JOB = interns.assignment()
 
@@ -76,7 +76,7 @@ bet request(method, path, extra = ghost, body = "") {
 
 bet json_body(reply) {
     sketchy {
-        bounce parse_json(reply["body"])
+        bounce json.parse(reply["body"])
     } my_bad (e) {
         bounce {}
     }
@@ -87,7 +87,7 @@ bet post(path, value, extra = ghost) {
     sus (extra != ghost) {
         headers.merge(extra)
     }
-    bounce request("POST", path, headers, to_json(value))
+    bounce request("POST", path, headers, json.spill(value))
 }
 
 // -- the scripted conversation ----------------------------------------------------

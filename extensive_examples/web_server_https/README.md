@@ -44,7 +44,6 @@ threads, and a site that remembers things.
 | `store.funny` | The data files, and what "protected at rest" means here |
 | `security.funny` | Constant-time compare, tokens, the session cookie, rate windows, validation |
 | `crypto.funny` | SHA-256 and base64 |
-| `json.funny` | A JSON reader and writer |
 | `web/` | The front end: four pages, one stylesheet, a script per page, no framework |
 | `data/config.default.json` | The committed defaults |
 | `certs/` | `make_cert.sh`, the test CA and the PKCS#12 identity — **test material, not secrets** |

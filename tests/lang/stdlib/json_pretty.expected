@@ -1,0 +1,12 @@
+{
+  "name": "sam",
+  "tags": [
+    "a",
+    "b"
+  ],
+  "nested": {
+    "n": 1
+  }
+}
+END
+"AQID"

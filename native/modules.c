@@ -10,6 +10,7 @@
 #include "gc.h"
 #include "groupchat.h"
 #include "internet.h"
+#include "json.h"
 #include "interns.h"
 #include "mafs.h"
 #include "rizz.h"
@@ -45,6 +46,7 @@ static const StdlibEntry STDLIB_REGISTRY[] = {
     {"mafs", mafs_build},
     {"blob", blob_build},
     {"vault", vault_build},
+    {"json", json_build},
     {"yapper", yapper_build},
     {"stash", stash_build},
     {"groupchat", groupchat_build},

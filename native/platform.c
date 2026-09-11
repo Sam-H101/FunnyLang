@@ -2279,6 +2279,103 @@ bool platform_random_bytes(unsigned char *out, size_t n) {
 }
 #endif
 
+/* -- atomic replacement (RUNTIME_PLAN.md R6) ------------------------------ */
+
+bool platform_write_file_durable(const char *path, const unsigned char *data, size_t len, char *errbuf,
+                                 size_t errbuf_len) {
+    FILE *f = fopen_utf8(path, "wb");
+    if (!f) {
+        set_errbuf(errbuf, errbuf_len, errno);
+        return false;
+    }
+    size_t written = len > 0 ? fwrite(data, 1, len, f) : 0;
+    if (written != len) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    if (fflush(f) != 0) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    /* Out of the C library's buffer is not the same as onto the disk, and
+       the whole point of writing beside the target is that a crash leaves
+       the old file rather than a new half-written one. */
+#ifdef _WIN32
+    int sync_rc = _commit(_fileno(f));
+#else
+    int sync_rc = fsync(fileno(f));
+#endif
+    if (sync_rc != 0) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    if (fclose(f) != 0) {
+        set_errbuf(errbuf, errbuf_len, errno);
+        return false;
+    }
+    return true;
+}
+
+#ifdef _WIN32
+
+bool platform_replace_file(const char *from, const char *to, char *errbuf, size_t errbuf_len) {
+    wchar_t *wfrom = widen(from);
+    wchar_t *wto = widen(to);
+    if (wfrom == NULL || wto == NULL) {
+        free(wfrom);
+        free(wto);
+        set_errbuf(errbuf, errbuf_len, ENOENT);
+        return false;
+    }
+    /* MOVEFILE_REPLACE_EXISTING is the "over the old one" half;
+       MOVEFILE_WRITE_THROUGH is the "and it survives losing power" half. */
+    BOOL ok = MoveFileExW(wfrom, wto, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    DWORD err = ok ? 0 : GetLastError();
+    free(wfrom);
+    free(wto);
+    if (!ok) {
+        set_errbuf_win32(errbuf, errbuf_len, err);
+        return false;
+    }
+    return true;
+}
+
+#else
+
+bool platform_replace_file(const char *from, const char *to, char *errbuf, size_t errbuf_len) {
+    if (rename(from, to) != 0) {
+        set_errbuf(errbuf, errbuf_len, errno);
+        return false;
+    }
+    /* The rename itself is atomic to any reader. Making it survive a power
+       cut also needs the *directory* entry flushed -- otherwise the data is
+       on the disk and the name still points at the old file. Best effort:
+       a filesystem that refuses to open its own directory is not a reason
+       to report a write that did happen as a failure. */
+    char dir[4352];
+    snprintf(dir, sizeof dir, "%s", to);
+    char *slash = strrchr(dir, '/');
+    if (slash != NULL) {
+        *slash = '\0';
+    } else {
+        dir[0] = '\0';
+    }
+    int fd = open(dir[0] != '\0' ? dir : ".", O_RDONLY);
+    if (fd >= 0) {
+        fsync(fd);
+        close(fd);
+    }
+    return true;
+}
+
+#endif
+
 /* -- interrupts (RUNTIME_PLAN.md R5) --------------------------------------
  *
  * The handler sets a flag and nothing else. Not a condition variable, not a

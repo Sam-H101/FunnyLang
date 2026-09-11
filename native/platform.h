@@ -389,6 +389,28 @@ bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce,
                            size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
                            unsigned char *plainOut, char *errbuf, size_t errbuf_len);
 
+
+/* -- atomic replacement (RUNTIME_PLAN.md R6) -------------------------------
+ *
+ * Writing a file in place has a window in which it is neither the old thing
+ * nor the new one, and a reader that arrives during it gets half a file. A
+ * crash during it leaves half a file for good. The fix is as old as Unix:
+ * write a new file beside it, make sure it is really on the disk, and move it
+ * over the old one in a single step that cannot be observed halfway.
+ */
+
+/* Moves `from` over `to`, replacing it, atomically as far as any reader is
+   concerned. Both must be on the same filesystem, which is why the caller
+   writes its temporary file in the destination's own directory. */
+bool platform_replace_file(const char *from, const char *to, char *errbuf, size_t errbuf_len);
+
+/* Like platform_write_file, but does not return until the bytes are on the
+   disk rather than merely in the operating system's cache -- the half of
+   "atomic" that survives losing power, as opposed to the half that survives
+   another process reading at the wrong moment. */
+bool platform_write_file_durable(const char *path, const unsigned char *data, size_t len, char *errbuf,
+                                 size_t errbuf_len);
+
 /* -- interrupts (RUNTIME_PLAN.md R5) --------------------------------------
  *
  * `computer.until_ctrl_c()` is an `otw` that settles the first time somebody

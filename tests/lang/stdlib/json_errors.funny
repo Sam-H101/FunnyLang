@@ -1,0 +1,42 @@
+// tests/lang/stdlib/json_errors.funny -- a request body is written by whoever
+// is on the other end of the socket, so every failure is one SkillIssue that
+// says what was wrong and where, and nothing half-parsed is ever handed back.
+gimme json
+gimme yapper
+
+bet why(text) {
+    sketchy {
+        json.parse(text)
+        yap "no complaint"
+    } my_bad (e) {
+        yap e.flavor + ": " + e.message
+    }
+}
+
+why("")
+why("{")
+why("[1,]")
+why("{\"a\":1} extra")
+why("\"unterminated")
+why("\"bad \\q\"")
+why("nope")
+why("{\"a\" 1}")
+why("[1 2]")
+
+// Deep nesting is refused rather than being a way to walk the C stack off the
+// end of a thread.
+sketchy {
+    json.parse(yapper.repeat("[", 600))
+} my_bad (e) {
+    yap e.flavor
+    yap yapper.contains(e.message, "nested deeper than 512")
+}
+
+// And a value that contains itself cannot be written at all.
+yo loop = [1, 2]
+loop.yeet_in(loop)
+sketchy {
+    yap json.spill(loop)
+} my_bad (e) {
+    yap e.flavor
+}

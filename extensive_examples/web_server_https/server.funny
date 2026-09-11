@@ -35,7 +35,7 @@ gimme filez
 gimme yapper
 gimme { new_token } from "security.funny"
 gimme { load_config, unseal, setting, default_config_path, custom_config_path } from "store.funny"
-gimme { to_json } from "json.funny"
+gimme json
 gimme { keeper_link, ask_keeper, close_link } from "keeper_client.funny"
 
 flex deadass DEFAULTS = {
@@ -65,7 +65,7 @@ flex async_ngl bet stop_server(info) {
 // The log stream: every request's line, as the keeper hears about it.
 async_ngl bet log_pump(port, secret, on_log, state) {
     yo conn = internet.slide_into("127.0.0.1", port, 2000)
-    internet.holler_back(conn, secret + "\n" + to_json({"op": "subscribe"}) + "\n")
+    internet.holler_back(conn, secret + "\n" + json.spill({"op": "subscribe"}) + "\n")
     yo buffer = ""
     yo greeted = cap
     sketchy {

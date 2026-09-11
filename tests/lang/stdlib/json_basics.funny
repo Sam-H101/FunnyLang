@@ -1,0 +1,30 @@
+// tests/lang/stdlib/json_basics.funny -- RUNTIME_PLAN.md R7. The mapping is
+// the whole specification: null is ghost, an object is an insertion-ordered
+// groupchat, and an integer stays an integer rather than quietly becoming a
+// double the way most JSON parsers make it.
+gimme json
+
+yo doc = json.parse("{\"a\": 1, \"b\": [true, false, null], \"c\": \"text\"}")
+yap what_is_it(doc)
+yap doc["a"]
+yap what_is_it(doc["a"])
+yap doc["b"]
+yap doc["c"]
+yap json.spill(doc)
+
+yap what_is_it(json.parse("2.5"))
+yap json.spill(json.parse("2.5"))
+yap json.spill(json.parse("1e3"))
+yap json.spill(json.parse("42"))
+yap json.spill(json.parse("-7"))
+
+// A numba is arbitrary-precision, so a large id round-trips exactly instead
+// of losing its low digits to a double.
+yap json.spill(json.parse("123456789012345678901234567890"))
+
+// A JSON escape is two characters in the text being parsed, which is why each
+// backslash is doubled in this FunnyLang string.
+yap json.parse("\"a\\nb\"")
+yap json.spill("line\nbreak")
+yap json.spill([])
+yap json.spill({})

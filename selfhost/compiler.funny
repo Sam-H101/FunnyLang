@@ -504,7 +504,7 @@ flex deadass BUILTIN_GLOBAL_NAMES = [
 
 flex deadass STDLIB_MODULE_NAMES = [
     "mafs", "yapper", "stash", "groupchat", "rizz", "filez", "clock",
-    "blob", "vault",
+    "blob", "vault", "json",
     "sus", "computer", "internet",
 ]
 

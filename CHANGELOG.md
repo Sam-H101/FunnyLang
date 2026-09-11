@@ -13,6 +13,44 @@ stdlib module safe on them, and the corpus that proves it. Plan and build log:
   and then on eight interns at once, and passes only if all eight answers match the single-threaded
   one. CI also runs the whole directory under ThreadSanitizer, along with `extensive_examples`.
 
+### Added: `json`
+
+`gimme json`. `json.parse(text)` and `json.spill(value, {"pretty": fax})`, in C, with the semantics
+`extensive_examples/web_server_https/json.funny` had — that file is now deleted, and the example
+uses the module.
+
+```funny
+gimme json
+
+yo doc = json.parse("{\"name\": \"sam\", \"tags\": [1, 2]}")
+yap doc["name"]                        // sam
+yap json.spill(doc, {"pretty": fax})   // indented, one key per line
+```
+
+- **An integer stays an integer.** A `numba` is arbitrary-precision, so a document full of large
+  ids round-trips exactly rather than losing its low digits to a double, which is what most JSON
+  parsers do to it.
+- `null` is `ghost`, an object is an insertion-ordered `groupchat`, an array is a `stash`.
+- **The parser assumes hostile input**: nesting deeper than 512 is refused rather than being a way
+  to walk the C stack off the end of a thread, a half-parsed value is never handed back, and every
+  failure is one `SkillIssue` naming the character it gave up at.
+- Going out, NaN and infinity become `null`, `U+2028`/`U+2029` are escaped for the browser on the
+  other end, a `blob` becomes base64 text, and a value containing itself is `OutOfPocket`.
+
+### Added: atomic file writes
+
+`filez.yeet_out_atomic(path, text)`, `filez.write_blob_atomic(path, b)` and `filez.replace(from, to)`.
+Writing a file in place has a window in which it holds neither the old contents nor the new ones: a
+reader that arrives during it gets half a file, and a crash during it leaves half a file for good.
+These write beside the target, flush the bytes to the disk, and move the new file over the old one
+in a single step.
+
+The temporary file is made in the **target's own directory**, not the OS temp directory, because a
+rename only works within one filesystem. On POSIX the directory entry is flushed after the rename
+as well, so the new contents survive a power cut rather than only a concurrent reader; on Windows
+the move is `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`. A failed move takes its own
+half-written file with it rather than leaving litter next to somebody's data.
+
 ### Added: `computer.until_ctrl_c()`
 
 An `otw` that settles the first time somebody presses Ctrl-C. A server can then stop accepting,
