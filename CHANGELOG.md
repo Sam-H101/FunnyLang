@@ -34,6 +34,13 @@ with everything above the TLS record layer written in FunnyLang. Design and devi
 - OpenSSL is loaded under `pthread_once`: two threads reaching TLS for the first time at the same
   moment could previously both run the lazy `dlopen`.
 
+### Fixed
+- **Interns importing modules at the same moment could fail** with "'x.funny' isn't in this bundle"
+  for a module that was in the bundle. The loader normalized import paths with `strtok`, whose
+  cursor is shared by every thread in the process, so concurrent imports walked through each
+  other's paths. Rare with a few interns, reliable enough to find with two dozen starting at once.
+  `tests/lang/interns/concurrent_imports` is the golden.
+
 ## [Unreleased] — concurrency
 
 `async_ngl` and `await_fr` are real, and `gimme interns` runs work on real OS threads. Two of

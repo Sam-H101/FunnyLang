@@ -63,22 +63,30 @@ static void normalize_module_path(char *path) {
     char *segments[64];
     int count = 0;
     char *save = path;
-    char *copy = (char *)malloc(strlen(path) + 1);
-    memcpy(copy, path, strlen(path) + 1);
-    char *tok = strtok(copy, "/");
-    while (tok && count < 64) {
-        if (strcmp(tok, ".") == 0 || tok[0] == '\0') {
+    size_t len = strlen(path);
+    char *copy = (char *)malloc(len + 1);
+    memcpy(copy, path, len + 1);
+    /* Split on '/' by hand. This used to be strtok, whose cursor is one
+       hidden variable shared by every thread in the process: with several
+       `interns` importing modules at the same moment, one thread's
+       strtok(NULL, ...) carried on through another thread's string, and a
+       module that was in the bundle came back "isn't in this bundle". */
+    char *p = copy;
+    while (*p != '\0' && count < 64) {
+        char *seg = p;
+        while (*p != '\0' && *p != '/') p++;
+        if (*p == '/') *p++ = '\0';
+        if (seg[0] == '\0' || strcmp(seg, ".") == 0) {
             /* dropped */
-        } else if (strcmp(tok, "..") == 0) {
+        } else if (strcmp(seg, "..") == 0) {
             /* A leading ".." can't be resolved away -- keep it, so the
                lookup fails loudly instead of silently landing somewhere
                else. */
             if (count > 0 && strcmp(segments[count - 1], "..") != 0) count--;
-            else segments[count++] = tok;
+            else segments[count++] = seg;
         } else {
-            segments[count++] = tok;
+            segments[count++] = seg;
         }
-        tok = strtok(NULL, "/");
     }
     size_t pos = 0;
     for (int i = 0; i < count; i++) {

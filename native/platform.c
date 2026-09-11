@@ -580,7 +580,10 @@ static void lexical_normalize(const char *abs_path, char *out, size_t out_len) {
     char *copy = strdup(abs_path);
     char *comps[256];
     int n = 0;
-    char *tok = strtok(copy, "/");
+    /* strtok_r, not strtok: strtok's cursor is shared by every thread, and
+       `interns` workers resolve paths concurrently. */
+    char *cursor = NULL;
+    char *tok = strtok_r(copy, "/", &cursor);
     while (tok && n < 256) {
         if (strcmp(tok, ".") == 0) {
             /* dropped */
@@ -589,7 +592,7 @@ static void lexical_normalize(const char *abs_path, char *out, size_t out_len) {
         } else {
             comps[n++] = tok;
         }
-        tok = strtok(NULL, "/");
+        tok = strtok_r(NULL, "/", &cursor);
     }
     if (n == 0) {
         snprintf(out, out_len, "/");
