@@ -645,6 +645,10 @@ void vm_init(VM *vm) {
     vm->programArgs = GHOST_VAL;
     vm->scriptPath = NULL;
 
+    /* One xoshiro256** generator per VM, not one per process: see rizz.c. */
+    memset(vm->rngState, 0, sizeof vm->rngState);
+    vm->rngSeeded = false;
+
     vm->unit = NULL;
     vm->pak = NULL;
     vm->pakModuleCache = GHOST_VAL;

@@ -619,7 +619,7 @@ static Value m_shuffle_it(VM *vm, Value *a, int argc) {
     if (!ok) return GHOST_VAL;
     ObjStash *out = stash_new(&vm->gc, s->items, s->count);
     for (int i = out->count - 1; i > 0; i--) {
-        int j = (int)(rizz_next_u64() % (uint64_t)(i + 1));
+        int j = (int)(rizz_next_u64(vm) % (uint64_t)(i + 1));
         Value tmp = out->items[i];
         out->items[i] = out->items[j];
         out->items[j] = tmp;

@@ -1,0 +1,12 @@
+gimme computer
+
+flex bet work_computer(i) {
+    yo ok = fax
+    grind n from 0 to 200 {
+        ok = ok && computer.env("FUNNY_THREADS_TEST_SURELY_UNSET_" + to_yap(i)) == ghost
+        ok = ok && computer.exe_path().how_thicc() > 0
+        ok = ok && computer.ram() > 0
+        ok = ok && computer.uptime() >= 0
+    }
+    bounce ok
+}

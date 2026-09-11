@@ -1,0 +1,20 @@
+gimme sus
+
+squad Probe {
+    spawn(n) {
+        me.n = n
+        me.label = "probe"
+    }
+}
+
+flex bet work_sus(i) {
+    yo total = 0
+    grind n from 0 to 200 {
+        yo p = Probe(n + i)
+        total += sus.fields_of(p).how_thicc()
+        total += sus.is_a(p, "Probe") ? 1 : 0
+        total += sus.type_of([1, 2]).how_thicc()
+        total += sus.stack_trace().how_thicc() > 0 ? 1 : 0
+    }
+    bounce total
+}

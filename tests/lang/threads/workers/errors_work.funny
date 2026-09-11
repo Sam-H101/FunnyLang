@@ -1,0 +1,39 @@
+// Every flavor raised and caught, plus the errors the VM raises by itself,
+// from eight threads: error.c's flavor table and the diagnostic machinery
+// behind .message and .trace.
+deadass FLAVORS = ["LexerSaidNah", "ParserHadAStroke", "WhoDis", "TypeVibeMismatch", "MathAintMathin",
+                   "OutOfPocket", "KeyGhosted", "GhostError", "NotACallableRizz", "WrongNumberOfHomies",
+                   "TooDeepBro", "ImportSkillIssue", "ImmutableVibes", "SkillIssue", "LeftOnRead",
+                   "CantWaitRightNow"]
+
+flex bet work_errors(i) {
+    yo caught = []
+    grind round from 0 to 20 {
+        grind f in FLAVORS {
+            sketchy {
+                chuck oops(f, "number " + to_yap(i))
+            } my_bad (e) {
+                caught.yeet_in(e.flavor + ":" + to_yap(e.message.how_thicc()))
+            }
+        }
+        sketchy {
+            yo z = round - round
+            yo boom = 1 \ z
+        } my_bad (e) {
+            caught.yeet_in(e.flavor)
+        }
+        sketchy {
+            yo g = {}
+            yo missing = g["nope"]
+        } my_bad (e) {
+            caught.yeet_in(e.flavor)
+        }
+        sketchy {
+            yo nothing = ghost
+            nothing.field
+        } my_bad (e) {
+            caught.yeet_in(e.flavor + ":" + to_yap(e.trace.how_thicc() > 0))
+        }
+    }
+    bounce caught.join(",").how_thicc()
+}

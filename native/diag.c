@@ -1,5 +1,6 @@
 #include "diag.h"
 
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,11 +31,20 @@ static DiagOptions derive_default_options(void) {
 
 /* The CLI parses --serious/--no-color once and installs the result here, so
    a nested run (sus.run_program, the compiler, a REPL input) renders the
-   same way instead of each re-deriving from the environment. */
+   same way instead of each re-deriving from the environment.
+
+   Process-global on purpose, and safe because of when it is written: once,
+   by main.c, before the first VM exists and so before any `interns` thread
+   can. Every later access is a read. Nothing else may call the setter
+   (RUNTIME_PLAN.md R0). */
 static bool g_hasOverride = false;
 static DiagOptions g_override;
 
 void diag_set_default_options(DiagOptions opts) {
+    /* Start-up only, and exactly once: main.c, before any VM and so before any
+       thread. A second call from anywhere else would be a write racing every
+       other thread's reads (RUNTIME_PLAN.md R0). */
+    assert(!g_hasOverride && "diag options are installed once, at start-up");
     g_override = opts;
     g_hasOverride = true;
 }

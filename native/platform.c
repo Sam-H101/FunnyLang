@@ -100,9 +100,16 @@ typedef int SockFd;
 #include <string.h>
 #include <time.h>
 
+/* The reentrant strerror (RUNTIME_PLAN.md R0): plain strerror may hand back
+   a buffer shared by every thread. POSIX's XSI strerror_r and MSVC's
+   strerror_s both fill the caller's buffer and return 0 on success. */
 static void set_errbuf(char *errbuf, size_t n, int err) {
     if (!errbuf || n == 0) return;
-    snprintf(errbuf, n, "%s", strerror(err));
+#ifdef _WIN32
+    if (strerror_s(errbuf, n, err) != 0) snprintf(errbuf, n, "error %d", err);
+#else
+    if (strerror_r(err, errbuf, n) != 0) snprintf(errbuf, n, "error %d", err);
+#endif
 }
 
 #ifdef _WIN32
@@ -646,16 +653,24 @@ double platform_now_seconds(void) {
 
 #ifdef _WIN32
 
+/* The counter's frequency is fixed at boot, but the first read of it was a
+   plain `static bool init`: a second thread could see `init` set before
+   `freq` was (RUNTIME_PLAN.md R0). INIT_ONCE orders them. */
+static LARGE_INTEGER g_qpcFreq;
+static INIT_ONCE g_qpcOnce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK qpc_freq_cb(PINIT_ONCE once, PVOID param, PVOID *context) {
+    (void)once;
+    (void)param;
+    (void)context;
+    QueryPerformanceFrequency(&g_qpcFreq);
+    return TRUE;
+}
+
 double platform_monotonic_seconds(void) {
-    static LARGE_INTEGER freq;
-    static bool init = false;
-    if (!init) {
-        QueryPerformanceFrequency(&freq);
-        init = true;
-    }
+    InitOnceExecuteOnce(&g_qpcOnce, qpc_freq_cb, NULL, NULL);
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    return (double)now.QuadPart / (double)freq.QuadPart;
+    return (double)now.QuadPart / (double)g_qpcFreq.QuadPart;
 }
 
 void platform_sleep_seconds(double seconds) {
@@ -928,14 +943,20 @@ bool platform_net_disabled(void) {
 
 #ifdef _WIN32
 
-static void ensure_winsock(void) {
-    static bool started = false;
-    if (!started) {
-        WSADATA wsaData;
-        WSAStartup(MAKEWORD(2, 2), &wsaData);
-        started = true;
-    }
+/* Once per process, and not with a plain `static bool`: two interns opening
+   their first socket at the same moment could both see it unset, or one
+   could go on to use Winsock before the other's WSAStartup returned
+   (RUNTIME_PLAN.md R0). */
+static INIT_ONCE g_winsockOnce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK winsock_start_cb(PINIT_ONCE once, PVOID param, PVOID *context) {
+    (void)once;
+    (void)param;
+    (void)context;
+    WSADATA wsaData;
+    WSAStartup(MAKEWORD(2, 2), &wsaData);
+    return TRUE;
 }
+static void ensure_winsock(void) { InitOnceExecuteOnce(&g_winsockOnce, winsock_start_cb, NULL, NULL); }
 
 static void sock_set_nonblocking(SockFd fd, bool nonblocking) {
     u_long mode = nonblocking ? 1 : 0;
@@ -1055,7 +1076,7 @@ static bool sock_set_reuseaddr(SockFd fd) {
 }
 
 static const char *sock_last_error(char *buf, size_t len) {
-    snprintf(buf, len, "%s", strerror(errno));
+    set_errbuf(buf, len, errno);
     return buf;
 }
 
@@ -2576,7 +2597,9 @@ static TlsServer *tlsb_server_load(const char *pfxPath, const char *password, ch
     if (!sslx_ready(err, errLen)) return NULL;
     FILE *f = fopen(pfxPath, "rb");
     if (f == NULL) {
-        snprintf(err, errLen, "can't read the certificate file '%s': %s.", pfxPath, strerror(errno));
+        char why[128];
+        set_errbuf(why, sizeof why, errno);
+        snprintf(err, errLen, "can't read the certificate file '%s': %s.", pfxPath, why);
         return NULL;
     }
     g_sslx.ERR_clear_error();

@@ -1,0 +1,25 @@
+gimme groupchat
+
+flex bet work_groupchat(i) {
+    yo total = 0
+    grind round from 0 to 40 {
+        yo g = {}
+        grind n from 0 to 300 {
+            g["k" + to_yap((n * 13 + i) % 257)] = n + round
+            g[n % 50] = n
+        }
+        grind n from 0 to 100 step 3 {
+            yo key = "k" + to_yap(n)
+            sus (g.has(key)) {
+                g.remove(key)
+            }
+        }
+        yo other = {"extra": i, "k1": -1}
+        g.merge(other)
+        yo inverted = groupchat.invert({"a": 1, "b": 2, "c": i})
+        yo rebuilt = groupchat.from_pairs(g.pairs().slice(0, 20))
+        total = (total + g.how_thicc() + g.keys().how_thicc() + g.get("k1", 0) + g.get("missing", 7) +
+                 inverted.how_thicc() + rebuilt.how_thicc()) % 1000000007
+    }
+    bounce total
+}

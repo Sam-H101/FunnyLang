@@ -1,0 +1,9 @@
+// tests/lang/threads/yapper.funny -- RUNTIME_PLAN.md R0: `yapper` from eight interns at
+// once. The same work runs on this thread first; every intern's answer must
+// match it. A process-wide scratch buffer, a shared generator or a
+// non-reentrant C library call shows up here as a mismatch -- and, under
+// ThreadSanitizer in CI, as a report.
+gimme { crew_matches, CREW } from "workers/crew.funny"
+gimme { work_yapper } from "workers/yapper_work.funny"
+
+yap "yapper, eight interns at once, answers matching one thread:", crew_matches("yapper", work_yapper), "of", CREW

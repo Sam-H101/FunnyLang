@@ -1,0 +1,23 @@
+gimme clock
+
+// Time from eight threads: the formatter (strftime over localtime_r), the
+// monotonic clock, a stopwatch, and the timer queue. Answers are facts that
+// hold whenever this runs, not times.
+flex bet work_clock(i) {
+    yo ok = fax
+    yo last = clock.now()
+    yo watch = clock.stopwatch()
+    grind n from 0 to 300 {
+        ok = ok && clock.date_yap("%%") == "%"
+        ok = ok && clock.date_yap("%Y").how_thicc() == 4
+        yo t = clock.now()
+        ok = ok && t >= last
+        last = t
+        ok = ok && clock.now_ms() > 0
+    }
+    grind n from 0 to 5 {
+        await_fr clock.chill(2)
+    }
+    ok = ok && watch() >= 0.009
+    bounce ok
+}

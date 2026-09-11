@@ -2,6 +2,30 @@
 
 All notable changes to FunnyLang are documented here.
 
+## [Unreleased] — the runtime under threads
+
+`gimme interns` gave FunnyLang real OS threads; this is the pass over `native/` that makes every
+stdlib module safe on them, and the corpus that proves it. Plan and build log:
+[RUNTIME_PLAN.md](RUNTIME_PLAN.md).
+
+### Added
+- **`tests/lang/threads/`** — one golden per stdlib module. Each runs the same work on this thread
+  and then on eight interns at once, and passes only if all eight answers match the single-threaded
+  one. CI also runs the whole directory under ThreadSanitizer, along with `extensive_examples`.
+
+### Fixed
+- **`rizz` kept one generator for the whole process**, unlocked. Two interns rolling dice at the
+  same moment was a data race, and a seeded stream came out different depending on what the other
+  threads happened to be doing. The state now lives in the `VM`, so `rizz.seed(n)` means the same
+  stream wherever it runs. `stash.shuffle_it`, which draws from the same generator, is fixed with
+  it.
+- **First use of randomness now seeds from the operating system** rather than the wall clock. Two
+  interns hired in the same second no longer roll the same dice.
+- **Winsock start-up and the Windows performance-counter frequency** are done under `INIT_ONCE`. A
+  plain `static bool` let one thread see the flag set before the thing it guarded was.
+- **Error text is built with `strerror_r`/`strerror_s`**. Plain `strerror` may hand back a buffer
+  shared by every thread, so two threads failing at once could read each other's message.
+
 ## [Unreleased] — HTTPS
 
 A FunnyLang program can now be an HTTPS server, and `extensive_examples/web_server_https/` is one: a

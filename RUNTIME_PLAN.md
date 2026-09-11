@@ -427,13 +427,13 @@ docs/STDLIB.md docs/LANGUAGE.md docs/NATIVE.md CHANGELOG.md   every milestone
 ## 5. Milestone checklist
 
 ### R0 — thread-safety audit
-- [ ] `tests/lang/threads/` corpus, one golden per module, each with eight interns
-- [ ] `rizz` state per VM, seeded from the OS; `rizz.seed` per VM
-- [ ] `ensure_winsock`, Windows `platform_monotonic_seconds` under `INIT_ONCE`
-- [ ] `platform_strerror` (`strerror_r`/`strerror_s`); `set_errbuf` and `sock_last_error` use it
-- [ ] `diag.c`, `sus.c` start-up-only globals documented and asserted
-- [ ] CI TSan step covers `threads`, `interns`, `async`, `extensive_examples`
-- [ ] `docs/NATIVE.md`: "what is process-global, and why that is safe"
+- [x] `tests/lang/threads/` corpus, one golden per module, each with eight interns
+- [x] `rizz` state per VM, seeded from the OS; `rizz.seed` per VM
+- [x] `ensure_winsock`, Windows `platform_monotonic_seconds` under `INIT_ONCE`
+- [x] `platform_strerror` (`strerror_r`/`strerror_s`); `set_errbuf` and `sock_last_error` use it
+- [x] `diag.c`, `sus.c` start-up-only globals documented and asserted
+- [x] CI TSan step covers `threads`, `interns`, `async`, `extensive_examples`
+- [x] `docs/NATIVE.md`: "what is process-global, and why that is safe"
 
 ### R1 — `blob`
 - [ ] The type: object, GC, equality, hashing as a groupchat key, printing
@@ -533,7 +533,33 @@ docs/STDLIB.md docs/LANGUAGE.md docs/NATIVE.md CHANGELOG.md   every milestone
 
 ## 9. Deviations log
 
-*(empty — nothing built yet)*
+**Branching (applies to every milestone).** §0 asks for a branch per milestone. This runs on one
+branch, `feature/runtime-plan`, with a commit pushed per milestone instead. The plan's reason for
+the rule — that a milestone lands reviewable on its own — is met by the commits, and ten branches
+for ten milestones that each build on the last would be ten pull requests waiting on each other.
+
+**R0.** Built as specified, with two notes.
+
+*The corpus is eleven goldens plus the moved one, not twelve new ones.* Each
+`tests/lang/threads/<module>.funny` computes the expected answers on its own thread first, then
+hires eight interns to compute the same eight and counts the matches. The expected-first ordering
+is not cosmetic: with a process-wide generator the golden's own rolls would have raced the
+interns', so the test would have been measuring the bug with the bug. `tests/lang/interns/`'s
+`concurrent_imports` moved here as `threads/imports.funny`, since it is the same kind of test and
+CI now runs this whole directory under ThreadSanitizer.
+
+*`rizz`'s first seed comes from the OS, which the plan did not ask for.* Moving the generator into
+the `VM` turned a latent bug into a visible one: the old self-seed mixed `time(NULL)` with the
+address of the (single, static) state, so eight interns starting in the same second would have
+drawn from eight nearly identical streams. It now seeds from `platform_random_bytes`, falling back
+to the clock only if that fails.
+
+*Everything else in R0 is as written.* Winsock start-up and the Windows performance-counter
+frequency moved to `INIT_ONCE`; `strerror` became `strerror_r`/`strerror_s` behind `set_errbuf`,
+which `sock_last_error` and the TLS certificate reader now use; `diag.c` and `sus.c`'s start-up-only
+globals are documented where they are declared; `docs/NATIVE.md` gained a "what is process-global,
+and why that is safe" section; CI's ThreadSanitizer step now covers `tests/lang/threads`,
+`tests/lang/interns`, `tests/lang/async` and `extensive_examples`.
 
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in

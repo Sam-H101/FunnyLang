@@ -1,0 +1,19 @@
+gimme rizz
+gimme stash
+
+// A seeded stream must be the same stream wherever it runs. With one
+// generator for the whole process, eight interns rolling at once interleave
+// their draws and every stream comes out different; with one per VM, each
+// intern's stream is exactly the one its seed makes on its own.
+flex bet work_rizz(i) {
+    rizz.seed(1000 + i)
+    yo draws = []
+    grind n from 0 to 3000 {
+        draws.yeet_in(rizz.roll(1, 1000000))
+    }
+    draws.yeet_in(rizz.float_roll())
+    draws.yeet_in(rizz.coinflip())
+    draws.yeet_in(rizz.pick([10, 20, 30, 40]))
+    draws.extend(stash.shuffle_it([1, 2, 3, 4, 5, 6, 7, 8]))
+    bounce draws.join(",")
+}

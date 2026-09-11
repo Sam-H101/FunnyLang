@@ -1,0 +1,45 @@
+// tests/lang/threads/workers/run.funny -- the worker every threads/ golden
+// hires. Its assignment names a work module and an index; it runs that
+// module's `work(index)` and delivers the answer. The golden runs the same
+// function on its own thread and compares.
+gimme interns
+gimme { work_mafs } from "mafs_work.funny"
+gimme { work_yapper } from "yapper_work.funny"
+gimme { work_stash } from "stash_work.funny"
+gimme { work_groupchat } from "groupchat_work.funny"
+gimme { work_rizz } from "rizz_work.funny"
+gimme { work_filez } from "filez_work.funny"
+gimme { work_clock } from "clock_work.funny"
+gimme { work_computer } from "computer_work.funny"
+gimme { work_internet } from "internet_work.funny"
+gimme { work_sus } from "sus_work.funny"
+gimme { work_errors } from "errors_work.funny"
+
+yo job = interns.assignment()
+yo what = job["what"]
+yo i = job["index"]
+yo answer = ghost
+sus (what == "mafs") {
+    answer = work_mafs(i)
+} kinda_sus (what == "yapper") {
+    answer = work_yapper(i)
+} kinda_sus (what == "stash") {
+    answer = work_stash(i)
+} kinda_sus (what == "groupchat") {
+    answer = work_groupchat(i)
+} kinda_sus (what == "rizz") {
+    answer = work_rizz(i)
+} kinda_sus (what == "filez") {
+    answer = work_filez(i)
+} kinda_sus (what == "clock") {
+    answer = work_clock(i)
+} kinda_sus (what == "computer") {
+    answer = work_computer(i)
+} kinda_sus (what == "internet") {
+    answer = work_internet(i)
+} kinda_sus (what == "sus") {
+    answer = work_sus(i)
+} kinda_sus (what == "errors") {
+    answer = work_errors(i)
+}
+interns.deliver(answer)

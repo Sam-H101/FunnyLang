@@ -132,6 +132,13 @@ struct VM {
        from its hire path, a yeeted binary from its own executable. */
     char *scriptPath;
 
+    /* rizz's xoshiro256** state. Per VM rather than per process, so that
+       `interns` workers never share one (RUNTIME_PLAN.md R0) and a seed
+       gives the same stream wherever it runs. Seeded from the OS on first
+       use unless rizz.seed(n) came first. */
+    uint64_t rngState[4];
+    bool rngSeeded;
+
     /* The module currently executing, borrowed -- swapped by vm_run_module
        for the duration of an import and restored afterwards, so error
        positions and stack traces name the file the code actually came

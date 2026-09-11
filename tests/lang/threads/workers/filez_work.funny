@@ -1,0 +1,27 @@
+gimme filez
+
+// Temp files, directories, listing, reading, writing, appending, paths --
+// including abs_path on a path that does not exist, which takes the
+// lexical-normalization fallback that used strtok.
+flex bet work_filez(i) {
+    yo dir = filez.temp_file("threads_") + "_d"
+    filez.mkdir(dir)
+    yo total = 0
+    grind n from 0 to 40 {
+        yo path = filez.join_path(dir, "f" + to_yap(n) + ".txt")
+        filez.yeet_out(path, "line " + to_yap(n) + " of " + to_yap(i) + "\n")
+        filez.append_to(path, "more\n")
+        total += filez.slurp(path).how_thicc()
+        filez.write_bytes(path + ".bin", [n % 256, i, 7])
+        total += filez.read_bytes(path + ".bin")[0]
+    }
+    total += filez.list_dir(dir).how_thicc()
+    grind n from 0 to 60 {
+        total += filez.base_of(filez.abs_path("no/such/../dir" + to_yap(n) + "/./file.txt")).how_thicc()
+    }
+    grind name in filez.list_dir(dir) {
+        filez.obliterate(filez.join_path(dir, name))
+    }
+    filez.obliterate(dir)
+    bounce total + (filez.exists(dir) ? 1 : 0)
+}

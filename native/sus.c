@@ -1,5 +1,6 @@
 #include "sus.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -120,10 +121,20 @@ static Value m_render_diag(VM *vm, Value *a, int argc) {
  * Same bytes `main.c` runs, so a golden written against it tests the shipped
  * dispatch rather than a re-linked copy of it.
  */
+/* (see above)
+ *
+ * Process-global, and safe because of when it is written (RUNTIME_PLAN.md
+ * R0): main.c installs the pointer once at start-up, before any VM and so
+ * before any `interns` thread exists, and it points at a const array in the
+ * binary. Everything afterwards only reads it.
+ */
 static const uint8_t *g_toolchain = NULL;
 static size_t g_toolchainLen = 0;
 
 void sus_set_toolchain(const uint8_t *bytes, size_t len) {
+    /* Start-up only, and exactly once (RUNTIME_PLAN.md R0): every later reader
+       is on some other thread. */
+    assert(g_toolchain == NULL && "the toolchain is installed once, at start-up");
     g_toolchain = bytes;
     g_toolchainLen = len;
 }

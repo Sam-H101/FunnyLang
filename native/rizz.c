@@ -19,10 +19,14 @@ static int64_t as_int64_like(Value v) {
     return IS_BOOL(v) ? (AS_BOOL(v) ? 1 : 0) : AS_INT(v);
 }
 
-/* -- xoshiro256** (public domain, D. Blackman & S. Vigna) ---------------- */
-
-static uint64_t g_state[4];
-static bool g_seeded = false;
+/* -- xoshiro256** (public domain, D. Blackman & S. Vigna) ----------------
+ *
+ * One generator per VM, in the VM (RUNTIME_PLAN.md R0). It used to be one
+ * for the whole process, unlocked: eight interns rolling dice at once
+ * interleaved their draws -- a data race, and a seeded stream that came out
+ * different depending on what the other threads were doing. Per VM, a seed
+ * means the same stream wherever it runs, and nothing is shared to race on.
+ */
 
 static uint64_t splitmix64(uint64_t *state) {
     uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
@@ -31,24 +35,30 @@ static uint64_t splitmix64(uint64_t *state) {
     return z ^ (z >> 31);
 }
 
-void rizz_seed(uint64_t seed) {
+void rizz_seed(VM *vm, uint64_t seed) {
     uint64_t sm = seed;
-    for (int i = 0; i < 4; i++) g_state[i] = splitmix64(&sm);
-    g_seeded = true;
+    for (int i = 0; i < 4; i++) vm->rngState[i] = splitmix64(&sm);
+    vm->rngSeeded = true;
 }
 
 static uint64_t rotl64(uint64_t x, int k) {
     return (x << k) | (x >> (64 - k));
 }
 
-uint64_t rizz_next_u64(void) {
-    if (!g_seeded) {
-        /* Self-seeded from the current time the first time anything asks
+uint64_t rizz_next_u64(VM *vm) {
+    if (!vm->rngSeeded) {
+        /* Seeded from the operating system the first time anything asks
            for randomness without an explicit rizz.seed(n) first --
-           unpredictable is the point here, not reproducible. */
-        rizz_seed((uint64_t)time(NULL) ^ (uint64_t)(uintptr_t)&g_state);
+           unpredictable is the point here, not reproducible. The clock is
+           only the fallback: two interns started in the same second would
+           otherwise roll the same dice. */
+        uint64_t seed = 0;
+        if (!platform_random_bytes((unsigned char *)&seed, sizeof seed)) {
+            seed = (uint64_t)time(NULL) ^ (uint64_t)(uintptr_t)vm;
+        }
+        rizz_seed(vm, seed);
     }
-    uint64_t *s = g_state;
+    uint64_t *s = vm->rngState;
     uint64_t result = rotl64(s[1] * 5, 7) * 9;
     uint64_t t = s[1] << 17;
     s[2] ^= s[0];
@@ -60,8 +70,8 @@ uint64_t rizz_next_u64(void) {
     return result;
 }
 
-double rizz_next_double(void) {
-    return (double)(rizz_next_u64() >> 11) * (1.0 / 9007199254740992.0); /* / 2^53 */
+double rizz_next_double(VM *vm) {
+    return (double)(rizz_next_u64(vm) >> 11) * (1.0 / 9007199254740992.0); /* / 2^53 */
 }
 
 /* -- funnylang/stdlib/rizz.py's own functions ---------------------------- */
@@ -79,14 +89,13 @@ static Value m_roll(VM *vm, Value *a, int argc) {
         hi = t;
     }
     uint64_t range = (uint64_t)(hi - lo) + 1;
-    return INT_VAL(lo + (int64_t)(rizz_next_u64() % range));
+    return INT_VAL(lo + (int64_t)(rizz_next_u64(vm) % range));
 }
 
 static Value m_float_roll(VM *vm, Value *a, int argc) {
-    (void)vm;
     (void)a;
     (void)argc;
-    return FLOAT_VAL(rizz_next_double());
+    return FLOAT_VAL(rizz_next_double(vm));
 }
 
 static Value m_pick(VM *vm, Value *a, int argc) {
@@ -100,7 +109,7 @@ static Value m_pick(VM *vm, Value *a, int argc) {
         vm_throw_native(vm, "TypeVibeMismatch", "'pick' on an empty stash.");
         return GHOST_VAL;
     }
-    return s->items[rizz_next_u64() % (uint64_t)s->count];
+    return s->items[rizz_next_u64(vm) % (uint64_t)s->count];
 }
 
 static Value m_shuffle(VM *vm, Value *a, int argc) {
@@ -111,7 +120,7 @@ static Value m_shuffle(VM *vm, Value *a, int argc) {
     }
     ObjStash *s = (ObjStash *)AS_OBJ(a[0]);
     for (int i = s->count - 1; i > 0; i--) {
-        int j = (int)(rizz_next_u64() % (uint64_t)(i + 1));
+        int j = (int)(rizz_next_u64(vm) % (uint64_t)(i + 1));
         Value tmp = s->items[i];
         s->items[i] = s->items[j];
         s->items[j] = tmp;
@@ -120,15 +129,14 @@ static Value m_shuffle(VM *vm, Value *a, int argc) {
 }
 
 static Value m_coinflip(VM *vm, Value *a, int argc) {
-    (void)vm;
     (void)a;
     (void)argc;
-    return BOOL_VAL(rizz_next_double() < 0.5);
+    return BOOL_VAL(rizz_next_double(vm) < 0.5);
 }
 
 static Value m_seed(VM *vm, Value *a, int argc) {
     if (argc == 0 || IS_GHOST(a[0])) {
-        g_seeded = false; /* re-seed unpredictably next use, matching random.seed(None) */
+        vm->rngSeeded = false; /* re-seed unpredictably next use, matching random.seed(None) */
         return GHOST_VAL;
     }
     uint64_t seed;
@@ -141,14 +149,14 @@ static Value m_seed(VM *vm, Value *a, int argc) {
         vm_throw_native(vm, "TypeVibeMismatch", "'seed' needs a numba, not a %s.", vm_type_name(a[0]));
         return GHOST_VAL;
     }
-    rizz_seed(seed);
+    rizz_seed(vm, seed);
     return GHOST_VAL;
 }
 
 static Value m_uuid(VM *vm, Value *a, int argc) {
     (void)a;
     (void)argc;
-    uint64_t hi = rizz_next_u64(), lo = rizz_next_u64();
+    uint64_t hi = rizz_next_u64(vm), lo = rizz_next_u64(vm);
     /* UUIDv4: version nibble fixed to 4, variant bits fixed to 10xx. */
     unsigned char b[16];
     memcpy(b, &hi, 8);
@@ -201,7 +209,7 @@ static Value m_gamble(VM *vm, Value *a, int argc) {
         return GHOST_VAL;
     }
     double odds = IS_FLOAT(a[0]) ? AS_FLOAT(a[0]) : (IS_INT(a[0]) ? (double)AS_INT(a[0]) : bignum_to_double(AS_BIGNUM(a[0])));
-    return BOOL_VAL(rizz_next_double() < odds);
+    return BOOL_VAL(rizz_next_double(vm) < odds);
 }
 
 typedef struct {

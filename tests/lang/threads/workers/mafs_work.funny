@@ -1,0 +1,17 @@
+gimme mafs
+
+// Numbers, formatting and bignums: everything here goes through numfmt.c and
+// bignum.c, which would show a hidden scratch buffer shared between threads.
+flex bet work_mafs(i) {
+    yo parts = []
+    grind n from 1 to 400 {
+        yo x = n + i
+        parts.yeet_in(to_yap(mafs.round(mafs.sqrt(x) * mafs.sin(x) + mafs.log(x), 6)))
+        parts.yeet_in(to_yap(mafs.gcd(x * 12, 18 + i)))
+        parts.yeet_in(to_yap(mafs.is_prime(x)))
+    }
+    parts.yeet_in(to_yap(mafs.factorial(40 + i)))
+    parts.yeet_in(to_yap(mafs.pow(2, 100 + i)))
+    parts.yeet_in(to_yap(1.0 / 3.0 * i))
+    bounce parts.join(",").how_thicc() + mafs.factorial(20 + i) % 1000003
+}

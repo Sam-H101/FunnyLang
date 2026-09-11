@@ -1,0 +1,23 @@
+gimme internet
+
+// Each intern runs its own loopback server and client, back to back, so eight
+// threads open, accept, read, write and close sockets at the same moment --
+// which is where the TLS side table, the non-blocking listener and the
+// SIGPIPE/Winsock start-up all get exercised concurrently.
+flex bet work_internet(i) {
+    yo shop = internet.open_shop(0, "127.0.0.1")
+    yo port = internet.shop_port(shop)
+    yo heard = []
+    grind n from 0 to 25 {
+        yo client = internet.slide_into("127.0.0.1", port, 5000)
+        yo customer = internet.next_customer(shop, 5000)
+        internet.holler_back(client, "ping " + to_yap(i) + " " + to_yap(n))
+        yo got = internet.hear_them_out(customer["conn"], 100, 5000)
+        internet.holler_back(customer["conn"], "pong " + got)
+        heard.yeet_in(internet.hear_them_out(client, 100, 5000))
+        internet.kick_out(customer["conn"])
+        internet.kick_out(client)
+    }
+    internet.close_shop(shop)
+    bounce heard.join("|")
+}

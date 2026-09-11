@@ -1,0 +1,30 @@
+// tests/lang/threads/workers/crew.funny -- what every threads/ golden does:
+// run `work(i)` for eight indices on its own thread first, then hire eight
+// interns to run the same eight at the same moment, and say whether every
+// intern's answer matches. Computing the expected answers *before* hiring
+// matters for rizz: with one generator for the whole process, the golden's
+// own rolls would otherwise race with the interns'.
+gimme interns
+gimme filez
+
+flex deadass CREW = 8
+
+flex bet crew_matches(what, work) {
+    yo expected = []
+    grind i from 0 to CREW {
+        expected.yeet_in(work(i))
+    }
+    yo worker = filez.join_path(filez.dir_of(the_script()), filez.join_path("workers", "run.funny"))
+    yo hired = []
+    grind i from 0 to CREW {
+        hired.yeet_in(interns.hire(worker, {"what": what, "index": i}))
+    }
+    yo got = interns.everybody(hired)
+    yo matching = 0
+    grind i from 0 to CREW {
+        sus (got[i] == expected[i]) {
+            matching += 1
+        }
+    }
+    bounce matching
+}
