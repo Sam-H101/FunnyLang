@@ -65,6 +65,7 @@
 #pragma comment(lib, "secur32.lib")
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "ncrypt.lib")
+#pragma comment(lib, "advapi32.lib") /* CryptAcquireContextW: deleting a legacy-CSP key (sch_delete_key) */
 typedef SOCKET SockFd;
 #define SOCK_INVALID INVALID_SOCKET
 #else
