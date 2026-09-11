@@ -20,6 +20,7 @@ static ObjOtw *alloc_otw(GC *gc) {
     p->dueAt = 0.0;
     p->waitSocket = PLATFORM_SOCKET_NONE;
     p->waitMailbox = false;
+    p->waitInterrupt = false;
     p->awaited = false;
     gc_track(gc, (Obj *)p, sizeof(ObjOtw));
     return p;
@@ -54,6 +55,12 @@ ObjOtw *otw_for_mailbox(GC *gc, double deadline) {
     return p;
 }
 
+ObjOtw *otw_for_interrupt(GC *gc) {
+    ObjOtw *p = alloc_otw(gc);
+    p->waitInterrupt = true;
+    return p;
+}
+
 ObjOtw *otw_done(GC *gc, Value v) {
     ObjOtw *p = alloc_otw(gc);
     p->state = OTW_FULFILLED;
@@ -68,6 +75,7 @@ void otw_fulfill(ObjOtw *p, Value v) {
     p->internId = 0;
     p->waitSocket = PLATFORM_SOCKET_NONE;
     p->waitMailbox = false;
+    p->waitInterrupt = false;
 }
 
 void otw_reject(ObjOtw *p, Value err) {
@@ -77,4 +85,5 @@ void otw_reject(ObjOtw *p, Value err) {
     p->internId = 0;
     p->waitSocket = PLATFORM_SOCKET_NONE;
     p->waitMailbox = false;
+    p->waitInterrupt = false;
 }

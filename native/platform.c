@@ -2279,6 +2279,56 @@ bool platform_random_bytes(unsigned char *out, size_t n) {
 }
 #endif
 
+/* -- interrupts (RUNTIME_PLAN.md R5) --------------------------------------
+ *
+ * The handler sets a flag and nothing else. Not a condition variable, not a
+ * write to a pipe, not a malloc: almost nothing is safe to call inside a
+ * signal handler, and the loop is already awake often enough to notice.
+ */
+
+#ifdef _WIN32
+
+static volatile LONG g_interrupted = 0;
+static INIT_ONCE g_interruptOnce = INIT_ONCE_STATIC_INIT;
+
+static BOOL WINAPI console_ctrl_handler(DWORD type) {
+    if (type != CTRL_C_EVENT && type != CTRL_BREAK_EVENT) return FALSE;
+    /* FALSE the second time: the default action is to end the process, which
+       is what somebody pressing Ctrl-C again is asking for. */
+    return InterlockedExchange(&g_interrupted, 1) == 0;
+}
+
+static BOOL CALLBACK interrupt_install_cb(PINIT_ONCE once, PVOID param, PVOID *context) {
+    (void)once;
+    (void)param;
+    (void)context;
+    SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+    return TRUE;
+}
+
+void platform_on_interrupt(void) { InitOnceExecuteOnce(&g_interruptOnce, interrupt_install_cb, NULL, NULL); }
+
+bool platform_interrupt_seen(void) { return InterlockedCompareExchange(&g_interrupted, 0, 0) != 0; }
+
+#else
+
+static volatile sig_atomic_t g_interrupted = 0;
+
+static void interrupt_handler(int sig) {
+    (void)sig;
+    g_interrupted = 1;
+    /* Back to the default for the next one, so a shutdown that itself hangs
+       is still interruptible. signal() is one of the few calls POSIX
+       guarantees is safe from inside a handler. */
+    signal(SIGINT, SIG_DFL);
+}
+
+void platform_on_interrupt(void) { signal(SIGINT, interrupt_handler); }
+
+bool platform_interrupt_seen(void) { return g_interrupted != 0; }
+
+#endif
+
 /* -- cryptography (RUNTIME_PLAN.md R3) -------------------------------------
  *
  * Nothing below implements a cipher or a hash. Each backend asks the OS for

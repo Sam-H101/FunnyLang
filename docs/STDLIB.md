@@ -366,6 +366,7 @@ platform info.
 | `computer.beep()` | Rings the terminal bell (`\a`). |
 | `computer.clear()` | Clears the terminal screen. |
 | `computer.uptime()` | Seconds since the FunnyLang process itself started. |
+| `computer.until_ctrl_c()` | An `otw` that settles the first time somebody presses Ctrl-C, so a long-running program can shut down tidily instead of being killed mid-write. Pressing Ctrl-C a second time ends the process immediately, so a shutdown that hangs is not a trap. Only the program that owns the terminal may ask: inside an `interns` worker this is `OutOfPocket`, and the boss dms it instead. |
 | `computer.blue_screen()` | A full-screen blue-ANSI "fatal error" screen, then raises an error (exit code 1 when uncaught). |
 
 ## `internet` — networking

@@ -164,6 +164,24 @@ static bool settle_mailboxes(VM *vm, double now) {
     return moved;
 }
 
+/* An interrupt settles every `otw` waiting for one, with `ghost`: what was
+   asked for was the event. The flag is a latch, so a program that asks twice
+   and awaits both gets both. */
+static bool settle_interrupts(VM *vm) {
+    bool moved = false;
+    if (!platform_interrupt_seen()) return false;
+    for (int i = 0; i < vm->taskCount; i++) {
+        Task *t = vm->tasks[i];
+        if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
+        ObjOtw *p = t->awaiting;
+        if (p->state == OTW_PENDING && p->waitInterrupt) {
+            otw_fulfill(p, GHOST_VAL);
+            moved = true;
+        }
+    }
+    return moved;
+}
+
 /* A timer whose moment has come fulfils with `ghost`: what was asked for was
    the delay. */
 static bool fire_due_timers(VM *vm, double now) {
@@ -226,6 +244,7 @@ static bool wake_waiters(VM *vm) {
     bool moved = fire_due_timers(vm, now);
     if (settle_ready_sockets(vm, now)) moved = true;
     if (settle_mailboxes(vm, now)) moved = true;
+    if (settle_interrupts(vm)) moved = true;
 
     for (int i = 0; i < vm->taskCount; i++) {
         Task *t = vm->tasks[i];
@@ -257,6 +276,19 @@ static bool wake_waiters(VM *vm) {
         }
     }
 
+    /* Nothing else can wake a Ctrl-C waiter -- there is no thread to finish
+       and no socket to become readable -- so the wait is capped and the flag
+       is read again next turn, at most one cap late. */
+    bool anyInterrupt = false;
+    for (int i = 0; i < vm->taskCount; i++) {
+        Task *t = vm->tasks[i];
+        if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
+        if (t->awaiting->waitInterrupt) {
+            anyInterrupt = true;
+            break;
+        }
+    }
+
     bool anyMailbox = false;
     for (int i = 0; i < vm->taskCount; i++) {
         Task *t = vm->tasks[i];
@@ -271,7 +303,9 @@ static bool wake_waiters(VM *vm) {
     gather_sockets(vm, &w);
     if (w.count > 0) {
         int timeout = deadlineMs;
-        if ((anyWorker || anyMailbox) && (timeout < 0 || timeout > MIXED_WAIT_CAP_MS)) timeout = MIXED_WAIT_CAP_MS;
+        if ((anyWorker || anyMailbox || anyInterrupt) && (timeout < 0 || timeout > MIXED_WAIT_CAP_MS)) {
+            timeout = MIXED_WAIT_CAP_MS;
+        }
         if (timeout < 0) timeout = 60000;
         unsigned char *ready = (unsigned char *)calloc((size_t)w.count, 1);
         platform_poll_sockets(w.handles, w.count, timeout, ready);
@@ -284,10 +318,18 @@ static bool wake_waiters(VM *vm) {
     free_sockets(&w);
 
     if (anyWorker || anyMailbox) {
+        if (anyInterrupt && (deadlineMs < 0 || deadlineMs > MIXED_WAIT_CAP_MS)) deadlineMs = MIXED_WAIT_CAP_MS;
         /* One wait covers a worker finishing, a message being posted (both
            broadcast on the same condition variable) and the next
            deadline (the timeout). */
         interns_wait_any(vm, deadlineMs);
+        return true;
+    }
+    if (anyInterrupt) {
+        /* Only a Ctrl-C left to wait for. Sleeping the thread in short slices
+           is exactly right: there is no task that could run, no thread that
+           could finish, and a flag that only this loop will notice. */
+        platform_sleep_seconds((double)MIXED_WAIT_CAP_MS / 1000.0);
         return true;
     }
     if (deadlineMs >= 0) {
@@ -331,6 +373,16 @@ void loop_settle_blocking(VM *vm, ObjOtw *p) {
             unsigned char ready = 0;
             int64_t one = p->waitSocket;
             otw_fulfill(p, BOOL_VAL(platform_poll_sockets(&one, 1, timeout, &ready) > 0 && ready));
+            continue;
+        }
+        if (p->waitInterrupt) {
+            /* Blocking on Ctrl-C is legitimate the same way blocking on a
+               worker is: it settles from outside this interpreter. */
+            if (platform_interrupt_seen()) {
+                otw_fulfill(p, GHOST_VAL);
+                continue;
+            }
+            platform_sleep_seconds((double)MIXED_WAIT_CAP_MS / 1000.0);
             continue;
         }
         if (p->waitMailbox) {

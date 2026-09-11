@@ -457,8 +457,8 @@ docs/STDLIB.md docs/LANGUAGE.md docs/NATIVE.md CHANGELOG.md   every milestone
 - [x] `{"live": fax}` on `hire`; one `fwrite` per line; docs
 
 ### R5 — Ctrl-C
-- [ ] `platform_on_interrupt`; `computer.until_ctrl_c`; loop pass; second Ctrl-C still kills
-- [ ] A golden cannot press Ctrl-C: `tests/lang/stdlib/until_ctrl_c.funny` checks the `otw` is
+- [x] `platform_on_interrupt`; `computer.until_ctrl_c`; loop pass; second Ctrl-C still kills
+- [x] A golden cannot press Ctrl-C: `tests/lang/stdlib/until_ctrl_c.funny` checks the `otw` is
       pending and that `wait_up` on it with a timeout is refused, and the manual check is written
       down in the CHANGELOG entry
 
@@ -649,6 +649,28 @@ stdout, which is the stream `funny test` is capturing to compare against, and th
 threads is not fixed by design. It is checked by hand with two live workers and one captured one:
 the live lines appear interleaved while the program runs, never broken mid-line, and the captured
 worker's output still arrives in one piece at its join.
+
+**R5.** Built as specified.
+
+*The manual check the plan asks for, and what it showed.* A program that awaits
+`computer.until_ctrl_c()` while an `async_ngl` task keeps working was sent a real `SIGINT` from
+the shell: the interrupt landed mid-run, the program printed its own shutdown lines, the
+outstanding task drained, and the process exited on its own rather than dying on the signal. A
+second program whose shutdown deliberately hangs was sent two: the first started the shutdown, the
+second ended the process. Both are written down in the CHANGELOG entry, because a golden cannot
+press Ctrl-C.
+
+*The checklist line about `wait_up` with a timeout does not match the API.* `wait_up` takes no
+timeout, so there is nothing to refuse; what the golden checks instead is that asking gives a
+pending `otw`, that asking twice gives two different ones, and that neither settles while nobody
+has pressed anything. The worker case got its own golden in `tests/lang/interns/`, since it needs a
+worker to be refused in.
+
+*One diagnosis worth recording, because it cost time and was not a bug.* The first manual run
+appeared to hang with no output. The program was fine: the shell had captured the wrong background
+PID, so the signal went nowhere, and stdout redirected to a file is block-buffered, so a program
+that never exits never flushes. Capturing the PID properly made it pass first time. The lesson is
+about the harness, not the runtime.
 
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in

@@ -1,0 +1,14 @@
+// tests/lang/stdlib/until_ctrl_c.funny -- RUNTIME_PLAN.md R5. A golden cannot
+// press Ctrl-C, so this checks everything up to that point: asking gives a
+// pending `otw`, asking twice gives two different ones, and nothing settles
+// while nobody has pressed anything. The other half is checked by hand, and
+// written down in the CHANGELOG entry.
+gimme computer
+
+yo stop = computer.until_ctrl_c()
+yap what_is_it(stop)
+yap stop
+
+yo again = computer.until_ctrl_c()
+yap again == stop
+yap stop

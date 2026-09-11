@@ -13,6 +13,31 @@ stdlib module safe on them, and the corpus that proves it. Plan and build log:
   and then on eight interns at once, and passes only if all eight answers match the single-threaded
   one. CI also runs the whole directory under ThreadSanitizer, along with `extensive_examples`.
 
+### Added: `computer.until_ctrl_c()`
+
+An `otw` that settles the first time somebody presses Ctrl-C. A server can then stop accepting,
+finish what it is holding and write its files out, instead of being killed in the middle of one.
+
+```funny
+gimme computer
+
+yo stop = computer.until_ctrl_c()
+await_fr stop
+yap "shutting down"
+```
+
+- **The second Ctrl-C still ends the process**, so a shutdown that itself hangs is not a trap.
+- The signal handler sets a flag and does nothing else, because almost nothing is safe to call
+  inside one. The event loop reads the flag on its next turn, and caps its wait at 25 ms whenever
+  something is waiting on an interrupt, so it is noticed within that.
+- **Only the program that owns the terminal may ask.** Inside an `interns` worker it is
+  `OutOfPocket` — the worker shares the process but not the session, and two VMs both claiming the
+  interrupt would mean neither shuts down tidily. The boss waits and dms it.
+- A golden cannot press Ctrl-C, so `tests/lang/stdlib/until_ctrl_c` checks everything up to that
+  point and the rest is checked by hand: a program awaiting it, sent a real `SIGINT` from the
+  shell, prints its own shutdown lines and exits 0 rather than dying on the signal, and a second
+  signal during a hung shutdown still kills it.
+
 ### Added: live output from an intern
 
 `interns.hire(path, arg, {"live": fax})`. A worker's `yap` and `yell` are held and replayed when it

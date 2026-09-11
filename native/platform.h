@@ -389,6 +389,25 @@ bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce,
                            size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
                            unsigned char *plainOut, char *errbuf, size_t errbuf_len);
 
+/* -- interrupts (RUNTIME_PLAN.md R5) --------------------------------------
+ *
+ * `computer.until_ctrl_c()` is an `otw` that settles the first time somebody
+ * presses Ctrl-C, so a server can shut down tidily instead of being killed
+ * mid-write. The handler itself does one thing -- set a flag -- because
+ * almost nothing else is safe to do inside a signal handler; the event loop
+ * notices the flag on its next turn, which is never more than one wait cap
+ * away.
+ */
+
+/* Starts watching for SIGINT / CTRL_C_EVENT. Idempotent. The *second*
+   interrupt is left to the default action, so a program that hangs during its
+   own shutdown can still be stopped with another Ctrl-C. */
+void platform_on_interrupt(void);
+
+/* Has an interrupt arrived since watching began? Never blocks, and stays true
+   once set -- it is a latch, not a queue. */
+bool platform_interrupt_seen(void);
+
 /* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
  *
  * `interns` runs each worker on a real OS thread, in its own VM with its own

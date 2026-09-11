@@ -1,0 +1,11 @@
+// Ctrl-C belongs to the program that owns the terminal. A worker shares the
+// process but not the session, so it is told to ask its boss instead.
+gimme computer
+gimme interns
+
+sketchy {
+    computer.until_ctrl_c()
+    interns.deliver("no complaint")
+} my_bad (e) {
+    interns.deliver(e.flavor)
+}

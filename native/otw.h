@@ -80,6 +80,11 @@ typedef struct ObjOtw {
        "settle by itself", so `isTimer` stays false. */
     bool waitMailbox;
 
+    /* R5: this `otw` settles (with `ghost`) the first time the process is
+       interrupted. There is no deadline and nothing else settles it: a
+       program asks for it once and shuts down when it arrives. */
+    bool waitInterrupt;
+
     /* Has anything ever awaited this? Not a state -- it says nothing about
        whether the value arrived -- but the loop needs it at exit: an `otw`
        that *rejected* and that nobody ever looked at is an error thrown into
@@ -105,6 +110,9 @@ ObjOtw *otw_for_socket(struct GC *gc, int64_t sock, double deadline);
 /* Born pending, settling with the next message in this VM's inbox, or `ghost`
    at `deadline` (monotonic seconds; 0 means wait as long as it takes). */
 ObjOtw *otw_for_mailbox(struct GC *gc, double deadline);
+
+/* Born pending, settling the first time somebody presses Ctrl-C. */
+ObjOtw *otw_for_interrupt(struct GC *gc);
 
 /* Both are no-ops on an `otw` that has already settled: a settled `otw` is
    final, and a second answer is a bug in the settler rather than something
