@@ -78,7 +78,10 @@ flex bet route(req) {
         bounce text(200, "waited " + to_yap(ms) + "ms without blocking anything else\n")
     }
     sus (path == "/primes" && method == "GET") {
-        bounce primes_page(req)
+        // Awaited here, so `route` stays an ordinary function that returns a
+        // response rather than an `otw`. The awaiting happens inside the
+        // connection's own task either way.
+        bounce await_fr primes_page(req)
     }
     sus (path == "/guestbook" && method == "GET") {
         bounce guestbook_page()
@@ -124,7 +127,7 @@ flex bet route(req) {
 // does not mean equal answers.
 flex deadass PRIME_BLOCK = 2000
 
-flex bet primes_page(req) {
+flex async_ngl bet primes_page(req) {
     yo upto = to_int(req["query"].get("upto", "50000"))
     sus (upto < 2) {
         upto = 2
@@ -164,7 +167,15 @@ flex bet primes_page(req) {
         crew.yeet_in(interns.hire(worker, {"blocks": piles[k]}))
     }
 
-    yo counts = interns.everybody(crew)
+    // `await_fr` each one rather than `interns.everybody`, which joins the
+    // threads and so stops this whole process while it waits. Awaiting parks
+    // only this task: the event loop collects each worker as it finishes and
+    // keeps serving other callers in the meantime. Same order, same answer,
+    // and the server stays responsive through a long one.
+    yo counts = []
+    grind pending in crew {
+        counts.yeet_in(await_fr pending)
+    }
     yo total = 0
     grind c in counts {
         total += c

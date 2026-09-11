@@ -8,6 +8,7 @@
 #include "gc.h"
 #include "groupchat.h"
 #include "modules.h"
+#include "otw.h"
 #include "platform.h"
 #include "stash.h"
 #include "da_string.h"
@@ -378,6 +379,34 @@ static Value m_slide_into(VM *vm, Value *a, int argc) {
     return INT_VAL(conn);
 }
 
+/* internet.hold_up(handle, timeout_ms?) -- an `otw` that settles `fax` when
+   that socket has something to read (for a listener: somebody waiting to be
+   accepted), or `cap` if the timeout runs out first.
+ *
+ * This is the difference between a server that answers one caller at a time
+ * and one that answers several. A blocking read stops the whole thread,
+ * including every other task; awaiting this stops only the task that asked,
+ * and the event loop polls every socket anybody is waiting on in a single
+ * call. Shared state stays safe because it is still one thread -- there is
+ * nothing to lock.
+ *
+ *     bruh (fax) {
+ *         sus (await_fr internet.hold_up(listener, 1000)) {
+ *             serve(internet.next_customer(listener, 0))   // a task
+ *         }
+ *     }
+ */
+static Value m_hold_up(VM *vm, Value *a, int argc) {
+    int64_t sock = handle_arg(vm, a[0], "hold_up");
+    if (vm->hadError) return GHOST_VAL;
+    double deadline = 0.0;
+    if (argc > 1 && !IS_GHOST(a[1])) {
+        int ms = int_opt(a[1], -1);
+        if (ms >= 0) deadline = platform_monotonic_seconds() + (double)ms / 1000.0;
+    }
+    return OBJ_VAL(otw_for_socket(&vm->gc, sock, deadline));
+}
+
 /* internet.shop_port(listener) -- which port it actually got. Only
    interesting after `open_shop(0)`, which is how you bind without gambling on
    a fixed number being free. */
@@ -415,6 +444,7 @@ static const InternetEntry INTERNET_FUNCTIONS[] = {
     {"open_shop", m_open_shop, 1, 2},
     {"slide_into", m_slide_into, 2, 3},
     {"next_customer", m_next_customer, 1, 2},
+    {"hold_up", m_hold_up, 1, 2},
     {"hear_them_out", m_hear_them_out, 1, 3},
     {"holler_back", m_holler_back, 2, 2},
     {"shop_port", m_shop_port, 1, 1},

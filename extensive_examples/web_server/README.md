@@ -7,11 +7,11 @@ serving on http://127.0.0.1:8080 — ctrl-c to stop
 21:04:11  127.0.0.1:51154  GET /hello?name=sam  -> 200  135b
 ```
 
-Three files, and the split is the point:
+Four files, and the split is the point:
 
 | | |
 |---|---|
-| `serve.funny` | the socket loop — the only file that knows what a connection is |
+| `serve.funny` | the accept loop — the only file that knows what a connection is |
 | `http.funny` | HTTP/1.1: request line, headers, bodies, query strings, percent-decoding, responses |
 | `routes.funny` | what it says back. Plain functions from a request to a response |
 | `test_server.funny` | all of the above, over a real socket, in one program |
@@ -66,16 +66,41 @@ The full route list is on the home page. `/slow?ms=120` uses `clock.chill`,
 which yields rather than blocking; `/boom` raises on purpose so the 500 path
 is exercised by something other than a bug.
 
-## What it is not
+## Several callers at once, on one thread
 
-**One request at a time.** The obvious next step is to hand each connection to
-an `interns` worker, and it would even work — a connection handle is a
-`numba`, and a `numba` is one of the things that can cross to a worker. But a
+Each connection is handed to an `async_ngl bet`, which makes a task. A task
+waiting for bytes gives the interpreter back, so the others run; the event loop
+polls every socket anybody is parked on in a single call. Measured against the
+same server before the change:
+
+| | before | after |
+|---|---|---|
+| one `/health`, nothing else happening | 0.35 ms | 0.35 ms |
+| `/health` while a 1500 ms `/slow` runs | **1300 ms** | **0.35 ms** |
+| five 1000 ms `/slow` together | ~5000 ms | **1007 ms** |
+| `/health` while `/primes` runs on 4 threads | blocked | 0.33 ms |
+| 40 requests, 10 at a time | — | 40/40 in 51 ms |
+
+The whole trick is that **nothing blocks**. Every read is
+`await_fr internet.hold_up(conn, ...)` first and then a read with a zero
+timeout that cannot wait; `/slow` uses `clock.chill`, which yields, where
+`touch_grass` would stop the process; `/primes` awaits its workers rather than
+joining them. One plain blocking call anywhere in that path takes the whole
+server down to one caller at a time, which is exactly what it used to do.
+
+Threads were not the answer here. `interns` would give real ones, and a
+connection handle is a `numba` so it could even cross to a worker — but a
 worker is a whole separate VM with its own heap, so it could not see
-`GUESTBOOK` or any other state this program keeps. That is a real consequence
-of the isolation the threading model is built on, not an oversight, and an
-example that hid it would teach the wrong thing. `/primes` shows where workers
-*do* fit: work that takes a value and gives back a value.
+`GUESTBOOK` or anything else this program keeps. Staying on one thread means
+shared state needs no locks at all. `/primes` shows where workers *do* fit:
+work that takes a value and gives back a value.
+
+`test_server.funny` pins this down without asserting on a clock: it opens two
+connections, writes a `/slow?ms=250` and then a `/hello`, and checks the
+*order the server finished them in*. Serial gives `["/slow", "/hello"]`;
+concurrent gives `["/hello", "/slow"]`.
+
+## What it is not
 
 **No keep-alive, no chunked request bodies, no TLS, no HTTP/2.** Every
 response says `Connection: close` and means it. A server that claimed those
@@ -89,7 +114,7 @@ it at the internet.
 
 ## The runtime side
 
-Serving needed six new things in `internet`, since everything that was there
+Serving needed eight new things in `internet`, since everything that was there
 before dials *out*:
 
 ```funny
@@ -102,7 +127,10 @@ internet.kick_out(customer["conn"])
 internet.close_shop(listener)
 ```
 
-plus `internet.slide_into(host, port)` for the other end, which is what lets
+plus `internet.hold_up(handle, timeout_ms?)`, which is the one that makes
+concurrency possible — an `otw` that settles when a socket has something to
+read, so a task can wait on the event loop instead of on the socket — and
+`internet.slide_into(host, port)` for the other end, which is what lets
 `test_server.funny` be both halves of a conversation. Listeners and
 connections are `numba` handles rather than objects — the same reasoning
 `sus`'s REPL sessions and `interns`'s workers already use: a plain integer

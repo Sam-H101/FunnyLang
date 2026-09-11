@@ -128,4 +128,101 @@ grind reply in replies {
 }
 
 filez.obliterate(client_src)
+
+// -- several callers at once ----------------------------------------------
+//
+// The question a concurrency test has to answer without asserting on a clock:
+// does a slow request still hold up a fast one behind it?
+//
+// Two connections, opened and written in order: a `/slow?ms=250` first, then
+// a `/hello`. A server that takes them one at a time finishes them in the
+// order it accepted them. One that serves them at once finishes the fast one
+// first, because the slow one is parked on a `clock.chill` and has given the
+// interpreter back. So the *order the server finished them in* is the answer,
+// and it is a fixed string either way -- §5's "assert on order-independent
+// facts, or force the order" applied to the thing actually being tested.
+yap "-- several callers at once --"
+
+yo finished = []
+
+// The same shape serve.funny uses: one task per connection, and every read
+// waits on the loop rather than on the socket.
+async_ngl bet serve_one(customer) {
+    yo conn = customer["conn"]
+    sus (await_fr internet.hold_up(conn, 5000)) {
+        yo first = internet.hear_them_out(conn, 65536, 0)
+        yo req = read_request(lowkey () => "", first)
+        sus (req != ghost) {
+            internet.holler_back(conn, respond(route(req)))
+            finished.yeet_in(req["path"])
+        }
+    }
+    internet.kick_out(conn)
+}
+
+// This client opens *both* connections and writes *both* requests before
+// reading either. The first client sent one request per connection and waited
+// for each reply, which can never show concurrency no matter how the server
+// behaves.
+deadass PIPELINE_CLIENT = "gimme internet\n" +
+    "gimme interns\n" +
+    "yo job = interns.assignment()\n" +
+    "yo conns = []\n" +
+    "grind req in job[\"requests\"] {\n" +
+    "    yo c = internet.slide_into(\"127.0.0.1\", job[\"port\"], 5000)\n" +
+    "    internet.holler_back(c, req)\n" +
+    "    conns.yeet_in(c)\n" +
+    "}\n" +
+    "yo out = []\n" +
+    "grind c in conns {\n" +
+    "    yo seen = \"\"\n" +
+    "    bruh (fax) {\n" +
+    "        yo chunk = internet.hear_them_out(c, 65536, 10000)\n" +
+    "        sus (chunk == ghost || chunk == \"\") { bail }\n" +
+    "        seen = seen + chunk\n" +
+    "    }\n" +
+    "    internet.kick_out(c)\n" +
+    "    out.yeet_in(seen)\n" +
+    "}\n" +
+    "interns.deliver(out)\n"
+
+yo pipeline_src = filez.temp_file() + "_pipeline.funny"
+filez.yeet_out(pipeline_src, PIPELINE_CLIENT)
+
+yo listener2 = internet.open_shop(0, "127.0.0.1")
+yo port2 = internet.shop_port(listener2)
+
+deadass PAIR = [
+    "GET /slow?ms=250 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    "GET /hello?name=quick HTTP/1.1\r\nHost: localhost\r\n\r\n",
+]
+
+yo pipeline = interns.hire(pipeline_src, {"port": port2, "requests": PAIR})
+
+// Accept both before either has finished. `serve_one` is called, not awaited:
+// it starts a task and comes straight back.
+grind i from 0 to PAIR.how_thicc() {
+    sus (await_fr internet.hold_up(listener2, 5000)) {
+        yo customer = internet.next_customer(listener2, 0)
+        sus (customer != ghost) {
+            serve_one(customer)
+        }
+    }
+}
+
+// `await_fr`, not `interns.wait_up`: wait_up blocks the whole thread, so the
+// `serve_one` tasks would never get a turn and the client would sit there
+// waiting for replies from a server that is busy waiting for the client. That
+// deadlock is the exact trap this whole feature exists to avoid, and writing
+// it once by accident is how you learn the difference.
+yo both = await_fr pipeline
+grind reply in both {
+    yap yapper.split(reply, "\r\n")[0]
+}
+yap "server finished them in this order:", finished
+yap "the fast one did not wait for the slow one:", finished[0] == "/hello"
+
+internet.close_shop(listener2)
+filez.obliterate(pipeline_src)
+
 yap "-- done --"

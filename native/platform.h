@@ -279,6 +279,16 @@ int64_t platform_tcp_connect(const char *host, int port, int timeoutMs);
    fixed number being free -- and then it has to be able to find out which. */
 int platform_socket_port(int64_t sock);
 
+/* Waits until at least one of `handles` has something to read -- for a
+   listener, that means somebody is waiting to be accepted -- or `timeoutMs`
+   elapses (negative: forever). `readyOut[i]` is set to 1 for each handle that
+   is ready and 0 otherwise. Returns how many are ready, or -1 on error.
+
+   This is what lets one thread serve several callers at once: the event loop
+   asks it about every socket any task is blocked on, all in one call, instead
+   of each task sitting in its own blocking read. */
+int platform_poll_sockets(const int64_t *handles, int count, int timeoutMs, unsigned char *readyOut);
+
 void platform_socket_close(int64_t sock);
 
 /* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------

@@ -32,6 +32,8 @@
 
 #include <stdbool.h>
 
+#include <stdint.h>
+
 #include "object.h"
 #include "value.h"
 
@@ -64,6 +66,14 @@ typedef struct ObjOtw {
     bool isTimer;
     double dueAt;
 
+    /* A socket this `otw` is waiting to have something to read on, or
+       PLATFORM_SOCKET_NONE. It settles `fax` when the socket is ready and
+       `cap` if `dueAt` arrives first -- which is what lets one thread serve
+       several callers at once, instead of each of them sitting in a blocking
+       read that nothing else can get past. `dueAt` means the deadline here,
+       not "settle by itself", so `isTimer` stays false. */
+    int64_t waitSocket;
+
     /* Has anything ever awaited this? Not a state -- it says nothing about
        whether the value arrived -- but the loop needs it at exit: an `otw`
        that *rejected* and that nobody ever looked at is an error thrown into
@@ -81,6 +91,10 @@ ObjOtw *otw_for_intern(struct GC *gc, int internId);
 ObjOtw *otw_done(struct GC *gc, Value v);
 /* Born pending, settling by itself at `dueAt` (monotonic seconds). */
 ObjOtw *otw_for_timer(struct GC *gc, double dueAt);
+
+/* Born pending, settling `fax` when `sock` has something to read, or `cap` at
+   `deadline` (monotonic seconds; 0 means no deadline). */
+ObjOtw *otw_for_socket(struct GC *gc, int64_t sock, double deadline);
 
 /* Both are no-ops on an `otw` that has already settled: a settled `otw` is
    final, and a second answer is a bug in the settler rather than something

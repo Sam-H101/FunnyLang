@@ -285,7 +285,9 @@ network at all.
 | `internet.ping(host)` | Opens a TCP connection to `host:80` and returns the round-trip time in milliseconds. |
 
 Everything above dials *out*. These are the other direction — enough to be the
-thing on the other end of somebody else's request. Listeners and connections are `numba` handles
+thing on the other end of somebody else's request, and to answer several of them at once on one
+thread (`hold_up` plus `async_ngl` — see
+[LANGUAGE.md](LANGUAGE.md#concurrency)). Listeners and connections are `numba` handles
 rather than objects, so they stay out of the collector and can cross to an `interns` worker (which
 an object could not). `extensive_examples/web_server/` is a whole HTTP server built on them.
 
@@ -294,6 +296,7 @@ an object could not). `extensive_examples/web_server/` is a whole HTTP server bu
 | `internet.open_shop(port, host?)` | Binds `port` and starts listening; returns a listener handle. `host` defaults to every interface; `port` 0 means "pick a free one". `SO_REUSEADDR` is set, so a restarted server can rebind its own port. |
 | `internet.shop_port(listener)` | Which port it actually got — only interesting after `open_shop(0)`. |
 | `internet.next_customer(listener, timeout_ms?)` | Waits for a connection. Returns `{conn, peer}`, or **`ghost`** if nobody arrived in time (a timeout is not an error — a server loop wants a turn between callers). |
+| `internet.hold_up(handle, timeout_ms?)` | An `otw` that settles `fax` when that socket has something to read (for a listener: somebody waiting to be accepted), or `cap` on timeout. **This is what lets one thread serve several callers at once** — `await_fr` it and only the asking task waits, while the event loop polls every socket anybody is parked on in a single call. A plain blocking read would stop the whole thread, every other task included. |
 | `internet.slide_into(host, port, timeout_ms?)` | Dials out: a raw TCP connection, none of the HTTP above it. Returns a connection handle. |
 | `internet.hear_them_out(conn, max_bytes?, timeout_ms?)` | One read. `""` means the other end closed; **`ghost`** means it said nothing in time. |
 | `internet.holler_back(conn, text)` | Writes all of it (looping over short writes) and returns the byte count. |

@@ -2024,6 +2024,59 @@ int64_t platform_tcp_connect(const char *host, int port, int timeoutMs) {
     return sock_to_handle(fd);
 }
 
+int platform_poll_sockets(const int64_t *handles, int count, int timeoutMs, unsigned char *readyOut) {
+    if (count <= 0) return 0;
+#ifdef _WIN32
+    WSAPOLLFD *pfds = (WSAPOLLFD *)calloc((size_t)count, sizeof(WSAPOLLFD));
+#else
+    struct pollfd *pfds = (struct pollfd *)calloc((size_t)count, sizeof(struct pollfd));
+#endif
+    int live = 0;
+    for (int i = 0; i < count; i++) {
+        readyOut[i] = 0;
+        SockFd fd = handle_to_sock(handles[i]);
+        if (fd == SOCK_INVALID) continue;
+        pfds[live].fd = fd;
+#ifdef _WIN32
+        pfds[live].events = POLLRDNORM;
+#else
+        pfds[live].events = POLLIN;
+#endif
+        pfds[live].revents = 0;
+        live++;
+    }
+    if (live == 0) {
+        free(pfds);
+        return 0;
+    }
+
+#ifdef _WIN32
+    int rc = WSAPoll(pfds, (ULONG)live, timeoutMs);
+#else
+    int rc = poll(pfds, (nfds_t)live, timeoutMs);
+#endif
+    if (rc <= 0) {
+        free(pfds);
+        return rc; /* 0 is a timeout, negative an error */
+    }
+
+    /* Map back, skipping the invalid handles that were not polled. Anything
+       with revents at all counts as ready: a hangup or an error is something
+       to notice, and the read that follows is what reports which. */
+    int at = 0;
+    int ready = 0;
+    for (int i = 0; i < count; i++) {
+        if (handle_to_sock(handles[i]) == SOCK_INVALID) continue;
+        if (pfds[at].revents != 0) {
+            readyOut[i] = 1;
+            ready++;
+        }
+        at++;
+    }
+    free(pfds);
+    return ready;
+}
+
 int platform_socket_port(int64_t sock) {
     SockFd fd = handle_to_sock(sock);
     if (fd == SOCK_INVALID) return -1;

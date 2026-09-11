@@ -22,4 +22,9 @@ bound a port: fax
 HTTP/1.1 200 OK | yo world, sup 👋
 HTTP/1.1 418 I'm a teapot | i'm a teapot. i cannot brew coffee. 🫖
 HTTP/1.1 201 Created | {"ok":true,"entries":1}
+-- several callers at once --
+HTTP/1.1 200 OK
+HTTP/1.1 200 OK
+server finished them in this order: ["/hello", "/slow"]
+the fast one did not wait for the slow one: fax
 -- done --

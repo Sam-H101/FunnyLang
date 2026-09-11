@@ -50,6 +50,10 @@ yap await_fr fetch_both()      // 42
   `kick_out` / `close_shop` close, `shop_port` tells you which port `open_shop(0)` picked, and
   `slide_into(host, port)` dials the other end. Listeners and connections are `numba` handles, so
   they stay out of the collector and can cross to an `interns` worker.
+- **`internet.hold_up(handle, timeout_ms?)`** — an `otw` that settles when a socket has something to
+  read. This is what lets one thread serve several callers at once: `await_fr` it and only the
+  asking task waits, while the event loop polls every socket anybody is parked on in a single call.
+  The loop learned to wait on sockets, timers and worker threads together.
 - **`yapper.byte_len(s)`** — length in bytes, where `how_thicc` is length in codepoints. An HTTP
   `Content-Length` taken from the latter is short for any response with a non-ASCII character in it.
 - **`extensive_examples/web_server/`** — a real HTTP/1.1 server in FunnyLang: a socket loop, a

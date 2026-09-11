@@ -2,6 +2,7 @@
 #include "loop.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "error.h"
@@ -69,6 +70,79 @@ static void reap_done(VM *vm) {
     }
 }
 
+/* Every socket some task is parked on, gathered into one array so they can
+   all be polled in a single call. That is the whole trick behind serving
+   several callers at once on one thread: instead of each task sitting in its
+   own blocking read, nobody blocks and the loop asks about all of them
+   together. */
+typedef struct {
+    int64_t *handles;
+    ObjOtw **owners;
+    int count;
+} SocketWaits;
+
+static void gather_sockets(VM *vm, SocketWaits *out) {
+    out->handles = NULL;
+    out->owners = NULL;
+    out->count = 0;
+    int capacity = 0;
+    for (int i = 0; i < vm->taskCount; i++) {
+        Task *t = vm->tasks[i];
+        if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
+        ObjOtw *p = t->awaiting;
+        if (p->state != OTW_PENDING || p->waitSocket == PLATFORM_SOCKET_NONE) continue;
+        if (out->count == capacity) {
+            capacity = capacity == 0 ? 8 : capacity * 2;
+            out->handles = (int64_t *)realloc(out->handles, (size_t)capacity * sizeof(int64_t));
+            out->owners = (ObjOtw **)realloc(out->owners, (size_t)capacity * sizeof(ObjOtw *));
+        }
+        out->handles[out->count] = p->waitSocket;
+        out->owners[out->count] = p;
+        out->count++;
+    }
+}
+
+static void free_sockets(SocketWaits *w) {
+    free(w->handles);
+    free(w->owners);
+}
+
+/* A socket wait settles `fax` when its socket has something to read and `cap`
+   when its deadline passes first -- so the FunnyLang side reads like
+   `sus (await_fr internet.hold_up(conn, 5000)) { ... }` and a client that
+   connects and then says nothing cannot park a task forever. */
+static bool settle_ready_sockets(VM *vm, double now) {
+    SocketWaits w;
+    gather_sockets(vm, &w);
+    bool moved = false;
+
+    if (w.count > 0) {
+        unsigned char *ready = (unsigned char *)calloc((size_t)w.count, 1);
+        /* Zero timeout: this pass only *notices*, it never waits. Waiting is
+           the caller's decision, below, once it knows nothing else can run. */
+        if (platform_poll_sockets(w.handles, w.count, 0, ready) > 0) {
+            for (int i = 0; i < w.count; i++) {
+                if (ready[i]) {
+                    otw_fulfill(w.owners[i], BOOL_VAL(true));
+                    moved = true;
+                }
+            }
+        }
+        free(ready);
+    }
+
+    for (int i = 0; i < w.count; i++) {
+        ObjOtw *p = w.owners[i];
+        if (p->state == OTW_PENDING && p->dueAt > 0.0 && p->dueAt <= now) {
+            otw_fulfill(p, BOOL_VAL(false));
+            moved = true;
+        }
+    }
+
+    free_sockets(&w);
+    return moved;
+}
+
 /* A timer whose moment has come fulfils with `ghost`: what was asked for was
    the delay. */
 static bool fire_due_timers(VM *vm, double now) {
@@ -85,16 +159,17 @@ static bool fire_due_timers(VM *vm, double now) {
     return fired;
 }
 
-/* How long until the earliest pending timer anything is waiting on, in
-   milliseconds, or -1 if nothing is waiting on a timer at all. */
-static int next_timer_ms(VM *vm, double now) {
+/* How long until the earliest deadline anything is waiting on, in
+   milliseconds, or -1 if nothing has one. Covers both a `clock.chill` and a
+   socket wait's timeout: the loop must not sleep past either. */
+static int next_deadline_ms(VM *vm, double now) {
     double soonest = 0.0;
     bool any = false;
     for (int i = 0; i < vm->taskCount; i++) {
         Task *t = vm->tasks[i];
         if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
         ObjOtw *p = t->awaiting;
-        if (p->state != OTW_PENDING || !p->isTimer) continue;
+        if (p->state != OTW_PENDING || p->dueAt <= 0.0) continue;
         if (!any || p->dueAt < soonest) {
             soonest = p->dueAt;
             any = true;
@@ -107,19 +182,28 @@ static int next_timer_ms(VM *vm, double now) {
     return (int)ms;
 }
 
+/* When a worker thread and a socket are both outstanding, the loop cannot
+   block on the condition variable and the sockets at the same time -- one
+   call has to win. It polls the sockets, capped at this, and goes round
+   again; a worker that finishes meanwhile is noticed within one cap.
+   25ms is imperceptible next to anything a worker is hired to do, and the
+   alternative (a self-pipe written by every finishing worker so one poll
+   could cover both) is a lot of machinery for that 25ms. */
+#define MIXED_WAIT_CAP_MS 25
+
 /* Anything that is waiting and can now stop waiting? Returns true if at least
    one task moved to READY.
  *
  * The passes are in order of cost, and the order is what keeps the scheduling
  * a program observes from depending on the machine it is on. Noticing an
  * `otw` that has already settled is free. Firing a timer that is already due
- * is free. Collecting a worker that has already finished is a join that
- * returns immediately. Only when none of that moves anything does this block
- * -- and it blocks on *everything at once*, with a timeout set by the
- * earliest timer, so a worker finishing and a timer coming due both wake it. */
+ * is free. Polling sockets with a zero timeout is nearly free. Collecting a
+ * worker that has already finished is a join that returns immediately. Only
+ * when none of that moves anything does this block. */
 static bool wake_waiters(VM *vm) {
     double now = platform_monotonic_seconds();
     bool moved = fire_due_timers(vm, now);
+    if (settle_ready_sockets(vm, now)) moved = true;
 
     for (int i = 0; i < vm->taskCount; i++) {
         Task *t = vm->tasks[i];
@@ -140,7 +224,7 @@ static bool wake_waiters(VM *vm) {
     if (moved) return true;
 
     /* Nothing has happened yet. Is anything still coming? */
-    int timerMs = next_timer_ms(vm, now);
+    int deadlineMs = next_deadline_ms(vm, now);
     bool anyWorker = false;
     for (int i = 0; i < vm->taskCount; i++) {
         Task *t = vm->tasks[i];
@@ -151,18 +235,32 @@ static bool wake_waiters(VM *vm) {
         }
     }
 
-    if (anyWorker) {
-        /* One wait covers both: a finishing worker broadcasts, and the
-           timeout is the next timer. Returns whether or not anything
-           happened -- the caller goes round again either way, and the passes
-           above are what decide. */
-        interns_wait_any(vm, timerMs);
+    SocketWaits w;
+    gather_sockets(vm, &w);
+    if (w.count > 0) {
+        int timeout = deadlineMs;
+        if (anyWorker && (timeout < 0 || timeout > MIXED_WAIT_CAP_MS)) timeout = MIXED_WAIT_CAP_MS;
+        if (timeout < 0) timeout = 60000;
+        unsigned char *ready = (unsigned char *)calloc((size_t)w.count, 1);
+        platform_poll_sockets(w.handles, w.count, timeout, ready);
+        free(ready);
+        free_sockets(&w);
+        /* Whatever happened, go round again: the passes above are what
+           decide, and they will see anything this wait woke for. */
         return true;
     }
-    if (timerMs >= 0) {
+    free_sockets(&w);
+
+    if (anyWorker) {
+        /* One wait covers a worker finishing (it broadcasts) and the next
+           deadline (the timeout). */
+        interns_wait_any(vm, deadlineMs);
+        return true;
+    }
+    if (deadlineMs >= 0) {
         /* Only timers left. Sleeping the whole thread is exactly right here:
            there is no task that could run and no thread that could finish. */
-        platform_sleep_seconds((double)timerMs / 1000.0);
+        platform_sleep_seconds((double)deadlineMs / 1000.0);
         return true;
     }
     return false;
@@ -189,6 +287,17 @@ void loop_settle_blocking(VM *vm, ObjOtw *p) {
             double left = p->dueAt - platform_monotonic_seconds();
             if (left > 0.0) platform_sleep_seconds(left);
             otw_fulfill(p, GHOST_VAL);
+            continue;
+        }
+        if (p->waitSocket != PLATFORM_SOCKET_NONE) {
+            int timeout = -1;
+            if (p->dueAt > 0.0) {
+                double left = (p->dueAt - platform_monotonic_seconds()) * 1000.0;
+                timeout = left > 0.0 ? (int)left : 0;
+            }
+            unsigned char ready = 0;
+            int64_t one = p->waitSocket;
+            otw_fulfill(p, BOOL_VAL(platform_poll_sockets(&one, 1, timeout, &ready) > 0 && ready));
             continue;
         }
         vm_throw_native(vm, "CantWaitRightNow",
