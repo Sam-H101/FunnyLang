@@ -436,11 +436,11 @@ docs/STDLIB.md docs/LANGUAGE.md docs/NATIVE.md CHANGELOG.md   every milestone
 - [x] `docs/NATIVE.md`: "what is process-global, and why that is safe"
 
 ### R1 — `blob`
-- [ ] The type: object, GC, equality, hashing as a groupchat key, printing
-- [ ] Constructors, conversions, operators, iteration, methods
-- [ ] Portable across interns; `filez`, `internet`, `yapper` integration
-- [ ] `STDLIB_MODULE_NAMES` in `compiler.funny` (blob regenerated with R3/R7's, once)
-- [ ] Goldens; docs
+- [x] The type: object, GC, equality, hashing as a groupchat key, printing
+- [x] Constructors, conversions, operators, iteration, methods
+- [x] Portable across interns; `filez`, `internet`, `yapper` integration
+- [x] `STDLIB_MODULE_NAMES` in `compiler.funny` (blob regenerated with R3/R7's, once)
+- [x] Goldens; docs
 
 ### R2 — DMs
 - [ ] `Mailbox`; `vm->inbox`; a worker's inbox on its `Intern`
@@ -560,6 +560,28 @@ which `sock_last_error` and the TLS certificate reader now use; `diag.c` and `su
 globals are documented where they are declared; `docs/NATIVE.md` gained a "what is process-global,
 and why that is safe" section; CI's ThreadSanitizer step now covers `tests/lang/threads`,
 `tests/lang/interns`, `tests/lang/async` and `extensive_examples`.
+
+**R1.** Built as specified. Four notes, three of them about what the type deliberately does not do.
+
+*A blob works as a groupchat key through `value_equal_narrow`, not through the hash index.*
+`groupchat.c` indexes string keys only, and every other key type already falls back to a linear
+scan; blobs join that group rather than growing a second hash function. Keys are almost always
+strings, and a groupchat keyed by blobs is small when it exists at all.
+
+*`blob.of` refuses a numba outside 0-255 instead of masking it.* `filez.write_bytes` masks, and
+keeps doing so, because programs already depend on that; but this is a new constructor, and 300
+quietly becoming 44 is a bug nobody finds for a week.
+
+*The plan's `sheesh` line said "the first 16 in hex", so `sheesh(b)` prints*
+`<blob 26 bytes: 6162...6f70...>` *-- the length, then the bytes, then an ellipsis when there are
+more.* `yap b` stays `<blob 26 bytes>`.
+
+*Four existing goldens changed because a message changed.* The portable-value rejection names
+what can cross, and `blob` is now on that list, so `tests/lang/interns/cant_cross`, `handles`,
+`otw_states` and `examples/concurrency` say so too. The toolchain blob is deliberately NOT
+regenerated here even though `STDLIB_MODULE_NAMES` gained "blob": the plan batches that with R3
+and R7's own additions into one regeneration in R8, and `bootstrap --verify` is a fixed point
+either way because it compiles the current source with itself.
 
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in

@@ -1,0 +1,19 @@
+// tests/lang/stdlib/blob_filez.funny -- a byte-exact round trip through a
+// file. Every byte value survives, including the ones no text encoding would
+// let through.
+gimme blob
+gimme filez
+
+yo path = filez.temp_file("blobtest")
+yo data = blob.of([0, 1, 2, 253, 254, 255])
+yap filez.write_blob(path, data)
+yap filez.read_blob(path) == data
+
+yap filez.append_blob(path, blob.of([7]))
+yo grown = filez.read_blob(path)
+yap how_thicc(grown)
+yap grown[6]
+yap grown.to_hex()
+
+filez.obliterate(path)
+yap filez.exists(path)

@@ -48,6 +48,10 @@ typedef struct {
 #define IS_NUM(v)   (IS_INT(v) || IS_FLOAT(v) || IS_BIGNUM(v))
 #define IS_BIGNUM(v) (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_BIGNUM)
 #define IS_STRING(v) (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING)
+/* A `blob` (RUNTIME_PLAN.md R1): bytes, not codepoints. The cast expands
+   only where native/blob.h is already included, the same arrangement
+   AS_STRING has with da_string.h. */
+#define IS_BLOB(v) (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_BLOB)
 
 #define AS_BOOL(v)   ((v).as.boolean)
 #define AS_INT(v)    ((v).as.integer)
@@ -55,6 +59,7 @@ typedef struct {
 #define AS_OBJ(v)    ((v).as.obj)
 #define AS_BIGNUM(v) ((ObjBignum *)AS_OBJ(v))
 #define AS_STRING(v) ((ObjString *)AS_OBJ(v))
+#define AS_BLOB(v)   ((ObjBlob *)AS_OBJ(v))
 
 #define GHOST_VAL      ((Value){VAL_GHOST, {.integer = 0}})
 #define BOOL_VAL(b)    ((Value){VAL_BOOL, {.boolean = (b)}})

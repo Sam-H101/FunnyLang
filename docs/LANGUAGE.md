@@ -90,9 +90,9 @@ Lowest to highest. Every binary operator is left-associative except assignment, 
 | 8 | `^` | bitwise xor |
 | 9 | `&` | bitwise and |
 | 10 | `==` `!=` `same_energy` `diff_energy` | |
-| 11 | `<` `<=` `>` `>=` `in` | `in` works on `stash`, `groupchat`, `yapstring` |
+| 11 | `<` `<=` `>` `>=` `in` | `in` works on `stash`, `groupchat`, `yapstring`, `blob` |
 | 12 | `<<` `>>` | bit shifts |
-| 13 | `+` `-` | `+` also concatenates `yapstring`s and `stash`es |
+| 13 | `+` `-` | `+` also concatenates `yapstring`s, `stash`es and `blob`s |
 | 14 | `*` `/` `\` `%` | `*` also repeats a `yapstring`/`stash`: `"ha" * 3` |
 | 15 | `**` | right-assoc, and binds *looser* than unary — `-2 ** 2` is `(-2) ** 2` |
 | 16 | unary `-` `!` `aint` `~` | |
@@ -140,7 +140,7 @@ grind i from 10 to 0 step -2 {
     yap i
 }
 
-// for-each over a stash, yapstring, or groupchat (groupchat yields its keys)
+// for-each over a stash, yapstring, blob, or groupchat (groupchat yields its keys)
 grind item in ["a", "b", "c"] {
     sus (item same_energy "b") { nvm }
     yap item
@@ -300,6 +300,12 @@ reference: [STDLIB.md](STDLIB.md).
 `reverse()`, `to_numba()`, `chars()`, `at(i)`, `code_at(i)`, `repeat(n)`, `pad_left(n, c)`,
 `pad_right(n, c)`.
 
+**`blob`** (immutable, bytes rather than codepoints) — `to_yap()`, `to_hex()`, `to_base64()`,
+`to_stash()`, `how_thicc()`, `starts_with(b)`, `ends_with(b)`, `index_of(b)`, `contains(b)`,
+`split(sep)`, `join(stash)`. Built with `blob.of(stash)`, `blob.from_yap(s)`, `blob.from_hex(s)`
+or `blob.from_base64(s)`. `b[i]` is a numba `0`–`255`, `b[a:c]` slices bytes, and assigning to
+`b[i]` raises `ImmutableVibes`. A `yapstring` is text; a `blob` is a PNG, a request body or a key.
+
 **`stash`** (mutable, reference semantics) — `how_thicc()`, `yeet_in(x)` (push), `yoink()` (pop),
 `yoink_at(i)`, `insert(i, x)`, `contains(x)`, `index_of(x)`, `slice(a, b)`, `reverse()`,
 `sort(cmp?)`, `join(sep)`, `glow_up(fn)` (map), `vibe_check(fn)` (filter), `squish(fn, init)`
@@ -307,7 +313,7 @@ reference: [STDLIB.md](STDLIB.md).
 
 **`groupchat`** (mutable, reference semantics, insertion-ordered) — `how_thicc()`, `keys()`,
 `values()`, `pairs()`, `has(k)`, `get(k, default?)`, `set(k, v)`, `remove(k)`, `merge(other)`,
-`clone()`, `clear()`. Keys may be a `yapstring`, `numba`, or `boolski`.
+`clone()`, `clear()`. Keys may be a `yapstring`, `numba`, `boolski`, or `blob`.
 
 **`numba`** — `to_yap()`, `abs()`, `floor()`, `ceil()`, `round(digits?)`, `is_whole()`.
 
@@ -416,7 +422,7 @@ yap interns.everybody([a, b])        // [42, 200]
 
 Each hire is an OS thread running a whole program in its own VM, with its own collector. **Nothing
 is shared**, which is why nothing needs a lock: arguments are deep-copied in and results
-deep-copied out. `ghost`, `boolski`, `numba`, `yapstring` and `stash`/`groupchat` of those can
+deep-copied out. `ghost`, `boolski`, `numba`, `yapstring`, `blob` and `stash`/`groupchat` of those can
 cross; a `bet`, a squad instance, a `pointa` or an `otw` cannot, because each references a heap and
 there is no second copy of that heap on the other side. A structure containing itself is refused
 too. Every refusal names the type.

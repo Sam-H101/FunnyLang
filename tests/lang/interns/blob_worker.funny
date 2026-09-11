@@ -1,0 +1,7 @@
+// The worker half of blob_crosses.funny. It gets a blob, adds a byte, and
+// hands one back -- both directions across a heap boundary.
+gimme interns
+gimme blob
+
+yo got = interns.assignment()
+interns.deliver(got + blob.from_yap("!"))

@@ -3,6 +3,7 @@
 #include "bignum.h"
 #include "groupchat.h"
 #include "stash.h"
+#include "blob.h"
 #include "da_string.h"
 
 bool value_equal_narrow(Value a, Value b) {
@@ -39,6 +40,9 @@ bool value_equal_narrow(Value a, Value b) {
     }
 
     if (IS_STRING(a) && IS_STRING(b)) return string_equal(AS_STRING(a), AS_STRING(b));
+    /* Blobs compare by content, exactly as strings do -- which is also what
+       lets one be a groupchat key (RUNTIME_PLAN.md R1). */
+    if (IS_BLOB(a) && IS_BLOB(b)) return blob_equal(AS_BLOB(a), AS_BLOB(b));
     if (IS_OBJ(a) && IS_OBJ(b)) return AS_OBJ(a) == AS_OBJ(b);
     return false;
 }
@@ -50,6 +54,7 @@ bool value_is_truthy(Value v) {
     if (IS_FLOAT(v)) return AS_FLOAT(v) != 0.0;
     if (IS_BIGNUM(v)) return !bignum_is_zero(AS_BIGNUM(v));
     if (IS_STRING(v)) return AS_STRING(v)->byteLen > 0;
+    if (IS_BLOB(v)) return AS_BLOB(v)->byteLen > 0; /* empty is falsy, same as ""  */
     /* funnylang/values.py's own is_truthy: only stash/groupchat check
        emptiness (an empty [] or {} is falsy, matching Python's own
        container truthiness); every other Obj kind is unconditionally

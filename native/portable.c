@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "bignum.h"
+#include "blob.h"
 #include "da_string.h"
 #include "gc.h"
 #include "groupchat.h"
@@ -112,6 +113,14 @@ static PortableValue *copy_value(Value v, CopyTrail *trail, char *errbuf, size_t
         pv->as.bignum = bignum_copy(AS_BIGNUM(v));
         return pv;
     }
+    if (IS_BLOB(v)) {
+        ObjBlob *b = AS_BLOB(v);
+        PortableValue *pv = pv_new(PV_BLOB);
+        pv->as.blob.len = b->byteLen;
+        pv->as.blob.bytes = (uint8_t *)malloc(b->byteLen > 0 ? b->byteLen : 1);
+        memcpy(pv->as.blob.bytes, b->bytes, b->byteLen);
+        return pv;
+    }
     if (IS_STRING(v)) {
         ObjString *s = AS_STRING(v);
         PortableValue *pv = pv_new(PV_STRING);
@@ -148,7 +157,7 @@ static PortableValue *copy_value(Value v, CopyTrail *trail, char *errbuf, size_t
     const char *article = strchr("aeiouAEIOU", name[0]) != NULL && name[0] != '\0' ? "an" : "a";
     snprintf(errbuf, errbuf_len,
              "%s %s can't be handed to an intern -- it belongs to this heap. "
-             "ghost, boolski, numba, yapstring, and stash/groupchat of those can cross.",
+             "ghost, boolski, numba, yapstring, blob, and stash/groupchat of those can cross.",
              article, name);
     return NULL;
 }
@@ -174,6 +183,8 @@ Value portable_to_value(VM *vm, const PortableValue *pv) {
             gc_track(&vm->gc, (Obj *)n, sizeof(ObjBignum));
             return OBJ_VAL(n);
         }
+        case PV_BLOB:
+            return OBJ_VAL(blob_new(&vm->gc, pv->as.blob.bytes, pv->as.blob.len));
         case PV_STRING:
             return OBJ_VAL(string_new(&vm->gc, pv->as.string.bytes, pv->as.string.len));
         case PV_STASH: {
@@ -212,6 +223,9 @@ void portable_free(PortableValue *pv) {
     switch (pv->kind) {
         case PV_BIGNUM:
             bignum_free(pv->as.bignum);
+            break;
+        case PV_BLOB:
+            free(pv->as.blob.bytes);
             break;
         case PV_STRING:
             free(pv->as.string.bytes);

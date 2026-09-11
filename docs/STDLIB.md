@@ -111,9 +111,60 @@ non-ASCII character in it.
 | `yapper.words(s)` | Splits on whitespace into a `stash`. |
 | `yapper.title_case(s)` | Title Cases Every Word. |
 | `yapper.sarcasm_case(s)` | AlTeRnAtInG cAsE. |
+| `yapper.to_blob(s)` | The string's UTF-8 bytes, as a `blob`. Also an instance method (`s.to_blob()`). |
+| `yapper.from_blob(b)` | A `blob` decoded as UTF-8, with `U+FFFD` for anything invalid. |
 
 Additional `yapstring` instance methods not exposed as free functions: `how_thicc()`, `at(i)`,
 `code_at(i)`, `to_numba()`.
+
+## `blob` — bytes
+
+A `yapstring` is a sequence of codepoints; a `blob` is a sequence of **bytes**. Anything that is
+not text — a PNG, a request body, a key, a hash — is a `blob`, because `how_thicc` on a string
+counts characters and `chr_of(200)` is two bytes rather than the byte `200`.
+
+A `blob` is **immutable**, like a `yapstring` and for the same reasons: it travels to `interns`,
+it can be a `groupchat` key, and neither is safe if it can change underneath. Build one up with a
+`stash` of blobs and `join`, not in place. It is also not a string with different accessors:
+`"a" + b` is a `TypeVibeMismatch`, and `b.to_yap()` is the explicit (and lossy, `U+FFFD`) way
+across.
+
+```funny
+gimme blob
+
+yo png = blob.of([137, 80, 78, 71])
+yap png.to_hex()          // 89504e47
+yap png[0]                // 137   -- a numba, not a one-byte blob
+yap how_thicc(png)        // 4     -- bytes
+yap png                   // <blob 4 bytes>
+```
+
+| Function | Description |
+|---|---|
+| `blob.of(stash)` | A blob from a `stash` of numbas `0`–`255`. Anything outside that range is a `TypeVibeMismatch` rather than a silent `& 0xFF`. |
+| `blob.from_yap(s)` | The UTF-8 bytes of a `yapstring`. |
+| `blob.from_hex(s)` / `blob.from_base64(s)` | Decodes hex / base64. Both are strict: bad padding or a character outside the alphabet raises `SkillIssue`. |
+| `b.to_yap()` | The bytes decoded as UTF-8, with `U+FFFD` for anything invalid. |
+| `b.to_hex()` / `b.to_base64()` | Encodes to a `yapstring`. |
+| `b.to_stash()` | The bytes as a `stash` of numbas. |
+| `b.starts_with(other)` / `b.ends_with(other)` | Prefix / suffix check, against another blob. |
+| `b.index_of(other)` | Byte index of the first occurrence, or `-1`. |
+| `b.contains(other)` | Whether `other` appears in `b`. |
+| `b.split(sep)` | Splits on a non-empty separator blob, returns a `stash` of blobs. |
+| `sep.join(stash)` | Joins a `stash` of blobs with `sep` between them — the receiver is the separator, matching `yapper.join`. |
+
+Every method above is also a free function with the blob as its first argument
+(`blob.to_hex(b)`), the same arrangement `stash` and `yapper` have.
+
+Operators: `b[i]` is a numba `0`–`255` (negative indexes count from the end); `b[a:c:step]`
+slices bytes; `+` concatenates; `==` compares contents; `how_thicc(b)` is the byte count;
+`grind byte in b` yields numbas; `n in b` asks whether that byte value is present and
+`other in b` whether that run of bytes is. Assigning to `b[i]` raises `ImmutableVibes`.
+
+Elsewhere: `filez.read_blob` / `write_blob` / `append_blob`, `internet.holler_back` (which
+accepts one), `internet.hear_them_out(conn, n, ms, {"raw": fax})`, `go_brrrr`'s `blob` response
+key, and `yapper.to_blob` / `yapper.from_blob`. A blob is a portable value, so it can be handed
+to an `interns` worker and come back.
 
 ## `stash` — arrays
 
@@ -195,6 +246,9 @@ Free functions below; most are also `groupchat` instance methods.
 | `filez.read_bytes(path)` | Reads a whole file as a `stash` of ints `0`–`255`. |
 | `filez.write_bytes(path, bytes)` | Writes a `stash` of ints `0`–`255` to `path`; returns the byte count. |
 | `filez.append_bytes(path, bytes)` | Appends a `stash` of ints `0`–`255` to `path`; returns the byte count. |
+| `filez.read_blob(path)` | Reads a whole file as a `blob` — one allocation rather than one per byte. |
+| `filez.write_blob(path, b)` | Writes a `blob` to `path`; returns the byte count. |
+| `filez.append_blob(path, b)` | Appends a `blob` to `path`; returns the byte count. |
 | `filez.make_executable(path)` | Marks `path` runnable (the executable bits on POSIX; a no-op on Windows). |
 | `filez.temp_file(prefix?)` | Creates an empty file in the OS temp directory and returns its path. Yours to `obliterate`. |
 | `filez.abs_path(path)` | The absolute, resolved form of `path`. |
@@ -280,7 +334,7 @@ network at all.
 
 | Function | Description |
 |---|---|
-| `internet.go_brrrr(url, opts?)` | An HTTP request. `opts` is a `groupchat` with optional `method`, `body`, `headers`, `timeout` keys. Returns a `groupchat` with `status`, `body`, `headers`. |
+| `internet.go_brrrr(url, opts?)` | An HTTP request. `opts` is a `groupchat` with optional `method`, `body`, `headers`, `timeout` keys. Returns a `groupchat` with `status`, `body`, `headers`, and `blob` (the body exactly as it arrived). |
 | `internet.is_it_up(url)` | Whether a `GET` to `url` succeeds (`cap` on any failure, never raises). |
 | `internet.download(url, path)` | Downloads `url` to a local file at `path`; returns the byte count. |
 | `internet.speed_test()` | Times a download from `https://example.com/` and returns a description of the throughput in Mbps. |
@@ -300,8 +354,8 @@ an object could not). `extensive_examples/web_server/` is a whole HTTP server bu
 | `internet.next_customer(listener, timeout_ms?)` | Waits for a connection. Returns `{conn, peer}`, or **`ghost`** if nobody arrived in time (a timeout is not an error — a server loop wants a turn between callers). |
 | `internet.hold_up(handle, timeout_ms?)` | An `otw` that settles `fax` when that socket has something to read (for a listener: somebody waiting to be accepted), or `cap` on timeout. **This is what lets one thread serve several callers at once** — `await_fr` it and only the asking task waits, while the event loop polls every socket anybody is parked on in a single call. A plain blocking read would stop the whole thread, every other task included. |
 | `internet.slide_into(host, port, timeout_ms?)` | Dials out: a raw TCP connection, none of the HTTP above it. Returns a connection handle. |
-| `internet.hear_them_out(conn, max_bytes?, timeout_ms?)` | One read. `""` means the other end closed; **`ghost`** means it said nothing in time. |
-| `internet.holler_back(conn, text)` | Writes all of it (looping over short writes) and returns the byte count. |
+| `internet.hear_them_out(conn, max_bytes?, timeout_ms?)` | One read. `""` means the other end closed; **`ghost`** means it said nothing in time. With `{"raw": fax}` as a fourth argument the bytes come back as a `blob` instead of being decoded as UTF-8, which is what a body that is not text needs. |
+| `internet.holler_back(conn, text)` | Writes all of it (looping over short writes) and returns the byte count. Accepts a `blob` as well as a `yapstring`. |
 | `internet.kick_out(conn)` / `internet.close_shop(listener)` | Close one connection / stop listening. The same call under two names, because they are different acts and a program reads better saying which it meant. |
 
 A listener is non-blocking, so several `interns` can accept from the same one: a thread that loses

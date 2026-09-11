@@ -1,0 +1,10 @@
+fax
+fax
+4
+-1
+fax
+3
+GET
+/index.html
+GET /index.html HTTP/1.1
+00ff

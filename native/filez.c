@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "bignum.h"
+#include "blob.h"
 #include "gc.h"
 #include "groupchat.h"
 #include "modules.h"
@@ -483,6 +484,60 @@ static Value m_write_bytes(VM *vm, Value *a, int argc) {
     return INT_VAL(s->count);
 }
 
+/* -- blobs (RUNTIME_PLAN.md R1) ------------------------------------------
+   The byte-exact counterparts to slurp/yeet_out/append_to. `read_bytes` and
+   `write_bytes` (a stash of numbas) stay, because programs use them, but a
+   blob is the form that costs one allocation instead of one per byte. */
+static Value m_read_blob(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "read_blob");
+    if (!path) return GHOST_VAL;
+    unsigned char *data;
+    size_t len;
+    char errbuf[256];
+    if (!platform_read_file(path, &data, &len, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "read_blob", path, errbuf);
+        return GHOST_VAL;
+    }
+    Value out = OBJ_VAL(blob_new(&vm->gc, data, (uint32_t)len));
+    free(data);
+    return out;
+}
+
+static Value m_write_blob(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "write_blob");
+    if (!path) return GHOST_VAL;
+    if (!IS_BLOB(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'write_blob' needs a blob, not a %s.", vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjBlob *b = AS_BLOB(a[1]);
+    char errbuf[256];
+    if (!platform_write_file(path, b->bytes, b->byteLen, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "write_blob", path, errbuf);
+        return GHOST_VAL;
+    }
+    return INT_VAL(b->byteLen);
+}
+
+static Value m_append_blob(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "append_blob");
+    if (!path) return GHOST_VAL;
+    if (!IS_BLOB(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'append_blob' needs a blob, not a %s.", vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjBlob *b = AS_BLOB(a[1]);
+    char errbuf[256];
+    if (!platform_append_file(path, b->bytes, b->byteLen, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "append_blob", path, errbuf);
+        return GHOST_VAL;
+    }
+    return INT_VAL(b->byteLen);
+}
+
 static Value m_abs_path(VM *vm, Value *a, int argc) {
     (void)argc;
     const char *path = path_str(vm, a[0], "abs_path");
@@ -516,6 +571,9 @@ static const FilezEntry FILEZ_FUNCTIONS[] = {
     {"read_bytes", m_read_bytes, 1, 1},
     {"write_bytes", m_write_bytes, 2, 2},
     {"append_bytes", m_append_bytes, 2, 2},
+    {"read_blob", m_read_blob, 1, 1},
+    {"write_blob", m_write_blob, 2, 2},
+    {"append_blob", m_append_blob, 2, 2},
     {"make_executable", m_make_executable, 1, 1},
     {"temp_file", m_temp_file, 0, 1},
     {"abs_path", m_abs_path, 1, 1},

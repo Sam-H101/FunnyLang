@@ -34,6 +34,7 @@ typedef enum {
     OBJ_COMBO,
     OBJ_MODULE,
     OBJ_OTW,
+    OBJ_BLOB,
 } ObjType;
 
 /* The common header. Every concrete object type (e.g. ObjBignum) is a

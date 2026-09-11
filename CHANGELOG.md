@@ -2,16 +2,46 @@
 
 All notable changes to FunnyLang are documented here.
 
-## [Unreleased] — the runtime under threads
+## [Unreleased] — the runtime pass
 
 `gimme interns` gave FunnyLang real OS threads; this is the pass over `native/` that makes every
 stdlib module safe on them, and the corpus that proves it. Plan and build log:
 [RUNTIME_PLAN.md](RUNTIME_PLAN.md).
 
-### Added
+### Added: the threaded-stdlib corpus
 - **`tests/lang/threads/`** — one golden per stdlib module. Each runs the same work on this thread
   and then on eight interns at once, and passes only if all eight answers match the single-threaded
   one. CI also runs the whole directory under ThreadSanitizer, along with `extensive_examples`.
+
+### Added: `blob`, a byte sequence
+
+`gimme blob`. A `yapstring` is codepoints, so a PNG read into one has a `how_thicc` that means
+nothing and cannot be built from FunnyLang at all — `chr_of(200)` is two bytes, not the byte 200.
+A `blob` is exactly bytes.
+
+```funny
+gimme blob
+
+yo png = blob.of([137, 80, 78, 71])
+yap png.to_hex()          // 89504e47
+yap png[0]                // 137   -- a numba, not a one-byte blob
+yap png                   // <blob 4 bytes>
+```
+
+- **Constructors** `blob.of(stash)`, `blob.from_yap`, `blob.from_hex`, `blob.from_base64`, and
+  back out with `to_yap` (lossy, U+FFFD), `to_hex`, `to_base64`, `to_stash`.
+- **Operators**: indexing (a numba 0–255), slicing, `+`, `==`, `how_thicc`, `grind byte in b`,
+  and `in` for both a byte value and a run of bytes. **Immutable** — assigning to `b[i]` raises
+  `ImmutableVibes`, and building up means `stash` of blobs then `join`.
+- **Methods** `starts_with`, `ends_with`, `index_of`, `contains`, `split`, `join`, each also a
+  free function taking the blob first.
+- **It crosses to an intern.** A blob is a portable value, alongside ghost/boolski/numba/
+  yapstring/stash/groupchat.
+- **`filez.read_blob` / `write_blob` / `append_blob`**; `internet.holler_back` takes one;
+  `internet.hear_them_out(conn, n, ms, {"raw": fax})` returns one; `go_brrrr`'s response gains a
+  `blob` key beside `body`; `yapper.to_blob` / `yapper.from_blob` bridge the two types.
+- `yap b` prints `<blob 4127 bytes>` rather than spraying bytes across a terminal; `sheesh b`
+  adds the first 16 in hex, which is enough to recognise a file format.
 
 ### Fixed
 - **`rizz` kept one generator for the whole process**, unlocked. Two interns rolling dice at the

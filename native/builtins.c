@@ -5,6 +5,7 @@
 
 #include "bignum.h"
 #include "error.h"
+#include "blob.h"
 #include "gc.h"
 #include "groupchat.h"
 #include "squad.h"
@@ -59,6 +60,8 @@ static Value m_how_thicc(VM *vm, Value *a, int argc) {
     if (IS_OBJ(x) && AS_OBJ(x)->type == OBJ_STASH) return INT_VAL(((ObjStash *)AS_OBJ(x))->count);
     if (IS_OBJ(x) && AS_OBJ(x)->type == OBJ_GROUPCHAT) return INT_VAL(((ObjGroupChat *)AS_OBJ(x))->count);
     if (IS_STRING(x)) return INT_VAL(AS_STRING(x)->codepointCount);
+    /* Bytes, not codepoints: that is the whole point of a blob. */
+    if (IS_BLOB(x)) return INT_VAL(AS_BLOB(x)->byteLen);
     if (IS_OBJ(x) && AS_OBJ(x)->type == OBJ_INSTANCE) {
         ObjInstance *inst = (ObjInstance *)AS_OBJ(x);
         ObjClosure *method = squad_find_method(inst->squad, "how_thicc");

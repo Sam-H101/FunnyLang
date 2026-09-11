@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "bignum.h"
+#include "blob.h"
 #include "gc.h"
 #include "groupchat.h"
 #include "modules.h"
@@ -121,11 +122,18 @@ static Value m_go_brrrr(VM *vm, Value *a, int argc) {
     }
     Value bodyStr = OBJ_VAL(string_new_utf8_lossy(&vm->gc, resp.body, (uint32_t)resp.bodyLen));
     gc_push_temp(&vm->gc, bodyStr);
+    /* "blob" is the body as it arrived; "body" is the same bytes decoded as
+       UTF-8. A response that is a PNG has a useless "body" and a usable
+       "blob" (RUNTIME_PLAN.md R1). */
+    Value bodyBlob = OBJ_VAL(blob_new(&vm->gc, (const uint8_t *)resp.body, (uint32_t)resp.bodyLen));
+    gc_push_temp(&vm->gc, bodyBlob);
     ObjGroupChat *out = groupchat_new(&vm->gc, NULL, 0);
     gc_push_temp(&vm->gc, OBJ_VAL(out));
     groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "status", 6)), INT_VAL(resp.status));
     groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "body", 4)), bodyStr);
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "blob", 4)), bodyBlob);
     groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "headers", 7)), OBJ_VAL(respHeaders));
+    gc_pop_temp(&vm->gc);
     gc_pop_temp(&vm->gc);
     gc_pop_temp(&vm->gc);
     gc_pop_temp(&vm->gc);
@@ -330,8 +338,12 @@ static Value m_next_customer(VM *vm, Value *a, int argc) {
     return OBJ_VAL(out);
 }
 
-/* internet.hear_them_out(conn, max_bytes?, timeout_ms?) -- one read.
-   `""` means the other end closed; `ghost` means it said nothing in time. */
+/* internet.hear_them_out(conn, max_bytes?, timeout_ms?, {"raw": fax}?) -- one
+   read. `""` means the other end closed; `ghost` means it said nothing in
+   time. With {"raw": fax} the bytes come back as a `blob` instead of being
+   decoded as UTF-8 (RUNTIME_PLAN.md R1) -- which is what a request body, an
+   image, or anything else that isn't text needs; an empty blob is then the
+   closed-connection answer. */
 static Value m_hear_them_out(VM *vm, Value *a, int argc) {
     int64_t conn = handle_arg(vm, a[0], "hear_them_out");
     if (vm->hadError) return GHOST_VAL;
@@ -339,6 +351,14 @@ static Value m_hear_them_out(VM *vm, Value *a, int argc) {
     if (maxBytes < 1) maxBytes = 1;
     if (maxBytes > 1048576) maxBytes = 1048576;
     int timeoutMs = argc > 2 ? int_opt(a[2], 15000) : 15000;
+    bool raw = false;
+    if (argc > 3 && !IS_GHOST(a[3])) {
+        if (!(IS_OBJ(a[3]) && AS_OBJ(a[3])->type == OBJ_GROUPCHAT)) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'hear_them_out' options need to be a groupchat.");
+            return GHOST_VAL;
+        }
+        raw = value_is_truthy(opt_get(&vm->gc, (ObjGroupChat *)AS_OBJ(a[3]), "raw", BOOL_VAL(false)));
+    }
 
     char *buf = (char *)malloc((size_t)maxBytes);
     int64_t n = platform_socket_recv(conn, buf, (size_t)maxBytes, timeoutMs);
@@ -351,30 +371,38 @@ static Value m_hear_them_out(VM *vm, Value *a, int argc) {
         vm_throw_native(vm, "SkillIssue", "that connection broke while we were listening.");
         return GHOST_VAL;
     }
-    Value out = OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)n));
+    Value out = raw ? OBJ_VAL(blob_new(&vm->gc, (const uint8_t *)buf, (uint32_t)n))
+                    : OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)n));
     free(buf);
     return out;
 }
 
-/* internet.holler_back(conn, text) -- write all of it, or raise. */
+/* internet.holler_back(conn, text_or_blob) -- write all of it, or raise. */
 static Value m_holler_back(VM *vm, Value *a, int argc) {
     (void)argc;
     int64_t conn = handle_arg(vm, a[0], "holler_back");
     if (vm->hadError) return GHOST_VAL;
-    if (!IS_STRING(a[1])) {
-        vm_throw_native(vm, "TypeVibeMismatch", "'holler_back' needs a yapstring to send, not a %s.",
+    const char *bytes;
+    uint32_t len;
+    if (IS_STRING(a[1])) {
+        /* byteLen, not the codepoint count: what goes on the wire is bytes,
+           and an HTTP Content-Length that counted characters would be wrong
+           for every response with a non-ASCII byte in it. */
+        bytes = AS_STRING(a[1])->chars;
+        len = AS_STRING(a[1])->byteLen;
+    } else if (IS_BLOB(a[1])) {
+        bytes = (const char *)AS_BLOB(a[1])->bytes;
+        len = AS_BLOB(a[1])->byteLen;
+    } else {
+        vm_throw_native(vm, "TypeVibeMismatch", "'holler_back' needs a yapstring or a blob to send, not a %s.",
                         vm_type_name(a[1]));
         return GHOST_VAL;
     }
-    ObjString *s = AS_STRING(a[1]);
-    /* byteLen, not the codepoint count: what goes on the wire is bytes, and
-       an HTTP Content-Length that counted characters would be wrong for every
-       response with a non-ASCII byte in it. */
-    if (!platform_socket_send(conn, s->chars, s->byteLen)) {
+    if (!platform_socket_send(conn, bytes, len)) {
         vm_throw_native(vm, "SkillIssue", "that connection broke while we were talking.");
         return GHOST_VAL;
     }
-    return INT_VAL((int64_t)s->byteLen);
+    return INT_VAL((int64_t)len);
 }
 
 /* internet.kick_out(conn) / internet.close_shop(listener) -- the same call,
@@ -557,7 +585,7 @@ static const InternetEntry INTERNET_FUNCTIONS[] = {
     {"slide_into", m_slide_into, 2, 3},
     {"next_customer", m_next_customer, 1, 2},
     {"hold_up", m_hold_up, 1, 2},
-    {"hear_them_out", m_hear_them_out, 1, 3},
+    {"hear_them_out", m_hear_them_out, 1, 4},
     {"holler_back", m_holler_back, 2, 2},
     {"shop_port", m_shop_port, 1, 1},
     {"kick_out", m_kick_out, 1, 1},
