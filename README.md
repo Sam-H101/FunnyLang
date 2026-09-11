@@ -141,7 +141,8 @@ contract.
 
   Nothing is shared between threads, so nothing needs a lock: values are deep-copied across the
   worker boundary, and anything that cannot cross coherently is refused with an error that says
-  which argument and why. See [ASYNC_PLAN.md](ASYNC_PLAN.md) for the design and its cost sheet.
+  which argument and why. `examples/concurrency.funny` is a tour of both halves; see
+  [ASYNC_PLAN.md](ASYNC_PLAN.md) for the design and its cost sheet.
 
 ## What this isn't
 

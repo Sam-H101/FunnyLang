@@ -1,0 +1,83 @@
+// Two kinds of concurrency, and they are different.
+//
+//   async_ngl / await_fr   tasks, inside one thread, scheduled by an event loop
+//   gimme interns          real OS threads, each with its own VM and its own heap
+//
+// Async is what makes waiting for interns ergonomic. Interns are what give
+// async something worth waiting for.
+
+gimme interns
+gimme clock
+gimme filez
+
+// The worker is a whole program, not a function: it reads its input with
+// interns.assignment() and returns its answer with interns.deliver(). A
+// top-level script has no `bounce`, so it needs somewhere to put the answer.
+//
+// It is written to a temp file here only so this example runs from any
+// directory -- a path given to `hire` is resolved against the working
+// directory, not against the file doing the hiring. Normally it would just
+// be a `.funny` file sitting next to this one.
+deadass SQUARE_IT = "gimme interns\nyo n = interns.assignment()\ninterns.deliver(n * n)\n"
+yo worker = filez.temp_file() + ".funny"
+filez.yeet_out(worker, SQUARE_IT)
+
+// -- interns, without any async at all ------------------------------------
+// Four real threads. `everybody` waits for all of them, in the order given.
+yo crew = []
+grind n from 1 to 5 {
+    crew.yeet_in(interns.hire(worker, n))
+}
+yap "squares:", interns.everybody(crew)
+yap "worth hiring:", interns.headcount() >= 1
+
+// Only self-contained values can cross to a worker -- it has its own heap, so
+// there is no coherent way to hand it something that references this one.
+sketchy {
+    interns.hire(worker, lowkey (x) => x)
+} my_bad (e) {
+    yap e.flavor + ":", e.message
+}
+
+// -- async, over the top of it --------------------------------------------
+// Calling an async_ngl bet does not run its body. It makes a task and hands
+// back an `otw` -- "on the way".
+async_ngl bet sum_of_squares(a, b) {
+    yo left = interns.hire(worker, a)      // both threads are already running
+    yo right = interns.hire(worker, b)     // before either is awaited
+    bounce await_fr left + await_fr right
+}
+
+yo pending = sum_of_squares(3, 4)
+yap "started:", what_is_it(pending)
+yap "3² + 4² =", await_fr pending
+yap "settled:", pending
+
+// An async_ngl bet that falls over does not raise at the call -- the call only
+// made a task. The error travels in the `otw`, keeps its own flavor, and is
+// re-raised wherever you await it.
+async_ngl bet nope() {
+    chuck oops("MathAintMathin", "i divided by vibes")
+}
+sketchy {
+    await_fr nope()
+} my_bad (e) {
+    yap "caught:", e.flavor + ":", e.message
+}
+
+// -- timers ---------------------------------------------------------------
+// clock.touch_grass blocks the whole program. clock.chill yields, so only the
+// awaiting task waits and everything else carries on. The loop wakes on the
+// earliest deadline, not on the order the timers were made.
+yo finished = []
+async_ngl bet report(ms, name) {
+    await_fr clock.chill(ms)
+    finished.yeet_in(name)
+}
+yo slow = report(80, "slow")
+yo quick = report(1, "quick")
+await_fr slow
+await_fr quick
+yap "finished in this order:", finished
+
+filez.obliterate(worker)
