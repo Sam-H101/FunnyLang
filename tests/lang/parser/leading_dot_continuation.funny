@@ -1,0 +1,26 @@
+// RUNTIME_PLAN.md R8: a line that starts with `.` continues the expression
+// above it, so a long chain reads one step per line instead of running off
+// the side of the screen. Nothing else can start a line with a dot -- the
+// lexer only makes a float out of digits before the point -- so there is
+// nothing for this to be ambiguous with.
+gimme stash
+
+yo people = [
+    {"name": "ada", "age": 36},
+    {"name": "bo", "age": 9},
+    {"name": "cy", "age": 21},
+]
+
+yo names = people
+    .vibe_check(lowkey (p) => p["age"] > 17)
+    .glow_up(lowkey (p) => p["name"])
+
+yap names
+yap names.join(", ")
+
+// Any expression, not only a call chain, and blank lines in between are fine.
+yo n = "hello"
+    .SCREAM()
+
+    .how_thicc()
+yap n

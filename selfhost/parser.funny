@@ -64,6 +64,40 @@ flex deadass RESERVED_FUTURE = [
 
 flex deadass KEYWORD_KINDS = KEYWORDS.values()
 
+
+// RUNTIME_PLAN.md R8. What each keyword is for, in one line, so that using
+// one as a name is answered with "here is what that word already means"
+// rather than "expected a variable name" -- which tells you nothing you did
+// not already know, and leaves you staring at a word that looks perfectly
+// ordinary.
+flex deadass KEYWORD_MEANINGS = {
+    "yo": "it starts a variable", "deadass": "it starts a constant",
+    "yap": "it prints", "mumble": "it prints without a newline",
+    "yeet": "it builds a standalone binary", "bet": "it declares a function",
+    "lowkey": "it starts a lambda", "bounce": "it returns from a function",
+    "sus": "it's `if`", "kinda_sus": "it's `else if`", "nah": "it's `else`",
+    "bruh": "it's `while`", "grind": "it's `for`",
+    "from": "it's part of `grind i from 0 to 10`",
+    "to": "it's part of `grind i from 0 to 10`",
+    "step": "it's part of `grind i from 0 to 10 step 2`",
+    "in": "it's part of `grind item in things`",
+    "bail": "it's `break`", "nvm": "it's `continue`",
+    "sketchy": "it's `try`", "my_bad": "it's `catch`",
+    "regardless": "it's `finally`", "chuck": "it's `throw`",
+    "gimme": "it imports", "as": "it renames an import",
+    "flex": "it exports", "squad": "it declares a class",
+    "inherits": "it names a superclass", "me": "it's `this` inside a squad",
+    "og": "it's `super` inside a squad", "spawn": "it's a squad's constructor",
+    "fax": "it's `true`", "cap": "it's `false`", "ghost": "it's `null`",
+    "fr": "it's `and`", "orr": "it's `or`", "aint": "it's `not`",
+    "same_energy": "it compares two values", "diff_energy": "it compares two values",
+    "vibe": "it prints a value's type", "async_ngl": "it marks an async function",
+    "await_fr": "it waits for an otw", "vibin": "it's reserved for generators",
+    "yield_lol": "it's reserved for generators",
+    "match_this": "it's reserved for pattern matching",
+    "when": "it's reserved for pattern matching",
+}
+
 flex deadass MAX_ERRORS = 5
 
 // -- token-stream primitives -----------------------------------------
@@ -110,6 +144,15 @@ flex bet parser_error(ps, tok, message) {
     chuck oops("ParserHadAStroke", message, tok["line"], tok["col"], {"file": ps["file"]})
 }
 
+
+// Same, with a roast. The diagnostic renderer prints the roast by default and
+// the message only under `--serious`, so an error whose whole point *is* the
+// explanation has to carry it in both -- otherwise the person who needs it
+// gets "i read this three times. it's still not code."
+flex bet parser_error_roast(ps, tok, message, roast) {
+    chuck oops("ParserHadAStroke", message, tok["line"], tok["col"], {"file": ps["file"], "roast": roast})
+}
+
 flex bet p_expect(ps, kind, message) {
     sus (p_check(ps, kind)) {
         bounce p_advance(ps)
@@ -117,7 +160,7 @@ flex bet p_expect(ps, kind, message) {
     parser_error(ps, p_peek(ps, 0), message)
 }
 
-// Like p_expect(ps, "IDENT", ...), but also accepts any keyword token used
+// Like p_expect_ident, but also accepts any keyword token used
 // as a name -- property/method names specifically, where the frozen
 // keyword list collides with a magic method name or squad constructor.
 flex bet p_expect_name(ps, message) {
@@ -125,6 +168,24 @@ flex bet p_expect_name(ps, message) {
     sus (tok["kind"] == "IDENT" || KEYWORD_KINDS.contains(tok["kind"])) {
         p_advance(ps)
         bounce tok
+    }
+    parser_error(ps, tok, message)
+}
+
+
+// A name, where a keyword is the mistake worth naming. `yo me = 1` used to
+// answer "expected a variable name after 'yo'", which is true and useless:
+// `me` looks like a perfectly ordinary name until you know it is taken.
+flex bet p_expect_ident(ps, message) {
+    sus (p_check(ps, "IDENT")) {
+        bounce p_advance(ps)
+    }
+    yo tok = p_peek(ps, 0)
+    sus (KEYWORD_KINDS.contains(tok["kind"])) {
+        yo meaning = KEYWORD_MEANINGS.get(tok["text"], "")
+        yo detail = meaning == "" ? "" : " (" + meaning + ")"
+        yo said = "'" + tok["text"] + "' is a keyword" + detail + " -- pick another name."
+        parser_error_roast(ps, tok, said, said)
     }
     parser_error(ps, tok, message)
 }
@@ -280,7 +341,7 @@ flex bet parse_block(ps) {
 
 flex bet parse_var_decl(ps) {
     yo start = p_advance(ps) // yo
-    yo name_tok = p_expect(ps, "IDENT", "expected a variable name after 'yo'.")
+    yo name_tok = p_expect_ident(ps, "expected a variable name after 'yo'.")
     yo initializer = ghost
     sus (p_match(ps, "EQ") != ghost) {
         initializer = parse_assignment(ps)
@@ -291,7 +352,7 @@ flex bet parse_var_decl(ps) {
 
 flex bet parse_const_decl(ps) {
     yo start = p_advance(ps) // deadass
-    yo name_tok = p_expect(ps, "IDENT", "expected a constant name after 'deadass'.")
+    yo name_tok = p_expect_ident(ps, "expected a constant name after 'deadass'.")
     p_expect(ps, "EQ", "'deadass' needs a value right away: deadass X = something.")
     yo initializer = parse_assignment(ps)
     p_expect_stmt_end(ps)
@@ -305,7 +366,7 @@ flex bet parse_param_list(ps) {
     p_skip_newlines(ps)
     bruh (!p_check(ps, "RPAREN")) {
         sus (p_match(ps, "ELLIPSIS") != ghost) {
-            yo name_tok = p_expect(ps, "IDENT", "expected a parameter name after '...'.")
+            yo name_tok = p_expect_ident(ps, "expected a parameter name after '...'.")
             variadic = name_tok["text"]
             p_skip_newlines(ps)
             sus (p_check(ps, "COMMA")) {
@@ -313,7 +374,7 @@ flex bet parse_param_list(ps) {
             }
             bail
         }
-        yo name_tok = p_expect(ps, "IDENT", "expected a parameter name.")
+        yo name_tok = p_expect_ident(ps, "expected a parameter name.")
         yo default = ghost
         sus (p_match(ps, "EQ") != ghost) {
             p_skip_newlines(ps)
@@ -356,7 +417,7 @@ flex bet parse_func_decl(ps, allow_keyword_name) {
     sus (allow_keyword_name) {
         name_tok = p_expect_name(ps, "expected a method name after 'bet'.")
     } nah {
-        name_tok = p_expect(ps, "IDENT", "expected a function name after 'bet'.")
+        name_tok = p_expect_ident(ps, "expected a function name after 'bet'.")
     }
     p_expect(ps, "LPAREN", "expected '(' to start this function's parameter list.")
     yo pv = parse_param_list(ps)
@@ -412,7 +473,7 @@ flex bet parse_while(ps) {
 
 flex bet parse_for(ps) {
     yo start = p_advance(ps) // grind
-    yo var_tok = p_expect(ps, "IDENT", "expected a loop variable name after 'grind'.")
+    yo var_tok = p_expect_ident(ps, "expected a loop variable name after 'grind'.")
     sus (p_match(ps, "FROM") != ghost) {
         p_skip_newlines(ps)
         yo start_e = parse_assignment(ps)
@@ -473,7 +534,7 @@ flex bet parse_try(ps) {
     sus (p_check(ps, "MY_BAD")) {
         p_advance(ps)
         p_expect(ps, "LPAREN", "'my_bad' needs the caught error in parens: my_bad (e) { }.")
-        yo name_tok = p_expect(ps, "IDENT", "expected a name for the caught error.")
+        yo name_tok = p_expect_ident(ps, "expected a name for the caught error.")
         p_expect(ps, "RPAREN", "this never closes. it's missing a ')'.")
         p_skip_newlines(ps)
         catch_var = name_tok["text"]
@@ -505,7 +566,7 @@ flex bet parse_import(ps) {
         yo names = []
         p_skip_newlines(ps)
         bruh (!p_check(ps, "RBRACE")) {
-            yo name_tok = p_expect(ps, "IDENT", "expected a name to import.")
+            yo name_tok = p_expect_ident(ps, "expected a name to import.")
             names.yeet_in(name_tok["text"])
             p_skip_newlines(ps)
             sus (p_match(ps, "COMMA") == ghost) {
@@ -524,7 +585,7 @@ flex bet parse_import(ps) {
         yo path_tok = p_advance(ps)
         yo alias = ghost
         sus (p_match(ps, "AS") != ghost) {
-            yo alias_tok = p_expect(ps, "IDENT", "expected a name after 'as'.")
+            yo alias_tok = p_expect_ident(ps, "expected a name after 'as'.")
             alias = alias_tok["text"]
         }
         p_expect_stmt_end(ps)
@@ -534,7 +595,7 @@ flex bet parse_import(ps) {
         yo name_tok = p_advance(ps)
         yo alias = ghost
         sus (p_match(ps, "AS") != ghost) {
-            yo alias_tok = p_expect(ps, "IDENT", "expected a name after 'as'.")
+            yo alias_tok = p_expect_ident(ps, "expected a name after 'as'.")
             alias = alias_tok["text"]
         }
         p_expect_stmt_end(ps)
@@ -564,10 +625,10 @@ flex bet parse_export(ps) {
 
 flex bet parse_squad_decl(ps) {
     yo start = p_advance(ps) // squad
-    yo name_tok = p_expect(ps, "IDENT", "expected a squad name after 'squad'.")
+    yo name_tok = p_expect_ident(ps, "expected a squad name after 'squad'.")
     yo superclass = ghost
     sus (p_match(ps, "INHERITS") != ghost) {
-        yo super_tok = p_expect(ps, "IDENT", "expected a superclass name after 'inherits'.")
+        yo super_tok = p_expect_ident(ps, "expected a superclass name after 'inherits'.")
         superclass = super_tok["text"]
     }
     p_skip_newlines(ps)
@@ -781,8 +842,30 @@ flex bet parse_unary(ps) {
     bounce parse_postfix(ps)
 }
 
+
+// RUNTIME_PLAN.md R8. Is what follows the newline(s) at the cursor a `.name`
+// continuation? A line that starts with a dot has no other meaning in this
+// language -- the lexer only makes a float out of digits *before* the point,
+// so `.5` is not a number either -- which is what makes this unambiguous
+// rather than a guess about what somebody meant.
+flex bet dot_continues(ps) {
+    yo n = 0
+    bruh (p_peek(ps, n)["kind"] == "NEWLINE") {
+        n += 1
+    }
+    yo kind = p_peek(ps, n)["kind"]
+    sus (kind != "DOT" && kind != "QUESTION_DOT") {
+        bounce cap
+    }
+    yo after = p_peek(ps, n + 1)
+    bounce after["kind"] == "IDENT" || KEYWORD_KINDS.contains(after["kind"])
+}
+
 flex bet parse_postfix(ps) {
     yo expr = parse_primary(ps)
+    // Set when the chain crossed a newline to get to the next `.`, so that
+    // `funny fmt` can put it back where the author had it.
+    yo broke = cap
     bruh (fax) {
         sus (p_check(ps, "LPAREN")) {
             expr = finish_call(ps, expr)
@@ -795,13 +878,20 @@ flex bet parse_postfix(ps) {
         sus (p_check(ps, "DOT")) {
             p_advance(ps)
             yo name_tok = p_expect_name(ps, "expected a property name after '.'.")
-            expr = {"node": "Get", "obj": expr, "name": name_tok["text"], "line": expr["line"], "col": expr["col"]}
+            expr = {"node": "Get", "obj": expr, "name": name_tok["text"], "broke_line": broke, "line": expr["line"], "col": expr["col"]}
+            broke = cap
             nvm
         }
         sus (p_check(ps, "QUESTION_DOT")) {
             p_advance(ps)
             yo name_tok = p_expect_name(ps, "expected a property name after '?.'.")
-            expr = {"node": "SafeGet", "obj": expr, "name": name_tok["text"], "line": expr["line"], "col": expr["col"]}
+            expr = {"node": "SafeGet", "obj": expr, "name": name_tok["text"], "broke_line": broke, "line": expr["line"], "col": expr["col"]}
+            broke = cap
+            nvm
+        }
+        sus (p_check(ps, "NEWLINE") && dot_continues(ps)) {
+            p_skip_newlines(ps)
+            broke = fax
             nvm
         }
         bail

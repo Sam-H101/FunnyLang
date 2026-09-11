@@ -470,8 +470,8 @@ docs/STDLIB.md docs/LANGUAGE.md docs/NATIVE.md CHANGELOG.md   every milestone
 - [x] `extensive_examples/web_server_https` switched to it (its `json.funny` deleted)
 
 ### R8 — parser
-- [ ] Keyword-as-name messages; leading-dot continuation; `fmt` keeps it
-- [ ] Toolchain blob regenerated; `bootstrap --verify` fixed point
+- [x] Keyword-as-name messages; leading-dot continuation; `fmt` keeps it
+- [x] Toolchain blob regenerated; `bootstrap --verify` fixed point
 
 ### R9 — thread dump
 - [ ] Status slots at every wait point; `SIGQUIT`/`CTRL_BREAK`; `--dump-on-stall`; `sus.threads()`
@@ -713,6 +713,26 @@ rather than a double, so a document full of large ids round-trips exactly -- `nu
 arbitrary-precision and there is no reason to throw that away at the JSON boundary. And a
 groupchat key that is not a yapstring is written as the text it displays as, because JSON keys are
 strings and refusing to write an otherwise ordinary groupchat would be worse.
+
+**R8.** Built as specified, and one thing about it had to be discovered by looking at the output.
+
+*The improved message is carried as the roast as well as the message.* The diagnostic renderer
+prints the roast by default and the message only under `--serious`, so the first version of this
+change was invisible to everyone who did not pass a flag: `yo me = 1` still answered "i read this
+three times. it's still not code." `oops` already accepts a `roast` in its extras groupchat, so the
+explanation now goes in both and reads the same either way. Worth recording because the change
+looked finished, and passed its goldens, while doing nothing a user would ever see -- the goldens
+assert the flavor, which was right before and after.
+
+*`funny fmt` threads its indent down the chain spine, not through every expression form.* `Get`,
+`SafeGet`, `Call` and `Index` pass the statement's depth along, which covers every chain that can
+be broken; a chain broken inside, say, a binary operand would be re-indented relative to its
+statement rather than its operand. Threading depth through all thirty expression cases for that
+would be a much larger change than the feature is worth, and the formatter is idempotent either
+way. A blank line *inside* a chain is normalized away, like every other blank line in a statement.
+
+*The toolchain blob was regenerated twice*, once per parser change, and `bootstrap --verify` was a
+byte-identical fixed point both times.
 
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in

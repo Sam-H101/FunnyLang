@@ -74,6 +74,12 @@ error): `vibin`, `yield_lol`, `match_this`, `when`.
 Identifiers start with a letter, `_`, or emoji, and continue with letters, digits, `_`, or emoji.
 Case sensitive.
 
+
+Using a keyword where a name belongs says so in as many words: `yo me = 1` answers *"'me' is a
+keyword (it's `this` inside a squad) — pick another name."* rather than "expected a variable name",
+which is true and tells you nothing about a word that looks perfectly ordinary. Every keyword in
+the table above has its own one-line explanation.
+
 ## Operators and precedence
 
 Lowest to highest. Every binary operator is left-associative except assignment, `? :`, and `**`.
@@ -170,6 +176,22 @@ sketchy {
 A statement ends at a newline or `;`. Blank lines and repeated terminators are skipped. Inside
 `(...)`/`[...]`/`{...}` of an argument list or array/map literal, newlines are suppressed so
 multi-line expressions read naturally; the `{}` braces of a statement block do not suppress them.
+
+
+### Continuing a line with `.`
+
+A line that starts with a `.` continues the expression above it, so a long chain reads one step per
+line instead of running off the side of the screen:
+
+```funny
+yo names = people
+    .vibe_check(lowkey (p) => p["age"] > 17)
+    .glow_up(lowkey (p) => p["name"])
+```
+
+Nothing else can start a line with a dot — `.5` is not a number, since a float needs its digits
+before the point — so there is nothing for this to be ambiguous with. Blank lines between the steps
+are fine, and `funny fmt` keeps the layout rather than folding the chain back onto one line.
 
 ## Functions & closures
 

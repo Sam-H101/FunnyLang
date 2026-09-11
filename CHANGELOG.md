@@ -37,6 +37,29 @@ yap json.spill(doc, {"pretty": fax})   // indented, one key per line
 - Going out, NaN and infinity become `null`, `U+2028`/`U+2029` are escaped for the browser on the
   other end, a `blob` becomes base64 text, and a value containing itself is `OutOfPocket`.
 
+### Changed: kinder parser errors, and a line can start with `.`
+
+**A keyword used as a name says which keyword it is, and what it is for.** `yo me = 1` used to
+answer "expected a variable name after 'yo'", which is true and tells you nothing about a word that
+looks perfectly ordinary. It now answers *"'me' is a keyword (it's `this` inside a squad) — pick
+another name."*, and every keyword in the language has its own one-line explanation. The same goes
+for a parameter, a loop variable, a caught error's name, an import and an alias.
+
+**A line that starts with `.` continues the expression above it.**
+
+```funny
+yo names = people
+    .vibe_check(lowkey (p) => p["age"] > 17)
+    .glow_up(lowkey (p) => p["name"])
+```
+
+Nothing else can start a line with a dot — a float needs its digits before the point, so `.5` was
+never a number — which is what makes this unambiguous rather than a guess. Blank lines between the
+steps are fine, and `funny fmt` keeps the layout instead of folding the chain back onto one line.
+
+Both changes are in `selfhost/parser.funny`, so this is the release that regenerates the embedded
+toolchain, and `funny bootstrap --verify` is a fixed point across it.
+
 ### Added: atomic file writes
 
 `filez.yeet_out_atomic(path, text)`, `filez.write_blob_atomic(path, b)` and `filez.replace(from, to)`.
