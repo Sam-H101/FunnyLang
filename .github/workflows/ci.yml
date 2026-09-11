@@ -91,6 +91,11 @@ jobs:
           ./funny test tests/lang
           ./funny test tests/slow
           ./funny test examples
+          # A whole HTTP server, driven over a real loopback socket by an
+          # `interns` worker acting as the client. FUNNY_NO_NET is set for
+          # these jobs and deliberately does not block loopback -- see
+          # internet.c's own note on why.
+          ./funny test extensive_examples
           ./funny xray examples/hello.funny
           ./funny xray examples/hello.funny --tokens
           ./funny xray examples/hello.funny --ast
@@ -109,6 +114,7 @@ jobs:
           funny.exe test tests\lang || exit /b 1
           funny.exe test tests\slow || exit /b 1
           funny.exe test examples || exit /b 1
+          funny.exe test extensive_examples || exit /b 1
           funny.exe xray examples\hello.funny || exit /b 1
           funny.exe xray examples\hello.funny --tokens || exit /b 1
           funny.exe xray examples\hello.funny --ast || exit /b 1
@@ -260,6 +266,7 @@ jobs:
           ./funny test tests/lang
           ./funny test tests/slow
           ./funny test examples
+          ./funny test extensive_examples
           ./funny xray examples/hello.funny
           ./funny xray examples/hello.funny --ast
           ./funny fmt examples/fizzbuzz.funny --check

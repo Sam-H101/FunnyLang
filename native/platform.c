@@ -934,6 +934,25 @@ static int sock_poll_writable(SockFd fd, int timeoutMs) {
     return WSAPoll(&pfd, 1, timeoutMs);
 }
 
+static int sock_poll_readable(SockFd fd, int timeoutMs) {
+    WSAPOLLFD pfd;
+    pfd.fd = fd;
+    pfd.events = POLLRDNORM;
+    pfd.revents = 0;
+    return WSAPoll(&pfd, 1, timeoutMs);
+}
+
+static bool sock_set_reuseaddr(SockFd fd) {
+    BOOL on = TRUE;
+    return setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on)) == 0;
+}
+
+static const char *sock_last_error(char *buf, size_t len) {
+    int e = WSAGetLastError();
+    snprintf(buf, len, "winsock error %d", e);
+    return buf;
+}
+
 static long sock_send(SockFd fd, const char *buf, size_t len) {
     int n = len > (size_t)INT_MAX ? INT_MAX : (int)len;
     return (long)send(fd, buf, n, 0);
@@ -971,6 +990,23 @@ static int sock_poll_writable(SockFd fd, int timeoutMs) {
     pfd.fd = fd;
     pfd.events = POLLOUT;
     return poll(&pfd, 1, timeoutMs);
+}
+
+static int sock_poll_readable(SockFd fd, int timeoutMs) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    return poll(&pfd, 1, timeoutMs);
+}
+
+static bool sock_set_reuseaddr(SockFd fd) {
+    int on = 1;
+    return setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == 0;
+}
+
+static const char *sock_last_error(char *buf, size_t len) {
+    snprintf(buf, len, "%s", strerror(errno));
+    return buf;
 }
 
 static long sock_send(SockFd fd, const char *buf, size_t len) { return (long)send(fd, buf, len, 0); }
@@ -1864,6 +1900,144 @@ bool platform_tcp_ping(const char *host, int port, int timeoutMs, double *outMs)
     sock_close(fd);
     *outMs = (platform_monotonic_seconds() - start) * 1000.0;
     return true;
+}
+
+/* -- listening sockets ----------------------------------------------------
+ *
+ * See platform.h. Handles are int64_t and the two backends differ only in
+ * the helpers above, which is the whole point of having them.
+ */
+
+/* SockFd is unsigned on Windows (`SOCKET` is a `UINT_PTR`), so INVALID_SOCKET
+   cast to int64_t is a huge positive number rather than -1. Everything here
+   normalises through these two, so a handle that crosses into FunnyLang is
+   always either >= 0 or one of the named negatives. */
+static int64_t sock_to_handle(SockFd fd) {
+    return fd == SOCK_INVALID ? PLATFORM_SOCKET_NONE : (int64_t)fd;
+}
+
+static SockFd handle_to_sock(int64_t h) {
+    return h < 0 ? SOCK_INVALID : (SockFd)h;
+}
+
+int64_t platform_tcp_listen(const char *host, int port, int backlog, char *errbuf, size_t errbuf_len) {
+    ensure_winsock();
+    if (errbuf != NULL && errbuf_len > 0) errbuf[0] = '\0';
+    if (port < 0 || port > 65535) {
+        snprintf(errbuf, errbuf_len, "%d isn't a port number.", port);
+        return PLATFORM_SOCKET_NONE;
+    }
+
+    char portStr[16];
+    snprintf(portStr, sizeof(portStr), "%d", port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE; /* NULL host then means "every interface" */
+    struct addrinfo *res = NULL;
+    const char *node = (host != NULL && host[0] != '\0') ? host : NULL;
+    if (getaddrinfo(node, portStr, &hints, &res) != 0 || res == NULL) {
+        snprintf(errbuf, errbuf_len, "can't resolve '%s'.", node != NULL ? node : "*");
+        return PLATFORM_SOCKET_NONE;
+    }
+
+    SockFd fd = SOCK_INVALID;
+    char why[128];
+    why[0] = '\0';
+    for (struct addrinfo *rp = res; rp != NULL; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd == SOCK_INVALID) continue;
+        /* Without SO_REUSEADDR a server restarted inside the TIME_WAIT window
+           cannot rebind its own port, which makes development miserable and
+           buys nothing: the socket is ours either way. */
+        sock_set_reuseaddr(fd);
+        if (bind(fd, rp->ai_addr, (int)rp->ai_addrlen) == 0 && listen(fd, backlog > 0 ? backlog : 16) == 0) break;
+        sock_last_error(why, sizeof why);
+        sock_close(fd);
+        fd = SOCK_INVALID;
+    }
+    freeaddrinfo(res);
+
+    if (fd == SOCK_INVALID) {
+        snprintf(errbuf, errbuf_len, "couldn't listen on port %d: %s", port, why[0] != '\0' ? why : "no usable address");
+        return PLATFORM_SOCKET_NONE;
+    }
+    return sock_to_handle(fd);
+}
+
+int64_t platform_tcp_accept(int64_t listener, int timeoutMs, char *peerOut, size_t peerOut_len) {
+    SockFd lfd = handle_to_sock(listener);
+    if (lfd == SOCK_INVALID) return PLATFORM_SOCKET_ERROR;
+    if (peerOut != NULL && peerOut_len > 0) peerOut[0] = '\0';
+
+    /* Polled rather than a blocking accept, so a server can have a loop that
+       does something else between callers -- checking a shutdown flag, firing
+       a timer -- instead of being parked in the kernel forever. */
+    int pr = sock_poll_readable(lfd, timeoutMs);
+    if (pr == 0) return PLATFORM_SOCKET_TIMEOUT;
+    if (pr < 0) return PLATFORM_SOCKET_ERROR;
+
+    struct sockaddr_storage addr;
+    socklen_t addrLen = sizeof(addr);
+    SockFd fd = accept(lfd, (struct sockaddr *)&addr, &addrLen);
+    if (fd == SOCK_INVALID) return PLATFORM_SOCKET_ERROR;
+
+    if (peerOut != NULL && peerOut_len > 0) {
+        char hostBuf[NI_MAXHOST];
+        char servBuf[NI_MAXSERV];
+        if (getnameinfo((struct sockaddr *)&addr, addrLen, hostBuf, sizeof hostBuf, servBuf, sizeof servBuf,
+                        NI_NUMERICHOST | NI_NUMERICSERV) == 0) {
+            snprintf(peerOut, peerOut_len, "%s:%s", hostBuf, servBuf);
+        }
+    }
+    return sock_to_handle(fd);
+}
+
+int64_t platform_socket_recv(int64_t sock, char *buf, size_t len, int timeoutMs) {
+    SockFd fd = handle_to_sock(sock);
+    if (fd == SOCK_INVALID) return PLATFORM_SOCKET_ERROR;
+    if (timeoutMs >= 0) {
+        int pr = sock_poll_readable(fd, timeoutMs);
+        if (pr == 0) return PLATFORM_SOCKET_TIMEOUT;
+        if (pr < 0) return PLATFORM_SOCKET_ERROR;
+    }
+    long n = sock_recv(fd, buf, len);
+    if (n < 0) return PLATFORM_SOCKET_ERROR;
+    return (int64_t)n; /* 0 is a clean close, and the caller wants to know */
+}
+
+bool platform_socket_send(int64_t sock, const char *buf, size_t len) {
+    SockFd fd = handle_to_sock(sock);
+    if (fd == SOCK_INVALID) return false;
+    size_t sent = 0;
+    while (sent < len) {
+        long n = sock_send(fd, buf + sent, len - sent);
+        if (n <= 0) return false;
+        sent += (size_t)n;
+    }
+    return true;
+}
+
+int64_t platform_tcp_connect(const char *host, int port, int timeoutMs) {
+    SockFd fd = connect_with_timeout(host, port, timeoutMs);
+    return sock_to_handle(fd);
+}
+
+int platform_socket_port(int64_t sock) {
+    SockFd fd = handle_to_sock(sock);
+    if (fd == SOCK_INVALID) return -1;
+    struct sockaddr_storage addr;
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) return -1;
+    if (addr.ss_family == AF_INET) return (int)ntohs(((struct sockaddr_in *)&addr)->sin_port);
+    if (addr.ss_family == AF_INET6) return (int)ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
+    return -1;
+}
+
+void platform_socket_close(int64_t sock) {
+    SockFd fd = handle_to_sock(sock);
+    if (fd != SOCK_INVALID) sock_close(fd);
 }
 
 /* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------

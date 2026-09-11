@@ -79,8 +79,14 @@ Also exposed as `numba` instance methods: `to_yap()`, `abs()`, `floor()`, `ceil(
 Free functions below; most are also `yapstring` instance methods (see
 [LANGUAGE.md](LANGUAGE.md#runtime-types--their-methods)).
 
+A `yapstring` is indexed and measured in **codepoints**, which is what you want almost
+everywhere. `byte_len` is for the exception: anything speaking a wire protocol counts bytes, and
+an HTTP `Content-Length` taken from `how_thicc` would be short for any response with a single
+non-ASCII character in it.
+
 | Function | Description |
 |---|---|
+| `yapper.byte_len(s)` | Length in **bytes** (`how_thicc` is length in codepoints). |
 | `yapper.split(s, sep?)` | Splits on `sep` (default: any whitespace run), returns a `stash`. |
 | `yapper.join(sep, stash)` | Joins a `stash` of values with `sep` between them. |
 | `yapper.SCREAM(s)` / `yapper.whisper(s)` | Uppercase / lowercase. |
@@ -277,6 +283,26 @@ network at all.
 | `internet.download(url, path)` | Downloads `url` to a local file at `path`; returns the byte count. |
 | `internet.speed_test()` | Times a download from `https://example.com/` and returns a description of the throughput in Mbps. |
 | `internet.ping(host)` | Opens a TCP connection to `host:80` and returns the round-trip time in milliseconds. |
+
+Everything above dials *out*. These are the other direction — enough to be the
+thing on the other end of somebody else's request. Listeners and connections are `numba` handles
+rather than objects, so they stay out of the collector and can cross to an `interns` worker (which
+an object could not). `extensive_examples/web_server/` is a whole HTTP server built on them.
+
+| Function | Description |
+|---|---|
+| `internet.open_shop(port, host?)` | Binds `port` and starts listening; returns a listener handle. `host` defaults to every interface; `port` 0 means "pick a free one". `SO_REUSEADDR` is set, so a restarted server can rebind its own port. |
+| `internet.shop_port(listener)` | Which port it actually got — only interesting after `open_shop(0)`. |
+| `internet.next_customer(listener, timeout_ms?)` | Waits for a connection. Returns `{conn, peer}`, or **`ghost`** if nobody arrived in time (a timeout is not an error — a server loop wants a turn between callers). |
+| `internet.slide_into(host, port, timeout_ms?)` | Dials out: a raw TCP connection, none of the HTTP above it. Returns a connection handle. |
+| `internet.hear_them_out(conn, max_bytes?, timeout_ms?)` | One read. `""` means the other end closed; **`ghost`** means it said nothing in time. |
+| `internet.holler_back(conn, text)` | Writes all of it (looping over short writes) and returns the byte count. |
+| `internet.kick_out(conn)` / `internet.close_shop(listener)` | Close one connection / stop listening. The same call under two names, because they are different acts and a program reads better saying which it meant. |
+
+`FUNNY_NO_NET=1` does **not** block these, with one exception: `slide_into` to a non-loopback host.
+The flag exists so a test runner does not *reach the network*, and a server binding its own
+loopback port sends no packet anywhere — refusing it would make a server untestable in exactly the
+environment that most needs its tests to run.
 
 ## `sus` — reflection / debugging
 

@@ -208,6 +208,199 @@ static Value m_ping(VM *vm, Value *a, int argc) {
     return FLOAT_VAL(ms);
 }
 
+/* -- the other direction: listening ---------------------------------------
+ *
+ * Everything above dials out. These five let a FunnyLang program *be* the
+ * thing on the other end of somebody else's request.
+ *
+ * A listener and a connection are both `numba` handles, not heap objects --
+ * the same reasoning `sus`'s REPL sessions and `interns`'s workers already
+ * record: a handle that is a plain integer stays out of the collector, and it
+ * can cross to an `interns` worker (which an object could not), so a
+ * connection can be handed to another OS thread to answer.
+ *
+ * `FUNNY_NO_NET=1` does not block these. That flag exists so a test runner
+ * can stop a program *reaching out* to the network; a server binding its own
+ * loopback port is not that, and blocking it would make this whole feature
+ * untestable in exactly the environment that most needs testing.
+ */
+
+static int64_t handle_arg(VM *vm, Value v, const char *fnName) {
+    if (!IS_INT(v)) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'%s' needs a socket handle, not a %s.", fnName, vm_type_name(v));
+        return -1;
+    }
+    return AS_INT(v);
+}
+
+static int int_opt(Value v, int fallback) {
+    if (IS_INT(v)) return (int)AS_INT(v);
+    if (IS_FLOAT(v)) return (int)AS_FLOAT(v);
+    return fallback;
+}
+
+/* internet.open_shop(port, host?) -- bind and listen. */
+static Value m_open_shop(VM *vm, Value *a, int argc) {
+    if (!IS_INT(a[0])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'open_shop' needs a port number, not a %s.", vm_type_name(a[0]));
+        return GHOST_VAL;
+    }
+    const char *host = "";
+    if (argc > 1 && !IS_GHOST(a[1])) {
+        host = string_arg(vm, a[1], "open_shop");
+        if (host == NULL) return GHOST_VAL;
+    }
+    char errbuf[256];
+    int64_t listener = platform_tcp_listen(host, (int)AS_INT(a[0]), 64, errbuf, sizeof errbuf);
+    if (listener == PLATFORM_SOCKET_NONE) {
+        vm_throw_native(vm, "SkillIssue", "%s", errbuf);
+        return GHOST_VAL;
+    }
+    return INT_VAL(listener);
+}
+
+/* internet.next_customer(listener, timeout_ms?) -- accept, or `ghost` if
+   nobody turned up in time. A timeout is deliberately not an error: a server
+   loop wants to check its own shutdown flag between callers, and making that
+   cost a `sketchy` block would be a tax on the normal case. */
+static Value m_next_customer(VM *vm, Value *a, int argc) {
+    int64_t listener = handle_arg(vm, a[0], "next_customer");
+    if (vm->hadError) return GHOST_VAL;
+    int timeoutMs = argc > 1 ? int_opt(a[1], -1) : -1;
+
+    char peer[128];
+    int64_t conn = platform_tcp_accept(listener, timeoutMs, peer, sizeof peer);
+    if (conn == PLATFORM_SOCKET_TIMEOUT) return GHOST_VAL;
+    if (conn == PLATFORM_SOCKET_ERROR) {
+        vm_throw_native(vm, "SkillIssue", "that listener is closed, or the accept failed.");
+        return GHOST_VAL;
+    }
+
+    ObjGroupChat *out = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "conn", 4)), INT_VAL(conn));
+    groupchat_set(&vm->gc, out, OBJ_VAL(string_new(&vm->gc, "peer", 4)),
+                  OBJ_VAL(string_new(&vm->gc, peer, (uint32_t)strlen(peer))));
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
+}
+
+/* internet.hear_them_out(conn, max_bytes?, timeout_ms?) -- one read.
+   `""` means the other end closed; `ghost` means it said nothing in time. */
+static Value m_hear_them_out(VM *vm, Value *a, int argc) {
+    int64_t conn = handle_arg(vm, a[0], "hear_them_out");
+    if (vm->hadError) return GHOST_VAL;
+    int maxBytes = argc > 1 ? int_opt(a[1], 65536) : 65536;
+    if (maxBytes < 1) maxBytes = 1;
+    if (maxBytes > 1048576) maxBytes = 1048576;
+    int timeoutMs = argc > 2 ? int_opt(a[2], 15000) : 15000;
+
+    char *buf = (char *)malloc((size_t)maxBytes);
+    int64_t n = platform_socket_recv(conn, buf, (size_t)maxBytes, timeoutMs);
+    if (n == PLATFORM_SOCKET_TIMEOUT) {
+        free(buf);
+        return GHOST_VAL;
+    }
+    if (n == PLATFORM_SOCKET_ERROR) {
+        free(buf);
+        vm_throw_native(vm, "SkillIssue", "that connection broke while we were listening.");
+        return GHOST_VAL;
+    }
+    Value out = OBJ_VAL(string_new(&vm->gc, buf, (uint32_t)n));
+    free(buf);
+    return out;
+}
+
+/* internet.holler_back(conn, text) -- write all of it, or raise. */
+static Value m_holler_back(VM *vm, Value *a, int argc) {
+    (void)argc;
+    int64_t conn = handle_arg(vm, a[0], "holler_back");
+    if (vm->hadError) return GHOST_VAL;
+    if (!IS_STRING(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'holler_back' needs a yapstring to send, not a %s.",
+                        vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjString *s = AS_STRING(a[1]);
+    /* byteLen, not the codepoint count: what goes on the wire is bytes, and
+       an HTTP Content-Length that counted characters would be wrong for every
+       response with a non-ASCII byte in it. */
+    if (!platform_socket_send(conn, s->chars, s->byteLen)) {
+        vm_throw_native(vm, "SkillIssue", "that connection broke while we were talking.");
+        return GHOST_VAL;
+    }
+    return INT_VAL((int64_t)s->byteLen);
+}
+
+/* internet.kick_out(conn) / internet.close_shop(listener) -- the same call,
+   under two names, because closing a connection and closing the door the
+   connections arrive through are different acts and a program reads better
+   when it says which one it meant. */
+static Value m_kick_out(VM *vm, Value *a, int argc) {
+    (void)argc;
+    int64_t conn = handle_arg(vm, a[0], "kick_out");
+    if (vm->hadError) return GHOST_VAL;
+    platform_socket_close(conn);
+    return GHOST_VAL;
+}
+
+/* internet.slide_into(host, port, timeout_ms?) -- a raw TCP connection, with
+   none of the HTTP above it. The other end of `open_shop`, and what lets a
+   test be both halves of a conversation.
+ *
+ * FUNNY_NO_NET stops this, with one exception that is not a loophole:
+ * loopback. That flag exists so a test runner does not *reach the network*,
+ * and a connection to 127.0.0.1 sends no packet anywhere. Refusing it would
+ * make a server impossible to test in exactly the environment that most needs
+ * its tests to run. */
+static bool is_loopback(const char *host) {
+    return strcmp(host, "127.0.0.1") == 0 || strcmp(host, "localhost") == 0 || strcmp(host, "::1") == 0 ||
+           strncmp(host, "127.", 4) == 0;
+}
+
+static Value m_slide_into(VM *vm, Value *a, int argc) {
+    const char *host = string_arg(vm, a[0], "slide_into");
+    if (host == NULL) return GHOST_VAL;
+    if (!IS_INT(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'slide_into' needs a port number, not a %s.", vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    if (platform_net_disabled() && !is_loopback(host)) {
+        vm_throw_native(vm, "SkillIssue", "%s", NET_SAID_NO);
+        return GHOST_VAL;
+    }
+    int timeoutMs = argc > 2 ? int_opt(a[2], DEFAULT_TIMEOUT_MS) : DEFAULT_TIMEOUT_MS;
+    int64_t conn = platform_tcp_connect(host, (int)AS_INT(a[1]), timeoutMs);
+    if (conn == PLATFORM_SOCKET_NONE) {
+        vm_throw_native(vm, "SkillIssue", "couldn't get through to %s:%lld.", host, (long long)AS_INT(a[1]));
+        return GHOST_VAL;
+    }
+    return INT_VAL(conn);
+}
+
+/* internet.shop_port(listener) -- which port it actually got. Only
+   interesting after `open_shop(0)`, which is how you bind without gambling on
+   a fixed number being free. */
+static Value m_shop_port(VM *vm, Value *a, int argc) {
+    (void)argc;
+    int64_t listener = handle_arg(vm, a[0], "shop_port");
+    if (vm->hadError) return GHOST_VAL;
+    int port = platform_socket_port(listener);
+    if (port < 0) {
+        vm_throw_native(vm, "SkillIssue", "that listener isn't listening.");
+        return GHOST_VAL;
+    }
+    return INT_VAL(port);
+}
+
+static Value m_close_shop(VM *vm, Value *a, int argc) {
+    (void)argc;
+    int64_t listener = handle_arg(vm, a[0], "close_shop");
+    if (vm->hadError) return GHOST_VAL;
+    platform_socket_close(listener);
+    return GHOST_VAL;
+}
+
 typedef struct {
     const char *name;
     NativeMethodFn fn;
@@ -218,6 +411,15 @@ typedef struct {
 static const InternetEntry INTERNET_FUNCTIONS[] = {
     {"go_brrrr", m_go_brrrr, 1, 2}, {"is_it_up", m_is_it_up, 1, 1},   {"download", m_download, 2, 2},
     {"speed_test", m_speed_test, 0, 0}, {"ping", m_ping, 1, 1},
+    /* The listening half. */
+    {"open_shop", m_open_shop, 1, 2},
+    {"slide_into", m_slide_into, 2, 3},
+    {"next_customer", m_next_customer, 1, 2},
+    {"hear_them_out", m_hear_them_out, 1, 3},
+    {"holler_back", m_holler_back, 2, 2},
+    {"shop_port", m_shop_port, 1, 1},
+    {"kick_out", m_kick_out, 1, 1},
+    {"close_shop", m_close_shop, 1, 1},
 };
 #define INTERNET_FUNCTIONS_COUNT (int)(sizeof(INTERNET_FUNCTIONS) / sizeof(INTERNET_FUNCTIONS[0]))
 

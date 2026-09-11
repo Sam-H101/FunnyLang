@@ -43,6 +43,19 @@ yap await_fr fetch_both()      // 42
   async). Not a bytecode version bump: every value any earlier toolchain wrote is 0 or 1 and reads
   back identically, which is what keeps the self-hosting bootstrap from needing a special dance.
 
+### Also added
+- **Listening sockets.** Everything in `internet` dialled *out*; these are the other direction.
+  `internet.open_shop(port, host?)` binds and listens, `next_customer(listener, timeout?)` accepts
+  (or is `ghost` if nobody arrived), `hear_them_out` / `holler_back` read and write,
+  `kick_out` / `close_shop` close, `shop_port` tells you which port `open_shop(0)` picked, and
+  `slide_into(host, port)` dials the other end. Listeners and connections are `numba` handles, so
+  they stay out of the collector and can cross to an `interns` worker.
+- **`yapper.byte_len(s)`** — length in bytes, where `how_thicc` is length in codepoints. An HTTP
+  `Content-Length` taken from the latter is short for any response with a non-ASCII character in it.
+- **`extensive_examples/web_server/`** — a real HTTP/1.1 server in FunnyLang: a socket loop, a
+  request parser, routes, and a golden that drives the whole thing over a loopback socket with an
+  `interns` worker as the client, so `funny test extensive_examples` keeps it honest.
+
 ### Notes on the design
 - **Nothing is shared between threads, so nothing needs a lock.** Each intern gets its own VM and
   its own collector; arguments are deep-copied in and results deep-copied out. `ghost`, `boolski`,

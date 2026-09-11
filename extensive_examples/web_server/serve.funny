@@ -1,0 +1,163 @@
+// serve.funny — the socket loop.
+//
+//     funny run extensive_examples/web_server/serve.funny -- 8080
+//
+// `internet.open_shop` binds a port; `internet.next_customer` waits for
+// somebody to connect. Everything above that is in http.funny (the protocol)
+// and routes.funny (the answers), so this file is only the part that is
+// genuinely about sockets.
+//
+// One request at a time, and deliberately so. The obvious next step is to
+// hand each connection to an `interns` worker — a connection handle is a
+// `numba`, and a `numba` is one of the things that can cross to a worker, so
+// it would work — but a worker is a *whole separate VM with its own heap*,
+// which means it could not see `GUESTBOOK` or any other state this program
+// keeps. That is a real design decision with real consequences, not an
+// oversight, and pretending otherwise in an example would teach the wrong
+// thing. `/primes` shows where workers *do* fit: work that takes a value and
+// returns a value.
+
+gimme internet
+gimme yapper
+gimme clock
+
+gimme { read_request, build_response } from "http.funny"
+gimme { route, respond, error_page, page } from "routes.funny"
+
+flex deadass DEFAULT_PORT = 8080
+// How long a connected client gets to send its request line and headers
+// before we give up on it. Short enough that a port scanner cannot park a
+// connection forever, long enough for a real request over a slow link.
+flex deadass READ_TIMEOUT_MS = 5000
+
+bet main(raw_args) {
+    // `funny run x.funny -- a b` hands the program `["--", "a", "b"]`: the
+    // separator is there to stop the CLI claiming a leading `-flag` as its
+    // own, and it is passed through rather than eaten. Dropping it here means
+    // both spellings work.
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo port = DEFAULT_PORT
+    yo host = "127.0.0.1"
+    // `--requests N` stops the server after N requests, so a smoke test can
+    // start it, drive it, and have it stop on its own rather than needing
+    // something to go and kill it.
+    yo budget = ghost
+    yo positional = []
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        sus (args[i] == "--requests" && i + 1 < args.how_thicc()) {
+            budget = to_int(args[i + 1])
+            i += 2
+        } nah {
+            positional.yeet_in(args[i])
+            i += 1
+        }
+    }
+    sus (positional.how_thicc() > 0) {
+        port = to_int(positional[0])
+    }
+    sus (positional.how_thicc() > 1) {
+        host = positional[1]
+    }
+
+    yo listener = ghost
+    sketchy {
+        listener = internet.open_shop(port, host)
+    } my_bad (e) {
+        yell("couldn't start: " + e.message)
+        bounce 1
+    }
+
+    yell("serving on http://" + host + ":" + to_yap(port) + " — ctrl-c to stop")
+    sus (budget != ghost) {
+        yell("(stopping after " + to_yap(budget) + " requests)")
+    }
+
+    yo served = 0
+    bruh (budget == ghost || served < budget) {
+        // A timeout rather than a blocking accept, so the loop gets a turn
+        // between callers. Nothing uses that here; a server with background
+        // work would.
+        yo customer = internet.next_customer(listener, 1000)
+        sus (customer == ghost) {
+            nvm
+        }
+        handle(customer)
+        served += 1
+    }
+
+    internet.close_shop(listener)
+    yell("served " + to_yap(served) + " requests. closing up.")
+    bounce 0
+}
+
+flex bet handle(customer) {
+    yo conn = customer["conn"]
+    sketchy {
+        yo first = internet.hear_them_out(conn, 65536, READ_TIMEOUT_MS)
+        sus (first == ghost) {
+            // Connected and then said nothing. Most often a health check or a
+            // port scan; answering 408 is more honest than hanging up silently.
+            internet.holler_back(conn, build_response(408, "", {}))
+            internet.kick_out(conn)
+            bounce ghost
+        }
+        sus (first == "") {
+            internet.kick_out(conn)
+            bounce ghost
+        }
+
+        yo req = read_request(lowkey () => internet.hear_them_out(conn, 65536, READ_TIMEOUT_MS), first)
+        sus (req == ghost) {
+            internet.holler_back(conn, build_response(400, "that wasn't HTTP.\n", {}))
+            internet.kick_out(conn)
+            bounce ghost
+        }
+        sus (req["truncated"]) {
+            internet.holler_back(conn, build_response(400, "the body stopped early.\n", {}))
+            internet.kick_out(conn)
+            bounce ghost
+        }
+
+        yo answer = ghost
+        sketchy {
+            answer = route(req)
+        } my_bad (e) {
+            // A route that falls over is a 500, not a dead server. The
+            // diagnostic goes to the log; the client gets the flavor and the
+            // message, which is the part that is about their request.
+            yell("500 on " + req["method"] + " " + req["target"] + ": " + e.flavor + ": " + e.message)
+            answer = {"status": 500, "body": error_page(e),
+                      "headers": {"Content-Type": "text/html; charset=utf-8"}}
+        }
+
+        yo bytes = respond(answer)
+        internet.holler_back(conn, bytes)
+        log_line(customer, req, answer, bytes)
+    } my_bad (e) {
+        // The client hung up mid-conversation, most likely. Not worth a
+        // stack trace; worth a line.
+        yell("dropped a connection: " + e.flavor + ": " + e.message)
+    }
+    internet.kick_out(conn)
+}
+
+// To stderr, not stdout, and for a reason that bit once already: stdout is
+// block-buffered when it is a file or a pipe, so a server killed with ctrl-C
+// -- which is how every server is stopped -- loses whatever had not filled a
+// block yet. A log you cannot see until the process exits cleanly is not a
+// log. stderr is unbuffered, which is why server logs conventionally live
+// there.
+flex bet log_line(customer, req, answer, bytes) {
+    yell(clock.date_yap("%H:%M:%S") + "  " + customer["peer"] + "  " +
+         req["method"] + " " + req["target"] + "  -> " + to_yap(answer["status"]) +
+         "  " + to_yap(yapper.byte_len(bytes)) + "b")
+}
+
+dip(main(the_args()))

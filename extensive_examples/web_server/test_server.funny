@@ -1,0 +1,131 @@
+// test_server.funny — the whole server, over a real socket, in one program.
+//
+// `funny test extensive_examples` runs this, so the example cannot quietly
+// stop working. It binds port 0 — "pick one nobody is using" — so it never
+// gambles on a fixed number being free on whatever machine is running it, and
+// it talks to itself over loopback rather than needing curl, a second
+// process, or the network.
+//
+// The client is an `interns` worker: a real OS thread, in its own VM. It has
+// to be a separate thread, because a server that is blocked in `accept` and a
+// client that is blocked in `connect` cannot be the same one. This is the
+// clearest use of a worker in the whole project — two ends of a conversation,
+// each a whole program, sharing nothing but the socket the OS gave them.
+
+gimme internet
+gimme interns
+gimme yapper
+gimme filez
+
+gimme { read_request, build_response, url_decode, parse_query, to_json } from "http.funny"
+gimme { route, respond } from "routes.funny"
+
+// -- the parser, with no socket in sight ----------------------------------
+// read_request takes a "give me more bytes" function rather than a
+// connection, so it can be driven from a string.
+
+flex bet from_text(text) {
+    bounce read_request(lowkey () => "", text)
+}
+
+yap "-- parsing --"
+
+yo get = from_text("GET /hello?name=sam%20jones&loud=1 HTTP/1.1\r\nHost: x\r\nX-Mood: Chill\r\n\r\n")
+yap get["method"], get["path"]
+yap get["query"].get("name"), get["query"].get("loud")
+yap get["headers"].get("x-mood")            // folded: header names are case-insensitive
+yap get["headers"].get("X-Mood") == ghost   // ...so the original case is not a key
+
+yo post = from_text("POST /guestbook HTTP/1.1\r\nContent-Length: 11\r\n\r\nhello there")
+yap post["method"], post["body"], post["truncated"]
+
+// A body that stops early is flagged rather than silently short.
+yo cut = from_text("POST /x HTTP/1.1\r\nContent-Length: 99\r\n\r\nnope")
+yap "truncated:", cut["truncated"]
+
+// Not a request at all.
+yap "garbage:", to_yap(from_text("hello there\r\n\r\n"))
+yap "no slash:", to_yap(from_text("GET nope HTTP/1.1\r\n\r\n"))
+
+// Bare-LF line endings, which some clients and most hand-typed requests use.
+yo lf = from_text("GET /health HTTP/1.1\nHost: x\n\n")
+yap "bare LF:", lf["path"]
+
+yap "-- decoding --"
+yap url_decode("a%20b+c%2Fd")
+yap url_decode("100%%")                     // a malformed escape is left alone
+yap to_json({"a": [1, 2], "b": ghost, "c": "quo\"te", "d": fax})
+
+// -- routing, still with no socket ----------------------------------------
+yap "-- routing --"
+grind path in ["/", "/nope", "/teapot", "/health"] {
+    yo r = route({"method": "GET", "path": path, "target": path, "query": {},
+                  "headers": {}, "body": "", "truncated": cap})
+    yap path, r["status"], r["headers"].get("Content-Type")
+}
+
+// -- and now over a real socket -------------------------------------------
+yap "-- over a socket --"
+
+yo listener = internet.open_shop(0, "127.0.0.1")
+yo port = internet.shop_port(listener)
+yap "bound a port:", port > 0
+
+// The client lives in a worker, because somebody has to be dialling while
+// this program is accepting. It sends three requests, one per connection,
+// and hands back what came off the wire.
+deadass CLIENT = "gimme internet\n" +
+    "gimme interns\n" +
+    "gimme yapper\n" +
+    "yo job = interns.assignment()\n" +
+    "yo out = []\n" +
+    "grind req in job[\"requests\"] {\n" +
+    "    yo conn = internet.slide_into(\"127.0.0.1\", job[\"port\"], 5000)\n" +
+    "    internet.holler_back(conn, req)\n" +
+    "    yo seen = \"\"\n" +
+    "    bruh (fax) {\n" +
+    "        yo chunk = internet.hear_them_out(conn, 65536, 5000)\n" +
+    "        sus (chunk == ghost || chunk == \"\") { bail }\n" +
+    "        seen = seen + chunk\n" +
+    "    }\n" +
+    "    internet.kick_out(conn)\n" +
+    "    out.yeet_in(seen)\n" +
+    "}\n" +
+    "interns.deliver(out)\n"
+
+yo client_src = filez.temp_file() + "_client.funny"
+filez.yeet_out(client_src, CLIENT)
+
+deadass REQUESTS = [
+    "GET /hello?name=world HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    "GET /teapot HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    "POST /guestbook HTTP/1.1\r\nHost: localhost\r\nContent-Length: 9\r\n\r\nsigned me",
+]
+
+yo client = interns.hire(client_src, {"port": port, "requests": REQUESTS})
+
+// Serve exactly as many as the client will send, then stop.
+grind i from 0 to REQUESTS.how_thicc() {
+    yo customer = internet.next_customer(listener, 5000)
+    sus (customer == ghost) {
+        yap "nobody turned up!"
+        bail
+    }
+    yo conn = customer["conn"]
+    yo first = internet.hear_them_out(conn, 65536, 5000)
+    yo req = read_request(lowkey () => internet.hear_them_out(conn, 65536, 5000), first)
+    internet.holler_back(conn, respond(route(req)))
+    internet.kick_out(conn)
+}
+internet.close_shop(listener)
+
+yo replies = interns.wait_up(client)
+grind reply in replies {
+    yo head = yapper.split(reply, "\r\n")[0]
+    yo body_at = yapper.index_of(reply, "\r\n\r\n")
+    yo body = yapper.slice(reply, body_at + 4, reply.how_thicc())
+    yap head, "|", yapper.trim(body)
+}
+
+filez.obliterate(client_src)
+yap "-- done --"

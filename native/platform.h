@@ -224,6 +224,63 @@ void platform_http_response_free(PlatformHttpResponse *resp);
 /* Raw TCP connect-and-time (no HTTP involved) for internet.ping(). */
 bool platform_tcp_ping(const char *host, int port, int timeoutMs, double *outMs);
 
+/* -- listening sockets, for `internet.open_shop` --------------------------
+ *
+ * Everything above is a *client*: it dials out. These are the other
+ * direction -- bind a port, wait for somebody to dial in, read what they
+ * say, say something back.
+ *
+ * Handles are `int64_t` rather than a struct, because they cross into
+ * FunnyLang as a `numba` and stay out of the collector entirely (the same
+ * reasoning `sus`'s REPL sessions and `interns`'s workers already record).
+ * They are wide enough for a Win32 `SOCKET`, which is a `UINT_PTR` and does
+ * not fit an `int` on a 64-bit build. A negative handle is never valid.
+ *
+ * `FUNNY_NO_NET=1` is *not* checked here: a listening socket is not reaching
+ * out to the network, and a test runner that blocks outbound calls has no
+ * reason to stop a program serving its own loopback. `internet.c` decides
+ * that, per function, exactly as it does for the client half. */
+#define PLATFORM_SOCKET_NONE ((int64_t)-1)
+/* platform_tcp_accept / platform_socket_recv: nobody arrived, or nothing was
+   said, within the timeout. Not an error -- the caller usually loops. */
+#define PLATFORM_SOCKET_TIMEOUT ((int64_t)-1)
+#define PLATFORM_SOCKET_ERROR ((int64_t)-2)
+
+/* Binds `port` on `host` ("" or NULL for every interface) and starts
+   listening. Returns a handle, or PLATFORM_SOCKET_NONE with a reason in
+   `errbuf` -- "address already in use" is the one everybody hits, so it says
+   which port. SO_REUSEADDR is set: without it a server restarted inside the
+   TIME_WAIT window cannot rebind its own port, which makes development
+   miserable for no safety gained. */
+int64_t platform_tcp_listen(const char *host, int port, int backlog, char *errbuf, size_t errbuf_len);
+
+/* Waits up to `timeoutMs` for a connection (negative: forever). Returns the
+   new connection's handle, PLATFORM_SOCKET_TIMEOUT if nobody arrived, or
+   PLATFORM_SOCKET_ERROR. `peerOut` gets the peer's address as text when it
+   is not NULL. */
+int64_t platform_tcp_accept(int64_t listener, int timeoutMs, char *peerOut, size_t peerOut_len);
+
+/* Reads up to `len` bytes. >0 is a byte count; 0 is a clean close by the
+   other end; PLATFORM_SOCKET_TIMEOUT is nothing said in time;
+   PLATFORM_SOCKET_ERROR is a broken connection. */
+int64_t platform_socket_recv(int64_t sock, char *buf, size_t len, int timeoutMs);
+
+/* Writes all of `len` bytes, looping over short writes. True only if every
+   byte went. */
+bool platform_socket_send(int64_t sock, const char *buf, size_t len);
+
+/* Dials out: a raw TCP connection, with none of the HTTP above it. The
+   client half of the same handle type -- what comes back works with
+   platform_socket_recv/send/close exactly like an accepted connection. */
+int64_t platform_tcp_connect(const char *host, int port, int timeoutMs);
+
+/* The port a listener actually ended up on. Asking for port 0 means "pick
+   one nobody is using", which is how a test binds without gambling on a
+   fixed number being free -- and then it has to be able to find out which. */
+int platform_socket_port(int64_t sock);
+
+void platform_socket_close(int64_t sock);
+
 /* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
  *
  * `interns` runs each worker on a real OS thread, in its own VM with its own

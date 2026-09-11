@@ -663,6 +663,18 @@ static Value m_how_thicc(VM *vm, Value *a, int argc) {
     return INT_VAL(AS_STRING(a[0])->codepointCount);
 }
 
+/* The length in *bytes*, where how_thicc is the length in codepoints.
+   Almost nothing wants this -- and then one thing does and nothing else will
+   do: an HTTP `Content-Length` counts bytes, so a response with a single
+   non-ASCII character in it would be sent short and the other end would sit
+   waiting for the rest. Anything speaking a wire protocol has the same
+   problem. */
+static Value m_byte_len(VM *vm, Value *a, int argc) {
+    (void)argc;
+    if (!check_str(vm, a[0], "byte_len")) return GHOST_VAL;
+    return INT_VAL(AS_STRING(a[0])->byteLen);
+}
+
 static Value m_to_numba(VM *vm, Value *a, int argc) {
     (void)argc;
     return to_numba_value(vm, a[0]);
@@ -680,6 +692,7 @@ typedef struct {
 static const YapperModuleEntry MODULE_FUNCTIONS[] = {
     {"split", m_split, 1, 2},
     {"join", m_join, 2, 2},
+    {"byte_len", m_byte_len, 1, 1},
     {"SCREAM", m_scream, 1, 1},
     {"whisper", m_whisper, 1, 1},
     {"trim", m_trim, 1, 1},
@@ -716,6 +729,7 @@ static const YapperModuleEntry MODULE_FUNCTIONS[] = {
    funnylang/stdlib/yapper.py's own YAPSTRING_METHODS exactly. */
 static const YapperModuleEntry YAPSTRING_METHOD_TABLE[] = {
     {"how_thicc", m_how_thicc, 0, 0},
+    {"byte_len", m_byte_len, 0, 0},
     {"SCREAM", m_scream, 0, 0},
     {"whisper", m_whisper, 0, 0},
     {"trim", m_trim, 0, 0},
