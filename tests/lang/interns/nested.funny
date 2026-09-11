@@ -1,0 +1,35 @@
+// ASYNC_PLAN.md A1: an intern can hire interns.
+//
+// Nothing special was built for this -- a worker is a VM, `gimme interns`
+// works there like anywhere else, and its handles are its own. It is worth a
+// golden anyway, because it is the case where the registry is written from
+// two threads at once and where a VM is torn down while it still owns
+// workers: a worker that finishes without waiting on its own hires has them
+// joined for it, the same way the top-level program does.
+gimme interns
+gimme filez
+
+// Depth 2: this one is hired by the middle layer.
+deadass LEAF = "gimme interns\ninterns.deliver(interns.assignment() + 1)\n"
+yo leaf = filez.temp_file() + ".funny"
+filez.yeet_out(leaf, LEAF)
+
+// The middle layer hires three leaves of its own and gathers them. Its
+// handles start at #1 again -- they are numbered per VM, and it has its own.
+deadass MIDDLE = "gimme interns\nyo job = interns.assignment()\nyo crew = []\ngrind n in job[\"nums\"] {\n    crew.yeet_in(interns.hire(job[\"leaf\"], n))\n}\ninterns.deliver(interns.everybody(crew))\n"
+yo middle = filez.temp_file() + ".funny"
+filez.yeet_out(middle, MIDDLE)
+
+yap interns.wait_up(interns.hire(middle, {"leaf": leaf, "nums": [10, 20, 30]}))
+
+// A worker that hires and then walks off without waiting. The intern it left
+// behind is joined when its VM is destroyed, so this neither hangs nor leaks.
+deadass DEADBEAT = "gimme interns\nyo job = interns.assignment()\ninterns.hire(job[\"leaf\"], 1)\ninterns.deliver(\"clocked out\")\n"
+yo deadbeat = filez.temp_file() + ".funny"
+filez.yeet_out(deadbeat, DEADBEAT)
+
+yap interns.wait_up(interns.hire(deadbeat, {"leaf": leaf}))
+
+filez.obliterate(leaf)
+filez.obliterate(middle)
+filez.obliterate(deadbeat)

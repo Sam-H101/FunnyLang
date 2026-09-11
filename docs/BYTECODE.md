@@ -91,8 +91,9 @@ Local and upvalue slots are a single unsigned byte (max 256 locals per function)
 | 77 | `PTR_PROP` | u16 nameIdx | obj → pointa |
 | 78 | `DEREF` | — | pointa → value |
 | 79 | `SET_DEREF` | — | pointa value → value |
+| 80 | `AWAIT` | — | otw → value |
 
-80–99 are reserved for future opcodes; numbering is never reused. `JUMP_LONG`/`LOOP_LONG` (added
+81–99 are reserved for future opcodes; numbering is never reused. `JUMP_LONG`/`LOOP_LONG` (added
 during M11's hardening pass) are wide-offset counterparts of `JUMP`/`LOOP`, emitted only when a
 single function's body is so large a u16 offset can't reach — ordinary programs never produce
 them. See `PLAN.md` §16 for the full design rationale, including how a conditional jump (which
@@ -108,6 +109,13 @@ already a reference type. `DEREF`/`SET_DEREF` read/write through one. `PTR_LOCAL
 `PTR_UPVAL`'s `nameIdx` operand is otherwise-redundant display data only (for `.where()`/`to_yap`);
 `BYTECODE_VERSION` went to `2` alongside these seven, since a `.funnyc` using them is genuinely
 unreadable by a v1 runtime.
+
+`AWAIT` (added by `ASYNC_PLAN.md` A4) replaces the `otw` on top of the stack with what it settles
+to. If it has not settled, the running task suspends and the event loop picks something else; the
+instruction pointer is rewound to the `AWAIT` itself, so resuming re-runs it and finds the answer
+there. A value that is not an `otw` is left alone -- awaiting something already here is a no-op,
+not an error. `async_ngl` emits **no code at all**: it is a flag on the proto (see the file format
+below), and calling the closure is what makes a task.
 
 `TRY_PUSH`'s `handlerOff`/`finallyOff` use `0xFFFF` as an explicit "absent" sentinel (no `my_bad` /
 no `regardless`), since a real offset of `0` is reachable. Both are relative to the address right
@@ -187,7 +195,7 @@ protos         proto_count × {
                  name str
                  arity u8
                  default_count u8
-                 is_variadic u8
+                 flags u8            (bit 0 = variadic, bit 1 = async)
                  upvalue_count u8
                  max_stack u16
                  local_count u8
@@ -197,6 +205,13 @@ protos         proto_count × {
                }
 entry_proto    u32
 ```
+
+A proto's `flags` byte was `is_variadic` until `ASYNC_PLAN.md` A4 added `async_ngl`, which needed
+somewhere to record that a function is async. It is a flags byte rather than a new field, and the
+version did **not** go to 3, because every value any earlier toolchain ever wrote is `0` or `1` and
+reads back identically. That is not just tidiness: a new field would have meant a runtime that
+could not read the toolchain blob it needs in order to build the toolchain that writes the new
+format -- a circle with no cheap way out of it.
 
 An int constant's magnitude uses the *minimum* number of bytes that fit it — `0` has `byte_len 0`
 (no magnitude bytes at all), matching `n_bytes = ceil(value.bit_length() / 8)`. An int `1` and a

@@ -1,0 +1,68 @@
+// ASYNC_PLAN.md A2: `otw` is a value type with three states.
+//
+// "on the way". `interns.hire` hands one back instead of a number, and
+// `what_is_it` answers "otw" alongside numba, yapstring, pointa and boolski.
+// It shows its state when printed, and a settled one shows what it settled
+// to -- a bare `<otw>` would make the one question anybody asks of one
+// unanswerable without awaiting it, which is the last thing you want while
+// debugging.
+gimme interns
+gimme filez
+
+deadass ECHO = "gimme interns\ninterns.deliver(interns.assignment())\n"
+yo src = filez.temp_file() + ".funny"
+filez.yeet_out(src, ECHO)
+
+yo p = interns.hire(src, "the goods")
+yap what_is_it(p)
+
+// Waiting settles it in place, so the same `otw` is both the thing you wait
+// on and the record of what happened.
+yap interns.wait_up(p)
+yap p
+
+// Settled is final: waiting again is free and gives the same answer, with no
+// second worker and no second join.
+yap interns.wait_up(p)
+yap interns.wait_up(p) == "the goods"
+
+// Rejected keeps the worker's own flavor.
+deadass FALLS_OVER = "chuck oops(\"KeyGhosted\", \"lost the keys\")\n"
+yo bad = filez.temp_file() + ".funny"
+filez.yeet_out(bad, FALLS_OVER)
+
+yo q = interns.hire(bad, ghost)
+sketchy {
+    interns.wait_up(q)
+} my_bad (e) {
+    yap "rejected with " + e.flavor
+}
+yap q
+
+// A rejected `otw` re-raises every time it is awaited, rather than
+// remembering that somebody already looked.
+sketchy {
+    interns.wait_up(q)
+} my_bad (e) {
+    yap "again: " + e.flavor
+}
+
+// An `otw` belongs to the heap it was made on, so it cannot be handed to a
+// worker at all -- which is why an intern can never be given a colleague's
+// ticket and end up joining somebody else's thread.
+sketchy {
+    interns.hire(src, p)
+} my_bad (e) {
+    yap e.message
+}
+
+// Waiting on something that is not an `otw` is that thing. There is nothing
+// to wait for, and answering "that isn't an intern" would make every helper
+// that might or might not be asynchronous need to know which it was.
+yap interns.wait_up(41) + 1
+yap interns.wait_up("already here")
+yap to_yap(interns.wait_up(ghost))
+yap interns.everybody([1, 2, interns.hire(src, 3)])
+
+filez.obliterate(src)
+filez.obliterate(bad)

@@ -1,0 +1,656 @@
+# FunnyLang — Concurrency Plan (async + workers)
+
+> **Status:** built. A0-A7 complete; see §9. Branch `feature/async-threading`.
+> **Prerequisite:** `NATIVE_PLAN.md` complete — the runtime is C, the toolchain is FunnyLang, and
+> there is no Python anywhere. This plan assumes all of that.
+> **Deliverable:** `async_ngl` / `await_fr` with a real event loop, and OS threads through isolated
+> workers — the two reserved keywords made real, and something worth awaiting.
+
+---
+
+## 0. Rules for the executing agent
+
+1. **`PLAN.md` §11 says "Threads, async, or a GC" are non-goals. That entry is void, and knowing why
+   matters.** It was written for the v1 Python implementation, and its own parenthetical gives the
+   reason: *"(Python's refcounting is the GC)"*. There is a real mark-and-sweep collector now, in
+   C, and the runtime it belongs to was built to a different set of constraints. `PLAN.md`'s framing
+   block already declares the document historical outside §3–§6. This plan supersedes that line and
+   says so out loud rather than quietly contradicting it.
+2. **The reserved keywords are a contract.** `async_ngl`, `await_fr`, `vibin`, `yield_lol`,
+   `match_this` and `when` are already lexed as keywords and rejected by the parser with "isn't
+   implemented yet" (`selfhost/parser.funny`'s `RESERVED_FUTURE`). Use `async_ngl` and `await_fr`
+   for exactly what their names say. Do not invent a third spelling.
+3. **Every deliberate deviation gets a §9 entry**, same convention as `NATIVE_PLAN.md`. Including
+   the ones that turn out to be wrong.
+4. **`platform.c` is still the only file allowed `#ifdef _WIN32`.** Threads, mutexes and condition
+   variables go behind `platform.h` like everything else.
+5. **A golden that cannot be deterministic is not a golden.** Concurrency output ordering is the
+   obvious trap; §5 says what to do instead.
+6. **Commit per milestone, push, never merge to master.**
+
+---
+
+## 1. What "done" looks like
+
+```funny
+gimme interns
+gimme clock
+
+async_ngl bet fetch_both() {
+    // Two interns, two OS threads, one wait.
+    yo a = interns.hire("slow_job.funny", 21)
+    yo b = interns.hire("slow_job.funny", 21)
+    bounce await_fr a + await_fr b
+}
+
+yap await_fr fetch_both()      // 42
+```
+
+- `async_ngl bet f()` declares a function that returns an **`otw`** instead of running to completion.
+- `await_fr p` suspends the current task until `p` settles, and evaluates to its value — or re-raises
+  its error, with the awaiting site on the stack of shame.
+- `interns.hire(...)` runs a function on a real OS thread, in its own VM with its own heap, and hands
+  back an `otw`.
+- `clock.chill(ms)` gives you an `otw` that settles after a delay, so the loop has a timer.
+- `funny run` drains outstanding work before exiting; a program that leaves an `otw` unawaited gets a
+  diagnostic naming it, not a silent truncation.
+
+---
+
+## 2. Why this shape
+
+### 2.1 Async and threading are two features, and only one of them can share a heap
+
+They get conflated because both are "concurrency". They are not the same problem here:
+
+| | async (`async_ngl`) | workers (`interns`) |
+|---|---|---|
+| Parallelism | none — one OS thread | real, one thread per worker |
+| Shares the heap | yes | **no**, its own VM and its own GC |
+| Values crossing | ordinary references | deep-copied |
+| Cost of getting it wrong | a suspended task never resumes | a data race in the collector |
+
+Async is cheap *because* it does not introduce parallelism: there is exactly one mutator, so the
+collector's world does not change. Workers introduce parallelism and therefore may not touch the
+parent's heap at all.
+
+### 2.2 Why not shared-memory threads
+
+The obvious ask is "threads that share the heap". The honest answer is that this runtime cannot
+have them without a rewrite:
+
+- `GC` is one global-per-VM object with a single intrusive `objects` list, one `grayStack`, and one
+  `tempRoots` stack. Two mutators allocating at once corrupt all three.
+- `gc_push_temp`/`gc_pop_temp` — the documented rooting protocol every native function follows — is
+  a stack with no owner. It is correct precisely because only one thread uses it.
+- Making it safe means a lock on every allocation and every write barrier, or a per-thread nursery
+  with a stop-the-world protocol. That is a bigger project than everything in this plan combined,
+  and its failure mode is a heisenbug in the collector rather than a clear error.
+
+### 2.3 The worker model already exists
+
+`sus.run_bytecode` creates a **fresh VM with its own GC heap**, runs a bundle in it with argv, and
+copies the results out as plain C memory before tearing the child down. Its own comment says: *"A
+fresh VM with its own globals and its own GC heap, deliberately: this is isolation, not `eval`."*
+And `NATIVE_PLAN.md` §9 already records the lesson learned the hard way at that boundary — **a
+heap's roots are the job of the collector that owns the heap.**
+
+A worker is that, on a thread. This is not a new architecture; it is the existing one with the
+call made asynchronous. That is the strongest argument for this shape: the isolation is already
+built, already tested, and already the thing the runtime is shaped around.
+
+### 2.4 Names, and where this lives
+
+**One new stdlib module, `interns`. Async needs no module at all.**
+
+`async_ngl` and `await_fr` are keywords — already lexed, already reserved — and `otw` is a value
+type. None of that is importable, so the async half adds nothing to the module list. Only the worker
+half and the gather helpers need somewhere to live, and that somewhere is the standard library
+rather than a separate package, for three reasons:
+
+1. It cannot be written in FunnyLang. Threads live behind `platform.h`, in C, like `filez` and
+   `internet` before it.
+2. `gimme interns` is how every other capability in this language is reached. A different mechanism
+   for this one would be a second thing to learn for no gain.
+3. There is nowhere else to put it. A downloadable library needs a package registry, and "the group
+   chat" is a `PLAN.md` M14 stretch goal that does not exist.
+
+| name | what it is | why |
+|---|---|---|
+| `interns` | the module | You hire interns to do the work in parallel. `mafs`, `yapper`, `rizz`, `sus` and `filez` set the register; this fits it. |
+| `otw` | the pending-value type | "on the way". `what_is_it(p)` answers `"otw"`, alongside `numba`, `yapstring`, `pointa` and `boolski` — short, lowercase, and descriptive of what it *is*, which is the existing convention. |
+| `interns.hire(path, arg)` | spawn a worker | You do not `spawn` an intern. |
+| `interns.wait_up(x)` | block until settled | For code that is not async. "wait up" is what you say when you are being left behind. |
+| `interns.everybody(stash)` | gather | Wait for all of them. |
+| `interns.headcount()` | usable parallelism | How many you can usefully hire. |
+| `clock.chill(ms)` | awaitable delay | `clock.touch_grass(s)` already exists and *blocks*. `chill` yields instead — the pair reads correctly and cannot be confused. |
+
+**Two new error flavors, and no more.** `native/error.c`'s table is `PLAN.md` §4.1's taxonomy and is
+deliberately closed — `oops(flavor, ...)` validates against it, "so an error flavor always means the
+same thing, rather than being whatever string a library invented". Adding to it is a spec change, so
+it is two:
+
+| flavor | raised when | roast |
+|---|---|---|
+| `CantWaitRightNow` | `await_fr` where the task cannot suspend (§3.1) | "you can't wait here. bad timing, chief." |
+| `LeftOnRead` | an `otw` nobody ever awaited, or one that can never settle | "nobody ever awaited that. left on read." |
+
+Everything else reuses what exists: a value that cannot cross to a worker is a `TypeVibeMismatch`,
+and **an error raised inside a worker is re-raised in the parent with its own original flavor**,
+which is better than wrapping it in a concurrency-specific one.
+
+### 2.5 What makes async worth having
+
+A single-threaded event loop with nothing genuinely concurrent to wait for is a toy: `await_fr` on
+a value that is already computed is an expensive no-op. Async earns its place here because workers
+give it something real to await, and because a timer gives it a reason to yield.
+
+That is why the two land together rather than one at a time.
+
+---
+
+## 3. The honest cost sheet
+
+### 3.1 The suspension boundary is real and must be enforced
+
+The VM keeps its own `stack` and `frames` arrays rather than using the C stack, so a task's state is
+a slice of two arrays — suspension is genuinely feasible. **But `vm_call_value` re-enters
+`vm_execute` on the C stack**, which is how a native function calls back into FunnyLang
+(`stash.sort_by`'s comparator, `combo`, a squad's magic method). A task cannot suspend across one of
+those: its C frame cannot be saved.
+
+This is the same restriction Python has, and the requirement is not to remove it but to **detect
+it**: `await_fr` reached while nested inside a native callback must raise a clear, specific error
+naming the callback, not corrupt the frame stack. A silent wrong answer here would be the worst
+defect this plan could ship.
+
+### 3.2 The GC must mark every task, not the running one
+
+`mark_roots` delegates to `markExternalRoots` → `mark_vm_roots`, which walks *the* stack and *the*
+frames. The moment there is more than one task, anything on a suspended task's stack is invisible to
+the collector and gets swept while a live task still owns it.
+
+This is the single most likely serious bug in the whole plan, and it will present as an
+intermittent use-after-free rather than a test failure. Mitigation: `FUNNY_GC_STRESS` (now with a
+period, so it can run over the whole corpus) plus ASan, and a golden that suspends a task with a
+large freshly allocated structure on its stack and resumes it after forcing collections.
+
+### 3.3 Deep copy across the worker boundary is a language-visible restriction
+
+Only self-contained values can cross: `ghost`, `boolski`, `numba` (including bignums), `yapstring`,
+and `stash`/`groupchat` recursively containing those. A closure references upvalues and a module's
+globals; a squad instance references its class; a `pointa` references a cell in a specific heap.
+None can be copied coherently, and none may be shared.
+
+So `interns.hire` takes **a module path and a function name**, not a closure — the worker compiles or
+loads the bundle itself. That is a real ergonomic cost and it is the price of not having a
+thread-safe collector. It must be documented in the error message, not just here.
+
+A cycle in a copied structure must be detected and rejected (or copied preserving sharing) rather
+than recursing forever — the display path already had to learn this lesson (`[[...]]`).
+
+### 3.4 Cancellation, and what happens at exit
+
+Deliberately narrow for a first version: a worker runs to completion. There is no `kill`, because
+killing a thread mid-allocation leaves its heap in a state nothing can safely free. `funny run`
+joins outstanding workers before exiting; a program that leaves a promise unawaited gets a
+diagnostic naming the site, in the spirit of the existing "no silent truncation" rule.
+
+---
+
+## 4. Repository layout (additive)
+
+```
+native/
+  task.c / task.h        NEW  a task: its own stack + frames, and its state
+  loop.c / loop.h        NEW  the event loop: ready queue, timers, settled promises
+  otw.c / otw.h          NEW  the `otw` object and its settle/subscribe protocol
+  interns.c              NEW  the `interns` stdlib module (worker spawn/join)
+  platform.h/.c          threads, mutexes, condvars behind the boundary
+  gc.c                   mark every task, not just the running one
+  vm.c/.h                task-aware execute; OP_AWAIT; the suspend path
+  clock.c                `chill(ms)` -> promise
+
+selfhost/
+  lexer.funny            (no change -- keywords already lexed)
+  parser.funny           async_ngl / await_fr out of RESERVED_FUTURE, into the grammar
+  compiler.funny         async function protos; OP_AWAIT
+  ...
+
+tests/lang/async/        goldens (see §5)
+tests/lang/interns/      goldens
+```
+
+---
+
+## 5. Testing strategy
+
+The corpus is the test suite; `funny test` runs it. Concurrency breaks the usual assumption that a
+program's output is a fixed string, so:
+
+1. **Force the order in the test, or assert on order-independent facts.** `await_fr` in a fixed
+   sequence is deterministic and should be most of the corpus. Where genuine racing is the point,
+   collect results and sort them, or assert a count.
+2. **Never assert on timing.** `clock.chill(10)` finishing before `clock.chill(50)` is a scheduler
+   property worth testing; "it took under 60 ms" is a property of the runner, and `NATIVE_PLAN.md`
+   already rejected wall-clock budgets as goldens for that reason.
+3. **A stress golden per hazard**, not just per feature: a suspended task holding a large structure
+   across a forced collection (§3.2); `await_fr` inside a `sort_by` comparator, asserting the
+   specific error (§3.1); a worker handed a cyclic structure, asserting the specific error (§3.3).
+4. **The whole corpus runs under `FUNNY_GC_STRESS=50` in CI already.** Every new golden inherits
+   that for free, which is exactly the coverage §3.2 needs.
+5. **ASan and UBSan** already run the corpus in CI. A data race needs TSan, which is *not* currently
+   in the matrix — A1 adds it for the worker tests specifically, because a race is otherwise
+   invisible until it corrupts something in production.
+
+---
+
+## 6. Milestones
+
+### A0 — Platform threading primitives
+`platform_thread_start/join`, `platform_mutex_*`, `platform_cond_*` behind `platform.h`; Windows
+(`CreateThread`, `SRWLOCK`, `CONDITION_VARIABLE`) and POSIX (`pthread_*`). No language change.
+**Acceptance:** a C unit exercise starts N threads, each incrementing a mutex-guarded counter, and
+joins them; clean under ASan and TSan on Linux, and builds clean under MSVC `/W4 /WX`.
+
+### A1 — `interns`: workers, no syntax
+`interns.hire(path, arg) -> handle`, `interns.wait_up(handle) -> value`. Blocking join only, no promises, no
+async. Each worker is a fresh `VM` running a bundle, exactly as `sus.run_bytecode` does, on its own
+thread. Deep copy in and out; the copier rejects what cannot cross with a specific error.
+**Acceptance:** goldens for a value round trip, an error raised inside a worker surfacing in the
+parent with its flavor intact, a rejected closure argument, a rejected cycle. TSan clean.
+
+### A2 — `otw`
+An `otw` value type: pending / fulfilled / rejected, with subscribers. Settling from a worker
+thread is the only cross-thread mutation in the design and is mutex-guarded. `interns.hire` returns one.
+`what_is_it(p)` is `"otw"`.
+**Acceptance:** `interns.wait_up` reimplemented on top of `otw` with no behaviour change; goldens for
+each state and for the display form.
+
+### A3 — Tasks in the VM
+A task owns its `stack`/`frames`. `mark_vm_roots` walks **every** task (§3.2). The running task is
+swapped in and out by the loop. Still no syntax — the entry program is simply task zero.
+**Acceptance:** the entire existing corpus (376 goldens) passes unchanged, under
+`FUNNY_GC_STRESS=50` and under ASan. This milestone must be invisible.
+
+### A4 — `async_ngl` and `await_fr` in the language
+Out of `RESERVED_FUTURE`, into the grammar. An `async_ngl bet` compiles to a proto flagged async;
+calling it creates a task and returns a promise instead of running the body. `OP_AWAIT` suspends.
+The §3.1 boundary is enforced with its own error flavor.
+**Acceptance:** `funny xray --ast` and disassembly goldens for both forms; the nesting error golden;
+`await_fr` on a non-`otw` evaluating to the value itself (so awaiting a plain value is legal and
+cheap).
+
+### A5 — The event loop
+Ready queue, timer heap, settled-`otw` drain. `funny run` runs the entry program, then drains
+until nothing is pending. An `otw` left unawaited at exit is a `LeftOnRead` diagnostic naming its creation site.
+**Acceptance:** ordering goldens; a golden proving the loop drains work created after the entry
+program returned; the `LeftOnRead` diagnostic as a `!DIAG` golden.
+
+### A6 — Timers and awaiting workers
+`clock.chill(ms)`. A worker thread settling an `otw` wakes the loop. This is the milestone where
+the two halves meet and the §1 example runs.
+**Acceptance:** the §1 example as a golden; two `chill`s resolving in duration order; a worker
+awaited from an async function.
+
+### A7 — Docs, and the reserved-keyword list
+`README.md`, `docs/`, `PLAN.md` §3.3's reserved list (two of six now real), `CHANGELOG.md`.
+`vibin`/`yield_lol` stay reserved — generators reuse A3's task machinery and are a separate feature,
+noted as cheap-from-here rather than smuggled in.
+
+---
+
+## 7. Order of operations
+
+```
+A0 platform threads → A1 interns (blocking) → A2 otw → A3 tasks in the VM
+   → A4 async_ngl/await_fr → A5 event loop → A6 timers + worker integration → A7 docs
+```
+
+A1 before A2 on purpose: a blocking worker is a complete, useful, testable feature on its own, and
+it proves the isolation and the deep copy before any of the suspension machinery exists to confuse
+the diagnosis. A3 before A4 for the same reason — the riskiest change (multiple stacks, GC) lands
+where its acceptance criterion is *"the existing corpus is unaffected"*, which is the clearest
+signal available.
+
+---
+
+## 8. Definition of Done
+
+- [x] `async_ngl` and `await_fr` are out of `RESERVED_FUTURE` and do what their names say. **(A4)**
+- [x] `interns` runs real OS threads; a worker's crash or error surfaces in the parent as a normal
+      FunnyLang error, never as a runtime abort. **(A1)**
+- [x] The existing 376 goldens pass unchanged, under `FUNNY_GC_STRESS=50` and ASan. **(A3)**
+- [x] New goldens for every hazard in §3, not just every feature in §6. **(A1-A5)**
+- [x] TSan clean on the worker tests. **(A1)**
+- [x] `await_fr` inside a native callback raises a clear error naming the callback. **(A4)**
+- [x] A value that cannot cross the worker boundary is rejected with a message that says why. **(A1)**
+- [x] `CantWaitRightNow` and `LeftOnRead` are the *only* additions to §4.1's flavor taxonomy. **(A2, A4)**
+- [x] MSVC `/W4 /WX`, gcc and clang `-Wall -Wextra -Werror` clean; the corpus green on Linux,
+      Windows and macOS. **(macOS via CI)**
+- [x] `funny bootstrap --verify` still reaches its fixed point — the self-hosted compiler must be
+      unaffected by all of this.
+- [x] No third-party dependency, build-time or runtime. Still one C compiler.
+
+---
+
+## 9. Change log (executing agent: append here)
+
+Same convention as `NATIVE_PLAN.md` §9 and `PLAN.md` §16: every deviation, every AGENT CHOICE, every
+spec contradiction, and every wrong turn worth not repeating.
+
+- **A0 · platform threading primitives. Done.** `platform_thread_start/join/id`,
+  `platform_mutex_*` and `platform_cond_*` behind `platform.h`, with Win32 (`CreateThread`,
+  `SRWLOCK`, `CONDITION_VARIABLE`) and pthreads implementations in the one file allowed to know
+  which OS it is on. No language change; nothing above the boundary sees a thread yet.
+
+  **The three types are opaque fixed-size storage, not pointers to something malloc'd.** Two
+  reasons, and the second is the one that will matter later: a mutex that has to be allocated has an
+  allocation-failure path, and "I could not create a mutex" is not something any caller can act on;
+  and these need to sit *inside* other structs — an `otw` needs one to be settled from a worker
+  thread — where a bare member is far easier to reason about than an owned pointer with a lifetime.
+  `platform.c` `_Static_assert`s each size against the real underlying type, so a platform where the
+  handle does not fit is a build error with a readable message rather than a stack smash found
+  later.
+
+  **Choices worth recording:**
+  - **`SRWLOCK`, not `CRITICAL_SECTION`**: no initialisation call that can fail, smaller, and
+    nothing here recurses on a lock — a recursive acquire would be a bug worth crashing on.
+  - **No detach.** Every started thread must be joined. A leaked thread should be a bug, not a
+    supported mode.
+  - **`pthread_cond_timedwait` against `CLOCK_REALTIME`**, because that is the condvar's default
+    clock attribute on both Linux and macOS. A monotonic deadline without also setting the attribute
+    makes every wait return immediately — a mistake that would have looked like a scheduler bug.
+  - **`platform_thread_id` hashes `pthread_t`** rather than casting it: it is opaque and not required
+    to be an integer. The value is only ever compared, never interpreted.
+  - **The thread body returns `void`.** A `void *` return would hand this layer an ownership question
+    it cannot answer; a worker's result travels back through memory the caller owns, under the
+    caller's own mutex.
+  - **`build.sh` gained `-pthread`** (not `-lpthread`): it is a compile *and* link flag on gcc and
+    clang, and also defines `_REENTRANT`. glibc ≥ 2.34 folded pthreads into libc so the link half is
+    often a no-op now, which is not a reason to leave it off older systems.
+
+  **Acceptance, met:** `build/n4/a0_thread_check.c` compiles against the *shipped* `platform.c` — not
+  a copy — and runs eight threads doing 50,000 mutex-guarded increments each (400,000, exact), a
+  condvar handshake in the predicate-loop shape the `otw` protocol will need, a timed wait that must
+  *not* claim a signal nobody sent, and thread-id stability. Clean at `-O2`, under ASan+UBSan, and
+  **under ThreadSanitizer** — the one that matters, since a race is invisible to the others until it
+  corrupts something.
+
+  The existing corpus is untouched: 376/376 and the bootstrap fixed point on Linux (gcc, clang) and
+  Windows (MSVC `/W4 /WX`).
+
+- **A1 · `interns`: workers, no syntax. Done.** `gimme interns` gives `hire`, `wait_up`,
+  `everybody`, `headcount`, and the two halves of the worker protocol, `assignment` and `deliver`.
+  Each hire is a real OS thread running a fresh `VM` with its own heap and its own collector --
+  `sus.run_bytecode` with the call made asynchronous, exactly as §2.3 argued. Values are deep-copied
+  in and out through `native/portable.{h,c}`; nothing is shared, so no lock protects any FunnyLang
+  value anywhere.
+
+  **`hire` takes a path and an argument, and the worker is a *program*, not a function.** §3.3 says
+  "a module path and a function name"; §1 and §2.4's table both say `interns.hire(path, arg)`, and
+  the table is what shipped. Naming a function would have meant inventing a second way to enter
+  FunnyLang code -- a top-level script has no `bounce` -- so the worker reads its input with
+  `interns.assignment()` and returns through `interns.deliver(v)`:
+
+  ```funny
+  gimme interns
+  yo n = interns.assignment()
+  interns.deliver(n * 2)
+  ```
+
+  **Choices worth recording:**
+  - **A worker's `yap` is captured and replayed at the `wait_up`, not printed as it happens.** Two
+    workers writing to one stream interleave by luck, and §5 rules out a golden that depends on
+    luck. Replaying at the join makes the output appear in the order the program *waited*, which is
+    a fixed order and the one the reader already has in front of them. `yell` gets the same
+    treatment, to `vm->err`.
+  - **Handles are numbered per hiring VM, not per process.** A numba is one of the things that *can*
+    cross to a worker, so an intern can be handed a colleague's ticket -- and two threads joining
+    the same thread is undefined behaviour rather than a race anything would catch. Per-VM numbering
+    makes a stolen ticket name the thief's *own* intern (or nobody), so the hazard cannot be
+    reached, and the check is structural instead of a rule to remember. It also makes `#1` mean
+    `#1`: a golden that prints a handle would otherwise depend on how many interns every other
+    golden in the same `funny test` process had hired first.
+  - **`vm_destroy` joins the interns that VM hired.** Not the runner, not `sus.run_bytecode`, not
+    the REPL-session teardown, not the worker finishing its own program -- all four destroy a VM,
+    and putting the join at the one place they have in common means none of them can forget it.
+    A worker that walks off without waiting on its own hires therefore neither hangs nor leaks.
+  - **Compiled worker bundles are cached by path.** Hiring the same script twice -- which is what
+    §1's example does -- otherwise runs the whole self-hosted toolchain twice for a byte-identical
+    answer. A `.funnyc` or `.funnypak` hired by path is *not* cached: reading a file is cheap, and
+    that is the one case where a stale copy is plausible.
+  - **A `.funnyc`/`.funnypak` path is loaded directly, with no compiler involved.** That is what
+    lets a yeeted binary hire an intern at all: `funnyrt` deliberately contains no compiler, so
+    hiring from `.funny` source there is an `ImportSkillIssue` that says exactly that.
+  - **`sus.c` gained `sus_get_toolchain`** -- the setter existed, the getter did not. Compiling a
+    worker means running `funny build` in a child VM, because the compiler is written in FunnyLang.
+  - **`VM` gained a `void *workerContext`** rather than a `_Thread_local`. The VM already *is* the
+    per-execution context, and MSVC's support for the C11 spelling is not something to depend on.
+  - **No new error flavors.** A value that cannot cross is a `TypeVibeMismatch` naming the type, and
+    an error raised inside a worker is re-raised in the parent **with its own original flavor**, per
+    §2.4. `CantWaitRightNow` and `LeftOnRead` belong to A4 and A5 and are not added until something
+    raises them.
+
+  **Acceptance, met:** six new goldens under `tests/lang/interns/` -- the round trip for every type
+  that may cross plus the proof that it is a copy; a worker's error surfacing with its flavor
+  intact, alongside its output; every value that cannot cross (closure, instance, squad, `pointa`,
+  self-containing stash, self-containing groupchat) and the same restriction on the way back; the
+  gather; every way to misuse a handle; and interns hiring interns. 382/382 on Linux (gcc) and
+  Windows (MSVC `/W4 /WX`), 382/382 under `FUNNY_GC_STRESS=50`, and the interns corpus clean under
+  ASan+UBSan **and under ThreadSanitizer** (`build/a1/sanitize.sh`).
+
+- **A2 · `otw`. Done.** `native/otw.{h,c}`: a value type with three states -- pending, fulfilled,
+  rejected -- that `what_is_it` answers `"otw"` for. `interns.hire` returns one, `interns.wait_up`
+  drives one to settled, and the A1 goldens passed the change **unmodified** except the two that
+  named a handle, which is the "no behaviour change" the milestone asked for.
+
+  **The cross-thread mutation the plan expected turned out not to be needed, and removing it is
+  strictly better.** §2.4 says settling from a worker thread is "the only cross-thread mutation in
+  the design and is mutex-guarded". It cannot be: settling means putting a `Value` on a heap, and a
+  heap belongs to one collector on one thread (§2.2) -- a worker settling an `otw` directly would be
+  the exact thing `portable.c` exists to prevent. So the worker fills in its own `Intern` (plain
+  malloc'd memory, no collector) and sets `done` under the registry mutex with a broadcast; the
+  owning thread notices and settles the `otw` itself, on its own heap, at a moment of its choosing.
+  **No FunnyLang value is ever touched by two threads, and no lock protects one anywhere.** That is
+  a stronger invariant than the one the plan was willing to settle for.
+
+  **Choices worth recording:**
+  - **The interns registry gained a condition variable, `g_wake`**, broadcast by each worker as it
+    finishes. Nothing uses it yet -- `wait_up` joins -- but it is the mechanism A5's loop sleeps on
+    instead of polling, and a *timed* wait on it is how A6 says "wake when a worker finishes, or
+    when the next timer is due" in one call.
+  - **No subscriber list yet.** A2's brief includes "with subscribers", but a subscriber is a task
+    and there are no tasks until A3, nothing to suspend until A4, and nothing to resume until A5. A
+    dead field is worse than a later edit.
+  - **`wait_up` on a value that is not an `otw` is that value.** §2.4 calls `wait_up(x)` "block
+    until settled"; a value that is already here is settled. The alternative -- rejecting it -- would
+    force every helper that *might* be asynchronous to know which it was, and A4's acceptance
+    already requires `await_fr` on a plain value to behave this way. The two now agree.
+  - **`vm_rethrow` (new, `vm.h`)** raises an `ObjError` that already exists instead of rebuilding one
+    from a flavor and a message. It is `OP_CHUCK`'s own stamping logic: a worker's error is rebuilt
+    on this heap with no position, so the position it acquires is the **awaiting** site -- which is
+    what A4 wants for `await_fr` too.
+  - **`LeftOnRead` added to `error.c`'s table now**, because `interns_collect` needs an answer for an
+    `otw` nobody is working on. `CantWaitRightNow` is still not added: A4 is where something raises
+    it. That keeps the total at the two §2.4 allows.
+  - **An `otw` prints its state**: `<otw pending>`, `<otw done 42>`, `<otw rejected KeyGhosted>`. A
+    bare `<otw>` would make the only question anybody asks of one unanswerable without awaiting it.
+  - **`portable.c` picks "a"/"an"** by the type name's first letter, so the rejection reads "an otw"
+    rather than "a otw". It also fixes "a error" and "a iterator", which were already wrong.
+
+  **Acceptance, met:** `tests/lang/interns/otw_states.funny` covers all three states, the display
+  form of each, `what_is_it`, settling being final and idempotent, a rejected `otw` re-raising every
+  time, an `otw` being refused at the worker boundary, and awaiting plain values. 383/383 on Linux
+  (gcc) and Windows (MSVC `/W4 /WX`), 383/383 under `FUNNY_GC_STRESS=50`, and `tests/lang/interns`
+  clean under ASan+UBSan and ThreadSanitizer.
+
+- **A3 · tasks in the VM. Done, and invisible.** `native/task.{h,c}`: a Task owns a `stack`, a
+  `frames` array, an open-upvalue array, and the position/error scalars that go with them. The VM
+  holds every task and knows which one is running. The entry program is task zero, created by
+  `vm_init`. No syntax, no new golden, no behaviour change: 383/383 unchanged, under
+  `FUNNY_GC_STRESS=50`, under ASan+UBSan over the *whole* corpus, on Linux and on Windows, with the
+  bootstrap fixed point still byte-identical.
+
+  **The running task's context stays in the VM's own fields; only suspended tasks keep a copy.**
+  The obvious design -- `VM` holds a `Task *current` and every access goes through it -- would have
+  meant rewriting several hundred `vm->stack` / `vm->frameCount` references through the dispatch
+  loop, which is the most correctness-critical code in the project, in exchange for nothing that a
+  pair of struct copies does not already give. A milestone whose entire acceptance criterion is
+  "nothing notices" should not be a thousand-line diff through the interpreter. Switching is
+  `task_save` on the way out and `task_restore` on the way in.
+
+  **The one place the choice shows is `ObjUpvalue`, and it is worth spelling out** because it is the
+  bug this design would otherwise have. An open upvalue holds an *absolute index into the stack*.
+  With one stack that was unambiguous; with several it is not, and a suspended task's upvalue reading
+  `vm->stack[slot]` would read whatever the *running* task happens to have at that index -- a silent
+  wrong answer, the worst class of defect §3.1 warns about. So an upvalue now remembers its task, and
+  `frames.c` reads `vm->stack` when that task is the running one (the Task's copy of the pointer is
+  stale then, because the array may have been realloc'd since the last switch) and the Task's array
+  otherwise. Six lines, one function, `live_stack`.
+
+  **Closing an upvalue on suspend was considered and rejected.** It looks like it would avoid the
+  problem entirely, and it does not: closing copies the value out of the stack, so a resumed task
+  writing that local through `SET_LOCAL` and a closure reading it through the upvalue would diverge.
+  The two must keep pointing at one cell.
+
+  **`task_mark` roots a suspended task's unit constants too**, not just its stack and frames. A task
+  suspended inside module A while module B runs has a next instruction that may `CONST`-push out of
+  A's pool, and `mark_vm_roots` only ever rooted `vm->unit` -- which by then is B's.
+
+  **`vm_task_retire` frees a finished task's arrays early** rather than waiting for `vm_destroy`. A
+  program that awaits ten thousand things should not hold ten thousand 256-slot stacks; the Task
+  itself survives, so a stale reference finds a `TASK_DONE` with nothing in it rather than freed
+  memory.
+
+- **A4 · `async_ngl` and `await_fr` in the language, and A5 · the event loop. Done, together.**
+  They are one commit because A4 without A5 is a runtime that hangs: the moment `await_fr` can
+  suspend a task, something has to decide what runs next. Splitting them would have meant shipping a
+  deliberately broken intermediate state and writing throwaway scaffolding to hide it. §7's order is
+  otherwise followed exactly.
+
+  ```funny
+  async_ngl bet fetch_both() {
+      yo a = interns.hire("slow_job.funny", 21)
+      yo b = interns.hire("slow_job.funny", 21)
+      bounce await_fr a + await_fr b
+  }
+  yap await_fr fetch_both()      // 42
+  ```
+
+  `async_ngl` and `await_fr` are out of `selfhost/parser.funny`'s `RESERVED_FUTURE`; `vibin`,
+  `yield_lol`, `match_this` and `when` stay in it. Calling an `async_ngl bet` makes a task and hands
+  back an `otw` without running the body; `OP_AWAIT` (80) replaces the `otw` on the stack with what
+  it settles to, suspending the task if it has not.
+
+  **The proto's variadic byte became a flags byte rather than the format gaining a field.** Bit 0 is
+  variadic, bit 1 is async. Every value any older toolchain ever wrote is 0 or 1, so it reads back
+  identically -- **no bytecode version bump, and the self-hosting bootstrap needs no special dance**.
+  A new field would have meant a runtime that could not read the blob it needs in order to build the
+  toolchain that writes the new format, which is a circle with no cheap way out.
+
+  **Choices worth recording:**
+  - **`await_fr` is at unary precedence**, so §1's own `await_fr a + await_fr b` means
+    `(await_fr a) + (await_fr b)`, and `await_fr f()` awaits the call's result rather than the
+    callee.
+  - **`async_ngl lowkey (...) => ...` works too.** A lambda is a FuncDecl with different spelling as
+    far as `compile_closure` is concerned, so supporting it cost one parser branch.
+  - **`async_ngl` on a squad *method* is refused, with its own message.** A method is reached through
+    `INVOKE`, which has its own call path; only the plain-call path was taught to make a task. The
+    parser says "wrap one in an async_ngl bet outside the squad" rather than letting the generic
+    "a squad body only has 'spawn' and 'bet' methods in it" stand, which is true and useless there.
+  - **§3.1 is enforced with a re-entry count on the Task, and the error names the callback.** One
+    `vm_execute` is the task's own; more means a native function called back into FunnyLang, and
+    that C frame cannot be saved. The offender's name is threaded through every native call site, so
+    it says `can't 'await_fr' inside 'glow_up'` rather than "inside a native callback".
+    `tests/lang/async/boundary.funny` pins all five paths that reach it -- `glow_up`, `vibe_check`,
+    `squish`, `combo`, a squad's `to_yap` -- **and the two that must stay legal**: awaiting an
+    already-settled `otw` inside a callback (nothing needs pausing), and *starting* an async
+    function inside one (making a task suspends nothing).
+  - **The loop picks tasks in creation order and never preempts.** §5 rules out a golden that
+    depends on which thread got there first; a scheduler that picked at random would make the
+    language's own ordering unassertable too. `tests/lang/async/ordering.funny` writes the policy
+    down as a test rather than leaving it to be discovered.
+  - **`OP_AWAIT` rewinds `ip` to itself before suspending**, so resuming re-runs the instruction and
+    finds the `otw` settled. Cheaper to reason about than a resume point that has to push the value
+    itself, and it makes a spurious wake-up harmless.
+  - **A task's error settles its `otw`; it does not propagate to whoever happens to be running.**
+    Task zero is the exception -- its error *is* the program's error.
+  - **`vm_run_repl_unit` goes through the loop too**, with task zero put back into RUNNING each
+    input. `await_fr` at a REPL prompt would otherwise hand back a ghost and never run the task,
+    because `vm_call_value` has nowhere to report a suspension to.
+
+  **`LeftOnRead` covers both of the things §2.4's table names, and deliberately not a third.**
+  A task waiting on an `otw` that nothing can settle -- a deadlock -- is told so *in the waiting
+  task*, at its own `await_fr`. An `async_ngl bet` that **rejected** and that nobody ever awaited is
+  reported at exit and sets the exit code, because that is an error thrown into the void and §3.4's
+  "no silent truncation" rule applies. A **fulfilled** `otw` nobody awaited is *not* reported: §1's
+  own example leaves one behind, and starting work you do not need the answer to is a legitimate
+  thing to do. The plan's wording ("an `otw` left unawaited at exit") would have made
+  fire-and-forget impossible.
+
+  **The dropped-rejection report goes in the error's roast, not just its message.** §4.2 renders the
+  roast by default and the message only under `--serious`; a diagnostic that said "left on read" and
+  left you to go looking would barely be a report. It carries the dropped error's flavor, message
+  and `file:line`, and a hint saying what to do about it.
+
+  **Acceptance, met:** `tests/lang/parser/async_forms.funny` (`!XRAY --ast`) and
+  `tests/lang/compiler/async_forms.funny` (`!XRAY`) pin both forms through the toolchain -- the
+  disassembler now prints `async_ngl` in a proto's header, since the flag is otherwise invisible in
+  a disassembly. `basics` covers awaiting plain values, unary precedence, defaults, the lambda form
+  and three levels of nesting; `errors` covers a rejection crossing three tasks, an `otw` re-raising
+  every time, and a task catching its own failure; `left_on_read` covers a self-deadlock and a
+  mutual one; `left_on_read_dropped` is the `!DIAG` + `!EXIT 1` golden. 391/391 on Linux (gcc) and
+  Windows (MSVC `/W4 /WX`), 391/391 under `FUNNY_GC_STRESS=50`, the whole corpus clean under
+  ASan+UBSan, `tests/lang/async` and `tests/lang/interns` clean under ThreadSanitizer, and the
+  bootstrap fixed point byte-identical on both platforms.
+
+- **A6 · timers, and the two halves meeting. Done.** `clock.chill(ms)` is an `otw` that settles
+  after a delay; a worker finishing on its own thread wakes the loop; §1's example runs, and is a
+  golden.
+
+  **Choices worth recording:**
+  - **`chill` takes milliseconds where `touch_grass` takes seconds.** They are different verbs for
+    different behaviour -- `touch_grass` blocks the whole program, every task included, and `chill`
+    yields -- so the units should not invite substituting one for the other either. A timer you are
+    scheduling around is a millisecond-scale thing; `chill(0.05)` reads worse than `chill(50)`.
+  - **A timer lives on the `otw`, not in a heap in the loop.** `dueAt` is a field, in
+    `platform_monotonic_seconds()` terms -- monotonic, so a machine whose wall clock steps backwards
+    mid-program does not park a task forever. The loop scans waiting tasks for the earliest
+    deadline, which is O(tasks) per idle turn and irrelevant at any plausible task count; a timer
+    heap would be the right answer at ten thousand and is not worth its own invariants at ten.
+  - **One wait covers both sources.** When nothing can run, the loop does a *timed* wait on the
+    interns condition variable with the next timer as its timeout: a worker finishing broadcasts,
+    and a deadline expiring times out. Polling either one separately would have meant choosing
+    between latency and a spin.
+  - **`interns.wait_up` grew a third case and a refusal.** It blocks on a worker (join) or a timer
+    (sleep). It *refuses* an `otw` that only a task can settle, with `CantWaitRightNow` pointing at
+    `await_fr` -- the task needs the interpreter that `wait_up` is holding, so blocking there would
+    deadlock the program against itself. Hanging, or reporting `LeftOnRead` for something that was
+    nobody's fault, would both have been worse answers.
+
+  **Acceptance, met:** `tests/lang/async/timers.funny` runs §1's example verbatim in shape, proves
+  two `chill`s settle in duration order rather than creation order (the one timing claim in the
+  corpus, which §5.2 names as legitimate, with a sixtyfold gap so a loaded machine cannot change
+  the answer), awaits a worker from an async function with a timer running alongside it, and
+  gathers three tasks that each chill *and* hire.
+
+- **A7 · docs, and the reserved-keyword list. Done.** `README.md` (a concurrency bullet with the §1
+  example and an eleventh stdlib module), `docs/LANGUAGE.md` (a Concurrency section, `otw` in the
+  runtime-types list, both keywords in the table), `docs/STDLIB.md` (`interns`, and `chill` next to
+  `touch_grass` with the difference spelled out), `docs/BYTECODE.md` (`AWAIT`, and why the flags
+  byte is not a version bump), `docs/NATIVE.md` (the new files, threads behind the platform
+  boundary, and two new GC-contract rules: the collector walks every task, and one thread owns one
+  heap), `CHANGELOG.md`, and `PLAN.md` -- §3.3's reserved list is down to four, §4.1's taxonomy has
+  its two new flavors, §5.1 has opcode 80, §5.2 has the flags byte, and §11's "Threads, async, or a
+  GC" non-goal is struck through with the reason it was void.
+
+  `vibin` and `yield_lol` stay reserved. Generators reuse A3's task machinery and would be cheap
+  from here -- a task that yields values instead of settling once -- but they are a separate
+  feature and smuggling them in under a concurrency plan would be exactly the kind of scope creep
+  the §9 convention exists to catch.
+
+  **CI gained a ThreadSanitizer job** for `tests/lang/async` and `tests/lang/interns` on the
+  `ubuntu-latest` + `clang` leg. §5.5 asked for it: a data race is invisible to ASan and to
+  `FUNNY_GC_STRESS` alike, and only those two directories use threads, so running TSan over the
+  whole corpus would buy nothing for several minutes of CI.

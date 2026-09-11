@@ -4,15 +4,25 @@
 #include <string.h>
 
 #include "gc.h"
+#include "task.h"
 #include "vm.h"
 
-ObjUpvalue *upvalue_new(GC *gc, VM *vm, int slot) {
+/* The array `slot` indexes into. While this upvalue's task is the running
+   one the VM's own array is the live one -- it may have been realloc'd since
+   the task was last switched in, so the Task's copy of the pointer is stale.
+   While it is suspended, the Task's array is the only one there is. */
+static Value *live_stack(const ObjUpvalue *uv) {
+    return uv->task == uv->vm->currentTask ? uv->vm->stack : uv->task->stack;
+}
+
+ObjUpvalue *upvalue_new(GC *gc, VM *vm, Task *task, int slot) {
     ObjUpvalue *uv = (ObjUpvalue *)malloc(sizeof(ObjUpvalue));
     uv->obj.type = OBJ_UPVALUE;
     uv->obj.marked = false;
     uv->obj.size = 0;
     uv->obj.next = NULL;
     uv->vm = vm;
+    uv->task = task;
     uv->slot = slot;
     uv->closed = false;
     uv->closedValue = GHOST_VAL;
@@ -21,19 +31,19 @@ ObjUpvalue *upvalue_new(GC *gc, VM *vm, int slot) {
 }
 
 Value upvalue_get(const ObjUpvalue *uv) {
-    return uv->closed ? uv->closedValue : uv->vm->stack[uv->slot];
+    return uv->closed ? uv->closedValue : live_stack(uv)[uv->slot];
 }
 
 void upvalue_set(ObjUpvalue *uv, Value v) {
     if (uv->closed) {
         uv->closedValue = v;
     } else {
-        uv->vm->stack[uv->slot] = v;
+        live_stack(uv)[uv->slot] = v;
     }
 }
 
 void upvalue_close(ObjUpvalue *uv) {
-    uv->closedValue = uv->vm->stack[uv->slot];
+    uv->closedValue = live_stack(uv)[uv->slot];
     uv->closed = true;
 }
 

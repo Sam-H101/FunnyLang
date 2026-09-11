@@ -65,9 +65,11 @@ yap 7 % 2      // 1
 | `fr` / `orr` / `aint` | `&&` / `\|\|` / `!` aliases | |
 | `same_energy` / `diff_energy` | `==` / `!=` aliases | |
 | `vibe` | no-op statement | compiles to nothing |
+| `async_ngl` | async function declaration | `async_ngl bet f() { }`, `async_ngl lowkey (x) => x` — see [Concurrency](#concurrency) |
+| `await_fr` | await an `otw` | `await_fr p` — unary precedence |
 
 Reserved for future use (lexed as keywords, the parser rejects them with a "not yet, chief"
-error): `vibin`, `async_ngl`, `await_fr`, `yield_lol`, `match_this`, `when`.
+error): `vibin`, `yield_lol`, `match_this`, `when`.
 
 Identifiers start with a letter, `_`, or emoji, and continue with letters, digits, `_`, or emoji.
 Case sensitive.
@@ -315,6 +317,10 @@ reference: [STDLIB.md](STDLIB.md).
 
 **`bet`** (function) — `arity()`, `name()`, `call(...args)`.
 
+**`otw`** (a value that is on the way — see [Concurrency](#concurrency)) — pending, fulfilled or
+rejected. Produced by `async_ngl bet` calls, `interns.hire` and `clock.chill`; consumed by
+`await_fr` and `interns.wait_up`.
+
 **`error`** (a caught value, bound by `my_bad (e)`) — `.flavor` (the error class name, a
 `yapstring`), `.message`, `.line`, `.col`, `.file`, `.trace` (a `stash` of `yapstring`s),
 `.payload` (whatever was `chuck`ed, if it wasn't a plain string).
@@ -324,6 +330,106 @@ first with `oops(flavor, message?, line?, col?)` and `chuck` that — `chuck oop
 name")`. The flavor must be one of `PLAN.md` §4.1's error names; the taxonomy is closed, so an
 invented one is a `TypeVibeMismatch`. Chucking a caught error re-raises it with its flavor, message
 and original position intact.
+
+## Concurrency
+
+Two things, and they are different. **Tasks** are lines of execution inside one thread, scheduled by
+an event loop. **Interns** are real OS threads, each in its own VM with its own heap. Async is what
+makes waiting for interns ergonomic; interns are what give async something worth waiting for.
+
+### `async_ngl` and `await_fr`
+
+```funny
+async_ngl bet fetch(id) {
+    bounce await_fr slow_lookup(id)
+}
+
+yo p = fetch(7)            // nothing has run yet: p is an otw
+yap what_is_it(p)          // otw
+yap await_fr p             // the task runs, and this is its answer
+```
+
+Calling an `async_ngl bet` does **not** run its body. It makes a task, hands back an `otw`, and
+carries on; the body runs when the loop next gets a turn — which is the next time anything awaits,
+or after the entry program finishes. `funny run` drains outstanding work before exiting.
+
+`await_fr` sits at unary precedence, so `await_fr a + await_fr b` is `(await_fr a) + (await_fr b)`
+and `await_fr f()` awaits what the call returned. Awaiting something that is **not** an `otw` is
+that thing — there is nothing to wait for, and it keeps a helper that might or might not be
+asynchronous from forcing its callers to know which.
+
+The lambda form is `async_ngl lowkey (x) => ...`. A squad's *methods* cannot be `async_ngl` yet;
+wrap one in an `async_ngl bet` outside the squad.
+
+### `otw`
+
+"On the way" — a value that does not have its answer yet. `what_is_it(p)` is `"otw"`. Three states,
+and once it leaves the first it never changes again:
+
+```funny
+yap clock.chill(5)         // <otw pending>
+yap await_fr fetch(7)      // ... and afterwards p prints as <otw done 7>
+                           // or <otw rejected KeyGhosted>
+```
+
+An async function that raises does not raise at the call — the call only made a task. The error is
+carried by the `otw` and re-raised wherever it is awaited, **with its own original flavor** and the
+awaiting site's position. Awaiting a rejected `otw` raises every time, not just the first.
+
+### Where a task cannot pause
+
+The VM keeps its own stack and frames rather than using the C stack, which is what makes a task
+suspendable: its whole state is a slice of two arrays. But a *native* function that calls back into
+your code — `glow_up`, `vibe_check`, `squish`, `sort`, `combo`, a squad's `to_yap` — re-enters the
+interpreter on the **C** stack, and that frame cannot be saved. `await_fr` on something pending in
+there is a `CantWaitRightNow` naming the callback:
+
+```funny
+[1, 2, 3].glow_up(lowkey (x) => await_fr later(x))
+// CantWaitRightNow: can't 'await_fr' inside 'glow_up' -- it called back into
+// your code from the runtime, and that can't be paused.
+```
+
+Await before the call or after it. Awaiting an `otw` that has *already* settled inside a callback is
+fine (nothing needs pausing), and so is *starting* an async function in one (making a task suspends
+nothing).
+
+### `LeftOnRead`
+
+Work does not vanish quietly. A task waiting on an `otw` that nothing can ever settle — a deadlock —
+is told so at its own `await_fr`. An `async_ngl bet` that **rejected** and that nobody ever awaited
+is reported when the program exits, and sets the exit code: that is an error thrown into the void. A
+*fulfilled* `otw` nobody awaited says nothing; starting work you do not need the answer to is a
+legitimate thing to do.
+
+### `interns` — real threads
+
+```funny
+gimme interns
+
+// double.funny:  gimme interns
+//                interns.deliver(interns.assignment() * 2)
+yo a = interns.hire("double.funny", 21)
+yo b = interns.hire("double.funny", 100)
+yap interns.everybody([a, b])        // [42, 200]
+```
+
+Each hire is an OS thread running a whole program in its own VM, with its own collector. **Nothing
+is shared**, which is why nothing needs a lock: arguments are deep-copied in and results
+deep-copied out. `ghost`, `boolski`, `numba`, `yapstring` and `stash`/`groupchat` of those can
+cross; a `bet`, a squad instance, a `pointa` or an `otw` cannot, because each references a heap and
+there is no second copy of that heap on the other side. A structure containing itself is refused
+too. Every refusal names the type.
+
+`interns.wait_up(x)` blocks — it is the non-async way to wait, for an intern or a `clock.chill`. For
+an `otw` an `async_ngl bet` will settle, use `await_fr`: the task needs the interpreter that
+`wait_up` would be holding. Full reference: [STDLIB.md](STDLIB.md#interns--workers-on-real-os-threads).
+
+### Timers
+
+`clock.chill(ms)` is an `otw` that settles after a delay. `clock.touch_grass(seconds)` blocks the
+whole program, every task included; `chill` yields, so only the awaiting task waits. The pair reads
+correctly and cannot be confused for one another.
 
 ## Errors
 

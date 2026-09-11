@@ -1,0 +1,90 @@
+// ASYNC_PLAN.md A6: `clock.chill(ms)`, and the two halves meeting.
+//
+// `clock.touch_grass(s)` already existed and *blocks the whole thread*:
+// nothing else in the program runs, including every other task. `chill`
+// yields instead -- only the awaiting task waits, and everything else carries
+// on. Two names that read differently for two behaviours that are different,
+// which is why §2.4 chose a second verb rather than making one of them
+// depend on where it was called from.
+//
+// §5 forbids asserting on timing, with one exception it names itself: "a
+// `clock.chill(10)` finishing before a `clock.chill(50)` is a scheduler
+// property worth testing". That is the only timing claim here, and the gap is
+// sixty-fold so that a loaded machine does not change the answer. Nothing
+// below asserts how *long* anything took.
+gimme clock
+gimme interns
+gimme filez
+
+yap what_is_it(clock.chill(1))
+
+await_fr clock.chill(1)
+yap "chilled"
+
+// Awaiting zero is legal and immediate.
+await_fr clock.chill(0)
+await_fr clock.chill()
+yap "instant chills are still chills"
+
+// The scheduler wakes on the earliest deadline, not on the order the timers
+// were created: `slow` is started first and finishes last.
+yo log = []
+async_ngl bet after(ms, name) {
+    await_fr clock.chill(ms)
+    log.yeet_in(name)
+    bounce name
+}
+yo slow = after(120, "slow")
+yo fast = after(2, "fast")
+await_fr slow
+await_fr fast
+yap log
+
+// `interns.wait_up` blocks on a timer as happily as on a worker -- that is
+// what it is for, in code that is not async.
+interns.wait_up(clock.chill(1))
+yap "waited up"
+
+// What it cannot block on is an `otw` that only a *task* can settle: the task
+// needs the interpreter this call is holding, so blocking would deadlock the
+// program against itself. `await_fr` is the answer, and the error says so.
+async_ngl bet task_only() { bounce 1 }
+sketchy {
+    interns.wait_up(task_only())
+} my_bad (e) {
+    yap e.flavor + ": " + e.message
+}
+
+// -- §1's example, which is what this whole plan was for ------------------
+deadass DOUBLE = "gimme interns\ninterns.deliver(interns.assignment() * 2)\n"
+yo src = filez.temp_file() + ".funny"
+filez.yeet_out(src, DOUBLE)
+
+async_ngl bet fetch_both() {
+    // Two interns, two OS threads, one wait.
+    yo a = interns.hire(src, 21)
+    yo b = interns.hire(src, 21)
+    bounce await_fr a + await_fr b
+}
+yap await_fr fetch_both()
+
+// A worker awaited from an async function with a timer running alongside it:
+// the loop is waiting on a condition variable and a deadline at the same
+// time, and both wake it.
+async_ngl bet worker_and_timer() {
+    yo w = interns.hire(src, 5)
+    await_fr clock.chill(1)
+    bounce await_fr w
+}
+yap await_fr worker_and_timer()
+
+// Several workers and several timers at once, gathered in a fixed order so
+// the output does not depend on which thread got there first.
+async_ngl bet slow_double(n) {
+    await_fr clock.chill(n)
+    bounce await_fr interns.hire(src, n)
+}
+yo crew = [slow_double(3), slow_double(2), slow_double(1)]
+yap [await_fr crew[0], await_fr crew[1], await_fr crew[2]]
+
+filez.obliterate(src)

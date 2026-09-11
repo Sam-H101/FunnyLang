@@ -119,6 +119,30 @@ contract.
   ```
 - Shippable: `funny yeet` turns a program into a standalone executable by copying the runtime stub
   and appending the compiled bytecode. A couple of hundred KB, nothing to install to run it.
+- Concurrent, in both of the ways that word means. `async_ngl bet` and `await_fr` are a real event
+  loop over tasks that each own their stack and frames; `gimme interns` runs work on **real OS
+  threads**, each in its own VM with its own heap:
+
+  ```funny
+  gimme interns
+  gimme clock
+
+  async_ngl bet fetch_both() {
+      // Two interns, two OS threads, one wait.
+      yo a = interns.hire("slow_job.funny", 21)
+      yo b = interns.hire("slow_job.funny", 21)
+      bounce await_fr a + await_fr b
+  }
+
+  yap await_fr fetch_both()                // 42
+  yap what_is_it(fetch_both())             // otw
+  await_fr clock.chill(50)                 // yields; touch_grass blocks
+  ```
+
+  Nothing is shared between threads, so nothing needs a lock: values are deep-copied across the
+  worker boundary, and anything that cannot cross coherently is refused with an error that says
+  which argument and why. `examples/concurrency.funny` is a tour of both halves; see
+  [ASYNC_PLAN.md](ASYNC_PLAN.md) for the design and its cost sheet.
 
 ## What this isn't
 
@@ -242,8 +266,9 @@ Pass `--serious` if you are, in fact, being serious.
 
 ## Standard library
 
-Ten modules, imported with `gimme`: `mafs`, `yapper`, `stash`, `groupchat`, `rizz`, `filez`,
-`clock`, `sus`, `computer`, and `internet`, plus a set of builtins always in scope with no import.
+Eleven modules, imported with `gimme`: `mafs`, `yapper`, `stash`, `groupchat`, `rizz`, `filez`,
+`clock`, `sus`, `computer`, `internet`, and `interns`, plus a set of builtins always in scope with
+no import.
 Full reference, generated from the actual function registry so it can't drift:
 [docs/STDLIB.md](docs/STDLIB.md).
 
@@ -259,6 +284,8 @@ Full reference, generated from the actual function registry so it can't drift:
   every deviation from spec and why (§16).
 - [NATIVE_PLAN.md](NATIVE_PLAN.md) — the plan for the C runtime and the self-hosted toolchain, with
   the same kind of build log in §9.
+- [ASYNC_PLAN.md](ASYNC_PLAN.md) — the plan for `async_ngl`/`await_fr` and `interns`: why isolated
+  workers rather than shared-memory threads, what the deep copy costs, and the same build log.
 - [CHANGELOG.md](CHANGELOG.md) — what's actually landed, milestone by milestone.
 
 ## Development

@@ -25,6 +25,12 @@ typedef struct {
 typedef enum {
     VM_OK,
     VM_ERROR,
+    /* ASYNC_PLAN.md A4: the running task hit an `await_fr` on something that
+       has not settled and gave up the interpreter. Only ever returned to the
+       event loop -- a nested `vm_execute` (a native callback re-entering
+       FunnyLang) can never produce it, because §3.1's boundary refuses to
+       suspend there in the first place. */
+    VM_SUSPENDED,
 } VmResult;
 
 /* A method bound to a receiver (PLAN.md §3.9's per-type instance methods --
@@ -75,6 +81,11 @@ ObjNativeFn *native_fn_new(struct GC *gc, NativeMethodFn fn, const char *name, i
 struct VM {
     GC gc;
 
+    /* ASYNC_PLAN.md A3: these six, plus the open-upvalue array below and the
+       position/error scalars further down, are the *running task's* context.
+       Every other task's copy of them is saved in its own Task (task.h), and
+       switching is a pair of struct copies. task.h argues why the running
+       one stays here rather than behind a pointer. */
     Value *stack;
     int stackCount;
     int stackCapacity;
@@ -154,6 +165,25 @@ struct VM {
     int loadingCount;
     int loadingCapacity;
 
+    /* Every task in this VM, task zero (the entry program) first. The one
+       whose context is in the fields above is `currentTask`; the rest have
+       theirs saved. The collector walks all of them -- §3.2 names missing
+       that as the single most likely serious bug in the whole plan. */
+    struct Task **tasks;
+    int taskCount;
+    int taskCapacity;
+    struct Task *currentTask;
+    int nextTaskId;
+
+    /* The `interns` worker this VM is running as, or NULL for a VM that is
+       not one (the main program, a `sus` child, a REPL session). It is here
+       rather than in thread-local storage because the VM already *is* the
+       per-execution context, and a `_Thread_local` would be a second one --
+       with the added problem that MSVC's support for the C11 spelling is not
+       something to depend on. `interns.assignment()` and `interns.deliver()`
+       read it to find which worker they belong to. */
+    void *workerContext;
+
     /* Where the dispatch loop currently is, refreshed at the top of every
        iteration -- vm_throw() (callable from deep inside an arithmetic
        helper, not just the dispatch switch itself) needs this to build a
@@ -221,6 +251,23 @@ void vm_adopt_unit(VM *vm, CompiledUnit *unit);
 void vm_init(VM *vm);
 void vm_destroy(VM *vm);
 
+/* -- tasks (ASYNC_PLAN.md A3) ---------------------------------------------
+ *
+ * A new task, registered with this VM and READY. It has its own empty stack
+ * and frames; putting something on them is the caller's job. */
+struct Task *vm_task_spawn(VM *vm);
+
+/* Makes `to` the running task: saves the current one's context into its Task
+   and restores `to`'s. A no-op if `to` is already running. The task going out
+   keeps whatever state it had set for itself (WAITING, DONE, ...) and is
+   marked READY only if it was still RUNNING. */
+void vm_task_switch(VM *vm, struct Task *to);
+
+/* Frees a finished task's arrays early rather than at vm_destroy. Safe only
+   once nothing can resume it: its state must be TASK_DONE and it must not be
+   the running task. */
+void vm_task_retire(VM *vm, struct Task *t);
+
 /* Runs unit->protos[unit->entryProto]. `unit` must outlive the call (its
    consts, in particular, are referenced directly, not copied). Returns
    VM_ERROR if the program raised past its outermost frame; see
@@ -283,6 +330,11 @@ Value vm_call_value(VM *vm, Value callee, Value *args, int argc);
    squad's `to_yap` magic method, if it has one -- a real call back into
    FunnyLang code, exactly like the callback-taking stash methods. */
 void vm_throw_native(VM *vm, const char *flavor, const char *fmt, ...);
+
+/* Raises an ObjError that already exists instead of building one. An error
+   with no position yet is stamped with the current site, so a worker's error
+   re-raised by `interns.wait_up` points at the line that waited. */
+void vm_rethrow(VM *vm, Value errValue);
 /* Same, but with PLAN.md §4.1's site-specific roast -- the comedic line
    funny-mode diagnostics print instead of the message. Only for the stdlib
    throw sites whose Python counterpart passes an explicit `roast=`; the

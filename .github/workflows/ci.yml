@@ -91,6 +91,11 @@ jobs:
           ./funny test tests/lang
           ./funny test tests/slow
           ./funny test examples
+          # A whole HTTP server, driven over a real loopback socket by an
+          # `interns` worker acting as the client. FUNNY_NO_NET is set for
+          # these jobs and deliberately does not block loopback -- see
+          # internet.c's own note on why.
+          ./funny test extensive_examples
           ./funny xray examples/hello.funny
           ./funny xray examples/hello.funny --tokens
           ./funny xray examples/hello.funny --ast
@@ -109,6 +114,7 @@ jobs:
           funny.exe test tests\lang || exit /b 1
           funny.exe test tests\slow || exit /b 1
           funny.exe test examples || exit /b 1
+          funny.exe test extensive_examples || exit /b 1
           funny.exe xray examples\hello.funny || exit /b 1
           funny.exe xray examples\hello.funny --tokens || exit /b 1
           funny.exe xray examples\hello.funny --ast || exit /b 1
@@ -180,6 +186,24 @@ jobs:
           ./build.sh
           ./funny test tests/lang
 
+      # ASYNC_PLAN.md A1/§5.5: a data race is invisible to ASan and to
+      # FUNNY_GC_STRESS alike -- it corrupts something quietly and shows up
+      # much later, somewhere else. TSan is the only tool that sees it, and
+      # `interns` runs real OS threads, so the goldens that use them get it.
+      #
+      # Only those two directories, and only on one matrix leg: TSan is slow,
+      # and the rest of the corpus is single-threaded by construction, so
+      # running it there would buy nothing for several minutes of CI.
+      - name: The threaded goldens under ThreadSanitizer
+        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'clang'
+        run: |
+          set -eu
+          SRCS=$(ls native/*.c | grep -v 'native/stub_main.c')
+          clang -std=c11 -g -O1 -Wall -Wextra -Werror -pthread -fsanitize=thread \
+              -o funny_tsan $SRCS -lm -ldl
+          ./funny_tsan test tests/lang/interns
+          ./funny_tsan test tests/lang/async
+
   no-python:
     # NATIVE_PLAN.md N9 task 3, and now N11's whole point made concrete: a
     # container with a C compiler and *nothing else*. No Python, no pip, no
@@ -242,6 +266,7 @@ jobs:
           ./funny test tests/lang
           ./funny test tests/slow
           ./funny test examples
+          ./funny test extensive_examples
           ./funny xray examples/hello.funny
           ./funny xray examples/hello.funny --ast
           ./funny fmt examples/fizzbuzz.funny --check

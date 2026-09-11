@@ -69,7 +69,11 @@ flex bet read_proto(r) {
     yo name = read_str(r)
     yo arity = read_u8(r)
     yo default_count = read_u8(r)
-    yo is_variadic = read_u8(r) != 0
+    // Flags, not a bool -- see emitter.funny's note. Bit 0 variadic, bit 1
+    // async; an older file's 0/1 reads back exactly as it always did.
+    yo flags = read_u8(r)
+    yo is_variadic = (flags & 1) != 0
+    yo is_async = (flags & 2) != 0
     yo upvalue_count = read_u8(r)
     yo max_stack = read_u16(r)
     yo local_count = read_u8(r)
@@ -85,7 +89,7 @@ flex bet read_proto(r) {
     }
     bounce {
         "name": name, "arity": arity, "default_count": default_count,
-        "is_variadic": is_variadic, "upvalue_count": upvalue_count,
+        "is_variadic": is_variadic, "is_async": is_async, "upvalue_count": upvalue_count,
         "max_stack": max_stack, "local_count": local_count,
         "code": code, "lines": lines,
     }

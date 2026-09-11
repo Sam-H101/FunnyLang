@@ -9,6 +9,7 @@
 #include "gc.h"
 #include "groupchat.h"
 #include "internet.h"
+#include "interns.h"
 #include "mafs.h"
 #include "rizz.h"
 #include "stash.h"
@@ -49,6 +50,7 @@ static const StdlibEntry STDLIB_REGISTRY[] = {
     {"sus", sus_build},
     {"computer", computer_build},
     {"internet", internet_build},
+    {"interns", interns_build},
 };
 #define STDLIB_REGISTRY_COUNT (int)(sizeof(STDLIB_REGISTRY) / sizeof(STDLIB_REGISTRY[0]))
 

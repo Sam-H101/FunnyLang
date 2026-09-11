@@ -1,0 +1,46 @@
+// ASYNC_PLAN.md §3.4 and A5: work does not vanish quietly.
+//
+// Two different things are `LeftOnRead`, and both are here.
+//
+// The first is a deadlock: a task waiting on an `otw` that nothing can ever
+// settle. There is no thread behind it and nothing else left to run, so
+// waiting longer cannot help. The loop says so *in the waiting task*, at its
+// own `await_fr`, rather than as a remark about the program in general.
+gimme interns
+
+// A task that awaits its own result. It can never finish, because finishing
+// is what would settle the thing it is waiting for.
+yo self = ghost
+async_ngl bet eats_itself() {
+    bounce await_fr self
+}
+self = eats_itself()
+sketchy {
+    yap await_fr self
+} my_bad (e) {
+    yap "1: " + e.flavor + ": " + e.message
+}
+
+// Two tasks waiting on each other. Same conclusion, reached the same way.
+yo left = ghost
+yo right = ghost
+async_ngl bet needs_right() { bounce await_fr right }
+async_ngl bet needs_left() { bounce await_fr left }
+left = needs_right()
+right = needs_left()
+sketchy {
+    yap await_fr left
+} my_bad (e) {
+    yap "2: " + e.flavor
+}
+
+// The second is a rejection nobody collected -- that one is reported at exit
+// and is the whole program's problem, so it lives in its own golden
+// (left_on_read_dropped.funny). A *fulfilled* `otw` nobody awaited is fine
+// and says nothing: starting work you do not need the answer to is a
+// legitimate thing to do.
+async_ngl bet nobody_cares() {
+    bounce "and that's ok"
+}
+nobody_cares()
+yap "3: done"

@@ -67,6 +67,11 @@ native/
   error.c diag.c   error objects and PLAN.md §4.2's diagnostic renderer
   modules.c        stdlib registration and `gimme`
   builtins.c mafs.c yapper.c filez.c clock.c rizz.c sus.c computer.c internet.c
+  interns.c        the `interns` module: a worker per OS thread, each its own VM
+  task.c           a task: its own stack, frames and open upvalues
+  loop.c           the event loop: ready tasks, timers, settled promises
+  otw.c            the `otw` value type
+  portable.c       deep copy across a heap boundary, for the worker protocol
   numfmt.c         float formatting that matches Python's repr exactly
   platform.c       *the only file allowed #ifdef _WIN32*
 ```
@@ -79,7 +84,14 @@ One naming note before the rule: the `yapstring` implementation is `da_string.{c
 
 **`platform.c` is the only file in `native/` that may contain `#ifdef _WIN32`.** Everything else is
 portable C11. Filesystem access, timing, TTY detection, console setup, sockets, TLS, `dlopen`, the
-executable's own path and temp files all go through `platform.h`.
+executable's own path and temp files all go through `platform.h` — and so do **threads, mutexes and
+condition variables**: `CreateThread`/`SRWLOCK`/`CONDITION_VARIABLE` on Windows, `pthread_*`
+everywhere else. `PlatformThread`, `PlatformMutex` and `PlatformCond` are opaque fixed-size
+storage rather than pointers to something malloc'd, so they can sit inside other structs and so
+there is no "could not create a mutex" failure path for a caller to have no answer to;
+`platform.c` `_Static_assert`s each size against the real underlying type, so a platform where the
+handle does not fit is a build error with a readable message rather than a stack smash found
+later.
 
 This is not a style preference. It is the thing that keeps a port to a new OS a matter of one file
 rather than a hunt through twenty, and it is checked by reading, so keep it true: if you find
@@ -101,11 +113,27 @@ machine with no OpenSSL installed. Certificate verification is mandatory and has
    `to_yap` magic method — must root what it holds across the call, because that call runs the
    dispatch loop and so can collect.
 4. **A heap's roots are the job of the collector that owns the heap.** This matters at a VM
-   boundary: `sus.run_bytecode` and `sus.run_in` create a *second* VM with its own heap, and
-   nothing from it may be handed to the caller — strings are copied out, values never cross.
+   boundary: `sus.run_bytecode`, `sus.run_in` and every `interns` worker create a *second* VM with
+   its own heap, and nothing from it may be handed to the caller — values are deep-copied out
+   through `portable.c`, and never cross as references.
+5. **The collector walks every task, not the running one** (`task_mark`, called from
+   `mark_vm_roots`). Anything only a suspended task can reach is invisible without it, and getting
+   this wrong does not fail a test: it frees something a live task still owns and shows up later as
+   an intermittent use-after-free in whichever task resumes next.
 
-`FUNNY_GC_STRESS=1` collects on every allocation. It is slow and it is the fastest way to find a
-missing root; the corpus runs under it in CI.
+**One thread owns one heap, and no FunnyLang value is ever touched by two threads.** An `interns`
+worker runs a whole separate VM; it cannot settle its `otw` itself, because settling means putting
+a `Value` on a heap. It fills in plain malloc'd memory and says so under a mutex; the owning
+thread notices and settles the `otw` on its own heap. That is why no lock protects any value
+anywhere in `native/`.
+
+`FUNNY_GC_STRESS=1` collects on every allocation, and `FUNNY_GC_STRESS=N` on every Nth — it is the
+fastest way to find a missing root, and the period exists because every-allocation over the whole
+corpus takes hours where every-fiftieth takes a minute and still catches a deliberately removed
+`gc_push_temp`. CI runs the corpus at 50.
+
+A data race is invisible to ASan and to `FUNNY_GC_STRESS` alike, so the goldens that use threads —
+`tests/lang/async` and `tests/lang/interns` — are also run under **ThreadSanitizer**.
 
 ## Testing
 

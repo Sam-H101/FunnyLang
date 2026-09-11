@@ -13,11 +13,13 @@ ImportSkillIssue | a message for ImportSkillIssue
 ImmutableVibes | a message for ImmutableVibes
 SkillIssue | a message for SkillIssue
 ComputerExploded | a message for ComputerExploded
+LeftOnRead | a message for LeftOnRead
+CantWaitRightNow | a message for CantWaitRightNow
 error
 KeyGhosted saved for later
 42 7
 12 1
-45 5
+46 5
 ""
 
 OutOfPocket inner

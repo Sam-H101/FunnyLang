@@ -1,0 +1,36 @@
+// ASYNC_PLAN.md A1: several interns at once, and the gather.
+//
+// `interns.everybody` waits in the order it was given rather than in
+// finishing order, which is what makes this a golden at all: §5 rules out
+// asserting anything that depends on which thread got there first. The
+// parallelism is real -- these are OS threads -- but the *reporting* of it
+// is deterministic on purpose.
+gimme interns
+gimme filez
+
+deadass SQUARE = "gimme interns\nyo n = interns.assignment()\ninterns.deliver(n * n)\n"
+
+yo src = filez.temp_file() + ".funny"
+filez.yeet_out(src, SQUARE)
+
+yo crew = []
+grind i from 1 to 9 {
+    crew.yeet_in(interns.hire(src, i))
+}
+yap interns.everybody(crew)
+
+// An empty payroll is not an error.
+yap interns.everybody([])
+
+// headcount is how many are worth hiring, not a limit on how many you may.
+yap interns.headcount() >= 1
+
+// Each hire is its own intern with its own heap: the same script run twice
+// shares nothing, so a global in the worker cannot leak between them.
+deadass COUNTER = "gimme interns\nyo seen = []\nseen.yeet_in(interns.assignment())\ninterns.deliver(seen)\n"
+yo src2 = filez.temp_file() + ".funny"
+filez.yeet_out(src2, COUNTER)
+yap interns.everybody([interns.hire(src2, "a"), interns.hire(src2, "b")])
+
+filez.obliterate(src)
+filez.obliterate(src2)

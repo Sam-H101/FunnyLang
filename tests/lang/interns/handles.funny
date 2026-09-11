@@ -1,0 +1,47 @@
+// ASYNC_PLAN.md A1/A2: every way of misusing `hire`, `everybody` and the
+// worker protocol has its own answer rather than a crash.
+//
+// `wait_up` is not in here: waiting on something that is not an `otw` is
+// legal and is that thing, which otw_states.funny covers.
+gimme interns
+gimme filez
+
+deadass ECHO = "gimme interns\ninterns.deliver(interns.assignment())\n"
+yo src = filez.temp_file() + ".funny"
+filez.yeet_out(src, ECHO)
+
+flex bet oopsie(thunk) {
+    sketchy {
+        thunk()
+        yap "NO ERROR"
+    } my_bad (e) {
+        yap e.flavor + ": " + e.message
+    }
+}
+
+// Hiring needs a path.
+oopsie(lowkey () => interns.hire(42))
+oopsie(lowkey () => interns.hire(ghost))
+
+// Gathering needs a stash.
+oopsie(lowkey () => interns.everybody("not a stash"))
+oopsie(lowkey () => interns.everybody(ghost))
+
+// The worker protocol only means anything inside a worker: the top-level
+// program has no assignment and nobody to deliver to.
+oopsie(lowkey () => interns.assignment())
+oopsie(lowkey () => interns.deliver(1))
+
+// And a worker cannot deliver what cannot cross back.
+deadass GREEDY = "gimme interns\ninterns.deliver(interns)\n"
+yo greedy = filez.temp_file() + ".funny"
+filez.yeet_out(greedy, GREEDY)
+oopsie(lowkey () => interns.wait_up(interns.hire(greedy, ghost)))
+
+// Interns are numbered per hiring VM and that number never leaves the
+// runtime, so this program and its worker can both have a "#1" without
+// either being able to name the other's.
+yap interns.wait_up(interns.hire(src, "mine"))
+
+filez.obliterate(src)
+filez.obliterate(greedy)

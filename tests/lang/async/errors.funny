@@ -1,0 +1,65 @@
+// ASYNC_PLAN.md A4: an async function that falls over.
+//
+// The error does not escape at the call -- the call only made a task. It is
+// carried by the `otw`, and re-raised at whatever awaits it, with its own
+// original flavor and the *awaiting* site's position. That is the honest
+// answer to "where did this go wrong from here": the failing line is in the
+// stack of shame, and the line that asked for the answer is where it lands.
+gimme interns
+
+async_ngl bet boom() {
+    chuck oops("MathAintMathin", "i divided by vibes")
+}
+
+// Calling it raises nothing at all.
+yo p = boom()
+yap "called, still here"
+yap what_is_it(p)
+
+sketchy {
+    await_fr p
+} my_bad (e) {
+    yap "caught " + e.flavor + ": " + e.message
+}
+
+// The `otw` remembers, and re-raises every time.
+yap p
+sketchy {
+    await_fr p
+} my_bad (e) {
+    yap "again: " + e.flavor
+}
+
+// A run-time failure, not a `chuck`.
+async_ngl bet divide(n) {
+    bounce n / 0
+}
+sketchy {
+    yap await_fr divide(1)
+} my_bad (e) {
+    yap "caught " + e.flavor + ": " + e.message
+}
+
+// An error crossing several layers of await, one task per layer.
+async_ngl bet deep_three() { chuck oops("KeyGhosted", "bottom") }
+async_ngl bet deep_two() { bounce await_fr deep_three() }
+async_ngl bet deep_one() { bounce await_fr deep_two() }
+sketchy {
+    yap await_fr deep_one()
+} my_bad (e) {
+    yap "from the bottom: " + e.flavor + ": " + e.message
+}
+
+// A task can catch its own failure like any other code.
+async_ngl bet careful() {
+    sketchy {
+        bounce await_fr boom()
+    } my_bad (e) {
+        bounce "handled " + e.flavor
+    }
+}
+yap await_fr careful()
+
+// `dip` inside an async task stops the whole program, not just the task --
+// it is a process exit, not an error.
+yap "end"

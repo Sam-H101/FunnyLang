@@ -28,6 +28,8 @@ static const struct {
     {"ImmutableVibes", "it's deadass. it doesn't change. like your ex's opinion of you."},
     {"SkillIssue", "skill issue."},
     {"ComputerExploded", "it's over. exit code 69."},
+    {"LeftOnRead", "nobody ever awaited that. left on read."},
+    {"CantWaitRightNow", "you can't wait here. bad timing, chief."},
 };
 #define DEFAULT_ROAST_COUNT (int)(sizeof(DEFAULT_ROASTS) / sizeof(DEFAULT_ROASTS[0]))
 

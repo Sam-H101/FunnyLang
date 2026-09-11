@@ -79,8 +79,14 @@ Also exposed as `numba` instance methods: `to_yap()`, `abs()`, `floor()`, `ceil(
 Free functions below; most are also `yapstring` instance methods (see
 [LANGUAGE.md](LANGUAGE.md#runtime-types--their-methods)).
 
+A `yapstring` is indexed and measured in **codepoints**, which is what you want almost
+everywhere. `byte_len` is for the exception: anything speaking a wire protocol counts bytes, and
+an HTTP `Content-Length` taken from `how_thicc` would be short for any response with a single
+non-ASCII character in it.
+
 | Function | Description |
 |---|---|
+| `yapper.byte_len(s)` | Length in **bytes** (`how_thicc` is length in codepoints). |
 | `yapper.split(s, sep?)` | Splits on `sep` (default: any whitespace run), returns a `stash`. |
 | `yapper.join(sep, stash)` | Joins a `stash` of values with `sep` between them. |
 | `yapper.SCREAM(s)` / `yapper.whisper(s)` | Uppercase / lowercase. |
@@ -199,9 +205,51 @@ Free functions below; most are also `groupchat` instance methods.
 |---|---|
 | `clock.now()` | The current Unix timestamp, as a float number of seconds. |
 | `clock.now_ms()` | The current Unix timestamp in whole milliseconds. |
-| `clock.touch_grass(seconds?)` | Sleeps for `seconds` (default `0`). |
+| `clock.touch_grass(seconds?)` | Sleeps for `seconds` (default `0`). Blocks the **whole program** — no other task runs either. |
+| `clock.chill(ms?)` | An `otw` that settles after `ms` milliseconds (default `0`). Yields instead of blocking: `await_fr clock.chill(50)` pauses only the awaiting task. |
 | `clock.stopwatch()` | Starts a stopwatch and returns a zero-argument function that, each time it's called, returns the elapsed seconds since `stopwatch()` was called. |
 | `clock.date_yap(fmt?)` | The current local time formatted with a `strftime`-style pattern (default `"%Y-%m-%d %H:%M:%S"`). |
+
+## `interns` — workers on real OS threads
+
+Each hire runs a `.funny` program in its **own VM, on its own thread, with its own heap**. Nothing
+is shared, so nothing needs a lock: arguments are deep-copied in and results deep-copied out. What
+can cross is `ghost`, `boolski`, `numba` (bignums included), `yapstring`, and `stash`/`groupchat`
+recursively containing those. A `bet`, a squad instance, a `pointa`, an `otw` — anything that
+references a heap — is refused with a `TypeVibeMismatch` that names the type, because there is no
+second copy of that heap to reference. A structure containing itself is refused too.
+
+An error raised inside a worker is re-raised in the parent **with its own original flavor**.
+Whatever the worker printed is replayed at the point you waited for it, so two workers' output
+never interleaves by luck.
+
+| Function | Description |
+|---|---|
+| `interns.hire(path, arg?)` | Runs `path` on a new OS thread with `arg` as its assignment; returns an `otw`. `path` may be `.funny` source (compiled first, and cached) or an already-compiled `.funnyc`/`.funnypak`. |
+| `interns.wait_up(x)` | Blocks until `x` settles and is its value, re-raising its error if it rejected. Anything that is not an `otw` is itself. Blocks on an intern or a `clock.chill`; for an `otw` an `async_ngl bet` will settle, use `await_fr`. |
+| `interns.everybody(stash)` | Waits on a `stash` of `otw`s in the order given and returns a `stash` of their values. |
+| `interns.headcount()` | How many interns are worth hiring: the machine's logical CPU count. Not a limit. |
+| `interns.assignment()` | **Inside a worker:** what `hire` was given. |
+| `interns.deliver(v)` | **Inside a worker:** what `wait_up` gets back. Last delivery wins. |
+
+A worker is a *program*, not a function — a top-level script has no `bounce`, so it reads its input
+and returns its answer through the two calls above:
+
+```funny
+// double.funny
+gimme interns
+interns.deliver(interns.assignment() * 2)
+```
+
+```funny
+gimme interns
+yap interns.wait_up(interns.hire("double.funny", 21))   // 42
+```
+
+`interns.assignment()` and `interns.deliver()` outside a worker are an `OutOfPocket`. A worker may
+hire interns of its own; its handles are its own, and anything it leaves unwaited is joined when it
+finishes. Nothing is ever killed — `funny` waits for its workers at exit, because stopping a thread
+mid-allocation leaves a heap nothing can safely free.
 
 ## `computer` — the joke module
 
@@ -235,6 +283,29 @@ network at all.
 | `internet.download(url, path)` | Downloads `url` to a local file at `path`; returns the byte count. |
 | `internet.speed_test()` | Times a download from `https://example.com/` and returns a description of the throughput in Mbps. |
 | `internet.ping(host)` | Opens a TCP connection to `host:80` and returns the round-trip time in milliseconds. |
+
+Everything above dials *out*. These are the other direction — enough to be the
+thing on the other end of somebody else's request, and to answer several of them at once on one
+thread (`hold_up` plus `async_ngl` — see
+[LANGUAGE.md](LANGUAGE.md#concurrency)). Listeners and connections are `numba` handles
+rather than objects, so they stay out of the collector and can cross to an `interns` worker (which
+an object could not). `extensive_examples/web_server/` is a whole HTTP server built on them.
+
+| Function | Description |
+|---|---|
+| `internet.open_shop(port, host?)` | Binds `port` and starts listening; returns a listener handle. `host` defaults to every interface; `port` 0 means "pick a free one". `SO_REUSEADDR` is set, so a restarted server can rebind its own port. |
+| `internet.shop_port(listener)` | Which port it actually got — only interesting after `open_shop(0)`. |
+| `internet.next_customer(listener, timeout_ms?)` | Waits for a connection. Returns `{conn, peer}`, or **`ghost`** if nobody arrived in time (a timeout is not an error — a server loop wants a turn between callers). |
+| `internet.hold_up(handle, timeout_ms?)` | An `otw` that settles `fax` when that socket has something to read (for a listener: somebody waiting to be accepted), or `cap` on timeout. **This is what lets one thread serve several callers at once** — `await_fr` it and only the asking task waits, while the event loop polls every socket anybody is parked on in a single call. A plain blocking read would stop the whole thread, every other task included. |
+| `internet.slide_into(host, port, timeout_ms?)` | Dials out: a raw TCP connection, none of the HTTP above it. Returns a connection handle. |
+| `internet.hear_them_out(conn, max_bytes?, timeout_ms?)` | One read. `""` means the other end closed; **`ghost`** means it said nothing in time. |
+| `internet.holler_back(conn, text)` | Writes all of it (looping over short writes) and returns the byte count. |
+| `internet.kick_out(conn)` / `internet.close_shop(listener)` | Close one connection / stop listening. The same call under two names, because they are different acts and a program reads better saying which it meant. |
+
+`FUNNY_NO_NET=1` does **not** block these, with one exception: `slide_into` to a non-loopback host.
+The flag exists so a test runner does not *reach the network*, and a server binding its own
+loopback port sends no packet anywhere — refusing it would make a server untestable in exactly the
+environment that most needs its tests to run.
 
 ## `sus` — reflection / debugging
 

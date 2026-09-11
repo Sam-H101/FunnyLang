@@ -10,6 +10,7 @@
 #include "squad.h"
 #include "stash.h"
 #include "da_string.h"
+#include "task.h"
 #include "vm.h"
 
 /* -- combo() -------------------------------------------------------- */
@@ -26,12 +27,18 @@ ObjCombo *combo_new(GC *gc, Value fns) {
 }
 
 Value combo_call(VM *vm, ObjCombo *combo, Value arg) {
+    /* Every stage re-enters the interpreter on the C stack, so a task
+       cannot suspend inside one -- ASYNC_PLAN.md §3.1. Named, so the error
+       says `combo` rather than "a native callback". */
+    const char *priorNative = vm->currentTask->nativeName;
+    vm->currentTask->nativeName = "combo";
     ObjStash *fns = (ObjStash *)AS_OBJ(combo->fns);
     Value value = arg;
     for (int i = 0; i < fns->count && !vm->hadError; i++) {
         Value callArgs[1] = {value};
         value = vm_call_value(vm, fns->items[i], callArgs, 1);
     }
+    vm->currentTask->nativeName = priorNative;
     return vm->hadError ? GHOST_VAL : value;
 }
 

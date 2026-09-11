@@ -1,0 +1,53 @@
+// ASYNC_PLAN.md A4: `async_ngl` and `await_fr` are real.
+//
+// Calling an `async_ngl bet` does not run its body. It makes a task, hands
+// back an `otw`, and carries on; the body runs when the loop gets to it,
+// which is the next time anything awaits or the entry program runs out.
+gimme interns
+
+async_ngl bet answer() {
+    bounce 42
+}
+
+yo p = answer()
+yap what_is_it(p)
+yap await_fr p
+
+// Awaiting the same one again is free and gives the same answer.
+yap await_fr p
+yap p
+
+// Awaiting something that is not an `otw` is that thing. Nothing to wait
+// for, and rejecting it would make every helper that *might* be
+// asynchronous need callers who know which it was.
+yap await_fr 41 + 1
+yap await_fr "already here"
+yap to_yap(await_fr ghost)
+yap await_fr [1, 2, 3]
+
+// Unary precedence: `await_fr a + await_fr b` is `(await_fr a) + (await_fr b)`.
+async_ngl bet two() { bounce 2 }
+async_ngl bet three() { bounce 3 }
+yap await_fr two() + await_fr three()
+yap await_fr two() * await_fr three() - 1
+
+// An async function can await inside itself, and take arguments and
+// defaults like any other.
+async_ngl bet add(a, b = 10) {
+    bounce await_fr answer() + a + b
+}
+yap await_fr add(1)
+yap await_fr add(1, 2)
+
+// The expression form.
+yo double = async_ngl lowkey (x) => x * 2
+yap await_fr double(21)
+
+// And the exported form.
+yap what_is_it(double)
+
+// Nesting: an async function that awaits an async function that awaits one.
+async_ngl bet inner() { bounce 1 }
+async_ngl bet middle() { bounce await_fr inner() + 1 }
+async_ngl bet outer() { bounce await_fr middle() + 1 }
+yap await_fr outer()

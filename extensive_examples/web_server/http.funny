@@ -1,0 +1,273 @@
+// http.funny — HTTP/1.1, as much of it as a small server actually needs.
+//
+// There is no HTTP server in the standard library and there should not be:
+// `internet` gives you a socket you can accept on and bytes you can read and
+// write, and the protocol on top of it is ordinary text processing. This file
+// is that text processing, kept separate from the routing so both stay
+// readable.
+//
+// What is implemented: the request line, headers, `Content-Length` bodies,
+// query strings, percent-decoding, and status/header/body responses with
+// `Connection: close`. What is not: keep-alive, chunked request bodies,
+// `Transfer-Encoding`, HTTP/2, and TLS. A server that claimed those without
+// having them would be worse than one that says it hasn't.
+
+gimme yapper
+
+flex deadass METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]
+
+flex deadass STATUS_TEXT = {
+    200: "OK",
+    201: "Created",
+    204: "No Content",
+    301: "Moved Permanently",
+    302: "Found",
+    400: "Bad Request",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    408: "Request Timeout",
+    413: "Payload Too Large",
+    418: "I'm a teapot",
+    500: "Internal Server Error",
+}
+
+// -- reading a request ----------------------------------------------------
+
+// One request, read off `conn`. Returns a groupchat, or ghost if the client
+// went away or said nothing in time.
+//
+// `read_more` is a function rather than the connection itself so this file
+// never needs to know what a connection *is* — which is what lets the tests
+// drive it with a canned string instead of a socket.
+flex bet read_request(read_more, first_chunk) {
+    yo buffer = first_chunk
+
+    // Headers end at the blank line. Keep reading until we have one.
+    bruh (!yapper.contains(buffer, "\r\n\r\n") && !yapper.contains(buffer, "\n\n")) {
+        yo more = read_more()
+        sus (more == ghost || more == "") {
+            bounce ghost
+        }
+        buffer = buffer + more
+    }
+
+    yo split_at = yapper.index_of(buffer, "\r\n\r\n")
+    yo sep_len = 4
+    sus (split_at < 0) {
+        split_at = yapper.index_of(buffer, "\n\n")
+        sep_len = 2
+    }
+    yo head = yapper.slice(buffer, 0, split_at)
+    yo body = yapper.slice(buffer, split_at + sep_len, buffer.how_thicc())
+
+    yo lines = []
+    grind raw in yapper.split(head, "\n") {
+        lines.yeet_in(yapper.rtrim(raw))
+    }
+    sus (lines.how_thicc() == 0 || lines[0] == "") {
+        bounce ghost
+    }
+
+    yo parts = yapper.split(lines[0], " ")
+    sus (parts.how_thicc() < 2) {
+        bounce ghost
+    }
+    yo method = parts[0]
+    yo target = parts[1]
+    yo version = parts.how_thicc() > 2 ? parts[2] : "HTTP/1.0"
+
+    // Anything with two words on its first line would otherwise parse, so a
+    // port scanner saying "hello there" would come back as a 404 -- which
+    // claims "no such page" about something that was never a request at all.
+    // A known method and a target starting with "/" is the cheapest check
+    // that tells the two apart.
+    sus (!METHODS.contains(method) || !yapper.starts_with(target, "/")) {
+        bounce ghost
+    }
+
+    yo headers = {}
+    grind i from 1 to lines.how_thicc() {
+        yo line = lines[i]
+        yo colon = yapper.index_of(line, ":")
+        sus (colon > 0) {
+            // Header names are case-insensitive, so they are stored folded
+            // and looked up folded. Doing it at the door means no caller has
+            // to remember.
+            yo name = yapper.whisper(yapper.trim(yapper.slice(line, 0, colon)))
+            yo value = yapper.trim(yapper.slice(line, colon + 1, line.how_thicc()))
+            headers[name] = value
+        }
+    }
+
+    // A body only exists if the request said how long it is. Anything else —
+    // chunked, or a body with no length at all — is not supported, and the
+    // caller turns that into a 400 rather than guessing.
+    yo want = to_int(headers.get("content-length", "0"))
+    yo truncated = cap
+    bruh (body.how_thicc() < want) {
+        yo more = read_more()
+        sus (more == ghost || more == "") {
+            truncated = fax
+            bail
+        }
+        body = body + more
+    }
+
+    yo path = target
+    yo query = {}
+    yo qmark = yapper.index_of(target, "?")
+    sus (qmark >= 0) {
+        path = yapper.slice(target, 0, qmark)
+        query = parse_query(yapper.slice(target, qmark + 1, target.how_thicc()))
+    }
+
+    bounce {
+        "method": method,
+        "target": target,
+        "path": url_decode(path),
+        "query": query,
+        "version": version,
+        "headers": headers,
+        "body": body,
+        "truncated": truncated,
+    }
+}
+
+flex bet parse_query(raw) {
+    yo out = {}
+    sus (raw == "") {
+        bounce out
+    }
+    grind pair in yapper.split(raw, "&") {
+        sus (pair == "") {
+            nvm
+        }
+        yo eq = yapper.index_of(pair, "=")
+        sus (eq < 0) {
+            out[url_decode(pair)] = ""
+        } nah {
+            yo k = url_decode(yapper.slice(pair, 0, eq))
+            yo v = url_decode(yapper.slice(pair, eq + 1, pair.how_thicc()))
+            out[k] = v
+        }
+    }
+    bounce out
+}
+
+flex deadass HEX_DIGITS = "0123456789abcdef"
+
+flex bet hex_value(ch) {
+    yo idx = yapper.index_of(HEX_DIGITS, yapper.whisper(ch))
+    bounce idx
+}
+
+// `%20` and `+`. A malformed escape at the end of the string is left alone
+// rather than dropped: mangling input is worse than passing it through.
+flex bet url_decode(s) {
+    yo out = []
+    yo i = 0
+    yo n = s.how_thicc()
+    bruh (i < n) {
+        yo ch = s[i]
+        sus (ch == "+") {
+            out.yeet_in(" ")
+            i += 1
+        } kinda_sus (ch == "%" && i + 2 < n) {
+            yo hi = hex_value(s[i + 1])
+            yo lo = hex_value(s[i + 2])
+            sus (hi >= 0 && lo >= 0) {
+                out.yeet_in(yapper.chr_of(hi * 16 + lo))
+                i += 3
+            } nah {
+                out.yeet_in(ch)
+                i += 1
+            }
+        } nah {
+            out.yeet_in(ch)
+            i += 1
+        }
+    }
+    bounce out.join("")
+}
+
+// -- writing a response ---------------------------------------------------
+
+// `Content-Length` counts *bytes*, not characters, and a yapstring indexes by
+// codepoint — so anything above ASCII would give a short length and a browser
+// would sit waiting for the rest. yapper.byte_len is the honest answer.
+flex bet build_response(status, body, extra_headers) {
+    yo text = STATUS_TEXT.get(status, "Whatever")
+    yo lines = ["HTTP/1.1 " + to_yap(status) + " " + text]
+    lines.yeet_in("Content-Length: " + to_yap(yapper.byte_len(body)))
+    lines.yeet_in("Connection: close")
+    lines.yeet_in("Server: funnylang")
+    grind name in extra_headers.keys() {
+        lines.yeet_in(name + ": " + extra_headers.get(name))
+    }
+    bounce lines.join("\r\n") + "\r\n\r\n" + body
+}
+
+flex bet html_escape(s) {
+    yo out = yapper.replace(s, "&", "&amp;")
+    out = yapper.replace(out, "<", "&lt;")
+    out = yapper.replace(out, ">", "&gt;")
+    out = yapper.replace(out, "\"", "&quot;")
+    bounce out
+}
+
+// A tiny JSON writer. Enough for the shapes this server sends back, and no
+// more — a general one belongs in a library, not in an example's helper file.
+flex bet to_json(value) {
+    sus (value == ghost) {
+        bounce "null"
+    }
+    yo kind = what_is_it(value)
+    sus (kind == "boolski") {
+        bounce value ? "true" : "false"
+    }
+    sus (kind == "numba") {
+        bounce to_yap(value)
+    }
+    sus (kind == "yapstring") {
+        bounce json_string(value)
+    }
+    sus (kind == "stash") {
+        yo items = []
+        grind item in value {
+            items.yeet_in(to_json(item))
+        }
+        bounce "[" + items.join(",") + "]"
+    }
+    sus (kind == "groupchat") {
+        yo pairs = []
+        grind key in value.keys() {
+            pairs.yeet_in(json_string(to_yap(key)) + ":" + to_json(value.get(key)))
+        }
+        bounce "{" + pairs.join(",") + "}"
+    }
+    bounce json_string(to_yap(value))
+}
+
+flex bet json_string(s) {
+    yo out = ["\""]
+    grind ch in s.chars() {
+        yo cp = ch.code_at(0)
+        sus (ch == "\"") {
+            out.yeet_in("\\\"")
+        } kinda_sus (ch == "\\") {
+            out.yeet_in("\\\\")
+        } kinda_sus (ch == "\n") {
+            out.yeet_in("\\n")
+        } kinda_sus (ch == "\r") {
+            out.yeet_in("\\r")
+        } kinda_sus (ch == "\t") {
+            out.yeet_in("\\t")
+        } kinda_sus (cp < 0x20) {
+            out.yeet_in("\\u00" + HEX_DIGITS[(cp >> 4) & 0xF] + HEX_DIGITS[cp & 0xF])
+        } nah {
+            out.yeet_in(ch)
+        }
+    }
+    out.yeet_in("\"")
+    bounce out.join("")
+}

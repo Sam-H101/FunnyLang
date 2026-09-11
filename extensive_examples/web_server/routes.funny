@@ -1,0 +1,305 @@
+// routes.funny — what the server actually says.
+//
+// Separate from serve.funny (the socket loop) and http.funny (the protocol)
+// so each can be read, and tested, without the other two. A route is a plain
+// function from a request groupchat to a response groupchat; nothing here
+// touches a socket, which is why routes_test.funny can exercise every one of
+// them without opening a port.
+
+gimme yapper
+gimme clock
+gimme interns
+gimme filez
+gimme mafs
+
+gimme { build_response, html_escape, to_json } from "http.funny"
+
+// In-memory state, so the server has something to change and not just
+// something to read. It is a global on purpose: this server answers one
+// request at a time, so there is nothing to race with.
+yo GUESTBOOK = []
+yo HIT_COUNT = 0
+
+flex bet reply(status, body, content_type) {
+    bounce {"status": status, "body": body, "headers": {"Content-Type": content_type}}
+}
+
+flex bet html(status, body) {
+    bounce reply(status, body, "text/html; charset=utf-8")
+}
+
+flex bet json(status, value) {
+    bounce reply(status, to_json(value), "application/json; charset=utf-8")
+}
+
+flex bet text(status, body) {
+    bounce reply(status, body, "text/plain; charset=utf-8")
+}
+
+// -- the routes -----------------------------------------------------------
+
+flex bet route(req) {
+    HIT_COUNT += 1
+    yo path = req["path"]
+    yo method = req["method"]
+
+    sus (path == "/" && method == "GET") {
+        bounce home_page()
+    }
+    sus (path == "/hello" && method == "GET") {
+        yo who = req["query"].get("name", "stranger")
+        bounce text(200, "yo " + who + ", sup 👋\n")
+    }
+    sus (path == "/health" && method == "GET") {
+        bounce json(200, {"ok": fax, "hits": HIT_COUNT, "cores": interns.headcount()})
+    }
+    sus (path == "/echo") {
+        // Every method, deliberately: this is the one that shows what the
+        // parser actually extracted.
+        bounce json(200, {
+            "method": method,
+            "path": path,
+            "query": req["query"],
+            "headers": req["headers"],
+            "body": req["body"],
+        })
+    }
+    sus (path == "/slow" && method == "GET") {
+        // `chill` yields rather than blocking, so the event loop is free
+        // while this waits. With one request at a time that is invisible —
+        // but it is the honest way to wait, and swapping it for
+        // `touch_grass` would stop every task in the program, not just this
+        // one.
+        yo ms = to_int(req["query"].get("ms", "50"))
+        sus (ms > 2000) {
+            ms = 2000
+        }
+        await_fr clock.chill(ms)
+        bounce text(200, "waited " + to_yap(ms) + "ms without blocking anything else\n")
+    }
+    sus (path == "/primes" && method == "GET") {
+        // Awaited here, so `route` stays an ordinary function that returns a
+        // response rather than an `otw`. The awaiting happens inside the
+        // connection's own task either way.
+        bounce await_fr primes_page(req)
+    }
+    sus (path == "/guestbook" && method == "GET") {
+        bounce guestbook_page()
+    }
+    sus (path == "/guestbook" && method == "POST") {
+        bounce guestbook_post(req)
+    }
+    sus (path == "/teapot") {
+        bounce text(418, "i'm a teapot. i cannot brew coffee. 🫖\n")
+    }
+    sus (path == "/boom" && method == "GET") {
+        // Deliberately fatal, so the 500 path is exercised by something other
+        // than a bug.
+        chuck oops("MathAintMathin", "you asked for it")
+    }
+
+    bounce html(404, not_found_page(path))
+}
+
+// -- the interesting one --------------------------------------------------
+
+// /primes?upto=200000&crew=4
+//
+// Counts primes below `upto` with that many `interns` — real OS threads, each
+// in its own VM with its own heap. The parent hires them all first and awaits
+// afterwards, so they run at the same time rather than one after another.
+//
+// How the work is divided is the interesting part, and two obvious answers
+// are both wrong:
+//
+//   * One contiguous slice each. Equal *counts* of numbers, very unequal
+//     work — trial division to sqrt(n) gets dearer as n grows, so the worker
+//     holding the top slice finishes long after the one holding the bottom,
+//     and the request waits for the slowest.
+//   * One residue class each (k, k+crew, k+2*crew, ...). Worse: with an even
+//     crew size, one worker gets every even number and finds exactly one
+//     prime while another does all the real work.
+//
+// What works is dealing *small blocks* round-robin, like cards. Each worker
+// gets a mix of cheap low blocks and dear high ones, so they finish together.
+// The evidence is the wall time, not `per_intern`: those counts still slope
+// gently downwards, because primes thin out as they get bigger. Equal work
+// does not mean equal answers.
+flex deadass PRIME_BLOCK = 2000
+
+flex async_ngl bet primes_page(req) {
+    yo upto = to_int(req["query"].get("upto", "50000"))
+    sus (upto < 2) {
+        upto = 2
+    }
+    sus (upto > 2000000) {
+        upto = 2000000
+    }
+    yo crew_size = to_int(req["query"].get("crew", to_yap(interns.headcount())))
+    sus (crew_size < 1) {
+        crew_size = 1
+    }
+    sus (crew_size > 16) {
+        crew_size = 16
+    }
+
+    // Cut the range into blocks, then deal them out.
+    yo piles = []
+    grind k from 0 to crew_size {
+        piles.yeet_in([])
+    }
+    yo at = 2
+    yo which = 0
+    bruh (at < upto) {
+        yo end = at + PRIME_BLOCK
+        sus (end > upto) {
+            end = upto
+        }
+        piles[which % crew_size].yeet_in([at, end])
+        which += 1
+        at = end
+    }
+
+    yo worker = worker_path()
+    yo started = clock.now()
+    yo crew = []
+    grind k from 0 to crew_size {
+        crew.yeet_in(interns.hire(worker, {"blocks": piles[k]}))
+    }
+
+    // `await_fr` each one rather than `interns.everybody`, which joins the
+    // threads and so stops this whole process while it waits. Awaiting parks
+    // only this task: the event loop collects each worker as it finishes and
+    // keeps serving other callers in the meantime. Same order, same answer,
+    // and the server stays responsive through a long one.
+    yo counts = []
+    grind pending in crew {
+        counts.yeet_in(await_fr pending)
+    }
+    yo total = 0
+    grind c in counts {
+        total += c
+    }
+    yo elapsed = (clock.now() - started) * 1000.0
+
+    bounce json(200, {
+        "upto": upto,
+        "interns": crew_size,
+        "primes": total,
+        "per_intern": counts,
+        "ms": mafs.round(elapsed, 1),
+    })
+}
+
+// The worker is written beside the temp directory on first use rather than
+// shipped as a file next to this one, because a path given to `interns.hire`
+// resolves against the *working directory*, not against the file doing the
+// hiring — so a server started from anywhere else would not find it.
+//
+// The first `/primes` request also pays for compiling it: `interns.hire` runs
+// the whole self-hosted toolchain the first time it sees a `.funny` path, and
+// caches the result. That is one slow request, not a slow server, but it is
+// enough to make a naive before/after comparison lie — so measure the second
+// request, not the first.
+yo WORKER_PATH = ghost
+
+flex bet worker_path() {
+    sus (WORKER_PATH != ghost) {
+        bounce WORKER_PATH
+    }
+    yo path = filez.temp_file() + "_primes.funny"
+    filez.yeet_out(path, PRIME_WORKER)
+    WORKER_PATH = path
+    bounce path
+}
+
+flex deadass PRIME_WORKER = "gimme interns\n" +
+    "yo job = interns.assignment()\n" +
+    "yo found = 0\n" +
+    "grind block in job[\"blocks\"] {\n" +
+    "    grind n from block[0] to block[1] {\n" +
+    "        yo prime = n > 1\n" +
+    "        yo d = 2\n" +
+    "        bruh (d * d <= n) {\n" +
+    "            sus (n % d == 0) { prime = cap\n" +
+    "                bail }\n" +
+    "            d += 1\n" +
+    "        }\n" +
+    "        sus (prime) { found += 1 }\n" +
+    "    }\n" +
+    "}\n" +
+    "interns.deliver(found)\n"
+
+// -- the guestbook --------------------------------------------------------
+
+flex bet guestbook_post(req) {
+    yo body = yapper.trim(req["body"])
+    sus (body == "") {
+        bounce json(400, {"error": "say something"})
+    }
+    sus (body.how_thicc() > 280) {
+        bounce json(413, {"error": "that's a lot of words, champ"})
+    }
+    GUESTBOOK.yeet_in({"said": body, "at": clock.date_yap("%H:%M:%S")})
+    sus (GUESTBOOK.how_thicc() > 50) {
+        GUESTBOOK = GUESTBOOK.slice(GUESTBOOK.how_thicc() - 50, GUESTBOOK.how_thicc())
+    }
+    bounce json(201, {"ok": fax, "entries": GUESTBOOK.how_thicc()})
+}
+
+flex bet guestbook_page() {
+    yo rows = []
+    grind entry in GUESTBOOK {
+        rows.yeet_in("<li><code>" + entry["at"] + "</code> " + html_escape(entry["said"]) + "</li>")
+    }
+    sus (rows.how_thicc() == 0) {
+        rows.yeet_in("<li><em>nobody has said anything yet. be the first.</em></li>")
+    }
+    bounce html(200, page("guestbook",
+        "<h1>guestbook</h1><ul>" + rows.join("") + "</ul>" +
+        "<p>POST a line of text to <code>/guestbook</code> to add to it.</p>" +
+        "<p><a href=\"/\">back</a></p>"))
+}
+
+// -- pages ----------------------------------------------------------------
+
+flex bet home_page() {
+    bounce html(200, page("funnylang",
+        "<h1>this is a web server. it is written in funnylang. 🫡</h1>" +
+        "<p>the whole thing: a socket loop, an HTTP/1.1 parser, and these routes. " +
+        "the runtime underneath is C; everything above it is not.</p>" +
+        "<h2>routes</h2><ul>" +
+        "<li><a href=\"/hello?name=you\">/hello?name=you</a> — query strings</li>" +
+        "<li><a href=\"/health\">/health</a> — JSON, and how many cores it thinks it has</li>" +
+        "<li><a href=\"/echo?a=1&amp;b=2\">/echo</a> — everything the parser found</li>" +
+        "<li><a href=\"/slow?ms=100\">/slow?ms=100</a> — <code>clock.chill</code>, which yields</li>" +
+        "<li><a href=\"/primes?upto=200000\">/primes?upto=200000</a> — real OS threads, via <code>interns</code></li>" +
+        "<li><a href=\"/guestbook\">/guestbook</a> — state that changes</li>" +
+        "<li><a href=\"/teapot\">/teapot</a> — 418</li>" +
+        "<li><a href=\"/boom\">/boom</a> — an uncaught error, turned into a 500</li>" +
+        "</ul>"))
+}
+
+flex bet not_found_page(path) {
+    bounce page("404", "<h1>404</h1><p><code>" + html_escape(path) +
+                "</code> who? never heard of them.</p><p><a href=\"/\">back</a></p>")
+}
+
+flex bet error_page(e) {
+    bounce page("500", "<h1>500</h1><p>the server fumbled it.</p><p><code>" +
+                html_escape(e.flavor + ": " + e.message) + "</code></p>")
+}
+
+flex bet page(title, inner) {
+    bounce "<!doctype html><html><head><meta charset=\"utf-8\"><title>" + title + "</title>" +
+           "<style>body{font-family:system-ui,sans-serif;max-width:46rem;margin:3rem auto;padding:0 1rem;" +
+           "line-height:1.6}code{background:#f4f4f5;padding:.1rem .3rem;border-radius:.2rem}" +
+           "h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:2rem}</style></head><body>" +
+           inner + "</body></html>"
+}
+
+// -- turning a route's answer into bytes ----------------------------------
+
+flex bet respond(result) {
+    bounce build_response(result["status"], result["body"], result["headers"])
+}

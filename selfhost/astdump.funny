@@ -69,6 +69,9 @@ flex bet dump(node) {
     sus (kind == "Unary") {
         bounce "(" + node["op"] + " " + dump(node["operand"]) + ")"
     }
+    sus (kind == "Await") {
+        bounce "(await_fr " + dump(node["value"]) + ")"
+    }
     sus (kind == "Binary" || kind == "Logical") {
         bounce "(" + node["op"] + " " + dump(node["left"]) + " " + dump(node["right"]) + ")"
     }
@@ -131,7 +134,8 @@ flex bet dump(node) {
             pnames.yeet_in(p["name"])
         }
         yo variadic = node["variadic"] != ghost ? " ..." + node["variadic"] : ""
-        bounce "(lambda (" + pnames.join(" ") + variadic + ") " + dump(node["body"]) + ")"
+        yo head = node["is_async"] ? "async_ngl lambda" : "lambda"
+        bounce "(" + head + " (" + pnames.join(" ") + variadic + ") " + dump(node["body"]) + ")"
     }
     sus (kind == "Me") {
         bounce "me"
@@ -154,7 +158,8 @@ flex bet dump(node) {
             pnames.yeet_in(p["name"])
         }
         yo variadic = node["variadic"] != ghost ? " ..." + node["variadic"] : ""
-        bounce "(bet " + node["name"] + " (" + pnames.join(" ") + variadic + ") " + dump(node["body"]) + ")"
+        yo head = node["is_async"] ? "async_ngl bet " : "bet "
+        bounce "(" + head + node["name"] + " (" + pnames.join(" ") + variadic + ") " + dump(node["body"]) + ")"
     }
     sus (kind == "SquadDecl") {
         yo sup = node["superclass"] != ghost ? " inherits " + node["superclass"] : ""

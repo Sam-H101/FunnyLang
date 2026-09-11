@@ -1,0 +1,2 @@
+!XRAY --ast
+(program (async_ngl bet fetch (id retries) (block (bounce (+ (await_fr id) retries)))) (flex (async_ngl bet exported (x) (block (bounce (await_fr x))))) (bet ordinary () (block (bounce 1))) (yo lam (async_ngl lambda (x) (await_fr x))) (yo plain (lambda (x) x)) (yap (+ (await_fr (call fetch 1)) (await_fr (call fetch 2)))) (yap (* (await_fr (call fetch 1)) 2)) (yap (await_fr (await_fr (call fetch 1)))))

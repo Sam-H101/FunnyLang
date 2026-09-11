@@ -1,0 +1,221 @@
+// serve.funny — the socket loop.
+//
+//     funny run extensive_examples/web_server/serve.funny -- 8080
+//     funny run extensive_examples/web_server/serve.funny -- 8080 0.0.0.0
+//
+// `internet.open_shop` binds a port; `internet.hold_up` gives you an `otw`
+// that settles when somebody is at the door. Everything above that is in
+// http.funny (the protocol) and routes.funny (the answers), so this file is
+// only the part that is genuinely about sockets.
+//
+// SEVERAL CALLERS AT ONCE, ON ONE THREAD. Each connection is handed to an
+// `async_ngl bet`, which makes a task; a task that is waiting for bytes to
+// arrive gives the interpreter back, so another task runs. The event loop
+// polls every socket anybody is waiting on in one call.
+//
+// The thing that makes this work is that *nothing blocks*. A plain
+// `internet.hear_them_out(conn, n, 5000)` would stop the whole thread for up
+// to five seconds — every other connection included — so every read here is
+// `await_fr internet.hold_up(...)` first, and then a read with a zero timeout
+// that is guaranteed not to wait. The same goes for the routes:
+// `clock.chill` yields where `touch_grass` would block, and `/primes` awaits
+// its workers rather than joining them.
+//
+// One thread is a deliberate choice, not a limitation worked around. `interns`
+// would give real threads, and a connection handle is a `numba` so it could
+// even cross to one — but a worker is a whole separate VM with its own heap,
+// so it could not see `GUESTBOOK` or anything else this program keeps. Staying
+// on one thread means shared state needs no locks at all. `/primes` shows
+// where workers *do* fit: work that takes a value and gives back a value.
+
+gimme internet
+gimme yapper
+gimme clock
+
+gimme { read_request, build_response } from "http.funny"
+gimme { route, respond, error_page } from "routes.funny"
+
+flex deadass DEFAULT_PORT = 8080
+// How long a connected client gets to send its request line and headers
+// before we give up on it. Short enough that a connection cannot be parked
+// open forever, long enough for a real request over a slow link.
+flex deadass READ_TIMEOUT_MS = 5000
+
+yo SERVED = 0
+yo IN_FLIGHT = 0
+
+bet main(raw_args) {
+    // `funny run x.funny -- a b` hands the program `["--", "a", "b"]`: the
+    // separator is there to stop the CLI claiming a leading `-flag` as its
+    // own, and it is passed through rather than eaten. Dropping it here means
+    // both spellings work.
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo port = DEFAULT_PORT
+    yo host = "127.0.0.1"
+    // `--requests N` stops the server after N requests, so a smoke test can
+    // start it, drive it, and have it stop on its own rather than needing
+    // something to go and kill it. `--seconds N` is the same idea on a clock.
+    yo budget = ghost
+    yo seconds = ghost
+    yo positional = []
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        sus (args[i] == "--requests" && i + 1 < args.how_thicc()) {
+            budget = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (args[i] == "--seconds" && i + 1 < args.how_thicc()) {
+            seconds = to_int(args[i + 1])
+            i += 2
+        } nah {
+            positional.yeet_in(args[i])
+            i += 1
+        }
+    }
+    sus (positional.how_thicc() > 0) {
+        port = to_int(positional[0])
+    }
+    sus (positional.how_thicc() > 1) {
+        host = positional[1]
+    }
+
+    yo listener = ghost
+    sketchy {
+        listener = internet.open_shop(port, host)
+    } my_bad (e) {
+        yell("couldn't start: " + e.message)
+        bounce 1
+    }
+
+    yo shown = host == "0.0.0.0" ? "<this machine>" : host
+    yell("serving on http://" + shown + ":" + to_yap(port) + " — ctrl-c to stop")
+    sus (budget != ghost) {
+        yell("(stopping after " + to_yap(budget) + " requests)")
+    }
+    sus (seconds != ghost) {
+        yell("(stopping after " + to_yap(seconds) + " seconds)")
+    }
+
+    yo deadline = seconds == ghost ? ghost : clock.now() + seconds
+    bruh (fax) {
+        sus (budget != ghost && SERVED >= budget) {
+            bail
+        }
+        sus (deadline != ghost && clock.now() >= deadline) {
+            bail
+        }
+        // Yields rather than blocking: while nothing is at the door, the
+        // tasks already serving somebody get the interpreter.
+        sus (!await_fr internet.hold_up(listener, 250)) {
+            nvm
+        }
+        yo customer = internet.next_customer(listener, 0)
+        sus (customer == ghost) {
+            nvm
+        }
+        SERVED += 1
+        // Not awaited on purpose: calling an `async_ngl bet` starts a task
+        // and comes straight back, so the loop is round again and accepting
+        // before this one has read a byte. `handle` catches everything, so
+        // there is no rejection for nobody to have awaited.
+        handle(customer)
+    }
+
+    // Let whatever is mid-conversation finish before pulling the door shut.
+    yo waited = 0
+    bruh (IN_FLIGHT > 0 && waited < 5000) {
+        await_fr clock.chill(20)
+        waited += 20
+    }
+    internet.close_shop(listener)
+    yell("served " + to_yap(SERVED) + " requests. closing up.")
+    bounce 0
+}
+
+// One connection, start to finish. Every read waits on the *loop* rather than
+// on the socket, so several of these run at once without threads.
+flex async_ngl bet handle(customer) {
+    IN_FLIGHT += 1
+    yo conn = customer["conn"]
+    sketchy {
+        sus (!await_fr internet.hold_up(conn, READ_TIMEOUT_MS)) {
+            // Connected and then said nothing. Most often a health check or a
+            // port scan; answering 408 is more honest than hanging up silently.
+            internet.holler_back(conn, build_response(408, "", {}))
+            internet.kick_out(conn)
+            IN_FLIGHT -= 1
+            bounce ghost
+        }
+        yo first = internet.hear_them_out(conn, 65536, 0)
+        sus (first == ghost || first == "") {
+            internet.kick_out(conn)
+            IN_FLIGHT -= 1
+            bounce ghost
+        }
+
+        yo req = read_request(lowkey () => read_more(conn), first)
+        sus (req == ghost) {
+            internet.holler_back(conn, build_response(400, "that wasn't HTTP.\n", {}))
+            internet.kick_out(conn)
+            IN_FLIGHT -= 1
+            bounce ghost
+        }
+        sus (req["truncated"]) {
+            internet.holler_back(conn, build_response(400, "the body stopped early.\n", {}))
+            internet.kick_out(conn)
+            IN_FLIGHT -= 1
+            bounce ghost
+        }
+
+        yo answer = ghost
+        sketchy {
+            answer = route(req)
+        } my_bad (e) {
+            // A route that falls over is a 500, not a dead server. The
+            // diagnostic goes to the log; the client gets the flavor and the
+            // message, which is the part that is about their request.
+            yell("500 on " + req["method"] + " " + req["target"] + ": " + e.flavor + ": " + e.message)
+            answer = {"status": 500, "body": error_page(e),
+                      "headers": {"Content-Type": "text/html; charset=utf-8"}}
+        }
+
+        yo bytes = respond(answer)
+        internet.holler_back(conn, bytes)
+        log_line(customer, req, answer, bytes)
+    } my_bad (e) {
+        // The client hung up mid-conversation, most likely. Not worth a
+        // stack trace; worth a line.
+        yell("dropped a connection: " + e.flavor + ": " + e.message)
+    }
+    internet.kick_out(conn)
+    IN_FLIGHT -= 1
+}
+
+// The "give me more bytes" side of read_request. `hold_up` first so waiting
+// costs this task and nobody else; the read itself then cannot block, because
+// the loop has already said there is something there.
+flex bet read_more(conn) {
+    sus (!await_fr internet.hold_up(conn, READ_TIMEOUT_MS)) {
+        bounce ghost
+    }
+    bounce internet.hear_them_out(conn, 65536, 0)
+}
+
+// To stderr, not stdout, and for a reason that bit once already: stdout is
+// block-buffered when it is a file or a pipe, so a server killed with ctrl-C
+// — which is how every server is stopped — loses whatever had not filled a
+// block yet. A log you cannot see until the process exits cleanly is not a
+// log. stderr is unbuffered, which is why server logs conventionally live
+// there.
+flex bet log_line(customer, req, answer, bytes) {
+    yell(clock.date_yap("%H:%M:%S") + "  " + customer["peer"] + "  " +
+         req["method"] + " " + req["target"] + "  -> " + to_yap(answer["status"]) +
+         "  " + to_yap(yapper.byte_len(bytes)) + "b")
+}
+
+dip(main(the_args()))

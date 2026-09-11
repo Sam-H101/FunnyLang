@@ -42,7 +42,13 @@ typedef struct {
     char *name; /* NUL-terminated, owned */
     uint8_t arity;
     uint8_t defaultCount;
+    /* PLAN.md §5.2's variadic byte is a *flags* byte from ASYNC_PLAN.md A4
+       on: bit 0 variadic, bit 1 async. Not a new field and not a version
+       bump -- every value an older toolchain wrote is 0 or 1, so old
+       bytecode reads back identically and the self-hosting bootstrap needs
+       no special dance. */
     bool isVariadic;
+    bool isAsync;
     uint8_t upvalueCount;
     uint16_t maxStack;
     uint8_t localCount;

@@ -2,6 +2,87 @@
 
 All notable changes to FunnyLang are documented here.
 
+## [Unreleased] — concurrency
+
+`async_ngl` and `await_fr` are real, and `gimme interns` runs work on real OS threads. Two of
+`PLAN.md` §3.3's six reserved keywords now mean what they are named. Design, cost sheet and build
+log: [ASYNC_PLAN.md](ASYNC_PLAN.md).
+
+```funny
+gimme interns
+gimme clock
+
+async_ngl bet fetch_both() {
+    // Two interns, two OS threads, one wait.
+    yo a = interns.hire("slow_job.funny", 21)
+    yo b = interns.hire("slow_job.funny", 21)
+    bounce await_fr a + await_fr b
+}
+
+yap await_fr fetch_both()      // 42
+```
+
+### Added
+- **`interns`** — an eleventh stdlib module. `interns.hire(path, arg)` runs a `.funny` program on a
+  real OS thread in its own VM with its own heap and hands back an `otw`; `wait_up`, `everybody`
+  and `headcount` collect. Inside a worker, `interns.assignment()` and `interns.deliver(v)` are the
+  protocol — a worker is a *program*, not a function, because a top-level script has no `bounce`.
+- **`async_ngl bet` and `await_fr`**, with a real event loop. Calling an `async_ngl bet` makes a
+  task and returns an `otw` without running the body; `await_fr` suspends the task until it
+  settles. `async_ngl lowkey (x) => ...` works too. `funny run` drains outstanding work before
+  exiting.
+- **`otw`** — a new runtime type, `what_is_it(p) == "otw"`. Pending, fulfilled or rejected, and
+  final once it leaves pending. Prints as `<otw pending>` / `<otw done 42>` /
+  `<otw rejected KeyGhosted>`.
+- **`clock.chill(ms)`** — an `otw` that settles after a delay. Its pair `clock.touch_grass(s)`
+  blocks the whole program; `chill` yields, so only the awaiting task waits.
+- **`LeftOnRead` and `CantWaitRightNow`** join `PLAN.md` §4.1's error taxonomy, and are the only
+  two additions. The taxonomy is closed — `oops(flavor, ...)` validates against it — so this is a
+  spec change, made deliberately.
+- **`AWAIT` (opcode 80)**. A proto's `is_variadic` byte became a flags byte (bit 0 variadic, bit 1
+  async). Not a bytecode version bump: every value any earlier toolchain wrote is 0 or 1 and reads
+  back identically, which is what keeps the self-hosting bootstrap from needing a special dance.
+
+### Also added
+- **Listening sockets.** Everything in `internet` dialled *out*; these are the other direction.
+  `internet.open_shop(port, host?)` binds and listens, `next_customer(listener, timeout?)` accepts
+  (or is `ghost` if nobody arrived), `hear_them_out` / `holler_back` read and write,
+  `kick_out` / `close_shop` close, `shop_port` tells you which port `open_shop(0)` picked, and
+  `slide_into(host, port)` dials the other end. Listeners and connections are `numba` handles, so
+  they stay out of the collector and can cross to an `interns` worker.
+- **`internet.hold_up(handle, timeout_ms?)`** — an `otw` that settles when a socket has something to
+  read. This is what lets one thread serve several callers at once: `await_fr` it and only the
+  asking task waits, while the event loop polls every socket anybody is parked on in a single call.
+  The loop learned to wait on sockets, timers and worker threads together.
+- **`yapper.byte_len(s)`** — length in bytes, where `how_thicc` is length in codepoints. An HTTP
+  `Content-Length` taken from the latter is short for any response with a non-ASCII character in it.
+- **`extensive_examples/web_server/`** — a real HTTP/1.1 server in FunnyLang: a socket loop, a
+  request parser, routes, and a golden that drives the whole thing over a loopback socket with an
+  `interns` worker as the client, so `funny test extensive_examples` keeps it honest.
+
+### Notes on the design
+- **Nothing is shared between threads, so nothing needs a lock.** Each intern gets its own VM and
+  its own collector; arguments are deep-copied in and results deep-copied out. `ghost`, `boolski`,
+  `numba`, `yapstring` and `stash`/`groupchat` of those can cross. A `bet`, a squad instance, a
+  `pointa` or an `otw` cannot — each references a heap, and there is no second copy of that heap on
+  the other side. Every refusal names the type. This is a real ergonomic cost and it is the price
+  of not having a thread-safe collector.
+- **A task cannot suspend inside a native callback**, because that C frame cannot be saved. `await_fr`
+  under `glow_up`, `squish`, `sort`, `combo` or a squad's `to_yap` raises `CantWaitRightNow`
+  *naming the callback* rather than silently doing the wrong thing.
+- **An error raised inside a worker, or inside an async task, keeps its own flavor.** A worker's
+  `MathAintMathin` is re-raised in the parent as a `MathAintMathin`, at the line that waited.
+- **Nothing is ever killed.** `funny` joins its workers at exit: stopping a thread mid-allocation
+  leaves a heap nothing can safely free.
+- **The scheduler is deterministic** — tasks run in creation order and never preempt — so a golden
+  can assert the language's own ordering without asserting on timing.
+
+### Tested
+- 392 goldens, including `tests/lang/async/` and `tests/lang/interns/`, green on Linux and Windows;
+  all of them also under `FUNNY_GC_STRESS=50` and under ASan+UBSan.
+- `tests/lang/async` and `tests/lang/interns` additionally under **ThreadSanitizer**.
+- `funny bootstrap --verify` still reaches a byte-identical fixed point.
+
 ## [2.0.0] — 2026-09-10
 
 The runtime is no longer Python. `native/` is a complete bytecode VM written in C — values,

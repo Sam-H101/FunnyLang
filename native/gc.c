@@ -9,6 +9,7 @@
 #include "groupchat.h"
 #include "iterator.h"
 #include "modules.h"
+#include "otw.h"
 #include "pointa.h"
 #include "squad.h"
 #include "stash.h"
@@ -76,6 +77,12 @@ static void free_object(Obj *obj) {
         }
         case OBJ_POINTA:
             free(obj); /* label/cell/globalName are separate GC objects; vm is borrowed */
+            return;
+        case OBJ_OTW:
+            /* value/error are Value fields -- separate GC objects, marked not
+               freed. The worker behind a pending one is a VM-local id, not a
+               pointer, and is joined by that VM's teardown. */
+            free(obj);
             return;
         case OBJ_BOUND_NATIVE:
             free(obj); /* receiver is a Value field, name is a static string literal */
@@ -215,6 +222,12 @@ static void blacken_object(GC *gc, Obj *obj) {
             gc_mark_object(gc, (Obj *)c->homeSquad);
             gc_mark_value(gc, c->moduleGlobals);
             gc_mark_value(gc, c->moduleExports);
+            return;
+        }
+        case OBJ_OTW: {
+            ObjOtw *p = (ObjOtw *)obj;
+            gc_mark_value(gc, p->value);
+            gc_mark_value(gc, p->error);
             return;
         }
         case OBJ_ERROR: {

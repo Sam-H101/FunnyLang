@@ -47,6 +47,7 @@ typedef SOCKET SockFd;
 #else
 #include <dirent.h>
 #include <fcntl.h>
+#include <pthread.h>   /* ASYNC_PLAN.md A0: threads behind platform.h */
 #include <limits.h>
 #include <netdb.h>
 #include <poll.h>
@@ -933,6 +934,25 @@ static int sock_poll_writable(SockFd fd, int timeoutMs) {
     return WSAPoll(&pfd, 1, timeoutMs);
 }
 
+static int sock_poll_readable(SockFd fd, int timeoutMs) {
+    WSAPOLLFD pfd;
+    pfd.fd = fd;
+    pfd.events = POLLRDNORM;
+    pfd.revents = 0;
+    return WSAPoll(&pfd, 1, timeoutMs);
+}
+
+static bool sock_set_reuseaddr(SockFd fd) {
+    BOOL on = TRUE;
+    return setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on)) == 0;
+}
+
+static const char *sock_last_error(char *buf, size_t len) {
+    int e = WSAGetLastError();
+    snprintf(buf, len, "winsock error %d", e);
+    return buf;
+}
+
 static long sock_send(SockFd fd, const char *buf, size_t len) {
     int n = len > (size_t)INT_MAX ? INT_MAX : (int)len;
     return (long)send(fd, buf, n, 0);
@@ -970,6 +990,23 @@ static int sock_poll_writable(SockFd fd, int timeoutMs) {
     pfd.fd = fd;
     pfd.events = POLLOUT;
     return poll(&pfd, 1, timeoutMs);
+}
+
+static int sock_poll_readable(SockFd fd, int timeoutMs) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    return poll(&pfd, 1, timeoutMs);
+}
+
+static bool sock_set_reuseaddr(SockFd fd) {
+    int on = 1;
+    return setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == 0;
+}
+
+static const char *sock_last_error(char *buf, size_t len) {
+    snprintf(buf, len, "%s", strerror(errno));
+    return buf;
 }
 
 static long sock_send(SockFd fd, const char *buf, size_t len) { return (long)send(fd, buf, len, 0); }
@@ -1864,3 +1901,360 @@ bool platform_tcp_ping(const char *host, int port, int timeoutMs, double *outMs)
     *outMs = (platform_monotonic_seconds() - start) * 1000.0;
     return true;
 }
+
+/* -- listening sockets ----------------------------------------------------
+ *
+ * See platform.h. Handles are int64_t and the two backends differ only in
+ * the helpers above, which is the whole point of having them.
+ */
+
+/* SockFd is unsigned on Windows (`SOCKET` is a `UINT_PTR`), so INVALID_SOCKET
+   cast to int64_t is a huge positive number rather than -1. Everything here
+   normalises through these two, so a handle that crosses into FunnyLang is
+   always either >= 0 or one of the named negatives. */
+static int64_t sock_to_handle(SockFd fd) {
+    return fd == SOCK_INVALID ? PLATFORM_SOCKET_NONE : (int64_t)fd;
+}
+
+static SockFd handle_to_sock(int64_t h) {
+    return h < 0 ? SOCK_INVALID : (SockFd)h;
+}
+
+int64_t platform_tcp_listen(const char *host, int port, int backlog, char *errbuf, size_t errbuf_len) {
+    ensure_winsock();
+    if (errbuf != NULL && errbuf_len > 0) errbuf[0] = '\0';
+    if (port < 0 || port > 65535) {
+        snprintf(errbuf, errbuf_len, "%d isn't a port number.", port);
+        return PLATFORM_SOCKET_NONE;
+    }
+
+    char portStr[16];
+    snprintf(portStr, sizeof(portStr), "%d", port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE; /* NULL host then means "every interface" */
+    struct addrinfo *res = NULL;
+    const char *node = (host != NULL && host[0] != '\0') ? host : NULL;
+    if (getaddrinfo(node, portStr, &hints, &res) != 0 || res == NULL) {
+        snprintf(errbuf, errbuf_len, "can't resolve '%s'.", node != NULL ? node : "*");
+        return PLATFORM_SOCKET_NONE;
+    }
+
+    SockFd fd = SOCK_INVALID;
+    char why[128];
+    why[0] = '\0';
+    for (struct addrinfo *rp = res; rp != NULL; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd == SOCK_INVALID) continue;
+        /* Without SO_REUSEADDR a server restarted inside the TIME_WAIT window
+           cannot rebind its own port, which makes development miserable and
+           buys nothing: the socket is ours either way. */
+        sock_set_reuseaddr(fd);
+        if (bind(fd, rp->ai_addr, (int)rp->ai_addrlen) == 0 && listen(fd, backlog > 0 ? backlog : 16) == 0) break;
+        sock_last_error(why, sizeof why);
+        sock_close(fd);
+        fd = SOCK_INVALID;
+    }
+    freeaddrinfo(res);
+
+    if (fd == SOCK_INVALID) {
+        snprintf(errbuf, errbuf_len, "couldn't listen on port %d: %s", port, why[0] != '\0' ? why : "no usable address");
+        return PLATFORM_SOCKET_NONE;
+    }
+    return sock_to_handle(fd);
+}
+
+int64_t platform_tcp_accept(int64_t listener, int timeoutMs, char *peerOut, size_t peerOut_len) {
+    SockFd lfd = handle_to_sock(listener);
+    if (lfd == SOCK_INVALID) return PLATFORM_SOCKET_ERROR;
+    if (peerOut != NULL && peerOut_len > 0) peerOut[0] = '\0';
+
+    /* Polled rather than a blocking accept, so a server can have a loop that
+       does something else between callers -- checking a shutdown flag, firing
+       a timer -- instead of being parked in the kernel forever. */
+    int pr = sock_poll_readable(lfd, timeoutMs);
+    if (pr == 0) return PLATFORM_SOCKET_TIMEOUT;
+    if (pr < 0) return PLATFORM_SOCKET_ERROR;
+
+    struct sockaddr_storage addr;
+    socklen_t addrLen = sizeof(addr);
+    SockFd fd = accept(lfd, (struct sockaddr *)&addr, &addrLen);
+    if (fd == SOCK_INVALID) return PLATFORM_SOCKET_ERROR;
+
+    if (peerOut != NULL && peerOut_len > 0) {
+        char hostBuf[NI_MAXHOST];
+        char servBuf[NI_MAXSERV];
+        if (getnameinfo((struct sockaddr *)&addr, addrLen, hostBuf, sizeof hostBuf, servBuf, sizeof servBuf,
+                        NI_NUMERICHOST | NI_NUMERICSERV) == 0) {
+            snprintf(peerOut, peerOut_len, "%s:%s", hostBuf, servBuf);
+        }
+    }
+    return sock_to_handle(fd);
+}
+
+int64_t platform_socket_recv(int64_t sock, char *buf, size_t len, int timeoutMs) {
+    SockFd fd = handle_to_sock(sock);
+    if (fd == SOCK_INVALID) return PLATFORM_SOCKET_ERROR;
+    if (timeoutMs >= 0) {
+        int pr = sock_poll_readable(fd, timeoutMs);
+        if (pr == 0) return PLATFORM_SOCKET_TIMEOUT;
+        if (pr < 0) return PLATFORM_SOCKET_ERROR;
+    }
+    long n = sock_recv(fd, buf, len);
+    if (n < 0) return PLATFORM_SOCKET_ERROR;
+    return (int64_t)n; /* 0 is a clean close, and the caller wants to know */
+}
+
+bool platform_socket_send(int64_t sock, const char *buf, size_t len) {
+    SockFd fd = handle_to_sock(sock);
+    if (fd == SOCK_INVALID) return false;
+    size_t sent = 0;
+    while (sent < len) {
+        long n = sock_send(fd, buf + sent, len - sent);
+        if (n <= 0) return false;
+        sent += (size_t)n;
+    }
+    return true;
+}
+
+int64_t platform_tcp_connect(const char *host, int port, int timeoutMs) {
+    SockFd fd = connect_with_timeout(host, port, timeoutMs);
+    return sock_to_handle(fd);
+}
+
+int platform_poll_sockets(const int64_t *handles, int count, int timeoutMs, unsigned char *readyOut) {
+    if (count <= 0) return 0;
+#ifdef _WIN32
+    WSAPOLLFD *pfds = (WSAPOLLFD *)calloc((size_t)count, sizeof(WSAPOLLFD));
+#else
+    struct pollfd *pfds = (struct pollfd *)calloc((size_t)count, sizeof(struct pollfd));
+#endif
+    int live = 0;
+    for (int i = 0; i < count; i++) {
+        readyOut[i] = 0;
+        SockFd fd = handle_to_sock(handles[i]);
+        if (fd == SOCK_INVALID) continue;
+        pfds[live].fd = fd;
+#ifdef _WIN32
+        pfds[live].events = POLLRDNORM;
+#else
+        pfds[live].events = POLLIN;
+#endif
+        pfds[live].revents = 0;
+        live++;
+    }
+    if (live == 0) {
+        free(pfds);
+        return 0;
+    }
+
+#ifdef _WIN32
+    int rc = WSAPoll(pfds, (ULONG)live, timeoutMs);
+#else
+    int rc = poll(pfds, (nfds_t)live, timeoutMs);
+#endif
+    if (rc <= 0) {
+        free(pfds);
+        return rc; /* 0 is a timeout, negative an error */
+    }
+
+    /* Map back, skipping the invalid handles that were not polled. Anything
+       with revents at all counts as ready: a hangup or an error is something
+       to notice, and the read that follows is what reports which. */
+    int at = 0;
+    int ready = 0;
+    for (int i = 0; i < count; i++) {
+        if (handle_to_sock(handles[i]) == SOCK_INVALID) continue;
+        if (pfds[at].revents != 0) {
+            readyOut[i] = 1;
+            ready++;
+        }
+        at++;
+    }
+    free(pfds);
+    return ready;
+}
+
+int platform_socket_port(int64_t sock) {
+    SockFd fd = handle_to_sock(sock);
+    if (fd == SOCK_INVALID) return -1;
+    struct sockaddr_storage addr;
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) return -1;
+    if (addr.ss_family == AF_INET) return (int)ntohs(((struct sockaddr_in *)&addr)->sin_port);
+    if (addr.ss_family == AF_INET6) return (int)ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
+    return -1;
+}
+
+void platform_socket_close(int64_t sock) {
+    SockFd fd = handle_to_sock(sock);
+    if (fd != SOCK_INVALID) sock_close(fd);
+}
+
+/* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
+ *
+ * platform.h declares these as opaque fixed-size storage. The static
+ * assertions below are what makes that safe: if a platform's real handle
+ * does not fit, the build stops here with a readable message instead of
+ * writing past the struct at run time.
+ */
+#ifdef _WIN32
+
+typedef struct {
+    HANDLE handle;
+    PlatformThreadFn fn;
+    void *userdata;
+} Win32Thread;
+
+_Static_assert(sizeof(Win32Thread) <= sizeof(PlatformThread), "PlatformThread storage too small");
+_Static_assert(sizeof(SRWLOCK) <= sizeof(PlatformMutex), "PlatformMutex storage too small");
+_Static_assert(sizeof(CONDITION_VARIABLE) <= sizeof(PlatformCond), "PlatformCond storage too small");
+
+/* SRWLOCK rather than CRITICAL_SECTION: it needs no initialisation call that
+   can fail, is smaller, and this code never recurses on a lock -- a
+   recursive acquire would be a bug worth crashing on rather than tolerating. */
+static SRWLOCK *win_mutex(PlatformMutex *m) { return (SRWLOCK *)m->opaque; }
+static CONDITION_VARIABLE *win_cond(PlatformCond *c) { return (CONDITION_VARIABLE *)c->opaque; }
+
+static DWORD WINAPI win_thread_trampoline(LPVOID param) {
+    Win32Thread *t = (Win32Thread *)param;
+    t->fn(t->userdata);
+    return 0;
+}
+
+bool platform_thread_start(PlatformThread *thread, PlatformThreadFn fn, void *userdata,
+                           char *errbuf, size_t errbuf_len) {
+    Win32Thread *t = (Win32Thread *)thread->opaque;
+    t->fn = fn;
+    t->userdata = userdata;
+    t->handle = CreateThread(NULL, 0, win_thread_trampoline, t, 0, NULL);
+    if (t->handle == NULL) {
+        set_errbuf_win32(errbuf, errbuf_len, GetLastError());
+        return false;
+    }
+    return true;
+}
+
+void platform_thread_join(PlatformThread *thread) {
+    Win32Thread *t = (Win32Thread *)thread->opaque;
+    if (t->handle == NULL) return;
+    WaitForSingleObject(t->handle, INFINITE);
+    CloseHandle(t->handle);
+    t->handle = NULL;
+}
+
+uint64_t platform_thread_id(void) { return (uint64_t)GetCurrentThreadId(); }
+
+void platform_mutex_init(PlatformMutex *m) { InitializeSRWLock(win_mutex(m)); }
+void platform_mutex_destroy(PlatformMutex *m) { (void)m; /* SRWLOCK needs none */ }
+void platform_mutex_lock(PlatformMutex *m) { AcquireSRWLockExclusive(win_mutex(m)); }
+void platform_mutex_unlock(PlatformMutex *m) { ReleaseSRWLockExclusive(win_mutex(m)); }
+
+void platform_cond_init(PlatformCond *c) { InitializeConditionVariable(win_cond(c)); }
+void platform_cond_destroy(PlatformCond *c) { (void)c; /* likewise */ }
+
+void platform_cond_wait(PlatformCond *c, PlatformMutex *m) {
+    SleepConditionVariableSRW(win_cond(c), win_mutex(m), INFINITE, 0);
+}
+
+bool platform_cond_wait_ms(PlatformCond *c, PlatformMutex *m, int timeoutMs) {
+    if (timeoutMs < 0) timeoutMs = 0;
+    if (SleepConditionVariableSRW(win_cond(c), win_mutex(m), (DWORD)timeoutMs, 0)) return true;
+    return GetLastError() != ERROR_TIMEOUT;
+}
+
+void platform_cond_signal(PlatformCond *c) { WakeConditionVariable(win_cond(c)); }
+void platform_cond_broadcast(PlatformCond *c) { WakeAllConditionVariable(win_cond(c)); }
+
+#else
+
+typedef struct {
+    pthread_t handle;
+    PlatformThreadFn fn;
+    void *userdata;
+    bool started;
+} PosixThread;
+
+_Static_assert(sizeof(PosixThread) <= sizeof(PlatformThread), "PlatformThread storage too small");
+_Static_assert(sizeof(pthread_mutex_t) <= sizeof(PlatformMutex), "PlatformMutex storage too small");
+_Static_assert(sizeof(pthread_cond_t) <= sizeof(PlatformCond), "PlatformCond storage too small");
+
+static pthread_mutex_t *posix_mutex(PlatformMutex *m) { return (pthread_mutex_t *)m->opaque; }
+static pthread_cond_t *posix_cond(PlatformCond *c) { return (pthread_cond_t *)c->opaque; }
+
+static void *posix_thread_trampoline(void *param) {
+    PosixThread *t = (PosixThread *)param;
+    t->fn(t->userdata);
+    return NULL;
+}
+
+bool platform_thread_start(PlatformThread *thread, PlatformThreadFn fn, void *userdata,
+                           char *errbuf, size_t errbuf_len) {
+    PosixThread *t = (PosixThread *)thread->opaque;
+    t->fn = fn;
+    t->userdata = userdata;
+    t->started = false;
+    int rc = pthread_create(&t->handle, NULL, posix_thread_trampoline, t);
+    if (rc != 0) {
+        set_errbuf(errbuf, errbuf_len, rc); /* pthread_create returns the errno itself */
+        return false;
+    }
+    t->started = true;
+    return true;
+}
+
+void platform_thread_join(PlatformThread *thread) {
+    PosixThread *t = (PosixThread *)thread->opaque;
+    if (!t->started) return;
+    pthread_join(t->handle, NULL);
+    t->started = false;
+}
+
+/* pthread_t is opaque and not required to be an integer, so it is hashed
+   rather than cast. Only ever compared for equality, never interpreted. */
+uint64_t platform_thread_id(void) {
+    pthread_t self = pthread_self();
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char *bytes = (const unsigned char *)&self;
+    for (size_t i = 0; i < sizeof self; i++) {
+        h ^= bytes[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+void platform_mutex_init(PlatformMutex *m) { pthread_mutex_init(posix_mutex(m), NULL); }
+void platform_mutex_destroy(PlatformMutex *m) { pthread_mutex_destroy(posix_mutex(m)); }
+void platform_mutex_lock(PlatformMutex *m) { pthread_mutex_lock(posix_mutex(m)); }
+void platform_mutex_unlock(PlatformMutex *m) { pthread_mutex_unlock(posix_mutex(m)); }
+
+void platform_cond_init(PlatformCond *c) { pthread_cond_init(posix_cond(c), NULL); }
+void platform_cond_destroy(PlatformCond *c) { pthread_cond_destroy(posix_cond(c)); }
+
+void platform_cond_wait(PlatformCond *c, PlatformMutex *m) {
+    pthread_cond_wait(posix_cond(c), posix_mutex(m));
+}
+
+/* CLOCK_REALTIME, not monotonic: pthread_cond_timedwait's deadline is
+   against the condvar's clock attribute, which defaults to CLOCK_REALTIME on
+   both Linux and macOS. Using a monotonic deadline here without also setting
+   the attribute would make every wait return immediately. */
+bool platform_cond_wait_ms(PlatformCond *c, PlatformMutex *m, int timeoutMs) {
+    if (timeoutMs < 0) timeoutMs = 0;
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeoutMs / 1000;
+    deadline.tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    return pthread_cond_timedwait(posix_cond(c), posix_mutex(m), &deadline) != ETIMEDOUT;
+}
+
+void platform_cond_signal(PlatformCond *c) { pthread_cond_signal(posix_cond(c)); }
+void platform_cond_broadcast(PlatformCond *c) { pthread_cond_broadcast(posix_cond(c)); }
+
+#endif

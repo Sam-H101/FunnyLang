@@ -55,8 +55,11 @@ flex deadass STMT_START_KINDS = [
 
 flex deadass STMT_END_KINDS = ["NEWLINE", "SEMICOLON", "RBRACE", "EOF"]
 
+// ASYNC_PLAN.md A4: `async_ngl` and `await_fr` are out of here and into the
+// grammar below. `vibin` and `yield_lol` stay -- generators reuse A3's task
+// machinery and are a separate feature, cheap from here but not smuggled in.
 flex deadass RESERVED_FUTURE = [
-    "vibin", "async_ngl", "await_fr", "yield_lol", "match_this", "when",
+    "vibin", "yield_lol", "match_this", "when",
 ]
 
 flex deadass KEYWORD_KINDS = KEYWORDS.values()
@@ -242,6 +245,7 @@ flex bet parse_statement(ps) {
     sus (kind == "YO") { bounce parse_var_decl(ps) }
     sus (kind == "DEADASS") { bounce parse_const_decl(ps) }
     sus (kind == "BET") { bounce parse_func_decl(ps, cap) }
+    sus (kind == "ASYNC_NGL") { bounce parse_async_decl(ps) }
     sus (kind == "SQUAD") { bounce parse_squad_decl(ps) }
     sus (kind == "SUS") { bounce parse_if(ps) }
     sus (kind == "BRUH") { bounce parse_while(ps) }
@@ -329,6 +333,23 @@ flex bet parse_param_list(ps) {
     bounce {"params": params, "variadic": variadic}
 }
 
+// `async_ngl bet f(...) { ... }` -- ASYNC_PLAN.md A4. The only difference
+// from an ordinary declaration is the flag: calling one makes a task and
+// hands back an `otw` instead of running the body, which is the runtime's
+// job, not the grammar's.
+flex bet parse_async_decl(ps) {
+    yo start = p_advance(ps) // async_ngl
+    sus (!p_check(ps, "BET")) {
+        parser_error(ps, p_peek(ps, 0), "'async_ngl' goes in front of a 'bet': async_ngl bet f() { }.")
+        bounce ghost
+    }
+    yo decl = parse_func_decl(ps, cap)
+    decl["is_async"] = fax
+    decl["line"] = start["line"]
+    decl["col"] = start["col"]
+    bounce decl
+}
+
 flex bet parse_func_decl(ps, allow_keyword_name) {
     yo start = p_advance(ps) // bet
     yo name_tok = ghost
@@ -342,7 +363,7 @@ flex bet parse_func_decl(ps, allow_keyword_name) {
     p_expect(ps, "RPAREN", "this parameter list never closes. it's missing a ')'.")
     p_skip_newlines(ps)
     yo body = parse_block(ps)
-    bounce {"node": "FuncDecl", "name": name_tok["text"], "params": pv["params"], "variadic": pv["variadic"], "body": body, "line": start["line"], "col": start["col"]}
+    bounce {"node": "FuncDecl", "name": name_tok["text"], "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_async": cap, "line": start["line"], "col": start["col"]}
 }
 
 flex bet parse_if(ps) {
@@ -527,6 +548,8 @@ flex bet parse_export(ps) {
     yo decl = ghost
     sus (p_check(ps, "BET")) {
         decl = parse_func_decl(ps, cap)
+    } kinda_sus (p_check(ps, "ASYNC_NGL")) {
+        decl = parse_async_decl(ps)
     } kinda_sus (p_check(ps, "DEADASS")) {
         decl = parse_const_decl(ps)
     } kinda_sus (p_check(ps, "YO")) {
@@ -534,7 +557,7 @@ flex bet parse_export(ps) {
     } kinda_sus (p_check(ps, "SQUAD")) {
         decl = parse_squad_decl(ps)
     } nah {
-        parser_error(ps, p_peek(ps, 0), "'flex' needs something to flex: flex bet ..., flex deadass ..., flex yo ..., or flex squad ....")
+        parser_error(ps, p_peek(ps, 0), "'flex' needs something to flex: flex bet ..., flex async_ngl bet ..., flex deadass ..., flex yo ..., or flex squad ....")
     }
     bounce {"node": "Export", "decl": decl, "line": start["line"], "col": start["col"]}
 }
@@ -563,9 +586,16 @@ flex bet parse_squad_decl(ps) {
             p_expect(ps, "RPAREN", "this parameter list never closes. it's missing a ')'.")
             p_skip_newlines(ps)
             yo body = parse_block(ps)
-            spawn_decl = {"node": "FuncDecl", "name": "spawn", "params": pv["params"], "variadic": pv["variadic"], "body": body, "line": spawn_tok["line"], "col": spawn_tok["col"]}
+            spawn_decl = {"node": "FuncDecl", "name": "spawn", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_async": cap, "line": spawn_tok["line"], "col": spawn_tok["col"]}
         } kinda_sus (p_check(ps, "BET")) {
             methods.yeet_in(parse_func_decl(ps, fax))
+        } kinda_sus (p_check(ps, "ASYNC_NGL")) {
+            // A method is reached through INVOKE, which has its own call
+            // path in the runtime; A4 only taught the plain-call one to make
+            // a task. Saying so beats "a squad body only has 'spawn' and
+            // 'bet' methods in it", which is true and useless here.
+            parser_error(ps, p_peek(ps, 0), "a squad's methods can't be async_ngl yet. wrap one in an async_ngl bet outside the squad.")
+            p_advance(ps)
         } nah {
             parser_error(ps, p_peek(ps, 0), "a squad body only has 'spawn' and 'bet' methods in it.")
         }
@@ -715,6 +745,14 @@ flex bet p_check_place(ps, place) {
 
 flex bet parse_unary(ps) {
     yo tok = p_peek(ps, 0)
+    // ASYNC_PLAN.md A4. Unary precedence, so `await_fr a + await_fr b` is
+    // `(await_fr a) + (await_fr b)` -- §1's own example -- and
+    // `await_fr f()` awaits what the call returned rather than the callee.
+    sus (tok["kind"] == "AWAIT_FR") {
+        p_advance(ps)
+        yo awaited = parse_unary(ps)
+        bounce {"node": "Await", "value": awaited, "line": tok["line"], "col": tok["col"]}
+    }
     sus (tok["kind"] == "AMP") {
         p_advance(ps)
         yo place = parse_unary(ps)
@@ -866,14 +904,14 @@ flex bet parse_lambda(ps) {
         p_skip_newlines(ps)
         sus (p_check(ps, "LBRACE")) {
             yo body = parse_block(ps)
-            bounce {"node": "Lambda", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_expr_body": cap, "line": start["line"], "col": start["col"]}
+            bounce {"node": "Lambda", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_expr_body": cap, "is_async": cap, "line": start["line"], "col": start["col"]}
         }
         yo body = parse_assignment(ps)
-        bounce {"node": "Lambda", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_expr_body": fax, "line": start["line"], "col": start["col"]}
+        bounce {"node": "Lambda", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_expr_body": fax, "is_async": cap, "line": start["line"], "col": start["col"]}
     }
     sus (p_check(ps, "LBRACE")) {
         yo body = parse_block(ps)
-        bounce {"node": "Lambda", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_expr_body": cap, "line": start["line"], "col": start["col"]}
+        bounce {"node": "Lambda", "params": pv["params"], "variadic": pv["variadic"], "body": body, "is_expr_body": cap, "is_async": cap, "line": start["line"], "col": start["col"]}
     }
     parser_error(ps, p_peek(ps, 0), "a lambda needs '=>' or a '{ }' body.")
 }
@@ -948,6 +986,19 @@ flex bet parse_primary(ps) {
     }
     sus (kind == "LOWKEY") {
         bounce parse_lambda(ps)
+    }
+    sus (kind == "ASYNC_NGL") {
+        // The expression form. Same flag, same machinery: a `lowkey` is a
+        // FuncDecl with a different spelling as far as compile_closure is
+        // concerned.
+        p_advance(ps)
+        sus (!p_check(ps, "LOWKEY")) {
+            parser_error(ps, p_peek(ps, 0), "'async_ngl' here needs a 'lowkey' after it: async_ngl lowkey () => ...")
+            bounce ghost
+        }
+        yo lam = parse_lambda(ps)
+        lam["is_async"] = fax
+        bounce lam
     }
     parser_error(ps, tok, "didn't expect to see '" + tok["text"] + "' here.")
 }

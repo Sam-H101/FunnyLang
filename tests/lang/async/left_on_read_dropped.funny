@@ -1,0 +1,23 @@
+// ASYNC_PLAN.md §3.4: an `async_ngl bet` that fell over and that nobody ever
+// awaited is an error thrown into the void, and the "no silent truncation"
+// rule says it must not vanish. The program is told at exit, and the exit
+// code says something went wrong.
+//
+// A *fulfilled* `otw` nobody awaited is deliberately not reported: starting
+// work you do not need the answer to is a legitimate thing to do, and
+// treating it as a fault would make fire-and-forget impossible.
+//
+// The detail goes in the diagnostic's roast rather than its message, because
+// §4.2 renders the roast by default -- a report that said only "left on read"
+// and left you to go looking would barely be a report.
+async_ngl bet fine() {
+    bounce "nobody needs this and that is fine"
+}
+
+async_ngl bet not_fine() {
+    chuck oops("MathAintMathin", "nobody will ever know")
+}
+
+fine()
+not_fine()
+yap "the entry program finished normally"

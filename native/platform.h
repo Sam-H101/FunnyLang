@@ -224,4 +224,133 @@ void platform_http_response_free(PlatformHttpResponse *resp);
 /* Raw TCP connect-and-time (no HTTP involved) for internet.ping(). */
 bool platform_tcp_ping(const char *host, int port, int timeoutMs, double *outMs);
 
+/* -- listening sockets, for `internet.open_shop` --------------------------
+ *
+ * Everything above is a *client*: it dials out. These are the other
+ * direction -- bind a port, wait for somebody to dial in, read what they
+ * say, say something back.
+ *
+ * Handles are `int64_t` rather than a struct, because they cross into
+ * FunnyLang as a `numba` and stay out of the collector entirely (the same
+ * reasoning `sus`'s REPL sessions and `interns`'s workers already record).
+ * They are wide enough for a Win32 `SOCKET`, which is a `UINT_PTR` and does
+ * not fit an `int` on a 64-bit build. A negative handle is never valid.
+ *
+ * `FUNNY_NO_NET=1` is *not* checked here: a listening socket is not reaching
+ * out to the network, and a test runner that blocks outbound calls has no
+ * reason to stop a program serving its own loopback. `internet.c` decides
+ * that, per function, exactly as it does for the client half. */
+#define PLATFORM_SOCKET_NONE ((int64_t)-1)
+/* platform_tcp_accept / platform_socket_recv: nobody arrived, or nothing was
+   said, within the timeout. Not an error -- the caller usually loops. */
+#define PLATFORM_SOCKET_TIMEOUT ((int64_t)-1)
+#define PLATFORM_SOCKET_ERROR ((int64_t)-2)
+
+/* Binds `port` on `host` ("" or NULL for every interface) and starts
+   listening. Returns a handle, or PLATFORM_SOCKET_NONE with a reason in
+   `errbuf` -- "address already in use" is the one everybody hits, so it says
+   which port. SO_REUSEADDR is set: without it a server restarted inside the
+   TIME_WAIT window cannot rebind its own port, which makes development
+   miserable for no safety gained. */
+int64_t platform_tcp_listen(const char *host, int port, int backlog, char *errbuf, size_t errbuf_len);
+
+/* Waits up to `timeoutMs` for a connection (negative: forever). Returns the
+   new connection's handle, PLATFORM_SOCKET_TIMEOUT if nobody arrived, or
+   PLATFORM_SOCKET_ERROR. `peerOut` gets the peer's address as text when it
+   is not NULL. */
+int64_t platform_tcp_accept(int64_t listener, int timeoutMs, char *peerOut, size_t peerOut_len);
+
+/* Reads up to `len` bytes. >0 is a byte count; 0 is a clean close by the
+   other end; PLATFORM_SOCKET_TIMEOUT is nothing said in time;
+   PLATFORM_SOCKET_ERROR is a broken connection. */
+int64_t platform_socket_recv(int64_t sock, char *buf, size_t len, int timeoutMs);
+
+/* Writes all of `len` bytes, looping over short writes. True only if every
+   byte went. */
+bool platform_socket_send(int64_t sock, const char *buf, size_t len);
+
+/* Dials out: a raw TCP connection, with none of the HTTP above it. The
+   client half of the same handle type -- what comes back works with
+   platform_socket_recv/send/close exactly like an accepted connection. */
+int64_t platform_tcp_connect(const char *host, int port, int timeoutMs);
+
+/* The port a listener actually ended up on. Asking for port 0 means "pick
+   one nobody is using", which is how a test binds without gambling on a
+   fixed number being free -- and then it has to be able to find out which. */
+int platform_socket_port(int64_t sock);
+
+/* Waits until at least one of `handles` has something to read -- for a
+   listener, that means somebody is waiting to be accepted -- or `timeoutMs`
+   elapses (negative: forever). `readyOut[i]` is set to 1 for each handle that
+   is ready and 0 otherwise. Returns how many are ready, or -1 on error.
+
+   This is what lets one thread serve several callers at once: the event loop
+   asks it about every socket any task is blocked on, all in one call, instead
+   of each task sitting in its own blocking read. */
+int platform_poll_sockets(const int64_t *handles, int count, int timeoutMs, unsigned char *readyOut);
+
+void platform_socket_close(int64_t sock);
+
+/* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
+ *
+ * `interns` runs each worker on a real OS thread, in its own VM with its own
+ * heap; nothing above this header knows whether that is pthreads or Win32.
+ *
+ * The three types are opaque *fixed-size storage*, not pointers to something
+ * malloc'd. Two reasons. A mutex that has to be allocated has an allocation
+ * failure path, and a mutex you cannot create is not a failure any caller can
+ * do anything useful about. And these want to sit inside other structs -- an
+ * `otw` needs one to be settled from a worker thread -- where a bare member
+ * is far easier to reason about than an owned pointer with a lifetime.
+ *
+ * The sizes below are deliberately generous, and platform.c asserts each one
+ * against the real underlying type at compile time. Getting this wrong is
+ * therefore a build error on the platform in question, not a stack smash
+ * discovered later. */
+
+typedef struct { _Alignas(16) unsigned char opaque[64]; } PlatformThread;
+typedef struct { _Alignas(16) unsigned char opaque[64]; } PlatformMutex;
+typedef struct { _Alignas(16) unsigned char opaque[64]; } PlatformCond;
+
+/* The body a thread runs. Returns nothing: a worker's *result* travels back
+   through memory the caller owns, guarded by the caller's own mutex, because
+   a thread return value would have to be a void* and this layer does not
+   want an ownership question it cannot answer. */
+typedef void (*PlatformThreadFn)(void *userdata);
+
+/* Starts `fn(userdata)` on a new thread. False if the OS refused, with a
+   reason in errbuf. `userdata` must outlive the thread -- nothing is copied.
+   Every started thread must be joined; there is deliberately no detach, so
+   a leaked thread is a bug rather than a supported mode. */
+bool platform_thread_start(PlatformThread *thread, PlatformThreadFn fn, void *userdata,
+                           char *errbuf, size_t errbuf_len);
+
+/* Blocks until the thread's function has returned, then releases the OS
+   handle. Calling it twice on one thread is undefined; call it exactly once. */
+void platform_thread_join(PlatformThread *thread);
+
+/* An identifier for the calling thread, equal across calls on one thread and
+   different between live threads. Only ever compared, never interpreted --
+   it exists so an assertion can say "this must run on the loop thread". */
+uint64_t platform_thread_id(void);
+
+void platform_mutex_init(PlatformMutex *m);
+void platform_mutex_destroy(PlatformMutex *m);
+void platform_mutex_lock(PlatformMutex *m);
+void platform_mutex_unlock(PlatformMutex *m);
+
+void platform_cond_init(PlatformCond *c);
+void platform_cond_destroy(PlatformCond *c);
+/* Atomically releases `m`, waits for a signal, and reacquires `m` before
+   returning. Spurious wakeups are permitted by both backends, so every
+   caller must re-check its predicate in a loop -- this layer does not
+   pretend otherwise. */
+void platform_cond_wait(PlatformCond *c, PlatformMutex *m);
+/* As above, bounded. Returns false if the deadline passed without a signal.
+   A spurious wakeup can still return true, so the predicate loop applies
+   here too. */
+bool platform_cond_wait_ms(PlatformCond *c, PlatformMutex *m, int timeoutMs);
+void platform_cond_signal(PlatformCond *c);
+void platform_cond_broadcast(PlatformCond *c);
+
 #endif /* FUNNY_PLATFORM_H */

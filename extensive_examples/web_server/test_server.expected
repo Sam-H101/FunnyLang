@@ -1,0 +1,30 @@
+-- parsing --
+GET /hello
+sam jones 1
+Chill
+fax
+POST hello there cap
+truncated: fax
+garbage: ghost
+no slash: ghost
+bare LF: /health
+-- decoding --
+a b c/d
+100%%
+{"a":[1,2],"b":null,"c":"quo\"te","d":true}
+-- routing --
+/ 200 text/html; charset=utf-8
+/nope 404 text/html; charset=utf-8
+/teapot 418 text/plain; charset=utf-8
+/health 200 application/json; charset=utf-8
+-- over a socket --
+bound a port: fax
+HTTP/1.1 200 OK | yo world, sup 👋
+HTTP/1.1 418 I'm a teapot | i'm a teapot. i cannot brew coffee. 🫖
+HTTP/1.1 201 Created | {"ok":true,"entries":1}
+-- several callers at once --
+HTTP/1.1 200 OK
+HTTP/1.1 200 OK
+server finished them in this order: ["/hello", "/slow"]
+the fast one did not wait for the slow one: fax
+-- done --

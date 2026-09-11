@@ -1,0 +1,50 @@
+// ASYNC_PLAN.md A1 + §2.4: an error raised inside a worker is re-raised in
+// the parent with its *own* original flavor, not wrapped in a
+// concurrency-specific one -- a worker's MathAintMathin is still a
+// MathAintMathin, and saying so tells you more than any wrapper could.
+//
+// Also: whatever the worker printed before it fell over is replayed at the
+// `wait_up`, in front of the error, rather than lost.
+gimme interns
+gimme filez
+gimme yapper
+
+yo src = filez.temp_file() + ".funny"
+filez.yeet_out(src, "gimme interns\nyap \"got as far as here\"\nchuck oops(\"MathAintMathin\", \"i divided by vibes\")\n")
+
+sketchy {
+    interns.wait_up(interns.hire(src, ghost))
+} my_bad (e) {
+    yap "caught " + e.flavor + ": " + e.message
+}
+
+// A worker that fails at run time, not by chucking: same treatment.
+yo src2 = filez.temp_file() + ".funny"
+filez.yeet_out(src2, "gimme interns\nyo n = interns.assignment()\ninterns.deliver(n / 0)\n")
+sketchy {
+    interns.wait_up(interns.hire(src2, 1))
+} my_bad (e) {
+    yap "caught " + e.flavor + ": " + e.message
+}
+
+// A worker whose source does not compile is a hiring problem, reported at
+// the `hire` site -- the intern never started.
+yo src3 = filez.temp_file() + ".funny"
+filez.yeet_out(src3, "yo x = = =\n")
+sketchy {
+    interns.hire(src3, 1)
+} my_bad (e) {
+    yap "caught " + e.flavor
+    yap "message starts right: " + to_yap(yapper.starts_with(e.message, "can't hire from "))
+}
+
+// A file that is not there at all.
+sketchy {
+    interns.hire(src3 + ".nope", 1)
+} my_bad (e) {
+    yap "missing file: " + e.flavor
+}
+
+filez.obliterate(src)
+filez.obliterate(src2)
+filez.obliterate(src3)
