@@ -13,6 +13,36 @@ stdlib module safe on them, and the corpus that proves it. Plan and build log:
   and then on eight interns at once, and passes only if all eight answers match the single-threaded
   one. CI also runs the whole directory under ThreadSanitizer, along with `extensive_examples`.
 
+### Added: DMs between interns
+
+`interns.dm(who, value)`, `interns.check_dms(timeout_ms?)`, `interns.dms_waiting()`. A worker used
+to be a function call: hand it one argument, get one answer, and it dies. Now it can be told things
+while it runs and can say things back.
+
+```funny
+gimme interns
+
+yo w = interns.hire("worker.funny", ghost)
+interns.dm(w, "start")
+yo reply = interns.wait_up(interns.check_dms())
+yap reply["msg"]
+```
+
+- **FIFO per inbox, deep-copied like an assignment** — anything `hire` accepts, `blob` included, so
+  the two threads still share nothing at all. A message is delivered whether or not the receiver is
+  asking yet.
+- **A star, not a mesh.** You can post to an intern you hired and to `"boss"`, whoever hired you. A
+  worker reaching a sibling forwards through the one they have in common, which is what keeps a
+  handle from ever naming another VM's thread.
+- **`check_dms` is an `otw`**, so `await_fr` it and only the asking task waits, or `wait_up` it and
+  block. A deadline settles `ghost`; no deadline in a program where nothing can arrive is
+  `LeftOnRead` rather than a hang.
+- An inbox a million messages deep raises `OutOfPocket` at the sender: a producer that far ahead of
+  its consumer is a bug, and the alternative is running out of memory quietly.
+- `tests/lang/interns/dm_*` covers the round trip, a four-worker pool fed twenty jobs, every
+  portable type, both timeouts, three-deep forwarding and each way a `dm` can fail. Under
+  ThreadSanitizer.
+
 ### Added: `blob`, a byte sequence
 
 `gimme blob`. A `yapstring` is codepoints, so a PNG read into one has a `how_thicc` that means

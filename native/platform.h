@@ -345,6 +345,50 @@ int64_t platform_tls_connect(const char *host, int port, int timeoutMs, const ch
    arc4random_buf, /dev/urandom). False only if the OS refused. */
 bool platform_random_bytes(unsigned char *out, size_t n);
 
+
+/* -- cryptography (RUNTIME_PLAN.md R3, `gimme vault`) ----------------------
+ *
+ * Password hashing and authenticated encryption, from whatever the OS
+ * already has: the dlopen'd OpenSSL that `https` uses on Linux/BSD, CNG on
+ * Windows, CommonCrypto on macOS. Nothing here is implemented in this
+ * repository, and that is the point -- a hand-written AES is a liability, and
+ * every platform ships a reviewed one.
+ *
+ * Each returns false with a sentence in `errbuf` rather than a bare failure.
+ * On a machine with no crypto library at all (only possible on Linux/BSD,
+ * where OpenSSL is loaded at run time), that sentence is the same "needs
+ * OpenSSL" one `https` gives, and `vault` turns it into a SkillIssue.
+ */
+
+/* PBKDF2-HMAC-SHA256 into `out`. `iterations` is the caller's: `vault`
+   defaults to 600,000 and records what it used alongside the hash. */
+bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, const unsigned char *salt,
+                            size_t saltLen, int iterations, unsigned char *out, size_t outLen, char *errbuf,
+                            size_t errbuf_len);
+
+/* SHA-256 of `data`, 32 bytes into `out`. */
+bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len);
+
+/* HMAC-SHA256, 32 bytes into `out`. */
+bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
+                          unsigned char *out, char *errbuf, size_t errbuf_len);
+
+/* AES-256-GCM. `key` is 32 bytes, `nonce` 12, `tag` 16, and `cipherOut` holds
+   `plainLen` bytes. `aad` is authenticated but not encrypted, so a sealed
+   value can be bound to the record it belongs to and not be movable to
+   another. */
+bool platform_aes_gcm_seal(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *plain, size_t plainLen, unsigned char *cipherOut,
+                           unsigned char *tagOut, char *errbuf, size_t errbuf_len);
+
+/* The other direction. False -- with nothing written to `plainOut` that a
+   caller should look at -- when the key, the nonce, the aad or a single bit
+   of the ciphertext is wrong: GCM cannot tell those apart, and neither
+   should the caller. */
+bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
+                           unsigned char *plainOut, char *errbuf, size_t errbuf_len);
+
 /* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
  *
  * `interns` runs each worker on a real OS thread, in its own VM with its own

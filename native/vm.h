@@ -198,6 +198,14 @@ struct VM {
        read it to find which worker they belong to. */
     void *workerContext;
 
+    /* This VM's inbox (RUNTIME_PLAN.md R2), a `Mailbox *` that interns.c
+       owns the shape of. A top-level VM makes its own on first use; a
+       worker VM points at the one on its `Intern`, so a parent can post to
+       it before the thread has started and after the worker's VM is gone.
+       `void *` for the same reason `workerContext` is: the type belongs to
+       interns.c and nothing here needs to see inside it. */
+    void *inbox;
+
     /* Where the dispatch loop currently is, refreshed at the top of every
        iteration -- vm_throw() (callable from deep inside an arithmetic
        helper, not just the dispatch switch itself) needs this to build a

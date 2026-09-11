@@ -1,0 +1,5 @@
+// Finishes immediately, so the program that hired it can try to dm a worker
+// that is already gone.
+gimme interns
+
+interns.deliver("done")

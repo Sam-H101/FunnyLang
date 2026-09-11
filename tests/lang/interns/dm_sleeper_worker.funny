@@ -1,0 +1,6 @@
+// Waits to be told what to do, then delivers it. The point is that it is
+// running and idle while the program that hired it does something else.
+gimme interns
+
+yo told = interns.wait_up(interns.check_dms())
+interns.deliver(told["msg"])

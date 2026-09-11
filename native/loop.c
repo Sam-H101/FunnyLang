@@ -112,6 +112,7 @@ static void free_sockets(SocketWaits *w) {
    `sus (await_fr internet.hold_up(conn, 5000)) { ... }` and a client that
    connects and then says nothing cannot park a task forever. */
 static bool settle_ready_sockets(VM *vm, double now) {
+
     SocketWaits w;
     gather_sockets(vm, &w);
     bool moved = false;
@@ -140,6 +141,26 @@ static bool settle_ready_sockets(VM *vm, double now) {
     }
 
     free_sockets(&w);
+    return moved;
+}
+
+/* A mailbox wait settles with the next message in this VM's inbox, or with
+   `ghost` when its deadline passes first -- the same shape as a socket wait,
+   and for the same reason: the asking task waits, nothing else does. */
+static bool settle_mailboxes(VM *vm, double now) {
+    bool moved = false;
+    for (int i = 0; i < vm->taskCount; i++) {
+        Task *t = vm->tasks[i];
+        if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
+        ObjOtw *p = t->awaiting;
+        if (p->state != OTW_PENDING || !p->waitMailbox) continue;
+        if (interns_settle_mailbox(vm, p)) {
+            moved = true;
+        } else if (p->dueAt > 0.0 && p->dueAt <= now) {
+            otw_fulfill(p, GHOST_VAL);
+            moved = true;
+        }
+    }
     return moved;
 }
 
@@ -204,6 +225,7 @@ static bool wake_waiters(VM *vm) {
     double now = platform_monotonic_seconds();
     bool moved = fire_due_timers(vm, now);
     if (settle_ready_sockets(vm, now)) moved = true;
+    if (settle_mailboxes(vm, now)) moved = true;
 
     for (int i = 0; i < vm->taskCount; i++) {
         Task *t = vm->tasks[i];
@@ -235,11 +257,21 @@ static bool wake_waiters(VM *vm) {
         }
     }
 
+    bool anyMailbox = false;
+    for (int i = 0; i < vm->taskCount; i++) {
+        Task *t = vm->tasks[i];
+        if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
+        if (t->awaiting->waitMailbox && interns_mail_possible(vm)) {
+            anyMailbox = true;
+            break;
+        }
+    }
+
     SocketWaits w;
     gather_sockets(vm, &w);
     if (w.count > 0) {
         int timeout = deadlineMs;
-        if (anyWorker && (timeout < 0 || timeout > MIXED_WAIT_CAP_MS)) timeout = MIXED_WAIT_CAP_MS;
+        if ((anyWorker || anyMailbox) && (timeout < 0 || timeout > MIXED_WAIT_CAP_MS)) timeout = MIXED_WAIT_CAP_MS;
         if (timeout < 0) timeout = 60000;
         unsigned char *ready = (unsigned char *)calloc((size_t)w.count, 1);
         platform_poll_sockets(w.handles, w.count, timeout, ready);
@@ -251,8 +283,9 @@ static bool wake_waiters(VM *vm) {
     }
     free_sockets(&w);
 
-    if (anyWorker) {
-        /* One wait covers a worker finishing (it broadcasts) and the next
+    if (anyWorker || anyMailbox) {
+        /* One wait covers a worker finishing, a message being posted (both
+           broadcast on the same condition variable) and the next
            deadline (the timeout). */
         interns_wait_any(vm, deadlineMs);
         return true;
@@ -298,6 +331,32 @@ void loop_settle_blocking(VM *vm, ObjOtw *p) {
             unsigned char ready = 0;
             int64_t one = p->waitSocket;
             otw_fulfill(p, BOOL_VAL(platform_poll_sockets(&one, 1, timeout, &ready) > 0 && ready));
+            continue;
+        }
+        if (p->waitMailbox) {
+            /* `wait_up(interns.check_dms())` -- blocking on a mailbox is as
+               legitimate as blocking on a worker: a message comes from
+               another thread, not from a task that needs this interpreter. */
+            if (interns_settle_mailbox(vm, p)) continue;
+            double now = platform_monotonic_seconds();
+            if (p->dueAt > 0.0 && p->dueAt <= now) {
+                otw_fulfill(p, GHOST_VAL);
+                continue;
+            }
+            if (!interns_mail_possible(vm)) {
+                ObjError *e = error_new(&vm->gc, "LeftOnRead",
+                                        "nothing can dm you -- you have no interns running, and you are not "
+                                        "one. that check_dms is never going to settle.",
+                                        NULL, NULL, 0, 0, NULL, GHOST_VAL, NULL, 0);
+                otw_reject(p, OBJ_VAL(e));
+                continue;
+            }
+            int timeout = -1;
+            if (p->dueAt > 0.0) {
+                double left = (p->dueAt - now) * 1000.0;
+                timeout = left > 0.0 ? (int)left : 0;
+            }
+            interns_wait_for_mail(vm, timeout);
             continue;
         }
         vm_throw_native(vm, "CantWaitRightNow",

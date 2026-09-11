@@ -284,6 +284,9 @@ never interleaves by luck.
 | `interns.hire(path, arg?)` | Runs `path` on a new OS thread with `arg` as its assignment; returns an `otw`. `path` may be `.funny` source (compiled first, and cached) or an already-compiled `.funnyc`/`.funnypak`. |
 | `interns.wait_up(x)` | Blocks until `x` settles and is its value, re-raising its error if it rejected. Anything that is not an `otw` is itself. Blocks on an intern or a `clock.chill`; for an `otw` an `async_ngl bet` will settle, use `await_fr`. |
 | `interns.everybody(stash)` | Waits on a `stash` of `otw`s in the order given and returns a `stash` of their values. |
+| `interns.dm(who, value)` | Posts `value` to an inbox and returns at once. `who` is a handle from `hire`, the `from` of a message you were sent, or the string `"boss"` for whoever hired you. Deep-copied like an assignment. A worker that has finished is `LeftOnRead`; anyone else's intern is `OutOfPocket`. |
+| `interns.check_dms(timeout_ms?)` | An `otw` settling with `{"from", "msg"}` when a message is waiting, or `ghost` if `timeout_ms` passes first. Without a timeout it waits as long as it takes. Only the asking task waits. |
+| `interns.dms_waiting()` | How many messages are in this VM's inbox. |
 | `interns.headcount()` | How many interns are worth hiring: the machine's logical CPU count. Not a limit. |
 | `interns.assignment()` | **Inside a worker:** what `hire` was given. |
 | `interns.deliver(v)` | **Inside a worker:** what `wait_up` gets back. Last delivery wins. |

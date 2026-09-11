@@ -669,6 +669,7 @@ void vm_init(VM *vm) {
     /* One xoshiro256** generator per VM, not one per process: see rizz.c. */
     memset(vm->rngState, 0, sizeof vm->rngState);
     vm->rngSeeded = false;
+    vm->inbox = NULL;
 
     vm->unit = NULL;
     vm->pak = NULL;
@@ -798,6 +799,9 @@ void vm_destroy(VM *vm) {
        (the runner, sus.run_bytecode, a REPL session, a worker finishing its
        own program) so that none of them can forget. */
     interns_join_owned_by(vm);
+    /* Then the inbox, and anything still in it. After the join, because a
+       worker that is still running can still post to its parent. */
+    interns_vm_teardown(vm);
 
     for (int i = 0; i < vm->loadingCount; i++) free(vm->loadingModules[i]);
     free(vm->loadingModules);

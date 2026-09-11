@@ -431,6 +431,31 @@ too. Every refusal names the type.
 an `otw` an `async_ngl bet` will settle, use `await_fr`: the task needs the interpreter that
 `wait_up` would be holding. Full reference: [STDLIB.md](STDLIB.md#interns--workers-on-real-os-threads).
 
+### Messages between interns
+
+A worker does not have to be a function call. `interns.dm(who, value)` posts a message and returns
+at once; `interns.check_dms(ms?)` is an `otw` that settles with `{"from", "msg"}` when one arrives,
+or `ghost` if the deadline passes first. Messages are FIFO per inbox and deep-copied exactly like
+an assignment, so the two threads still share nothing.
+
+```funny
+gimme interns
+
+yo w = interns.hire("worker.funny", ghost)
+interns.dm(w, "start")
+yo reply = interns.wait_up(interns.check_dms())
+yap reply["from"]        // which intern it came from
+yap reply["msg"]
+```
+
+Inside a worker, `"boss"` addresses whoever hired it, and the `from` of a message is an address you
+can post straight back to. The shape is a star rather than a mesh: you can talk to an intern you
+hired and to whoever hired you, and a worker that needs to reach a sibling forwards through the one
+they have in common. That is what keeps a handle from ever naming another VM's thread.
+
+A `check_dms` with no deadline, in a program with no interns running and nobody above it, is
+`LeftOnRead`: nothing can arrive, so the runtime says so instead of hanging.
+
 ### Timers
 
 `clock.chill(ms)` is an `otw` that settles after a delay. `clock.touch_grass(seconds)` blocks the

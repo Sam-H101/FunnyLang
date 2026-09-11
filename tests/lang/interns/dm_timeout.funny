@@ -1,0 +1,13 @@
+// tests/lang/interns/dm_timeout.funny -- check_dms with a deadline settles
+// `ghost` when nothing arrives, which is the same shape next_customer uses
+// for "nobody knocked": a quiet inbox is not an error.
+gimme interns
+gimme filez
+
+yo w = interns.hire(filez.join_path(filez.dir_of(the_script()), "dm_sleeper_worker.funny"), ghost)
+yo nothing = interns.wait_up(interns.check_dms(50))
+yap what_is_it(nothing)
+yap nothing
+
+interns.dm(w, "go")
+yap interns.wait_up(w)

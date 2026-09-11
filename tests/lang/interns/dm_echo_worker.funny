@@ -1,0 +1,11 @@
+// The worker half of dm_round_trip.funny: read two messages, echo each back
+// to whoever hired it, and report how many it handled.
+gimme interns
+
+yo handled = 0
+grind i from 0 to 2 {
+    yo got = interns.wait_up(interns.check_dms())
+    interns.dm("boss", "echo: " + got["msg"] + " (from " + to_yap(got["from"]) + ")")
+    handled += 1
+}
+interns.deliver(handled)

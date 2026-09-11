@@ -1,0 +1,6 @@
+// The innermost of three: its "boss" is the middle worker, not the program.
+gimme interns
+
+yo m = interns.wait_up(interns.check_dms())
+interns.dm("boss", m["msg"] + "-pong")
+interns.deliver("inner done")

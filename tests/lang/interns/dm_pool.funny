@@ -1,0 +1,27 @@
+// tests/lang/interns/dm_pool.funny -- a worker pool: four interns hired once
+// and fed twenty jobs round-robin, instead of twenty interns hired and torn
+// down. The totals are order-independent, and each worker's own share is
+// fixed by the round-robin, so nothing here depends on which thread was
+// quickest.
+gimme interns
+gimme filez
+
+yo worker = filez.join_path(filez.dir_of(the_script()), "dm_pool_worker.funny")
+yo crew = []
+grind i from 0 to 4 {
+    crew.yeet_in(interns.hire(worker, ghost))
+}
+grind j from 0 to 20 {
+    interns.dm(crew[j % 4], j)
+}
+
+yo total = 0
+yo got = 0
+grind k from 0 to 20 {
+    yo answer = interns.wait_up(interns.check_dms())
+    total += answer["msg"]
+    got += 1
+}
+yap got
+yap total
+yap interns.everybody(crew)

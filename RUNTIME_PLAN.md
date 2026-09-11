@@ -443,10 +443,10 @@ docs/STDLIB.md docs/LANGUAGE.md docs/NATIVE.md CHANGELOG.md   every milestone
 - [x] Goldens; docs
 
 ### R2 — DMs
-- [ ] `Mailbox`; `vm->inbox`; a worker's inbox on its `Intern`
-- [ ] `dm`, `check_dms`, `dms_waiting`; `wait_up` on a mailbox `otw`
-- [ ] `loop.c` mailbox pass; `LeftOnRead` rule; teardown frees the inbox
-- [ ] Goldens, under TSan; docs
+- [x] `Mailbox`; `vm->inbox`; a worker's inbox on its `Intern`
+- [x] `dm`, `check_dms`, `dms_waiting`; `wait_up` on a mailbox `otw`
+- [x] `loop.c` mailbox pass; `LeftOnRead` rule; teardown frees the inbox
+- [x] Goldens, under TSan; docs
 
 ### R3 — `vault`
 - [ ] `platform.h` crypto surface; Linux (dlopen libcrypto), Windows (CNG), macOS (CommonCrypto)
@@ -582,6 +582,25 @@ what can cross, and `blob` is now on that list, so `tests/lang/interns/cant_cros
 regenerated here even though `STDLIB_MODULE_NAMES` gained "blob": the plan batches that with R3
 and R7's own additions into one regeneration in R8, and `bootstrap --verify` is a fixed point
 either way because it compiles the current source with itself.
+
+**R2.** Built as specified, with one API difference that the plan's own design forced.
+
+*A message's `from` is a numba, not a handle.* The plan says "`from` is a handle or `"boss"`", but
+a handle is an `otw` on the receiver's heap, and the sender has no way to name it: reconstructing
+one would mean either handing back a different object each time or keeping a heap pointer in the
+malloc'd registry, where the collector cannot see it. So `from` is the sender's id *within the
+receiving VM* -- the same number `intern_at` has always used -- and `dm` accepts one as an address
+beside a handle and `"boss"`. That is safe for exactly the reason `interns.h` already gives for
+numbering per VM: a stolen id can only ever name one of the thief's own interns, so the check is
+structural rather than a rule to remember. It is also what makes replying possible at all.
+
+*A handle whose intern has been collected reports `LeftOnRead`, not `OutOfPocket`.* `otw_fulfill`
+clears `internId`, so a settled handle no longer names anything; "that intern has finished" is the
+true answer, and the plan's own `LeftOnRead` rule covers it.
+
+*`intern_release` now runs under `g_lock` in `interns_collect`.* A sender holds `g_lock` across the
+whole post, including the push, which is what stops a mailbox being freed between being found and
+being written to. Releasing outside the lock would have re-opened exactly that window.
 
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in

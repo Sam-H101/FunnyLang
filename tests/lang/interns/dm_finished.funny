@@ -1,0 +1,12 @@
+// tests/lang/interns/dm_finished.funny -- every way a dm can fail to find
+// anybody. Each is named rather than silently dropped: a message nobody will
+// ever read is exactly the thing you want to be told about.
+gimme interns
+gimme filez
+
+yo w = interns.hire(filez.join_path(filez.dir_of(the_script()), "dm_quick_worker.funny"), ghost)
+yap interns.wait_up(w)
+
+sketchy { interns.dm(w, "too late") } my_bad (e) { yap e.flavor }
+sketchy { interns.dm(99, "nobody home") } my_bad (e) { yap e.flavor }
+sketchy { interns.dm("boss", "there is no boss up here") } my_bad (e) { yap e.flavor }
