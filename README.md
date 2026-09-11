@@ -141,8 +141,8 @@ contract.
 
   Nothing is shared between threads, so nothing needs a lock: values are deep-copied across the
   worker boundary, and anything that cannot cross coherently is refused with an error that says
-  which argument and why. `examples/concurrency.funny` is a tour of both halves; see
-  [ASYNC_PLAN.md](ASYNC_PLAN.md) for the design and its cost sheet.
+  which argument and why. `examples/concurrency.funny` is a tour of both halves; the design and
+  its cost sheet are in the changelog and in `docs/NATIVE.md`.
 
 ## What this isn't
 
@@ -159,7 +159,7 @@ contract.
   implementation built as a complete, working system — a teaching-and-tinkering project, not a
   pitch for your next backend.
 - No package manager, no LSP, no debugger beyond what `funny xray` and the diagnostic renderer
-  give you. See `PLAN.md`'s stretch-goal list for what might come next.
+  give you. See `RUNTIME_PLAN.md` and `EXAMPLES_PLAN.md` for what comes next.
 
 ## A taste
 
@@ -280,13 +280,15 @@ Full reference, generated from the actual function registry so it can't drift:
 - [docs/BYTECODE.md](docs/BYTECODE.md) — the opcode table, file formats, and a worked disassembly
   walkthrough.
 - [docs/STDLIB.md](docs/STDLIB.md) — every stdlib function.
-- [PLAN.md](PLAN.md) — the original specification and milestone-by-milestone build log, including
-  every deviation from spec and why (§16).
-- [NATIVE_PLAN.md](NATIVE_PLAN.md) — the plan for the C runtime and the self-hosted toolchain, with
-  the same kind of build log in §9.
-- [ASYNC_PLAN.md](ASYNC_PLAN.md) — the plan for `async_ngl`/`await_fr` and `interns`: why isolated
-  workers rather than shared-memory threads, what the deep copy costs, and the same build log.
+- [RUNTIME_PLAN.md](RUNTIME_PLAN.md) — the next runtime work: message passing between interns,
+  real at-rest security, a thread-safety audit, and the smaller things the HTTPS server ran into.
+- [EXAMPLES_PLAN.md](EXAMPLES_PLAN.md) — the next `extensive_examples/`, built on that.
 - [CHANGELOG.md](CHANGELOG.md) — what's actually landed, milestone by milestone.
+
+The plans that got the project here — `PLAN.md` (the original spec), `NATIVE_PLAN.md` (the C
+runtime and self-hosting) and `ASYNC_PLAN.md` (async and interns) — were retired once built;
+comments in the code still cite their section numbers, and `git show 0e5b238:PLAN.md` (or the other
+two names) reads any of them.
 
 ## Development
 

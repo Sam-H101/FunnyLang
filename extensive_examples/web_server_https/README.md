@@ -188,7 +188,7 @@ loses the race gets `ghost` instead of freezing in `accept()`), SIGPIPE ignored 
 cannot kill the process, and a side table in `platform.c` mapping socket handles to TLS sessions so
 `recv`/`send`/`close`/`poll` do the right thing without `internet.c` knowing. `the_script()` needed
 the command line to pass the program's path down, which touched `selfhost/` and regenerated
-`native/toolchain_blob.c`. `PLAN.md` in this directory has the design and every deviation from it.
+`native/toolchain_blob.c`. The design and every deviation from it were logged in a `PLAN.md` beside this file, retired once the example was built (`git show 0e5b238:extensive_examples/web_server_https/PLAN.md`).
 
 ## What it is not
 
