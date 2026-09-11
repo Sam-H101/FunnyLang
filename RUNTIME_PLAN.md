@@ -449,12 +449,12 @@ docs/STDLIB.md docs/LANGUAGE.md docs/NATIVE.md CHANGELOG.md   every milestone
 - [x] Goldens, under TSan; docs
 
 ### R3 — `vault`
-- [ ] `platform.h` crypto surface; Linux (dlopen libcrypto), Windows (CNG), macOS (CommonCrypto)
-- [ ] The module; the string formats; constant-time compare
-- [ ] Known-answer goldens; both build scripts; docs, with the key-handling warning
+- [x] `platform.h` crypto surface; Linux (dlopen libcrypto), Windows (CNG), macOS (CommonCrypto)
+- [x] The module; the string formats; constant-time compare
+- [x] Known-answer goldens; both build scripts; docs, with the key-handling warning
 
 ### R4 — live output
-- [ ] `{"live": fax}` on `hire`; one `fwrite` per line; docs
+- [x] `{"live": fax}` on `hire`; one `fwrite` per line; docs
 
 ### R5 — Ctrl-C
 - [ ] `platform_on_interrupt`; `computer.until_ctrl_c`; loop pass; second Ctrl-C still kills
@@ -602,6 +602,54 @@ true answer, and the plan's own `LeftOnRead` rule covers it.
 whole post, including the push, which is what stops a mailbox being freed between being found and
 being written to. Releasing outside the lock would have re-opened exactly that window.
 
+**R3.** Built as specified. The open question is settled and two test-shaped things differ.
+
+*macOS AES-GCM: option (a), as recommended.* `CCCryptorGCMOneshotEncrypt` and `…Decrypt` are
+resolved with `dlsym` against local prototypes, exactly as Linux resolves OpenSSL, and a macOS that
+does not export them gets a clear `SkillIssue` rather than a different construction. Option (b)
+would have made `v1$` mean AES-CTR-then-HMAC on one platform and AES-GCM on the others, so a value
+sealed on a Mac could not be opened on a server; that is a worse outcome than a named failure on an
+OS old enough not to have the symbol.
+
+*There are no NIST GCM known-answer vectors, and there is no way to add them without a worse API.*
+A known-answer test has to supply the nonce, and `seal` generates one -- which is the single most
+important thing it does, because a reused nonce with the same key breaks GCM completely. Exposing a
+nonce parameter to make the test possible would hand every caller that footgun. GCM is covered
+instead by round trip, by a tamper case, by a wrong key, by a wrong `aad`, and by the check that
+sealing the same value twice gives two different strings. PBKDF2, SHA-256 and HMAC-SHA256 do have
+their published vectors, and those are what catch a backend wired up wrongly.
+
+*The sealed format has two version tags, not one.* `v1$` is a sealed `yapstring` and `v1b$` a
+sealed `blob`, which is how `unseal` returns the type that went in -- the plan asked for exactly
+that behaviour ("the version byte records which") without saying what it would look like.
+
+**R4.** Built as specified, and it found a real bug in R2.
+
+*ThreadSanitizer caught a race in the mailbox code while R4 was being tested.* A VM's inbox was
+made on first use, so a worker posting to `"boss"` created its *parent's* mailbox -- writing a
+field of the parent's VM while the parent was reading that same field. The registry lock did not
+help, because a VM reads its own inbox pointer without taking it. Every VM's inbox is now made in
+`interns_build`, on its own thread, before it can have hired anybody; the pointer is written once
+and only read afterwards. This is exactly what R0's corpus and the TSan step exist to catch, and it
+is worth recording that they caught it two milestones later rather than at the moment the code was
+written.
+
+*Every printed line is now one `fwrite`, for every program and not only a live one.* `yap` used to
+write one call per argument plus a separator, which is the difference between two threads
+interleaving between lines and interleaving mid-word. `yell` got the same treatment. It costs one
+allocation per printed line and removes a whole class of garbled output.
+
+*R3 and R4 are one commit.* Their documentation lines interleave in `docs/STDLIB.md`,
+`CHANGELOG.md` and this file, and splitting three shared files by hand to satisfy a
+commit-per-milestone rule would be worse than the rule is worth. Both are complete and each is
+described separately in the message.
+
+*There is no golden for live output, deliberately.* A live worker writes to the process's own
+stdout, which is the stream `funny test` is capturing to compare against, and the order between
+threads is not fixed by design. It is checked by hand with two live workers and one captured one:
+the live lines appear interleaved while the program runs, never broken mid-line, and the captured
+worker's output still arrives in one piece at its join.
+
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in
 `CommonCryptorSPI.h`, which the public SDK does not ship. Options, in order of preference: (a)
@@ -609,4 +657,4 @@ being written to. Releasing outside the lock would have re-opened exactly that w
 Linux's OpenSSL; (b) AES-256-CTR + HMAC-SHA256 encrypt-then-MAC through public CommonCrypto only,
 which is a different (still authenticated) construction and would make the `v1$` format mean two
 things; (c) a Swift shim over CryptoKit, which adds a toolchain. Recommend (a), logged here when
-decided.
+decided. **Decided: (a)**, and built that way -- see the R3 entry above.

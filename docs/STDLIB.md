@@ -166,6 +166,45 @@ accepts one), `internet.hear_them_out(conn, n, ms, {"raw": fax})`, `go_brrrr`'s 
 key, and `yapper.to_blob` / `yapper.from_blob`. A blob is a portable value, so it can be handed
 to an `interns` worker and come back.
 
+## `vault` — passwords and secrets
+
+Password hashing and authenticated encryption, from the operating system's own crypto library:
+the `dlopen`'d OpenSSL that `https` already uses on Linux/BSD, CNG on Windows, CommonCrypto on
+macOS. Nothing in FunnyLang implements a cipher or a hash, deliberately — every platform ships a
+reviewed one. On a machine with no OpenSSL at all, every function here raises the same
+`SkillIssue` `https` does.
+
+**A key kept next to the data it seals is not encryption.** `seal` protects data against somebody
+who gets the file; that only means anything if they do not also get the key. Read it from
+somewhere else — a path given on the command line, an environment variable, an OS keychain — and
+never from the directory you are sealing into.
+
+Passwords are different: `hash_password` is **one-way**, and there is deliberately no function
+here that turns one back. Store the string it gives you and compare with `check_password`.
+
+```funny
+gimme vault
+
+yo stored = vault.hash_password("hunter2")      // pbkdf2-sha256$600000$...$...
+yap vault.check_password("hunter2", stored)     // fax
+
+yo key = vault.new_key()                        // a 32-byte blob, kept elsewhere
+yo sealed = vault.seal("balance: 100", key, "account-7")
+yap vault.unseal(sealed, key, "account-7")      // balance: 100
+```
+
+| Function | Description |
+|---|---|
+| `vault.hash_password(password, iterations?)` | `"pbkdf2-sha256$<iters>$<salt>$<hash>"` — PBKDF2-HMAC-SHA256, a fresh 16-byte salt, 600,000 iterations by default. |
+| `vault.check_password(password, stored)` | `fax`/`cap`, in constant time. The parameters come out of `stored`, so raising the default later leaves existing passwords checkable. Anything malformed is `cap`, never an error: a login must not leak which part was wrong. |
+| `vault.new_key()` | 32 random bytes from the OS, as a `blob`. |
+| `vault.derive_key(password, salt, iterations?)` | PBKDF2 to a 32-byte `blob`, for when the key comes from a passphrase. |
+| `vault.seal(plain, key, aad?)` | `"v1$<nonce>$<ciphertext+tag>"` — AES-256-GCM, a fresh 12-byte nonce every time. `plain` is a `yapstring` or a `blob`; `aad` is authenticated but not encrypted, so a sealed value can be bound to the record it belongs to and not be movable to another. |
+| `vault.unseal(sealed, key, aad?)` | The plaintext, as the same type that went in. A wrong key, a wrong `aad` and a single changed byte all raise the same `SkillIssue`: telling them apart is what turns decryption into an oracle. |
+| `vault.sha256(x)` / `vault.hmac_sha256(key, x)` | Hex digests of a `yapstring` or `blob`. |
+| `vault.same_secret(a, b)` | Constant-time equality — every byte is looked at every time, so the comparison does not say how much of a guess was right. |
+| `vault.base64_encode(x)` / `vault.base64_decode(s)` | `decode` returns a `blob`, or `ghost` if the text is not valid base64. |
+
 ## `stash` — arrays
 
 Free functions below; most are also `stash` instance methods.
@@ -281,7 +320,7 @@ never interleaves by luck.
 
 | Function | Description |
 |---|---|
-| `interns.hire(path, arg?)` | Runs `path` on a new OS thread with `arg` as its assignment; returns an `otw`. `path` may be `.funny` source (compiled first, and cached) or an already-compiled `.funnyc`/`.funnypak`. |
+| `interns.hire(path, arg?, opts?)` | Runs `path` on a new OS thread with `arg` as its assignment; returns an `otw`. `path` may be `.funny` source (compiled first, and cached) or an already-compiled `.funnyc`/`.funnypak`. `opts` is a `groupchat`: `{"live": fax}` sends the worker's `yap` and `yell` straight to this process's own stdout and stderr as they happen, instead of holding them and replaying them when it is joined. |
 | `interns.wait_up(x)` | Blocks until `x` settles and is its value, re-raising its error if it rejected. Anything that is not an `otw` is itself. Blocks on an intern or a `clock.chill`; for an `otw` an `async_ngl bet` will settle, use `await_fr`. |
 | `interns.everybody(stash)` | Waits on a `stash` of `otw`s in the order given and returns a `stash` of their values. |
 | `interns.dm(who, value)` | Posts `value` to an inbox and returns at once. `who` is a handle from `hire`, the `from` of a message you were sent, or the string `"boss"` for whoever hired you. Deep-copied like an assignment. A worker that has finished is `LeftOnRead`; anyone else's intern is `OutOfPocket`. |

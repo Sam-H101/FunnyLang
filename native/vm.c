@@ -670,6 +670,7 @@ void vm_init(VM *vm) {
     memset(vm->rngState, 0, sizeof vm->rngState);
     vm->rngSeeded = false;
     vm->inbox = NULL;
+    vm->liveStreams = false;
 
     vm->unit = NULL;
     vm->pak = NULL;
@@ -3514,13 +3515,28 @@ static VmResult vm_execute_inner(VM *vm, int baseFrameCount, Value *resultOut) {
                 uint8_t newline = code[frame->ip++];
                 char *parts[256];
                 size_t lens[256];
-                for (int i = argc - 1; i >= 0; i--) parts[i] = value_to_display_len(vm, pop(vm), &lens[i]);
+                size_t total = newline ? 1 : 0;
+                for (int i = argc - 1; i >= 0; i--) {
+                    parts[i] = value_to_display_len(vm, pop(vm), &lens[i]);
+                    total += lens[i] + (i > 0 ? 1 : 0);
+                }
+                /* Assembled first, then written with a single fwrite -- not
+                   one write per argument. A `live` intern (RUNTIME_PLAN.md
+                   R4) shares the real stdout with every other thread, and
+                   the C library's per-call stream lock is the only thing
+                   keeping two lines from interleaving mid-word. */
+                char *line = (char *)malloc(total > 0 ? total : 1);
+                size_t o = 0;
                 for (int i = 0; i < argc; i++) {
-                    if (i > 0) fputc(' ', vm->out);
-                    fwrite(parts[i], 1, lens[i], vm->out); /* not fputs: the display may contain NULs */
+                    if (i > 0) line[o++] = ' ';
+                    memcpy(line + o, parts[i], lens[i]); /* not fputs: a display may contain NULs */
+                    o += lens[i];
                     free(parts[i]);
                 }
-                if (newline) fputc('\n', vm->out);
+                if (newline) line[o++] = '\n';
+                fwrite(line, 1, o, vm->out);
+                free(line);
+                if (vm->liveStreams) fflush(vm->out);
                 break;
             }
             case OP_HALT:

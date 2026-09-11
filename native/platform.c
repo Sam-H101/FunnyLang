@@ -2279,6 +2279,401 @@ bool platform_random_bytes(unsigned char *out, size_t n) {
 }
 #endif
 
+/* -- cryptography (RUNTIME_PLAN.md R3) -------------------------------------
+ *
+ * Nothing below implements a cipher or a hash. Each backend asks the OS for
+ * the one it already ships and has already had reviewed: CNG on Windows,
+ * CommonCrypto on macOS, and on Linux/BSD the same dlopen'd OpenSSL `https`
+ * uses -- libcrypto this time, opened separately, because libssl is loaded
+ * RTLD_LOCAL and a dependency's symbols are not visible through it.
+ *
+ * The per-OS includes sit in this section rather than at the top of the file
+ * so that the whole feature is one readable block.
+ */
+
+#ifdef _WIN32
+
+/* One helper for both SHA-256 and HMAC-SHA256: CNG spells them the same way,
+   with a flag and a key. */
+static bool cng_hash(const wchar_t *algId, const unsigned char *key, size_t keyLen, const unsigned char *data,
+                     size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    BCRYPT_ALG_HANDLE alg = NULL;
+    BCRYPT_HASH_HANDLE hash = NULL;
+    ULONG flags = key != NULL ? BCRYPT_ALG_HANDLE_HMAC_FLAG : 0;
+    bool ok = false;
+    if (BCryptOpenAlgorithmProvider(&alg, algId, NULL, flags) >= 0) {
+        if (BCryptCreateHash(alg, &hash, NULL, 0, (PUCHAR)key, (ULONG)keyLen, 0) >= 0) {
+            if (BCryptHashData(hash, (PUCHAR)data, (ULONG)len, 0) >= 0 && BCryptFinishHash(hash, out, 32, 0) >= 0) {
+                ok = true;
+            }
+            BCryptDestroyHash(hash);
+        }
+        BCryptCloseAlgorithmProvider(alg, 0);
+    }
+    if (!ok) snprintf(errbuf, errbuf_len, "windows refused that hashing operation.");
+    return ok;
+}
+
+bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    return cng_hash(BCRYPT_SHA256_ALGORITHM, NULL, 0, data, len, out, errbuf, errbuf_len);
+}
+
+bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
+                          unsigned char *out, char *errbuf, size_t errbuf_len) {
+    /* A zero-length key is legal HMAC, and NULL is how cng_hash is told there
+       is no key at all -- so point at something. */
+    static const unsigned char empty = 0;
+    return cng_hash(BCRYPT_SHA256_ALGORITHM, key != NULL ? key : &empty, keyLen, data, len, out, errbuf, errbuf_len);
+}
+
+bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, const unsigned char *salt,
+                            size_t saltLen, int iterations, unsigned char *out, size_t outLen, char *errbuf,
+                            size_t errbuf_len) {
+    BCRYPT_ALG_HANDLE alg = NULL;
+    bool ok = false;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC_FLAG) >= 0) {
+        ok = BCryptDeriveKeyPBKDF2(alg, (PUCHAR)password, (ULONG)passwordLen, (PUCHAR)salt, (ULONG)saltLen,
+                                   (ULONGLONG)iterations, out, (ULONG)outLen, 0) >= 0;
+        BCryptCloseAlgorithmProvider(alg, 0);
+    }
+    if (!ok) snprintf(errbuf, errbuf_len, "windows refused that key derivation.");
+    return ok;
+}
+
+/* Sealing and opening differ only in which call and which way the tag goes,
+   so they share everything up to that point. */
+static bool cng_gcm(bool sealing, const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                    size_t aadLen, const unsigned char *in, size_t inLen, unsigned char *out, unsigned char *tag,
+                    char *errbuf, size_t errbuf_len) {
+    BCRYPT_ALG_HANDLE alg = NULL;
+    BCRYPT_KEY_HANDLE hKey = NULL;
+    bool ok = false;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, NULL, 0) >= 0) {
+        if (BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_GCM,
+                              sizeof(BCRYPT_CHAIN_MODE_GCM), 0) >= 0 &&
+            BCryptGenerateSymmetricKey(alg, &hKey, NULL, 0, (PUCHAR)key, 32, 0) >= 0) {
+            BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
+            BCRYPT_INIT_AUTH_MODE_INFO(info);
+            info.pbNonce = (PUCHAR)nonce;
+            info.cbNonce = 12;
+            info.pbAuthData = (PUCHAR)(aadLen > 0 ? aad : NULL);
+            info.cbAuthData = (ULONG)aadLen;
+            info.pbTag = tag;
+            info.cbTag = 16;
+            ULONG done = 0;
+            if (sealing) {
+                ok = BCryptEncrypt(hKey, (PUCHAR)in, (ULONG)inLen, &info, NULL, 0, out, (ULONG)inLen, &done, 0) >= 0;
+            } else {
+                ok = BCryptDecrypt(hKey, (PUCHAR)in, (ULONG)inLen, &info, NULL, 0, out, (ULONG)inLen, &done, 0) >= 0;
+            }
+            BCryptDestroyKey(hKey);
+        }
+        BCryptCloseAlgorithmProvider(alg, 0);
+    }
+    if (!ok) {
+        snprintf(errbuf, errbuf_len, "%s",
+                 sealing ? "windows refused that encryption." : "that sealed value won't open.");
+    }
+    return ok;
+}
+
+bool platform_aes_gcm_seal(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *plain, size_t plainLen, unsigned char *cipherOut,
+                           unsigned char *tagOut, char *errbuf, size_t errbuf_len) {
+    return cng_gcm(true, key, nonce, aad, aadLen, plain, plainLen, cipherOut, tagOut, errbuf, errbuf_len);
+}
+
+bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
+                           unsigned char *plainOut, char *errbuf, size_t errbuf_len) {
+    /* BCryptDecrypt takes the tag through a non-const field it may write to,
+       so it gets a copy rather than the caller's buffer. */
+    unsigned char tagCopy[16];
+    memcpy(tagCopy, tag, 16);
+    return cng_gcm(false, key, nonce, aad, aadLen, cipher, cipherLen, plainOut, tagCopy, errbuf, errbuf_len);
+}
+
+#elif defined(__APPLE__)
+
+#include <CommonCrypto/CommonCrypto.h>
+#include <CommonCrypto/CommonKeyDerivation.h>
+#include <dlfcn.h>
+
+bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    (void)errbuf;
+    (void)errbuf_len;
+    CC_SHA256(data, (CC_LONG)len, out);
+    return true;
+}
+
+bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
+                          unsigned char *out, char *errbuf, size_t errbuf_len) {
+    (void)errbuf;
+    (void)errbuf_len;
+    CCHmac(kCCHmacAlgSHA256, key, keyLen, data, len, out);
+    return true;
+}
+
+bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, const unsigned char *salt,
+                            size_t saltLen, int iterations, unsigned char *out, size_t outLen, char *errbuf,
+                            size_t errbuf_len) {
+    int rc = CCKeyDerivationPBKDF(kCCPBKDF2, (const char *)password, passwordLen, salt, saltLen, kCCPRFHmacAlgSHA256,
+                                  (unsigned int)iterations, out, outLen);
+    if (rc != kCCSuccess) {
+        snprintf(errbuf, errbuf_len, "macos refused that key derivation.");
+        return false;
+    }
+    return true;
+}
+
+/* AES-GCM is the one thing CommonCrypto exports but does not declare in the
+   public SDK: the one-shots live in CommonCryptorSPI.h, which ships with the
+   OS and not with Xcode. RUNTIME_PLAN.md §9 chose to resolve them at run time
+   with local prototypes -- the same pattern Linux already uses for OpenSSL --
+   rather than switch macOS to a different construction, which would make the
+   `v1$` format mean two different things depending on where it was written. */
+typedef int32_t (*CCGcmSealFn)(uint32_t alg, const void *key, size_t keyLen, const void *iv, size_t ivLen,
+                               const void *aData, size_t aDataLen, const void *dataIn, size_t dataInLen,
+                               void *dataOut, void *tagOut, size_t tagLen);
+typedef int32_t (*CCGcmOpenFn)(uint32_t alg, const void *key, size_t keyLen, const void *iv, size_t ivLen,
+                               const void *aData, size_t aDataLen, const void *dataIn, size_t dataInLen,
+                               void *dataOut, const void *tagIn, size_t tagLen);
+
+static CCGcmSealFn g_ccGcmSeal;
+static CCGcmOpenFn g_ccGcmOpen;
+static pthread_once_t g_ccGcmOnce = PTHREAD_ONCE_INIT;
+
+static void cc_gcm_load(void) {
+    g_ccGcmSeal = (CCGcmSealFn)dlsym(RTLD_DEFAULT, "CCCryptorGCMOneshotEncrypt");
+    g_ccGcmOpen = (CCGcmOpenFn)dlsym(RTLD_DEFAULT, "CCCryptorGCMOneshotDecrypt");
+}
+
+#define NO_GCM_MSG "this macos doesn't expose AES-GCM (CCCryptorGCMOneshotEncrypt), so vault can't seal here."
+
+bool platform_aes_gcm_seal(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *plain, size_t plainLen, unsigned char *cipherOut,
+                           unsigned char *tagOut, char *errbuf, size_t errbuf_len) {
+    pthread_once(&g_ccGcmOnce, cc_gcm_load);
+    if (g_ccGcmSeal == NULL) {
+        snprintf(errbuf, errbuf_len, "%s", NO_GCM_MSG);
+        return false;
+    }
+    if (g_ccGcmSeal(kCCAlgorithmAES, key, 32, nonce, 12, aadLen > 0 ? aad : NULL, aadLen, plain, plainLen, cipherOut,
+                    tagOut, 16) != kCCSuccess) {
+        snprintf(errbuf, errbuf_len, "macos refused that encryption.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
+                           unsigned char *plainOut, char *errbuf, size_t errbuf_len) {
+    pthread_once(&g_ccGcmOnce, cc_gcm_load);
+    if (g_ccGcmOpen == NULL) {
+        snprintf(errbuf, errbuf_len, "%s", NO_GCM_MSG);
+        return false;
+    }
+    if (g_ccGcmOpen(kCCAlgorithmAES, key, 32, nonce, 12, aadLen > 0 ? aad : NULL, aadLen, cipher, cipherLen, plainOut,
+                    tag, 16) != kCCSuccess) {
+        snprintf(errbuf, errbuf_len, "that sealed value won't open.");
+        return false;
+    }
+    return true;
+}
+
+#else
+
+/* libcrypto, opened at run time exactly like libssl above and for the same
+   reason: this binary still builds and runs on a machine with no OpenSSL at
+   all, and says so clearly when asked for something it cannot do. */
+typedef struct funny_evp_md_st FunnyEvpMd;
+typedef struct funny_evp_cipher_st FunnyEvpCipher;
+typedef struct funny_evp_cipher_ctx_st FunnyEvpCipherCtx;
+
+/* ABI values, unchanged across every 1.1.0/3.x release. */
+#define FUNNY_EVP_CTRL_GCM_SET_IVLEN 0x09
+#define FUNNY_EVP_CTRL_GCM_GET_TAG 0x10
+#define FUNNY_EVP_CTRL_GCM_SET_TAG 0x11
+
+static struct {
+    void *handle;
+    int (*PKCS5_PBKDF2_HMAC)(const char *, int, const unsigned char *, int, int, const FunnyEvpMd *, int,
+                             unsigned char *);
+    const FunnyEvpMd *(*EVP_sha256)(void);
+    int (*EVP_Digest)(const void *, size_t, unsigned char *, unsigned int *, const FunnyEvpMd *, void *);
+    unsigned char *(*HMAC)(const FunnyEvpMd *, const void *, int, const unsigned char *, size_t, unsigned char *,
+                           unsigned int *);
+    FunnyEvpCipherCtx *(*EVP_CIPHER_CTX_new)(void);
+    void (*EVP_CIPHER_CTX_free)(FunnyEvpCipherCtx *);
+    const FunnyEvpCipher *(*EVP_aes_256_gcm)(void);
+    int (*EVP_EncryptInit_ex)(FunnyEvpCipherCtx *, const FunnyEvpCipher *, void *, const unsigned char *,
+                              const unsigned char *);
+    int (*EVP_EncryptUpdate)(FunnyEvpCipherCtx *, unsigned char *, int *, const unsigned char *, int);
+    int (*EVP_EncryptFinal_ex)(FunnyEvpCipherCtx *, unsigned char *, int *);
+    int (*EVP_DecryptInit_ex)(FunnyEvpCipherCtx *, const FunnyEvpCipher *, void *, const unsigned char *,
+                              const unsigned char *);
+    int (*EVP_DecryptUpdate)(FunnyEvpCipherCtx *, unsigned char *, int *, const unsigned char *, int);
+    int (*EVP_DecryptFinal_ex)(FunnyEvpCipherCtx *, unsigned char *, int *);
+    int (*EVP_CIPHER_CTX_ctrl)(FunnyEvpCipherCtx *, int, int, void *);
+} g_crypto;
+
+static const char *const LIBCRYPTO_SONAMES[] = {"libcrypto.so.3", "libcrypto.so.1.1", "libcrypto.so"};
+#define LIBCRYPTO_SONAME_COUNT (int)(sizeof(LIBCRYPTO_SONAMES) / sizeof(LIBCRYPTO_SONAMES[0]))
+#define NO_LIBCRYPTO_MSG \
+    "vault needs OpenSSL, and none could be loaded here (tried libcrypto.so.3, libcrypto.so.1.1, libcrypto.so)."
+
+static pthread_once_t g_cryptoOnce = PTHREAD_ONCE_INIT;
+
+static void libcrypto_load(void) {
+    for (int i = 0; i < LIBCRYPTO_SONAME_COUNT && !g_crypto.handle; i++) {
+        g_crypto.handle = dlopen(LIBCRYPTO_SONAMES[i], RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (!g_crypto.handle) return;
+    void *h = g_crypto.handle;
+    g_crypto.PKCS5_PBKDF2_HMAC = (int (*)(const char *, int, const unsigned char *, int, int, const FunnyEvpMd *, int,
+                                          unsigned char *))dlsym(h, "PKCS5_PBKDF2_HMAC");
+    g_crypto.EVP_sha256 = (const FunnyEvpMd *(*)(void))dlsym(h, "EVP_sha256");
+    g_crypto.EVP_Digest =
+        (int (*)(const void *, size_t, unsigned char *, unsigned int *, const FunnyEvpMd *, void *))dlsym(h,
+                                                                                                         "EVP_Digest");
+    g_crypto.HMAC = (unsigned char *(*)(const FunnyEvpMd *, const void *, int, const unsigned char *, size_t,
+                                        unsigned char *, unsigned int *))dlsym(h, "HMAC");
+    g_crypto.EVP_CIPHER_CTX_new = (FunnyEvpCipherCtx * (*)(void)) dlsym(h, "EVP_CIPHER_CTX_new");
+    g_crypto.EVP_CIPHER_CTX_free = (void (*)(FunnyEvpCipherCtx *))dlsym(h, "EVP_CIPHER_CTX_free");
+    g_crypto.EVP_aes_256_gcm = (const FunnyEvpCipher *(*)(void))dlsym(h, "EVP_aes_256_gcm");
+    g_crypto.EVP_EncryptInit_ex = (int (*)(FunnyEvpCipherCtx *, const FunnyEvpCipher *, void *, const unsigned char *,
+                                           const unsigned char *))dlsym(h, "EVP_EncryptInit_ex");
+    g_crypto.EVP_EncryptUpdate = (int (*)(FunnyEvpCipherCtx *, unsigned char *, int *, const unsigned char *,
+                                          int))dlsym(h, "EVP_EncryptUpdate");
+    g_crypto.EVP_EncryptFinal_ex =
+        (int (*)(FunnyEvpCipherCtx *, unsigned char *, int *))dlsym(h, "EVP_EncryptFinal_ex");
+    g_crypto.EVP_DecryptInit_ex = (int (*)(FunnyEvpCipherCtx *, const FunnyEvpCipher *, void *, const unsigned char *,
+                                           const unsigned char *))dlsym(h, "EVP_DecryptInit_ex");
+    g_crypto.EVP_DecryptUpdate = (int (*)(FunnyEvpCipherCtx *, unsigned char *, int *, const unsigned char *,
+                                          int))dlsym(h, "EVP_DecryptUpdate");
+    g_crypto.EVP_DecryptFinal_ex =
+        (int (*)(FunnyEvpCipherCtx *, unsigned char *, int *))dlsym(h, "EVP_DecryptFinal_ex");
+    g_crypto.EVP_CIPHER_CTX_ctrl = (int (*)(FunnyEvpCipherCtx *, int, int, void *))dlsym(h, "EVP_CIPHER_CTX_ctrl");
+
+    bool complete = g_crypto.PKCS5_PBKDF2_HMAC && g_crypto.EVP_sha256 && g_crypto.EVP_Digest && g_crypto.HMAC &&
+                    g_crypto.EVP_CIPHER_CTX_new && g_crypto.EVP_CIPHER_CTX_free && g_crypto.EVP_aes_256_gcm &&
+                    g_crypto.EVP_EncryptInit_ex && g_crypto.EVP_EncryptUpdate && g_crypto.EVP_EncryptFinal_ex &&
+                    g_crypto.EVP_DecryptInit_ex && g_crypto.EVP_DecryptUpdate && g_crypto.EVP_DecryptFinal_ex &&
+                    g_crypto.EVP_CIPHER_CTX_ctrl;
+    if (!complete) {
+        dlclose(h);
+        g_crypto.handle = NULL;
+    }
+}
+
+static bool ensure_libcrypto(char *errbuf, size_t errbuf_len) {
+    pthread_once(&g_cryptoOnce, libcrypto_load);
+    if (!g_crypto.handle) {
+        snprintf(errbuf, errbuf_len, "%s", NO_LIBCRYPTO_MSG);
+        return false;
+    }
+    return true;
+}
+
+bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    unsigned int n = 0;
+    if (g_crypto.EVP_Digest(data, len, out, &n, g_crypto.EVP_sha256(), NULL) != 1) {
+        snprintf(errbuf, errbuf_len, "openssl refused that hash.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
+                          unsigned char *out, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    unsigned int n = 0;
+    if (g_crypto.HMAC(g_crypto.EVP_sha256(), key, (int)keyLen, data, len, out, &n) == NULL) {
+        snprintf(errbuf, errbuf_len, "openssl refused that hmac.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, const unsigned char *salt,
+                            size_t saltLen, int iterations, unsigned char *out, size_t outLen, char *errbuf,
+                            size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    if (g_crypto.PKCS5_PBKDF2_HMAC((const char *)password, (int)passwordLen, salt, (int)saltLen, iterations,
+                                   g_crypto.EVP_sha256(), (int)outLen, out) != 1) {
+        snprintf(errbuf, errbuf_len, "openssl refused that key derivation.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_aes_gcm_seal(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *plain, size_t plainLen, unsigned char *cipherOut,
+                           unsigned char *tagOut, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    FunnyEvpCipherCtx *ctx = g_crypto.EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        snprintf(errbuf, errbuf_len, "openssl wouldn't start a cipher.");
+        return false;
+    }
+    bool ok = false;
+    int n = 0;
+    int produced = 0;
+    if (g_crypto.EVP_EncryptInit_ex(ctx, g_crypto.EVP_aes_256_gcm(), NULL, NULL, NULL) == 1 &&
+        g_crypto.EVP_CIPHER_CTX_ctrl(ctx, FUNNY_EVP_CTRL_GCM_SET_IVLEN, 12, NULL) == 1 &&
+        g_crypto.EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce) == 1) {
+        ok = true;
+        if (aadLen > 0) ok = g_crypto.EVP_EncryptUpdate(ctx, NULL, &n, aad, (int)aadLen) == 1;
+        if (ok && plainLen > 0) {
+            ok = g_crypto.EVP_EncryptUpdate(ctx, cipherOut, &n, plain, (int)plainLen) == 1;
+            produced = n;
+        }
+        if (ok) ok = g_crypto.EVP_EncryptFinal_ex(ctx, cipherOut + produced, &n) == 1;
+        if (ok) ok = g_crypto.EVP_CIPHER_CTX_ctrl(ctx, FUNNY_EVP_CTRL_GCM_GET_TAG, 16, tagOut) == 1;
+    }
+    g_crypto.EVP_CIPHER_CTX_free(ctx);
+    if (!ok) snprintf(errbuf, errbuf_len, "openssl refused that encryption.");
+    return ok;
+}
+
+bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
+                           unsigned char *plainOut, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    FunnyEvpCipherCtx *ctx = g_crypto.EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        snprintf(errbuf, errbuf_len, "openssl wouldn't start a cipher.");
+        return false;
+    }
+    bool ok = false;
+    int n = 0;
+    int produced = 0;
+    unsigned char tagCopy[16];
+    memcpy(tagCopy, tag, 16);
+    if (g_crypto.EVP_DecryptInit_ex(ctx, g_crypto.EVP_aes_256_gcm(), NULL, NULL, NULL) == 1 &&
+        g_crypto.EVP_CIPHER_CTX_ctrl(ctx, FUNNY_EVP_CTRL_GCM_SET_IVLEN, 12, NULL) == 1 &&
+        g_crypto.EVP_DecryptInit_ex(ctx, NULL, NULL, key, nonce) == 1) {
+        ok = true;
+        if (aadLen > 0) ok = g_crypto.EVP_DecryptUpdate(ctx, NULL, &n, aad, (int)aadLen) == 1;
+        if (ok && cipherLen > 0) {
+            ok = g_crypto.EVP_DecryptUpdate(ctx, plainOut, &n, cipher, (int)cipherLen) == 1;
+            produced = n;
+        }
+        if (ok) ok = g_crypto.EVP_CIPHER_CTX_ctrl(ctx, FUNNY_EVP_CTRL_GCM_SET_TAG, 16, tagCopy) == 1;
+        /* The tag is checked here, in Final: a wrong key, a wrong aad and one
+           flipped bit all arrive as the same answer, which is the property
+           that makes this authenticated encryption rather than encryption. */
+        if (ok) ok = g_crypto.EVP_DecryptFinal_ex(ctx, plainOut + produced, &n) == 1;
+    }
+    g_crypto.EVP_CIPHER_CTX_free(ctx);
+    if (!ok) snprintf(errbuf, errbuf_len, "that sealed value won't open.");
+    return ok;
+}
+
+#endif
+
 /* -- TLS on listening and dialled sockets (web_server_https PLAN.md §3) ----
  *
  * Two pieces. A side table, shared by every thread, mapping a handle to the

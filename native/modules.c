@@ -15,6 +15,7 @@
 #include "rizz.h"
 #include "stash.h"
 #include "sus.h"
+#include "vault.h"
 #include "vm.h"
 #include "yapper.h"
 
@@ -43,6 +44,7 @@ typedef struct {
 static const StdlibEntry STDLIB_REGISTRY[] = {
     {"mafs", mafs_build},
     {"blob", blob_build},
+    {"vault", vault_build},
     {"yapper", yapper_build},
     {"stash", stash_build},
     {"groupchat", groupchat_build},

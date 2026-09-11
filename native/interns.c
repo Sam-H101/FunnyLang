@@ -148,6 +148,11 @@ typedef struct Intern {
     bool joined;
     bool retired; /* collected; the slot survives only to say so */
 
+    /* {"live": fax} on hire (RUNTIME_PLAN.md R4): this worker writes straight
+       to the process's stdout and stderr instead of having its output held
+       and replayed when it is joined. */
+    bool live;
+
     /* Set by the worker as the very last thing it does, under g_lock, with a
        broadcast on g_wake. It is what lets the owning thread ask "is this one
        finished?" without committing to a join that might never return --
@@ -290,9 +295,15 @@ static void intern_body(void *userdata) {
        shared stream would interleave by luck, and §5 rules out a golden that
        depends on luck; replaying at the join point makes the output appear in
        the order the program waited, which is a fixed order. */
-    FILE *outCap = tmpfile();
-    FILE *errCap = tmpfile();
+    /* Held and replayed at the join by default, so that two workers' lines
+       cannot interleave by luck and a golden's output is a fixed order. A
+       `live` worker opts out: its streams are the real ones, every line is a
+       single flushed write, and the order between threads is whatever it is
+       -- which is what "live" means (RUNTIME_PLAN.md R4). */
+    FILE *outCap = in->live ? NULL : tmpfile();
+    FILE *errCap = in->live ? NULL : tmpfile();
     if (errCap != NULL) child.err = errCap;
+    child.liveStreams = in->live;
 
     char *loadErr = NULL;
     CompiledUnit *unit = NULL;
@@ -536,6 +547,20 @@ static Value m_hire(VM *vm, Value *a, int argc) {
     }
     char *path = dup_cstr(AS_STRING(a[0])->chars);
 
+    bool live = false;
+    if (argc > 2 && !IS_GHOST(a[2])) {
+        if (!(IS_OBJ(a[2]) && AS_OBJ(a[2])->type == OBJ_GROUPCHAT)) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'hire' options need to be a groupchat, not a %s.",
+                            vm_type_name(a[2]));
+            return GHOST_VAL;
+        }
+        ObjGroupChat *opts = (ObjGroupChat *)AS_OBJ(a[2]);
+        Value key = OBJ_VAL(string_new(&vm->gc, "live", 4));
+        GroupChatEntry *e = groupchat_find(opts, key);
+        live = e != NULL && value_is_truthy(e->value);
+    }
+
+
     char reason[512];
     reason[0] = '\0';
     PortableValue *assignment = portable_from_value(argc > 1 ? a[1] : GHOST_VAL, reason, sizeof reason);
@@ -564,6 +589,7 @@ static Value m_hire(VM *vm, Value *a, int argc) {
     in->codeLen = codeLen;
     in->assignment = assignment;
     in->mailbox = mailbox_new();
+    in->live = live;
 
     /* Registered and started under one hold of the lock, so `spawned` is
        never observed out of step with the thread that it describes -- a
@@ -846,12 +872,6 @@ typedef struct {
  * clearer way to say it anyway.
  */
 
-/* This VM's inbox, made on first use. Callers hold g_lock: another thread
-   may be posting to this same VM at this same moment. */
-static Mailbox *inbox_locked(VM *vm) {
-    if (vm->inbox == NULL) vm->inbox = mailbox_new();
-    return (Mailbox *)vm->inbox;
-}
 
 static Value m_dm(VM *vm, Value *a, int argc) {
     (void)argc;
@@ -903,7 +923,12 @@ static Value m_dm(VM *vm, Value *a, int argc) {
         if (me == NULL) {
             flavor = "OutOfPocket";
             problem = "\"boss\" only means something inside an intern's own script.";
-        } else if (!mailbox_push(inbox_locked(me->owner), pv, me->id)) {
+        } else if (me->owner->inbox == NULL) {
+            /* Unreachable: a VM with a worker has done `gimme interns`, which
+               is what makes its inbox. Named rather than silent anyway. */
+            flavor = "LeftOnRead";
+            problem = "whoever hired you isn't listening for messages.";
+        } else if (!mailbox_push((Mailbox *)me->owner->inbox, pv, me->id)) {
             flavor = "OutOfPocket";
             problem = "that inbox is a million messages deep. whoever is reading it has given up.";
         }
@@ -1019,7 +1044,7 @@ void interns_vm_teardown(VM *vm) {
 }
 
 static const InternEntry INTERN_FUNCTIONS[] = {
-    {"hire", m_hire, 1, 2},
+    {"hire", m_hire, 1, 3},
     {"wait_up", m_wait_up, 1, 1},
     {"everybody", m_everybody, 1, 1},
     {"headcount", m_headcount, 0, 0},
@@ -1033,6 +1058,15 @@ static const InternEntry INTERN_FUNCTIONS[] = {
 
 Value interns_build(VM *vm) {
     registry_init();
+/* A VM's inbox is made here, on its own thread, before it can possibly have
+   hired anybody -- rather than on first use, which is where ThreadSanitizer
+   caught it: a worker posting to "boss" would create its parent's mailbox,
+   writing a field of the parent's VM while the parent was reading it. The
+   registry lock did not help, because the parent reads its own inbox pointer
+   without taking it. Written once, before any thread of this VM's exists,
+   and only read afterwards. (A worker's VM gets its Intern's mailbox in
+   intern_body, which likewise happens before the thread starts.) */
+    if (vm->inbox == NULL) vm->inbox = mailbox_new();
     ObjGroupChat *members = groupchat_new(&vm->gc, NULL, 0);
     gc_push_temp(&vm->gc, OBJ_VAL(members));
     for (int i = 0; i < INTERN_FUNCTIONS_COUNT; i++) {

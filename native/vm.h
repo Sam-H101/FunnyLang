@@ -164,6 +164,12 @@ struct VM {
     const char *currentModuleName;
 
     FILE *out; /* where YAP writes */
+    /* This VM writes straight to the process's own stdout/stderr while other
+       threads may be doing the same (a `live` intern, RUNTIME_PLAN.md R4).
+       Every line is written with one fwrite and flushed, so two workers
+       never interleave mid-line and output appears when it happens rather
+       than when a block buffer fills. */
+    bool liveStreams;
     /* Where `yell` writes, and where an uncaught error's diagnostic is
        rendered. stderr for a top-level program, and a capture for a
        child VM: `sus.run_bytecode` is meant to isolate the program it

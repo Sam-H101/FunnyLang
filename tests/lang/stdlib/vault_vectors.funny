@@ -1,0 +1,22 @@
+// tests/lang/stdlib/vault_vectors.funny -- RUNTIME_PLAN.md R3. Known answers,
+// not round trips: these are the published PBKDF2-HMAC-SHA256, SHA-256 and
+// HMAC-SHA256 (RFC 4231) vectors, and they are the same on every platform, so
+// one .expected covers OpenSSL, CNG and CommonCrypto alike. If a backend is
+// wired up wrongly this is the file that says so.
+gimme vault
+gimme blob
+
+yap vault.derive_key("password", "salt", 1).to_hex()
+yap vault.derive_key("password", "salt", 2).to_hex()
+yap vault.derive_key("password", "salt", 4096).to_hex()
+
+yap vault.sha256("abc")
+yap vault.sha256("")
+
+yo rfcKey = blob.of([11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11])
+yap vault.hmac_sha256(rfcKey, "Hi There")
+yap vault.hmac_sha256("Jefe", "what do ya want for nothing?")
+
+yap vault.base64_encode("hello")
+yap vault.base64_decode("aGVsbG8=").to_yap()
+yap vault.base64_decode("not base64!")

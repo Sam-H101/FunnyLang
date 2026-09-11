@@ -13,6 +13,50 @@ stdlib module safe on them, and the corpus that proves it. Plan and build log:
   and then on eight interns at once, and passes only if all eight answers match the single-threaded
   one. CI also runs the whole directory under ThreadSanitizer, along with `extensive_examples`.
 
+### Added: live output from an intern
+
+`interns.hire(path, arg, {"live": fax})`. A worker's `yap` and `yell` are held and replayed when it
+is joined — which stays the default, because it is what keeps two workers' lines from interleaving
+by luck and a golden's output in a fixed order. A long-running worker wants the opposite, and now
+asks for it: a live worker writes to this process's own stdout and stderr as it goes.
+
+Every printed line is now assembled and written with a **single** `fwrite`, rather than one write
+per argument. The C library's stream lock is per call, so that is the difference between two
+threads interleaving between lines and interleaving mid-word. The order between threads is still
+whatever it is, which is what "live" means; goldens do not use it.
+
+### Added: `vault`, for passwords and secrets
+
+`gimme vault`. Password hashing and authenticated encryption, taken from the operating system's own
+crypto library — the `dlopen`'d OpenSSL `https` already uses on Linux/BSD, CNG on Windows,
+CommonCrypto on macOS. Nothing here implements a cipher or a hash: a hand-written AES is a
+liability, and every platform ships a reviewed one.
+
+```funny
+gimme vault
+
+yo stored = vault.hash_password("hunter2")      // pbkdf2-sha256$600000$...$...
+yap vault.check_password("hunter2", stored)     // fax
+
+yo key = vault.new_key()
+yo sealed = vault.seal("balance: 100", key, "account-7")
+yap vault.unseal(sealed, key, "account-7")      // balance: 100
+```
+
+- **`hash_password` / `check_password`** — PBKDF2-HMAC-SHA256, fresh 16-byte salt, 600,000
+  iterations by default, constant-time compare. The parameters travel with the hash, so raising the
+  default later does not invalidate anybody's password. A malformed stored string is `cap`, never an
+  error: a login must not leak which part was wrong.
+- **`seal` / `unseal`** — AES-256-GCM with a fresh nonce every time and optional additional
+  authenticated data, so a sealed value can be bound to the record it belongs to. A `yapstring`
+  comes back a `yapstring` and a `blob` comes back a `blob`. Wrong key, wrong `aad` and one changed
+  byte all give the same `SkillIssue`, because telling them apart turns decryption into an oracle.
+- **`new_key`, `derive_key`, `sha256`, `hmac_sha256`, `same_secret`, `base64_encode/decode`.**
+- **The key is the caller's to keep, somewhere the sealed data is not**, and the docs say so in
+  bold. A key in the same file as what it seals is a rearrangement, not encryption.
+- Goldens check the published PBKDF2, SHA-256 and RFC 4231 HMAC vectors, which are the same on
+  every platform and so catch a backend wired up wrongly.
+
 ### Added: DMs between interns
 
 `interns.dm(who, value)`, `interns.check_dms(timeout_ms?)`, `interns.dms_waiting()`. A worker used
