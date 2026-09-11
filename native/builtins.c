@@ -357,6 +357,20 @@ static Value m_the_args(VM *vm, Value *a, int argc) {
     return OBJ_VAL(stash_new(&vm->gc, src->items, src->count));
 }
 
+/* the_script() -- the absolute path of the running program, or `ghost` when
+   the program arrived as bytes with no path attached. Inside an `interns`
+   worker it is the path the worker was hired from. It exists so a program
+   can find the files that live beside it -- a worker to hire, a folder to
+   serve -- no matter which directory it was started from. A caught error's
+   `.file` is not a substitute: that is the bundle's logical module name,
+   not a path anything can open. */
+static Value m_the_script(VM *vm, Value *a, int argc) {
+    (void)a;
+    (void)argc;
+    if (vm->scriptPath == NULL) return GHOST_VAL;
+    return OBJ_VAL(string_new(&vm->gc, vm->scriptPath, (uint32_t)strlen(vm->scriptPath)));
+}
+
 static Value m_combo(VM *vm, Value *a, int argc) {
     ObjStash *fns = stash_new(&vm->gc, a, argc);
     return OBJ_VAL(combo_new(&vm->gc, OBJ_VAL(fns)));
@@ -527,6 +541,7 @@ static const BuiltinEntry BUILTIN_TABLE[] = {
     {"oops", m_oops, 1, 5},
     {"dip", m_dip, 0, 1},
     {"the_args", m_the_args, 0, 0},
+    {"the_script", m_the_script, 0, 0},
     {"combo", m_combo, 0, 255},
     {"identity", m_identity, 1, 1},
     {"range_stash", m_range_stash, 1, 3},

@@ -643,6 +643,7 @@ void vm_init(VM *vm) {
     vm->builtins = (GlobalEntry *)malloc((size_t)vm->builtinCapacity * sizeof(GlobalEntry));
     vm->builtinCount = 0;
     vm->programArgs = GHOST_VAL;
+    vm->scriptPath = NULL;
 
     vm->unit = NULL;
     vm->pak = NULL;
@@ -799,6 +800,8 @@ void vm_destroy(VM *vm) {
     vm->frames = NULL;
     vm->openUpvalues = NULL;
     free(vm->builtins);
+    free(vm->scriptPath);
+    vm->scriptPath = NULL;
     /* After gc_destroy, not before: a closure still on the heap points into
        its unit, and the sweep must not run over freed protos. */
     gc_destroy(&vm->gc);

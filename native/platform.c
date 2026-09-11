@@ -40,8 +40,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <winhttp.h>
+#include <bcrypt.h>
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "bcrypt.lib")
 typedef SOCKET SockFd;
 #define SOCK_INVALID INVALID_SOCKET
 #else
@@ -51,6 +53,7 @@ typedef SOCKET SockFd;
 #include <limits.h>
 #include <netdb.h>
 #include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
@@ -918,6 +921,13 @@ static bool sock_in_progress(void) {
     return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;
 }
 
+/* The accept or read that would have blocked, or a connection that was
+   reset before it could be accepted: none of them is the listener failing. */
+static bool sock_would_block(void) {
+    int e = WSAGetLastError();
+    return e == WSAEWOULDBLOCK || e == WSAEINTR || e == WSAECONNRESET;
+}
+
 static void sock_close(SockFd fd) { closesocket(fd); }
 
 static bool sock_set_recv_timeout(SockFd fd, int ms) {
@@ -965,7 +975,15 @@ static long sock_recv(SockFd fd, char *buf, size_t len) {
 
 #else
 
-static void ensure_winsock(void) {}
+/* Not Winsock, but the same "first time anything touches a socket" hook:
+   a write to a connection the peer has already dropped raises SIGPIPE, whose
+   default action kills the whole process. A server cannot let one impatient
+   client take it down, so the signal is ignored and the write fails with
+   EPIPE instead, which platform_socket_send already reports as a broken
+   connection. Once per process, and before any worker thread can race it. */
+static pthread_once_t g_sigpipeOnce = PTHREAD_ONCE_INIT;
+static void ignore_sigpipe(void) { signal(SIGPIPE, SIG_IGN); }
+static void ensure_winsock(void) { pthread_once(&g_sigpipeOnce, ignore_sigpipe); }
 
 static void sock_set_nonblocking(SockFd fd, bool nonblocking) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -974,6 +992,12 @@ static void sock_set_nonblocking(SockFd fd, bool nonblocking) {
 }
 
 static bool sock_in_progress(void) { return errno == EINPROGRESS; }
+
+/* The accept or read that would have blocked, or a connection that was
+   reset before it could be accepted: none of them is the listener failing. */
+static bool sock_would_block(void) {
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR || errno == ECONNABORTED;
+}
 
 static void sock_close(SockFd fd) { close(fd); }
 
@@ -1208,8 +1232,23 @@ static const char *const OPENSSL_SONAMES[] = {"libssl.so.3", "libssl.so.1.1", "l
 #define NO_OPENSSL_MSG \
     "https needs OpenSSL, and none could be loaded here (tried libssl.so.3, libssl.so.1.1, libssl.so)."
 
+/* Loaded once per process under pthread_once: `interns` workers can reach
+   this from several threads at the same moment, and a second thread seeing a
+   half-filled g_ssl would be a crash rather than an error. */
+static pthread_once_t g_sslOnce = PTHREAD_ONCE_INIT;
+static void openssl_load(void);
+
 static bool ensure_openssl(char *reason, size_t reasonLen) {
-    if (!g_ssl.tried) {
+    pthread_once(&g_sslOnce, openssl_load);
+    if (!g_ssl.handle) {
+        snprintf(reason, reasonLen, "%s", NO_OPENSSL_MSG);
+        return false;
+    }
+    return true;
+}
+
+static void openssl_load(void) {
+    {
         g_ssl.tried = true;
         for (int i = 0; i < OPENSSL_SONAME_COUNT && !g_ssl.handle; i++) {
             g_ssl.handle = dlopen(OPENSSL_SONAMES[i], RTLD_LAZY | RTLD_LOCAL);
@@ -1241,11 +1280,6 @@ static bool ensure_openssl(char *reason, size_t reasonLen) {
             }
         }
     }
-    if (!g_ssl.handle) {
-        snprintf(reason, reasonLen, "%s", NO_OPENSSL_MSG);
-        return false;
-    }
-    return true;
 }
 
 static bool tls_start(HttpConn *conn, const char *hostname, char *reason, size_t reasonLen) {
@@ -1902,6 +1936,18 @@ bool platform_tcp_ping(const char *host, int port, int timeoutMs, double *outMs)
     return true;
 }
 
+/* -- TLS side table: forward declarations ----------------------------------
+ * Defined further down, after the listener code: each backend needs things
+ * above (g_ssl), and the listener code just below needs to consult it. */
+typedef struct TlsConn TlsConn;
+typedef struct TlsServer TlsServer;
+static TlsConn *tls_conn_find(int64_t handle);
+static bool tls_attach_accepted(int64_t listener, int64_t conn, SockFd fd);
+static int64_t tlsb_recv(TlsConn *c, char *buf, size_t len, int timeoutMs);
+static bool tlsb_send(TlsConn *c, const char *buf, size_t len);
+static bool tlsb_pending(TlsConn *c);
+static void tls_forget(int64_t handle);
+
 /* -- listening sockets ----------------------------------------------------
  *
  * See platform.h. Handles are int64_t and the two backends differ only in
@@ -1963,6 +2009,13 @@ int64_t platform_tcp_listen(const char *host, int port, int backlog, char *errbu
         snprintf(errbuf, errbuf_len, "couldn't listen on port %d: %s", port, why[0] != '\0' ? why : "no usable address");
         return PLATFORM_SOCKET_NONE;
     }
+    /* Non-blocking, because more than one thread may be accepting from it.
+       The kernel wakes every thread polling a listener and gives the
+       connection to one; on a blocking socket each of the others would then
+       sit in accept() until the *next* connection -- and on an `interns`
+       worker that freezes every task that thread is serving. Non-blocking,
+       the losers get EWOULDBLOCK and go back to their event loops. */
+    sock_set_nonblocking(fd, true);
     return sock_to_handle(fd);
 }
 
@@ -1973,15 +2026,33 @@ int64_t platform_tcp_accept(int64_t listener, int timeoutMs, char *peerOut, size
 
     /* Polled rather than a blocking accept, so a server can have a loop that
        does something else between callers -- checking a shutdown flag, firing
-       a timer -- instead of being parked in the kernel forever. */
-    int pr = sock_poll_readable(lfd, timeoutMs);
-    if (pr == 0) return PLATFORM_SOCKET_TIMEOUT;
-    if (pr < 0) return PLATFORM_SOCKET_ERROR;
+       a timer -- instead of being parked in the kernel forever.
 
+       The listener is non-blocking (see platform_tcp_listen), so "readable"
+       followed by EWOULDBLOCK means another thread took this one. That is a
+       lost race, not a failure: poll again until the deadline. */
+    double deadline = timeoutMs >= 0 ? platform_monotonic_seconds() + (double)timeoutMs / 1000.0 : 0.0;
     struct sockaddr_storage addr;
-    socklen_t addrLen = sizeof(addr);
-    SockFd fd = accept(lfd, (struct sockaddr *)&addr, &addrLen);
-    if (fd == SOCK_INVALID) return PLATFORM_SOCKET_ERROR;
+    socklen_t addrLen;
+    SockFd fd;
+    for (;;) {
+        int wait = -1;
+        if (timeoutMs >= 0) {
+            double left = (deadline - platform_monotonic_seconds()) * 1000.0;
+            wait = left > 0.0 ? (int)left : 0;
+        }
+        int pr = sock_poll_readable(lfd, wait);
+        if (pr == 0) return PLATFORM_SOCKET_TIMEOUT;
+        if (pr < 0) return PLATFORM_SOCKET_ERROR;
+        addrLen = sizeof(addr);
+        fd = accept(lfd, (struct sockaddr *)&addr, &addrLen);
+        if (fd != SOCK_INVALID) break;
+        if (!sock_would_block()) return PLATFORM_SOCKET_ERROR;
+        if (timeoutMs >= 0 && platform_monotonic_seconds() >= deadline) return PLATFORM_SOCKET_TIMEOUT;
+    }
+    /* Windows and the BSDs hand the listener's non-blocking flag on to the
+       accepted socket and Linux does not. Say which one we mean. */
+    sock_set_nonblocking(fd, false);
 
     if (peerOut != NULL && peerOut_len > 0) {
         char hostBuf[NI_MAXHOST];
@@ -1991,12 +2062,21 @@ int64_t platform_tcp_accept(int64_t listener, int timeoutMs, char *peerOut, size
             snprintf(peerOut, peerOut_len, "%s:%s", hostBuf, servBuf);
         }
     }
-    return sock_to_handle(fd);
+    int64_t handle = sock_to_handle(fd);
+    /* A connection from a secure listener carries a TLS session from here
+       on. If one cannot be made, the caller never sees this connection. */
+    if (!tls_attach_accepted(listener, handle, fd)) {
+        sock_close(fd);
+        return PLATFORM_SOCKET_TIMEOUT;
+    }
+    return handle;
 }
 
 int64_t platform_socket_recv(int64_t sock, char *buf, size_t len, int timeoutMs) {
     SockFd fd = handle_to_sock(sock);
     if (fd == SOCK_INVALID) return PLATFORM_SOCKET_ERROR;
+    TlsConn *tc = tls_conn_find(sock);
+    if (tc != NULL) return tlsb_recv(tc, buf, len, timeoutMs);
     if (timeoutMs >= 0) {
         int pr = sock_poll_readable(fd, timeoutMs);
         if (pr == 0) return PLATFORM_SOCKET_TIMEOUT;
@@ -2010,6 +2090,8 @@ int64_t platform_socket_recv(int64_t sock, char *buf, size_t len, int timeoutMs)
 bool platform_socket_send(int64_t sock, const char *buf, size_t len) {
     SockFd fd = handle_to_sock(sock);
     if (fd == SOCK_INVALID) return false;
+    TlsConn *tc = tls_conn_find(sock);
+    if (tc != NULL) return tlsb_send(tc, buf, len);
     size_t sent = 0;
     while (sent < len) {
         long n = sock_send(fd, buf + sent, len - sent);
@@ -2026,6 +2108,20 @@ int64_t platform_tcp_connect(const char *host, int port, int timeoutMs) {
 
 int platform_poll_sockets(const int64_t *handles, int count, int timeoutMs, unsigned char *readyOut) {
     if (count <= 0) return 0;
+    /* A TLS session can already hold decrypted bytes the socket knows nothing
+       about -- the whole request arrived in one record and the library has
+       it. Such a connection is ready now, whatever the socket says, and the
+       poll below must not wait on anybody's behalf. */
+    unsigned char *buffered = (unsigned char *)calloc((size_t)count, 1);
+    int bufferedCount = 0;
+    for (int i = 0; i < count; i++) {
+        TlsConn *tc = tls_conn_find(handles[i]);
+        if (tc != NULL && tlsb_pending(tc)) {
+            buffered[i] = 1;
+            bufferedCount++;
+        }
+    }
+    if (bufferedCount > 0) timeoutMs = 0;
 #ifdef _WIN32
     WSAPOLLFD *pfds = (WSAPOLLFD *)calloc((size_t)count, sizeof(WSAPOLLFD));
 #else
@@ -2047,6 +2143,7 @@ int platform_poll_sockets(const int64_t *handles, int count, int timeoutMs, unsi
     }
     if (live == 0) {
         free(pfds);
+        free(buffered);
         return 0;
     }
 
@@ -2055,9 +2152,16 @@ int platform_poll_sockets(const int64_t *handles, int count, int timeoutMs, unsi
 #else
     int rc = poll(pfds, (nfds_t)live, timeoutMs);
 #endif
+    if (rc < 0 && bufferedCount == 0) {
+        free(pfds);
+        free(buffered);
+        return rc; /* an error */
+    }
     if (rc <= 0) {
         free(pfds);
-        return rc; /* 0 is a timeout, negative an error */
+        for (int i = 0; i < count; i++) readyOut[i] = buffered[i];
+        free(buffered);
+        return bufferedCount; /* 0 is a timeout */
     }
 
     /* Map back, skipping the invalid handles that were not polled. Anything
@@ -2067,13 +2171,14 @@ int platform_poll_sockets(const int64_t *handles, int count, int timeoutMs, unsi
     int ready = 0;
     for (int i = 0; i < count; i++) {
         if (handle_to_sock(handles[i]) == SOCK_INVALID) continue;
-        if (pfds[at].revents != 0) {
+        if (pfds[at].revents != 0 || buffered[i]) {
             readyOut[i] = 1;
             ready++;
         }
         at++;
     }
     free(pfds);
+    free(buffered);
     return ready;
 }
 
@@ -2090,8 +2195,739 @@ int platform_socket_port(int64_t sock) {
 
 void platform_socket_close(int64_t sock) {
     SockFd fd = handle_to_sock(sock);
+    /* Out of the TLS table *before* the descriptor is released, so a new
+       socket that reuses the number can never find this one's session. */
+    tls_forget(sock);
     if (fd != SOCK_INVALID) sock_close(fd);
 }
+
+/* -- randomness ------------------------------------------------------------ */
+
+#ifdef _WIN32
+bool platform_random_bytes(unsigned char *out, size_t n) {
+    if (n > (size_t)0xFFFFFFFFu) return false;
+    return BCryptGenRandom(NULL, out, (ULONG)n, BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0;
+}
+#elif defined(__APPLE__)
+bool platform_random_bytes(unsigned char *out, size_t n) {
+    arc4random_buf(out, n); /* the kernel's CSPRNG; cannot fail */
+    return true;
+}
+#else
+bool platform_random_bytes(unsigned char *out, size_t n) {
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) return false;
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, out + got, n - got);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) {
+            close(fd);
+            return false;
+        }
+        got += (size_t)r;
+    }
+    close(fd);
+    return true;
+}
+#endif
+
+/* -- TLS on listening and dialled sockets (web_server_https PLAN.md §3) ----
+ *
+ * Two pieces. A side table, shared by every thread, mapping a handle to the
+ * TLS state that goes with it -- a server identity for a secure listener, a
+ * session for a connection. And one backend per OS behind the tlsb_*
+ * functions, so everything outside the backend #if is written once.
+ *
+ * A session belongs to the thread that owns its connection: only that thread
+ * reads, writes, handshakes or closes it. So the table's lock guards the
+ * table, not the sessions, and is never held across I/O.
+ */
+
+typedef struct TlsEntry {
+    int64_t handle;
+    bool isServer;
+    void *ptr;
+    struct TlsEntry *next;
+} TlsEntry;
+
+#define TLS_BUCKETS 256
+static TlsEntry *g_tlsBuckets[TLS_BUCKETS];
+static PlatformMutex g_tlsLock;
+
+#ifdef _WIN32
+static INIT_ONCE g_tlsOnce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK tls_table_init_cb(PINIT_ONCE once, PVOID param, PVOID *context) {
+    (void)once;
+    (void)param;
+    (void)context;
+    platform_mutex_init(&g_tlsLock);
+    return TRUE;
+}
+static void tls_table_init(void) { InitOnceExecuteOnce(&g_tlsOnce, tls_table_init_cb, NULL, NULL); }
+#else
+static pthread_once_t g_tlsOnce = PTHREAD_ONCE_INIT;
+static void tls_table_init_cb(void) { platform_mutex_init(&g_tlsLock); }
+static void tls_table_init(void) { pthread_once(&g_tlsOnce, tls_table_init_cb); }
+#endif
+
+/* Win32 SOCKET values are multiples of four and POSIX descriptors are small
+   consecutive integers; a multiplicative hash spreads both. */
+static unsigned tls_bucket(int64_t h) {
+    uint64_t x = (uint64_t)h * 0x9E3779B97F4A7C15ULL;
+    return (unsigned)(x >> 56);
+}
+
+static void tls_register(int64_t h, bool isServer, void *ptr) {
+    tls_table_init();
+    TlsEntry *e = (TlsEntry *)malloc(sizeof(TlsEntry));
+    e->handle = h;
+    e->isServer = isServer;
+    e->ptr = ptr;
+    unsigned b = tls_bucket(h);
+    platform_mutex_lock(&g_tlsLock);
+    e->next = g_tlsBuckets[b];
+    g_tlsBuckets[b] = e;
+    platform_mutex_unlock(&g_tlsLock);
+}
+
+static void *tls_find(int64_t h, bool isServer) {
+    tls_table_init();
+    void *found = NULL;
+    unsigned b = tls_bucket(h);
+    platform_mutex_lock(&g_tlsLock);
+    for (TlsEntry *e = g_tlsBuckets[b]; e != NULL; e = e->next) {
+        if (e->handle == h) {
+            if (e->isServer == isServer) found = e->ptr;
+            break;
+        }
+    }
+    platform_mutex_unlock(&g_tlsLock);
+    return found;
+}
+
+static TlsEntry *tls_take(int64_t h) {
+    tls_table_init();
+    unsigned b = tls_bucket(h);
+    platform_mutex_lock(&g_tlsLock);
+    TlsEntry **link = &g_tlsBuckets[b];
+    TlsEntry *e = *link;
+    while (e != NULL && e->handle != h) {
+        link = &e->next;
+        e = e->next;
+    }
+    if (e != NULL) *link = e->next;
+    platform_mutex_unlock(&g_tlsLock);
+    return e;
+}
+
+/* Milliseconds until `deadline` (platform_monotonic_seconds terms), rounded
+   up, never negative. */
+static int tls_ms_left(double deadline) {
+    double left = (deadline - platform_monotonic_seconds()) * 1000.0;
+    if (left <= 0.0) return 0;
+    if (left > 600000.0) return 600000;
+    return (int)left + 1;
+}
+
+/* The backend, one per OS. Each defines struct TlsServer and struct TlsConn
+   however it likes and implements these, plus tlsb_recv/tlsb_send/
+   tlsb_pending declared further up. */
+static TlsServer *tlsb_server_load(const char *pfxPath, const char *password, char *err, size_t errLen);
+static void tlsb_server_free(TlsServer *s);
+static TlsConn *tlsb_conn_accept(TlsServer *s, SockFd fd);
+static int tlsb_handshake_step(TlsConn *c, char *err, size_t errLen);
+static TlsConn *tlsb_conn_connect(SockFd fd, const char *serverName, const char *caPath, double deadline, char *err,
+                                  size_t errLen);
+static bool tlsb_info(TlsConn *c, char *version, size_t versionLen, char *cipher, size_t cipherLen);
+static void tlsb_conn_free(TlsConn *c);
+
+static TlsConn *tls_conn_find(int64_t handle) { return (TlsConn *)tls_find(handle, false); }
+
+static bool tls_attach_accepted(int64_t listener, int64_t conn, SockFd fd) {
+    TlsServer *s = (TlsServer *)tls_find(listener, true);
+    if (s == NULL) return true; /* a plain listener: nothing to attach */
+    TlsConn *c = tlsb_conn_accept(s, fd);
+    if (c == NULL) return false;
+    tls_register(conn, false, c);
+    return true;
+}
+
+static void tls_forget(int64_t handle) {
+    TlsEntry *e = tls_take(handle);
+    if (e == NULL) return;
+    if (e->isServer) tlsb_server_free((TlsServer *)e->ptr);
+    else tlsb_conn_free((TlsConn *)e->ptr);
+    free(e);
+}
+
+int64_t platform_tls_listen(const char *host, int port, int backlog, const char *pfxPath, const char *password,
+                            char *errbuf, size_t errbuf_len) {
+    if (errbuf != NULL && errbuf_len > 0) errbuf[0] = '\0';
+    /* The identity first: a server that cannot prove who it is should not
+       have bound a port it will only refuse connections on. */
+    TlsServer *s = tlsb_server_load(pfxPath, password != NULL ? password : "", errbuf, errbuf_len);
+    if (s == NULL) return PLATFORM_SOCKET_NONE;
+    int64_t listener = platform_tcp_listen(host, port, backlog, errbuf, errbuf_len);
+    if (listener == PLATFORM_SOCKET_NONE) {
+        tlsb_server_free(s);
+        return PLATFORM_SOCKET_NONE;
+    }
+    tls_register(listener, true, s);
+    return listener;
+}
+
+bool platform_socket_is_tls(int64_t sock) { return tls_find(sock, false) != NULL || tls_find(sock, true) != NULL; }
+
+int platform_tls_handshake(int64_t sock, char *errbuf, size_t errbuf_len) {
+    if (errbuf != NULL && errbuf_len > 0) errbuf[0] = '\0';
+    TlsConn *c = tls_conn_find(sock);
+    if (c == NULL) return 1;
+    return tlsb_handshake_step(c, errbuf, errbuf_len);
+}
+
+bool platform_tls_info(int64_t sock, char *version, size_t version_len, char *cipher, size_t cipher_len) {
+    TlsConn *c = tls_conn_find(sock);
+    if (c == NULL) return false;
+    return tlsb_info(c, version, version_len, cipher, cipher_len);
+}
+
+int64_t platform_tls_connect(const char *host, int port, int timeoutMs, const char *serverName, const char *caPath,
+                             char *errbuf, size_t errbuf_len) {
+    if (errbuf != NULL && errbuf_len > 0) errbuf[0] = '\0';
+    if (timeoutMs <= 0) timeoutMs = 10000;
+    double deadline = platform_monotonic_seconds() + (double)timeoutMs / 1000.0;
+    SockFd fd = connect_with_timeout(host, port, timeoutMs);
+    if (fd == SOCK_INVALID) {
+        snprintf(errbuf, errbuf_len, "couldn't get through to %s:%d.", host, port);
+        return PLATFORM_SOCKET_NONE;
+    }
+    const char *name = (serverName != NULL && serverName[0] != '\0') ? serverName : host;
+    TlsConn *c = tlsb_conn_connect(fd, name, caPath, deadline, errbuf, errbuf_len);
+    if (c == NULL) {
+        sock_close(fd);
+        return PLATFORM_SOCKET_NONE;
+    }
+    int64_t handle = sock_to_handle(fd);
+    tls_register(handle, false, c);
+    return handle;
+}
+
+/* An IP literal gets no SNI (RFC 6066 forbids it) -- the name check still
+   runs against the certificate's IP entries. */
+static bool tls_name_is_ip(const char *name) {
+    if (strchr(name, ':') != NULL) return true;
+    for (const char *p = name; *p != '\0'; p++) {
+        if (!(isdigit((unsigned char)*p) || *p == '.')) return false;
+    }
+    return true;
+}
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+
+/* Linux/BSD: the same dlopen'd OpenSSL as the client above, plus what a
+   server and a pinned-CA client need. PKCS12_parse and friends live in
+   libcrypto; dlsym on the libssl handle finds them, because a handle's
+   lookup scope is the library *and* the dependencies it was loaded with.
+   Every constant here is an ABI value, unchanged from 1.1.1 through 3.x. */
+
+typedef struct funny_x509_st FunnyX509;
+typedef struct funny_evp_pkey_st FunnyEvpPkey;
+typedef struct funny_pkcs12_st FunnyPKCS12;
+
+#define FUNNY_SSL_ERROR_WANT_READ 2
+#define FUNNY_SSL_ERROR_WANT_WRITE 3
+#define FUNNY_SSL_ERROR_ZERO_RETURN 6
+#define FUNNY_SSL_CTRL_EXTRA_CHAIN_CERT 14
+#define FUNNY_SSL_CTRL_SET_MIN_PROTO_VERSION 123
+#define FUNNY_TLS1_2_VERSION 0x0303
+#define FUNNY_SSL_OP_NO_COMPRESSION 0x00020000ULL
+#define FUNNY_SSL_OP_CIPHER_SERVER_PREFERENCE 0x00400000ULL
+#define FUNNY_SSL_OP_NO_RENEGOTIATION 0x40000000ULL
+/* TLS 1.2: forward secrecy and AEAD only. TLS 1.3 suites are configured
+   separately by OpenSSL and are all AEAD already. */
+#define FUNNY_TLS12_CIPHERS                                                                             \
+    "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:"          \
+    "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"
+
+static struct {
+    const FunnySSLMethod *(*TLS_server_method)(void);
+    void (*SSL_CTX_free)(FunnySSLCtx *);
+    long (*SSL_CTX_ctrl)(FunnySSLCtx *, int, long, void *);
+    uint64_t (*SSL_CTX_set_options)(FunnySSLCtx *, uint64_t);
+    int (*SSL_CTX_set_cipher_list)(FunnySSLCtx *, const char *);
+    int (*SSL_CTX_use_certificate)(FunnySSLCtx *, FunnyX509 *);
+    int (*SSL_CTX_use_PrivateKey)(FunnySSLCtx *, FunnyEvpPkey *);
+    int (*SSL_CTX_check_private_key)(const FunnySSLCtx *);
+    int (*SSL_CTX_load_verify_locations)(FunnySSLCtx *, const char *, const char *);
+    void (*SSL_set_accept_state)(FunnySSL *);
+    void (*SSL_set_connect_state)(FunnySSL *);
+    int (*SSL_do_handshake)(FunnySSL *);
+    int (*SSL_get_error)(const FunnySSL *, int);
+    int (*SSL_pending)(const FunnySSL *);
+    const char *(*SSL_get_version)(const FunnySSL *);
+    const void *(*SSL_get_current_cipher)(const FunnySSL *);
+    const char *(*SSL_CIPHER_get_name)(const void *);
+    FunnyPKCS12 *(*d2i_PKCS12_fp)(FILE *, FunnyPKCS12 **);
+    int (*PKCS12_parse)(FunnyPKCS12 *, const char *, FunnyEvpPkey **, FunnyX509 **, void **);
+    void (*PKCS12_free)(FunnyPKCS12 *);
+    void (*X509_free)(FunnyX509 *);
+    void (*EVP_PKEY_free)(FunnyEvpPkey *);
+    int (*OPENSSL_sk_num)(const void *);
+    void *(*OPENSSL_sk_value)(const void *, int);
+    void (*OPENSSL_sk_free)(void *);
+    void (*ERR_clear_error)(void);
+    unsigned long (*ERR_get_error)(void);
+    void (*ERR_error_string_n)(unsigned long, char *, size_t);
+    const char *(*X509_verify_cert_error_string)(long);
+} g_sslx;
+static bool g_sslxOk = false;
+static pthread_once_t g_sslxOnce = PTHREAD_ONCE_INIT;
+
+#define SSLX_SYM(field) (g_sslx.field = (__typeof__(g_sslx.field))dlsym(g_ssl.handle, #field))
+
+static void sslx_load(void) {
+    char ignored[256]; /* sslx_ready reports a missing library itself */
+    if (!ensure_openssl(ignored, sizeof ignored)) return;
+    g_sslxOk = SSLX_SYM(TLS_server_method) && SSLX_SYM(SSL_CTX_free) && SSLX_SYM(SSL_CTX_ctrl) &&
+               SSLX_SYM(SSL_CTX_set_options) && SSLX_SYM(SSL_CTX_set_cipher_list) &&
+               SSLX_SYM(SSL_CTX_use_certificate) && SSLX_SYM(SSL_CTX_use_PrivateKey) &&
+               SSLX_SYM(SSL_CTX_check_private_key) && SSLX_SYM(SSL_CTX_load_verify_locations) &&
+               SSLX_SYM(SSL_set_accept_state) && SSLX_SYM(SSL_set_connect_state) && SSLX_SYM(SSL_do_handshake) &&
+               SSLX_SYM(SSL_get_error) && SSLX_SYM(SSL_pending) && SSLX_SYM(SSL_get_version) &&
+               SSLX_SYM(SSL_get_current_cipher) && SSLX_SYM(SSL_CIPHER_get_name) && SSLX_SYM(d2i_PKCS12_fp) &&
+               SSLX_SYM(PKCS12_parse) && SSLX_SYM(PKCS12_free) && SSLX_SYM(X509_free) && SSLX_SYM(EVP_PKEY_free) &&
+               SSLX_SYM(OPENSSL_sk_num) && SSLX_SYM(OPENSSL_sk_value) && SSLX_SYM(OPENSSL_sk_free) &&
+               SSLX_SYM(ERR_clear_error) && SSLX_SYM(ERR_get_error) && SSLX_SYM(ERR_error_string_n) &&
+               SSLX_SYM(X509_verify_cert_error_string);
+}
+
+static bool sslx_ready(char *err, size_t errLen) {
+    pthread_once(&g_sslxOnce, sslx_load);
+    if (g_ssl.handle == NULL) {
+        snprintf(err, errLen, "%s", NO_OPENSSL_MSG);
+        return false;
+    }
+    if (!g_sslxOk) {
+        snprintf(err, errLen, "this OpenSSL is missing something a TLS server needs (1.1.1 or newer has it all).");
+        return false;
+    }
+    return true;
+}
+
+/* `what`, plus OpenSSL's own reason when it left one. */
+static void sslx_error(char *err, size_t errLen, const char *what) {
+    unsigned long code = g_sslx.ERR_get_error();
+    if (code != 0) {
+        char detail[256];
+        g_sslx.ERR_error_string_n(code, detail, sizeof detail);
+        snprintf(err, errLen, "%s (%s).", what, detail);
+    } else {
+        snprintf(err, errLen, "%s.", what);
+    }
+    g_sslx.ERR_clear_error();
+}
+
+static bool sslx_configure(FunnySSLCtx *ctx) {
+    if (g_sslx.SSL_CTX_ctrl(ctx, FUNNY_SSL_CTRL_SET_MIN_PROTO_VERSION, FUNNY_TLS1_2_VERSION, NULL) != 1) return false;
+    g_sslx.SSL_CTX_set_options(ctx, FUNNY_SSL_OP_NO_COMPRESSION | FUNNY_SSL_OP_NO_RENEGOTIATION |
+                                        FUNNY_SSL_OP_CIPHER_SERVER_PREFERENCE);
+    return g_sslx.SSL_CTX_set_cipher_list(ctx, FUNNY_TLS12_CIPHERS) == 1;
+}
+
+struct TlsServer {
+    FunnySSLCtx *ctx;
+};
+
+struct TlsConn {
+    FunnySSL *ssl;
+    FunnySSLCtx *ownCtx; /* a client's private context; NULL for a server's session */
+    SockFd fd;
+    bool done;
+};
+
+static TlsServer *tlsb_server_load(const char *pfxPath, const char *password, char *err, size_t errLen) {
+    if (!sslx_ready(err, errLen)) return NULL;
+    FILE *f = fopen(pfxPath, "rb");
+    if (f == NULL) {
+        snprintf(err, errLen, "can't read the certificate file '%s': %s.", pfxPath, strerror(errno));
+        return NULL;
+    }
+    g_sslx.ERR_clear_error();
+    FunnyPKCS12 *p12 = g_sslx.d2i_PKCS12_fp(f, NULL);
+    fclose(f);
+    if (p12 == NULL) {
+        sslx_error(err, errLen, "that certificate file isn't PKCS#12");
+        return NULL;
+    }
+    FunnyEvpPkey *key = NULL;
+    FunnyX509 *cert = NULL;
+    void *chain = NULL;
+    int parsed = g_sslx.PKCS12_parse(p12, password, &key, &cert, &chain);
+    g_sslx.PKCS12_free(p12);
+    if (!parsed || key == NULL || cert == NULL) {
+        sslx_error(err, errLen, "couldn't open the PKCS#12 file -- wrong password, or no key and certificate in it");
+        if (key != NULL) g_sslx.EVP_PKEY_free(key);
+        if (cert != NULL) g_sslx.X509_free(cert);
+        if (chain != NULL) g_sslx.OPENSSL_sk_free(chain);
+        return NULL;
+    }
+
+    FunnySSLCtx *ctx = g_ssl.SSL_CTX_new(g_sslx.TLS_server_method());
+    bool ok = ctx != NULL && sslx_configure(ctx) && g_sslx.SSL_CTX_use_certificate(ctx, cert) == 1 &&
+              g_sslx.SSL_CTX_use_PrivateKey(ctx, key) == 1 && g_sslx.SSL_CTX_check_private_key(ctx) == 1;
+    if (!ok) sslx_error(err, errLen, "couldn't set up TLS with that certificate and key");
+    /* The rest of the chain, so a client that trusts only the root can build
+       the path. EXTRA_CHAIN_CERT takes ownership of a certificate it accepts. */
+    if (chain != NULL) {
+        int n = g_sslx.OPENSSL_sk_num(chain);
+        for (int i = 0; i < n; i++) {
+            FunnyX509 *x = (FunnyX509 *)g_sslx.OPENSSL_sk_value(chain, i);
+            if (!ok || g_sslx.SSL_CTX_ctrl(ctx, FUNNY_SSL_CTRL_EXTRA_CHAIN_CERT, 0, x) != 1) g_sslx.X509_free(x);
+        }
+        g_sslx.OPENSSL_sk_free(chain);
+    }
+    /* use_certificate/use_PrivateKey took their own references. */
+    g_sslx.X509_free(cert);
+    g_sslx.EVP_PKEY_free(key);
+    if (!ok) {
+        if (ctx != NULL) g_sslx.SSL_CTX_free(ctx);
+        return NULL;
+    }
+    TlsServer *s = (TlsServer *)calloc(1, sizeof(TlsServer));
+    s->ctx = ctx;
+    return s;
+}
+
+static void tlsb_server_free(TlsServer *s) {
+    if (s == NULL) return;
+    g_sslx.SSL_CTX_free(s->ctx);
+    free(s);
+}
+
+static TlsConn *tlsb_conn_accept(TlsServer *s, SockFd fd) {
+    FunnySSL *ssl = g_ssl.SSL_new(s->ctx);
+    if (ssl == NULL) return NULL;
+    if (g_ssl.SSL_set_fd(ssl, (int)fd) != 1) {
+        g_ssl.SSL_free(ssl);
+        return NULL;
+    }
+    g_sslx.SSL_set_accept_state(ssl);
+    /* Non-blocking for the life of the session, so a handshake step or a
+       read with nothing to do returns instead of parking the thread. */
+    sock_set_nonblocking(fd, true);
+    TlsConn *c = (TlsConn *)calloc(1, sizeof(TlsConn));
+    c->ssl = ssl;
+    c->fd = fd;
+    return c;
+}
+
+static int tlsb_handshake_step(TlsConn *c, char *err, size_t errLen) {
+    if (c->done) return 1;
+    /* WANT_WRITE means our own send buffer is full, which the caller's "wait
+       until readable" cannot fix; wait for it here, briefly, instead. */
+    double giveUp = platform_monotonic_seconds() + 5.0;
+    for (;;) {
+        g_sslx.ERR_clear_error();
+        int r = g_sslx.SSL_do_handshake(c->ssl);
+        if (r == 1) {
+            c->done = true;
+            return 1;
+        }
+        int e = g_sslx.SSL_get_error(c->ssl, r);
+        if (e == FUNNY_SSL_ERROR_WANT_READ) return 0;
+        if (e == FUNNY_SSL_ERROR_WANT_WRITE && platform_monotonic_seconds() < giveUp) {
+            sock_poll_writable(c->fd, 100);
+            continue;
+        }
+        sslx_error(err, errLen, "the TLS handshake failed");
+        return -1;
+    }
+}
+
+static TlsConn *tlsb_conn_connect(SockFd fd, const char *serverName, const char *caPath, double deadline, char *err,
+                                  size_t errLen) {
+    if (!sslx_ready(err, errLen)) return NULL;
+    if (g_ssl.SSL_set1_host == NULL) {
+        snprintf(err, errLen, "this OpenSSL can't check host names, so it can't verify anybody.");
+        return NULL;
+    }
+    FunnySSLCtx *ctx = g_ssl.SSL_CTX_new(g_ssl.TLS_client_method());
+    if (ctx == NULL || !sslx_configure(ctx)) {
+        sslx_error(err, errLen, "couldn't set up TLS");
+        if (ctx != NULL) g_sslx.SSL_CTX_free(ctx);
+        return NULL;
+    }
+    if (caPath != NULL && caPath[0] != '\0') {
+        /* Exactly this CA and nothing else: the system store is never loaded. */
+        if (g_sslx.SSL_CTX_load_verify_locations(ctx, caPath, NULL) != 1) {
+            sslx_error(err, errLen, "couldn't load the CA file");
+            g_sslx.SSL_CTX_free(ctx);
+            return NULL;
+        }
+    } else {
+        g_ssl.SSL_CTX_set_default_verify_paths(ctx);
+    }
+    FunnySSL *ssl = g_ssl.SSL_new(ctx);
+    if (ssl == NULL) {
+        sslx_error(err, errLen, "couldn't set up TLS");
+        g_sslx.SSL_CTX_free(ctx);
+        return NULL;
+    }
+    char name[256];
+    snprintf(name, sizeof name, "%s", serverName);
+    if (!tls_name_is_ip(name)) g_ssl.SSL_ctrl(ssl, FUNNY_SSL_CTRL_SET_TLSEXT_HOSTNAME, FUNNY_TLSEXT_NAMETYPE_host_name, name);
+    g_ssl.SSL_set1_host(ssl, name);
+    g_ssl.SSL_set_verify(ssl, FUNNY_SSL_VERIFY_PEER, NULL);
+    g_ssl.SSL_set_fd(ssl, (int)fd);
+    g_sslx.SSL_set_connect_state(ssl);
+    sock_set_nonblocking(fd, true);
+
+    bool ok = false;
+    for (;;) {
+        g_sslx.ERR_clear_error();
+        int r = g_sslx.SSL_do_handshake(ssl);
+        if (r == 1) {
+            ok = true;
+            break;
+        }
+        int e = g_sslx.SSL_get_error(ssl, r);
+        if (e == FUNNY_SSL_ERROR_WANT_READ || e == FUNNY_SSL_ERROR_WANT_WRITE) {
+            int wait = tls_ms_left(deadline);
+            int pr = wait <= 0 ? 0
+                               : (e == FUNNY_SSL_ERROR_WANT_READ ? sock_poll_readable(fd, wait)
+                                                                 : sock_poll_writable(fd, wait));
+            if (pr > 0) continue;
+            snprintf(err, errLen, "the TLS handshake with %s timed out.", name);
+            break;
+        }
+        long verify = g_ssl.SSL_get_verify_result(ssl);
+        if (verify != FUNNY_X509_V_OK) {
+            snprintf(err, errLen, "%s's certificate didn't check out: %s.", name,
+                     g_sslx.X509_verify_cert_error_string(verify));
+            g_sslx.ERR_clear_error();
+        } else {
+            sslx_error(err, errLen, "the TLS handshake failed");
+        }
+        break;
+    }
+    if (ok && g_ssl.SSL_get_verify_result(ssl) != FUNNY_X509_V_OK) {
+        snprintf(err, errLen, "%s's certificate didn't check out.", name);
+        ok = false;
+    }
+    if (!ok) {
+        g_ssl.SSL_free(ssl);
+        g_sslx.SSL_CTX_free(ctx);
+        return NULL;
+    }
+    TlsConn *c = (TlsConn *)calloc(1, sizeof(TlsConn));
+    c->ssl = ssl;
+    c->ownCtx = ctx;
+    c->fd = fd;
+    c->done = true;
+    return c;
+}
+
+static int64_t tlsb_recv(TlsConn *c, char *buf, size_t len, int timeoutMs) {
+    if (!c->done) return PLATFORM_SOCKET_ERROR;
+    double deadline = timeoutMs >= 0 ? platform_monotonic_seconds() + (double)timeoutMs / 1000.0 : 0.0;
+    int n = len > (size_t)INT_MAX ? INT_MAX : (int)len;
+    for (;;) {
+        g_sslx.ERR_clear_error();
+        int r = g_ssl.SSL_read(c->ssl, buf, n);
+        if (r > 0) return (int64_t)r;
+        int e = g_sslx.SSL_get_error(c->ssl, r);
+        if (e == FUNNY_SSL_ERROR_ZERO_RETURN) return 0; /* close_notify: a clean close */
+        if (e == FUNNY_SSL_ERROR_WANT_READ || e == FUNNY_SSL_ERROR_WANT_WRITE) {
+            int wait = -1;
+            if (timeoutMs >= 0) {
+                wait = tls_ms_left(deadline);
+                if (wait <= 0) return PLATFORM_SOCKET_TIMEOUT;
+            }
+            int pr = e == FUNNY_SSL_ERROR_WANT_READ ? sock_poll_readable(c->fd, wait) : sock_poll_writable(c->fd, wait);
+            if (pr == 0) return PLATFORM_SOCKET_TIMEOUT;
+            if (pr < 0) return PLATFORM_SOCKET_ERROR;
+            continue;
+        }
+        g_sslx.ERR_clear_error();
+        return PLATFORM_SOCKET_ERROR;
+    }
+}
+
+static bool tlsb_send(TlsConn *c, const char *buf, size_t len) {
+    if (!c->done) return false;
+    size_t sent = 0;
+    while (sent < len) {
+        size_t chunk = len - sent;
+        if (chunk > (size_t)1 << 30) chunk = (size_t)1 << 30;
+        g_sslx.ERR_clear_error();
+        int r = g_ssl.SSL_write(c->ssl, buf + sent, (int)chunk);
+        if (r > 0) {
+            sent += (size_t)r;
+            continue;
+        }
+        /* A retry must pass the same buffer and length, which it does:
+           `sent` has not moved. */
+        int e = g_sslx.SSL_get_error(c->ssl, r);
+        if (e == FUNNY_SSL_ERROR_WANT_WRITE && sock_poll_writable(c->fd, 30000) > 0) continue;
+        if (e == FUNNY_SSL_ERROR_WANT_READ && sock_poll_readable(c->fd, 30000) > 0) continue;
+        g_sslx.ERR_clear_error();
+        return false;
+    }
+    return true;
+}
+
+static bool tlsb_pending(TlsConn *c) { return c->done && g_sslx.SSL_pending(c->ssl) > 0; }
+
+static bool tlsb_info(TlsConn *c, char *version, size_t versionLen, char *cipher, size_t cipherLen) {
+    if (!c->done) return false;
+    const char *v = g_sslx.SSL_get_version(c->ssl);
+    const void *ci = g_sslx.SSL_get_current_cipher(c->ssl);
+    const char *cn = ci != NULL ? g_sslx.SSL_CIPHER_get_name(ci) : NULL;
+    snprintf(version, versionLen, "%s", v != NULL ? v : "?");
+    snprintf(cipher, cipherLen, "%s", cn != NULL ? cn : "?");
+    return true;
+}
+
+static void tlsb_conn_free(TlsConn *c) {
+    if (c == NULL) return;
+    /* close_notify, best effort: on a non-blocking socket this sends ours and
+       does not wait for theirs. */
+    if (c->done) g_ssl.SSL_shutdown(c->ssl);
+    g_ssl.SSL_free(c->ssl);
+    if (c->ownCtx != NULL) g_sslx.SSL_CTX_free(c->ownCtx);
+    free(c);
+}
+
+#elif defined(_WIN32)
+
+/* Windows: Schannel -- web_server_https PLAN.md H4. */
+struct TlsServer {
+    int unused;
+};
+struct TlsConn {
+    int unused;
+};
+static TlsServer *tlsb_server_load(const char *pfxPath, const char *password, char *err, size_t errLen) {
+    (void)pfxPath;
+    (void)password;
+    snprintf(err, errLen, "a TLS server isn't built for Windows yet.");
+    return NULL;
+}
+static void tlsb_server_free(TlsServer *s) { free(s); }
+static TlsConn *tlsb_conn_accept(TlsServer *s, SockFd fd) {
+    (void)s;
+    (void)fd;
+    return NULL;
+}
+static int tlsb_handshake_step(TlsConn *c, char *err, size_t errLen) {
+    (void)c;
+    snprintf(err, errLen, "a TLS server isn't built for Windows yet.");
+    return -1;
+}
+static TlsConn *tlsb_conn_connect(SockFd fd, const char *serverName, const char *caPath, double deadline, char *err,
+                                  size_t errLen) {
+    (void)fd;
+    (void)serverName;
+    (void)caPath;
+    (void)deadline;
+    (void)tls_ms_left;
+    (void)tls_name_is_ip;
+    snprintf(err, errLen, "a pinned-CA TLS client isn't built for Windows yet.");
+    return NULL;
+}
+static int64_t tlsb_recv(TlsConn *c, char *buf, size_t len, int timeoutMs) {
+    (void)c;
+    (void)buf;
+    (void)len;
+    (void)timeoutMs;
+    return PLATFORM_SOCKET_ERROR;
+}
+static bool tlsb_send(TlsConn *c, const char *buf, size_t len) {
+    (void)c;
+    (void)buf;
+    (void)len;
+    return false;
+}
+static bool tlsb_pending(TlsConn *c) {
+    (void)c;
+    return false;
+}
+static bool tlsb_info(TlsConn *c, char *version, size_t versionLen, char *cipher, size_t cipherLen) {
+    (void)c;
+    (void)version;
+    (void)versionLen;
+    (void)cipher;
+    (void)cipherLen;
+    return false;
+}
+static void tlsb_conn_free(TlsConn *c) { free(c); }
+
+#else
+
+/* macOS: Secure Transport -- web_server_https PLAN.md H5. */
+struct TlsServer {
+    int unused;
+};
+struct TlsConn {
+    int unused;
+};
+static TlsServer *tlsb_server_load(const char *pfxPath, const char *password, char *err, size_t errLen) {
+    (void)pfxPath;
+    (void)password;
+    snprintf(err, errLen, "a TLS server isn't built for macOS yet.");
+    return NULL;
+}
+static void tlsb_server_free(TlsServer *s) { free(s); }
+static TlsConn *tlsb_conn_accept(TlsServer *s, SockFd fd) {
+    (void)s;
+    (void)fd;
+    return NULL;
+}
+static int tlsb_handshake_step(TlsConn *c, char *err, size_t errLen) {
+    (void)c;
+    snprintf(err, errLen, "a TLS server isn't built for macOS yet.");
+    return -1;
+}
+static TlsConn *tlsb_conn_connect(SockFd fd, const char *serverName, const char *caPath, double deadline, char *err,
+                                  size_t errLen) {
+    (void)fd;
+    (void)serverName;
+    (void)caPath;
+    (void)deadline;
+    (void)tls_ms_left;
+    (void)tls_name_is_ip;
+    snprintf(err, errLen, "a pinned-CA TLS client isn't built for macOS yet.");
+    return NULL;
+}
+static int64_t tlsb_recv(TlsConn *c, char *buf, size_t len, int timeoutMs) {
+    (void)c;
+    (void)buf;
+    (void)len;
+    (void)timeoutMs;
+    return PLATFORM_SOCKET_ERROR;
+}
+static bool tlsb_send(TlsConn *c, const char *buf, size_t len) {
+    (void)c;
+    (void)buf;
+    (void)len;
+    return false;
+}
+static bool tlsb_pending(TlsConn *c) {
+    (void)c;
+    return false;
+}
+static bool tlsb_info(TlsConn *c, char *version, size_t versionLen, char *cipher, size_t cipherLen) {
+    (void)c;
+    (void)version;
+    (void)versionLen;
+    (void)cipher;
+    (void)cipherLen;
+    return false;
+}
+static void tlsb_conn_free(TlsConn *c) { free(c); }
+
+#endif
 
 /* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
  *

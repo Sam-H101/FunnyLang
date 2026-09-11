@@ -195,7 +195,9 @@ flex bet cmd_run(path, program_args, show_time, vibes) {
         blob = filez.read_bytes(path)
     }
     quip(vibes, "running")
-    yo result = sus.run_program(blob, program_args)
+    // The fourth argument is the program's own absolute path, for its
+    // the_script(): only the command line knows it, the bytes do not.
+    yo result = sus.run_program(blob, program_args, ghost, filez.abs_path(path))
     sus (show_time && result["code"] == 0) {
         yap "compiled in " + whole_ms(compile_ms) + "ms, ran in " + whole_ms(result["ms"]) + "ms. blazingly fast (probably)"
     }

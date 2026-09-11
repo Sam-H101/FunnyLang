@@ -41,6 +41,9 @@ typedef struct {
        diagnostics wherever its caller's do, or a captured child leaks them
        into the parent's stderr. */
     FILE *err;
+    /* The program's own absolute path, for its the_script(); copied, so the
+       caller keeps ownership. NULL when nobody knows it. */
+    const char *scriptPath;
 } RunnerOptions;
 
 /* Runs already-compiled bytes -- a `.funnyc` or a `.funnypak`, told apart

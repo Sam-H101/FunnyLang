@@ -222,7 +222,10 @@ flex bet run_one_test(path) {
     // `source_dir` so a `!DIAG` golden gets its caret line: the bundle stores
     // each module under a key relative to the entry's directory, so the path
     // in the error does not resolve from wherever `funny test` was run.
-    yo opts = {"serious": spec["serious"], "source_dir": filez.dir_of(path)}
+    // `script` so the program's the_script() is its own path, exactly as
+    // under `funny run`, and a golden can find the files that live beside it.
+    yo opts = {"serious": spec["serious"], "source_dir": filez.dir_of(path),
+               "script": filez.abs_path(path)}
 
     sus (spec["error"] != ghost) {
         yo wanted = spec["error"]

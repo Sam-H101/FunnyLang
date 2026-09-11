@@ -1,0 +1,22 @@
+// the_script(): the running program's own absolute path -- and inside an
+// intern, the path it was hired from. Printed as properties rather than as
+// paths, because the path depends on where the repository is checked out.
+//
+// It exists so a program can find the files that live beside it (a worker to
+// hire, a folder to serve) whichever directory it was started from. A caught
+// error's `.file` cannot do that job: it is the bundle's logical module name.
+gimme filez
+gimme interns
+
+yo mine = the_script()
+yap "a yapstring:", what_is_it(mine) == "yapstring"
+yap "absolute:", filez.abs_path(mine) == mine
+yap "names this file:", filez.base_of(mine) == "the_script.funny"
+yap "can find its neighbours:", filez.exists(filez.join_path(filez.dir_of(mine), "the_script.expected"))
+
+deadass WORKER = "gimme interns\ninterns.deliver(the_script())\n"
+yo worker = filez.temp_file() + "_where.funny"
+filez.yeet_out(worker, WORKER)
+yo seen = interns.wait_up(interns.hire(worker))
+yap "an intern knows where it was hired from:", seen == filez.abs_path(worker)
+filez.obliterate(worker)
