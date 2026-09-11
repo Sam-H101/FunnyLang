@@ -273,8 +273,15 @@ indistinguishable from `10` followed by a trailing comment; `\` is the VB/Pascal
 | `diff_energy` | `!=` | alias |
 | `vibe` | no-op statement / pass | `vibe` compiles to nothing |
 
+| `async_ngl` | declares an async function | `async_ngl bet f() { }` — calling it returns an `otw` (ASYNC_PLAN.md A4) |
+| `await_fr` | awaits an `otw` | unary precedence; `await_fr x` on a non-`otw` is `x` |
+
 Reserved for future use (lexed as keywords, parser rejects with a "not yet, chief" error):
-`vibin`, `async_ngl`, `await_fr`, `yield_lol`, `match_this`, `when`.
+`vibin`, `yield_lol`, `match_this`, `when`.
+
+> **Two of the six are real now.** `async_ngl` and `await_fr` were built by `ASYNC_PLAN.md` A4 and
+> mean exactly what they are named. `vibin`/`yield_lol` (generators) reuse the same task machinery
+> and are cheap from here, but they are a separate feature and were not smuggled in alongside it.
 
 Identifiers: `[A-Za-z_\p{Emoji}][A-Za-z0-9_\p{Emoji}]*`. Case sensitive.
 
@@ -610,6 +617,12 @@ This is a headline feature. Budget real time for it.
 | `ImmutableVibes` | reassigning a `deadass` | "`{name}` is deadass. it doesn't change. like your ex's opinion of you." |
 | `SkillIssue` | user `chuck` with a non-error value, generic base | "skill issue." |
 | `ComputerExploded` | `computer.explode()` | see §7.9 |
+| `LeftOnRead` | an `otw` nobody awaited, or one that can never settle | "nobody ever awaited that. left on read." |
+| `CantWaitRightNow` | `await_fr` where the task cannot suspend | "you can't wait here. bad timing, chief." |
+
+> The last two are `ASYNC_PLAN.md` §2.4's additions, and the *only* ones it allowed itself. The
+> taxonomy is closed on purpose — `oops(flavor, ...)` validates against it — so adding to it is a
+> spec change, made here rather than quietly.
 
 All of these are Python classes in `funnylang/errors.py` inheriting `FunnyError`.
 `FunnyError` carries `flavor`, `message`, `roast`, `hint`, `span`, `frames`.
@@ -746,7 +759,10 @@ Constant-pool indices are **unsigned 16-bit big-endian** unless noted. Local/upv
 | 78 | `DEREF` | — | pointa → value |
 | 79 | `SET_DEREF` | — | pointa value → value |
 
-Reserve 80–99 for future opcodes. **Never renumber.** Bump `BYTECODE_VERSION` if you must.
+| 80 | `AWAIT` | — | otw → value |
+
+Reserve 81–99 for future opcodes. **Never renumber.** Bump `BYTECODE_VERSION` if you must.
+`AWAIT` was added by `ASYNC_PLAN.md` A4 and did *not* need a version bump — see §5.2's flags byte.
 
 71–72 land in M11 and 73–79 in M15; both were appended rather than renumbered, per the rule above.
 `BYTECODE_VERSION` goes to **2** in M15 — a `.funnyc` using 73–79 is genuinely unreadable by a v1
@@ -779,7 +795,7 @@ protos         proto_count × {
                  name str
                  arity u8
                  default_count u8
-                 is_variadic u8
+                 flags u8            (bit 0 = variadic, bit 1 = async)
                  upvalue_count u8
                  max_stack u16
                  local_count u8
@@ -789,6 +805,12 @@ protos         proto_count × {
                }
 entry_proto    u32
 ```
+
+The proto `flags` byte was `is_variadic` until `ASYNC_PLAN.md` A4 needed somewhere to record that a
+function is `async_ngl`. A flags byte rather than a new field, and **no version bump**: every value
+any earlier toolchain wrote is `0` or `1` and reads back identically. That is what keeps the
+self-hosting bootstrap working -- a new field would mean a runtime that cannot read the toolchain
+blob it needs in order to build the toolchain that writes the new format.
 
 ### 5.3 `.funnypak` (linked bundle) format
 
@@ -1501,7 +1523,10 @@ and hoisting `code`/`consts` into locals — not a rewrite.
 ## 11. Non-goals (do not build these)
 
 - A FunnyLang-hosted VM (see M12 note).
-- Threads, async, or a GC (Python's refcounting is the GC).
+- ~~Threads, async, or a GC (Python's refcounting is the GC).~~ **Void.** Its own parenthetical
+  gives the reason: it was written for the v1 Python implementation. There is a real
+  mark-and-sweep collector in C now (`NATIVE_PLAN.md` N4), and `ASYNC_PLAN.md` built both
+  halves of the other two on top of it. See `ASYNC_PLAN.md` §0.1.
 - A type checker. FunnyLang is dynamically typed and proud.
 - Native code generation (that's M14 stretch territory).
 - Anything requiring a third-party runtime dependency.

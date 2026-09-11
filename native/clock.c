@@ -6,6 +6,7 @@
 #include "gc.h"
 #include "groupchat.h"
 #include "modules.h"
+#include "otw.h"
 #include "platform.h"
 #include "da_string.h"
 #include "vm.h"
@@ -49,6 +50,35 @@ static Value m_elapsed(VM *vm, Value *a, int argc) {
     return FLOAT_VAL(platform_monotonic_seconds() - start);
 }
 
+/* `clock.chill(ms)` -- ASYNC_PLAN.md A6. An `otw` that settles after a
+   delay, so the event loop has a reason to yield and something to wake up
+   for.
+ *
+ * The pair with `touch_grass` is deliberate and §2.4 argues it: `touch_grass`
+ * *blocks the whole thread* -- nothing else in the program runs, including
+ * every other task -- while `chill` yields, so everything else carries on and
+ * only the awaiting task waits. Two names that read differently for two
+ * behaviours that are different, rather than one name whose meaning depends
+ * on where you called it.
+ *
+ * Milliseconds rather than seconds, unlike `touch_grass`, because a timer
+ * you are scheduling around is a millisecond-scale thing and `chill(0.05)`
+ * reads worse than `chill(50)`. Fulfils with `ghost`: what you asked for was
+ * the delay. */
+static Value m_chill(VM *vm, Value *a, int argc) {
+    double ms = 0.0;
+    if (argc >= 1) {
+        if (!IS_NUM(a[0])) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'chill' needs a numba of milliseconds, not a %s.",
+                            vm_type_name(a[0]));
+            return GHOST_VAL;
+        }
+        ms = IS_FLOAT(a[0]) ? AS_FLOAT(a[0]) : (IS_INT(a[0]) ? (double)AS_INT(a[0]) : bignum_to_double(AS_BIGNUM(a[0])));
+    }
+    if (ms < 0.0) ms = 0.0;
+    return OBJ_VAL(otw_for_timer(&vm->gc, platform_monotonic_seconds() + ms / 1000.0));
+}
+
 static Value m_stopwatch(VM *vm, Value *a, int argc) {
     (void)a;
     (void)argc;
@@ -82,6 +112,7 @@ static const ClockEntry CLOCK_FUNCTIONS[] = {
     {"now", m_now, 0, 0},
     {"now_ms", m_now_ms, 0, 0},
     {"touch_grass", m_touch_grass, 0, 1},
+    {"chill", m_chill, 0, 1},
     {"stopwatch", m_stopwatch, 0, 0},
     {"date_yap", m_date_yap, 0, 1},
 };

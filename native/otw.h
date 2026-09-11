@@ -56,6 +56,14 @@ typedef struct ObjOtw {
        stays the worker one. */
     int internId;
 
+    /* A6: an `otw` that settles by itself when the clock gets there, from
+       `clock.chill(ms)`. `dueAt` is in platform_monotonic_seconds() terms --
+       monotonic, so a machine whose wall clock jumps backwards mid-program
+       does not park a task forever. It fulfils with `ghost`: what you wanted
+       was the delay, not a value. */
+    bool isTimer;
+    double dueAt;
+
     /* Has anything ever awaited this? Not a state -- it says nothing about
        whether the value arrived -- but the loop needs it at exit: an `otw`
        that *rejected* and that nobody ever looked at is an error thrown into
@@ -71,6 +79,8 @@ ObjOtw *otw_new(struct GC *gc);
 ObjOtw *otw_for_intern(struct GC *gc, int internId);
 /* Born settled -- what `await_fr` on a value that is already here produces. */
 ObjOtw *otw_done(struct GC *gc, Value v);
+/* Born pending, settling by itself at `dueAt` (monotonic seconds). */
+ObjOtw *otw_for_timer(struct GC *gc, double dueAt);
 
 /* Both are no-ops on an `otw` that has already settled: a settled `otw` is
    final, and a second answer is a bug in the settler rather than something

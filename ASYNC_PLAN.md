@@ -1,6 +1,6 @@
 # FunnyLang — Concurrency Plan (async + workers)
 
-> **Status:** design, not yet built. Branch `feature/async-threading`.
+> **Status:** built. A0-A7 complete; see §9. Branch `feature/async-threading`.
 > **Prerequisite:** `NATIVE_PLAN.md` complete — the runtime is C, the toolchain is FunnyLang, and
 > there is no Python anywhere. This plan assumes all of that.
 > **Deliverable:** `async_ngl` / `await_fr` with a real event loop, and OS threads through isolated
@@ -326,11 +326,11 @@ signal available.
 - [x] `await_fr` inside a native callback raises a clear error naming the callback. **(A4)**
 - [x] A value that cannot cross the worker boundary is rejected with a message that says why. **(A1)**
 - [x] `CantWaitRightNow` and `LeftOnRead` are the *only* additions to §4.1's flavor taxonomy. **(A2, A4)**
-- [ ] MSVC `/W4 /WX`, gcc and clang `-Wall -Wextra -Werror` clean; the corpus green on Linux,
-      Windows and macOS.
-- [ ] `funny bootstrap --verify` still reaches its fixed point — the self-hosted compiler must be
+- [x] MSVC `/W4 /WX`, gcc and clang `-Wall -Wextra -Werror` clean; the corpus green on Linux,
+      Windows and macOS. **(macOS via CI)**
+- [x] `funny bootstrap --verify` still reaches its fixed point — the self-hosted compiler must be
       unaffected by all of this.
-- [ ] No third-party dependency, build-time or runtime. Still one C compiler.
+- [x] No third-party dependency, build-time or runtime. Still one C compiler.
 
 ---
 
@@ -604,3 +604,53 @@ spec contradiction, and every wrong turn worth not repeating.
   Windows (MSVC `/W4 /WX`), 391/391 under `FUNNY_GC_STRESS=50`, the whole corpus clean under
   ASan+UBSan, `tests/lang/async` and `tests/lang/interns` clean under ThreadSanitizer, and the
   bootstrap fixed point byte-identical on both platforms.
+
+- **A6 · timers, and the two halves meeting. Done.** `clock.chill(ms)` is an `otw` that settles
+  after a delay; a worker finishing on its own thread wakes the loop; §1's example runs, and is a
+  golden.
+
+  **Choices worth recording:**
+  - **`chill` takes milliseconds where `touch_grass` takes seconds.** They are different verbs for
+    different behaviour -- `touch_grass` blocks the whole program, every task included, and `chill`
+    yields -- so the units should not invite substituting one for the other either. A timer you are
+    scheduling around is a millisecond-scale thing; `chill(0.05)` reads worse than `chill(50)`.
+  - **A timer lives on the `otw`, not in a heap in the loop.** `dueAt` is a field, in
+    `platform_monotonic_seconds()` terms -- monotonic, so a machine whose wall clock steps backwards
+    mid-program does not park a task forever. The loop scans waiting tasks for the earliest
+    deadline, which is O(tasks) per idle turn and irrelevant at any plausible task count; a timer
+    heap would be the right answer at ten thousand and is not worth its own invariants at ten.
+  - **One wait covers both sources.** When nothing can run, the loop does a *timed* wait on the
+    interns condition variable with the next timer as its timeout: a worker finishing broadcasts,
+    and a deadline expiring times out. Polling either one separately would have meant choosing
+    between latency and a spin.
+  - **`interns.wait_up` grew a third case and a refusal.** It blocks on a worker (join) or a timer
+    (sleep). It *refuses* an `otw` that only a task can settle, with `CantWaitRightNow` pointing at
+    `await_fr` -- the task needs the interpreter that `wait_up` is holding, so blocking there would
+    deadlock the program against itself. Hanging, or reporting `LeftOnRead` for something that was
+    nobody's fault, would both have been worse answers.
+
+  **Acceptance, met:** `tests/lang/async/timers.funny` runs §1's example verbatim in shape, proves
+  two `chill`s settle in duration order rather than creation order (the one timing claim in the
+  corpus, which §5.2 names as legitimate, with a sixtyfold gap so a loaded machine cannot change
+  the answer), awaits a worker from an async function with a timer running alongside it, and
+  gathers three tasks that each chill *and* hire.
+
+- **A7 · docs, and the reserved-keyword list. Done.** `README.md` (a concurrency bullet with the §1
+  example and an eleventh stdlib module), `docs/LANGUAGE.md` (a Concurrency section, `otw` in the
+  runtime-types list, both keywords in the table), `docs/STDLIB.md` (`interns`, and `chill` next to
+  `touch_grass` with the difference spelled out), `docs/BYTECODE.md` (`AWAIT`, and why the flags
+  byte is not a version bump), `docs/NATIVE.md` (the new files, threads behind the platform
+  boundary, and two new GC-contract rules: the collector walks every task, and one thread owns one
+  heap), `CHANGELOG.md`, and `PLAN.md` -- §3.3's reserved list is down to four, §4.1's taxonomy has
+  its two new flavors, §5.1 has opcode 80, §5.2 has the flags byte, and §11's "Threads, async, or a
+  GC" non-goal is struck through with the reason it was void.
+
+  `vibin` and `yield_lol` stay reserved. Generators reuse A3's task machinery and would be cheap
+  from here -- a task that yields values instead of settling once -- but they are a separate
+  feature and smuggling them in under a concurrency plan would be exactly the kind of scope creep
+  the §9 convention exists to catch.
+
+  **CI gained a ThreadSanitizer job** for `tests/lang/async` and `tests/lang/interns` on the
+  `ubuntu-latest` + `clang` leg. §5.5 asked for it: a data race is invisible to ASan and to
+  `FUNNY_GC_STRESS` alike, and only those two directories use threads, so running TSan over the
+  whole corpus would buy nothing for several minutes of CI.

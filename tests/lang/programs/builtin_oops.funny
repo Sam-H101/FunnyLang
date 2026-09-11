@@ -8,7 +8,8 @@
 grind flavor in ["LexerSaidNah", "ParserHadAStroke", "WhoDis", "TypeVibeMismatch",
                  "MathAintMathin", "OutOfPocket", "KeyGhosted", "GhostError",
                  "NotACallableRizz", "WrongNumberOfHomies", "TooDeepBro",
-                 "ImportSkillIssue", "ImmutableVibes", "SkillIssue", "ComputerExploded"] {
+                 "ImportSkillIssue", "ImmutableVibes", "SkillIssue", "ComputerExploded",
+                 "LeftOnRead", "CantWaitRightNow"] {
     sketchy {
         chuck oops(flavor, "a message for " + flavor)
     } my_bad (e) {

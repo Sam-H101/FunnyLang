@@ -31,4 +31,13 @@ struct Task;
    `entry`'s return value goes in `*resultOut` when it is not NULL. */
 VmResult loop_run(VM *vm, struct Task *entry, Value *resultOut);
 
+struct ObjOtw;
+
+/* Drives one `otw` to settled by blocking this whole thread: joining the
+   worker behind it, or sleeping out the timer. `interns.wait_up` is the
+   caller -- the non-async way to wait. An `otw` that a *task* would settle is
+   refused with `CantWaitRightNow` rather than deadlocking the program against
+   itself: the task needs the interpreter this call is holding. */
+void loop_settle_blocking(VM *vm, struct ObjOtw *p);
+
 #endif /* FUNNY_LOOP_H */

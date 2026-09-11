@@ -10,6 +10,7 @@
 #include "diag.h"
 #include "error.h"
 #include "gc.h"
+#include "loop.h"
 #include "groupchat.h"
 #include "modules.h"
 #include "object.h"
@@ -510,6 +511,39 @@ bool interns_ready(VM *vm, ObjOtw *p) {
     return ready;
 }
 
+/* Blocks until some worker owned by `vm` finishes, or `timeoutMs` elapses
+   (negative means no timeout). True if one has finished -- including one that
+   finished before this was called. This is what the event loop sleeps on
+   instead of spinning, and a *timed* wait is how A6 combines "wake when a
+   worker is done" with "wake when the next timer is due" in one call. */
+bool interns_wait_any(VM *vm, int timeoutMs) {
+    if (!g_ready) return false;
+    platform_mutex_lock(&g_lock);
+    bool found = false;
+    for (int i = 0; i < g_internCount; i++) {
+        Intern *in = g_interns[i];
+        if (in != NULL && in->owner == vm && in->done && !in->retired) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        /* One wait, not a loop: a spurious wake-up returns false and the
+           caller goes round its own loop, which has other things to check
+           anyway. Sleeping again here would mean re-deciding the timeout. */
+        platform_cond_wait_ms(&g_wake, &g_lock, timeoutMs < 0 ? 60000 : timeoutMs);
+        for (int i = 0; i < g_internCount; i++) {
+            Intern *in = g_interns[i];
+            if (in != NULL && in->owner == vm && in->done && !in->retired) {
+                found = true;
+                break;
+            }
+        }
+    }
+    platform_mutex_unlock(&g_lock);
+    return found;
+}
+
 /* Joins the worker behind `p` and settles it -- fulfilled with what the
    worker delivered, or rejected with the error that killed it, carrying its
    own original flavor (§2.4: wrapping a worker's TypeVibeMismatch in a
@@ -578,7 +612,7 @@ static Value settle_and_read(VM *vm, Value v) {
     if (!(IS_OBJ(v) && AS_OBJ(v)->type == OBJ_OTW)) return v;
     ObjOtw *p = (ObjOtw *)AS_OBJ(v);
     p->awaited = true;
-    interns_collect(vm, p);
+    loop_settle_blocking(vm, p);
     if (p->state == OTW_REJECTED) {
         vm_rethrow(vm, p->error);
         return GHOST_VAL;

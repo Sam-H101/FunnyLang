@@ -51,6 +51,11 @@ bool interns_has_worker(struct VM *vm, struct ObjOtw *p);
    to. */
 bool interns_ready(struct VM *vm, struct ObjOtw *p);
 
+/* Blocks until a worker owned by `vm` finishes, or `timeoutMs` elapses
+   (negative: no timeout). True if one has. The event loop sleeps on this
+   rather than spinning. */
+bool interns_wait_any(struct VM *vm, int timeoutMs);
+
 /* Joins the worker behind this `otw` and settles it -- fulfilled with what
    the worker delivered, rejected with the error that killed it. Replays what
    the worker printed to the waiting VM's streams first. A no-op on an `otw`

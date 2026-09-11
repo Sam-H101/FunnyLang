@@ -15,6 +15,8 @@ static ObjOtw *alloc_otw(GC *gc) {
     p->value = GHOST_VAL;
     p->error = GHOST_VAL;
     p->internId = 0;
+    p->isTimer = false;
+    p->dueAt = 0.0;
     p->awaited = false;
     gc_track(gc, (Obj *)p, sizeof(ObjOtw));
     return p;
@@ -25,6 +27,13 @@ ObjOtw *otw_new(GC *gc) { return alloc_otw(gc); }
 ObjOtw *otw_for_intern(GC *gc, int internId) {
     ObjOtw *p = alloc_otw(gc);
     p->internId = internId;
+    return p;
+}
+
+ObjOtw *otw_for_timer(GC *gc, double dueAt) {
+    ObjOtw *p = alloc_otw(gc);
+    p->isTimer = true;
+    p->dueAt = dueAt;
     return p;
 }
 

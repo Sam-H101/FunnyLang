@@ -7,6 +7,7 @@
 #include "error.h"
 #include "gc.h"
 #include "interns.h"
+#include "platform.h"
 #include "otw.h"
 #include "task.h"
 
@@ -68,18 +69,65 @@ static void reap_done(VM *vm) {
     }
 }
 
+/* A timer whose moment has come fulfils with `ghost`: what was asked for was
+   the delay. */
+static bool fire_due_timers(VM *vm, double now) {
+    bool fired = false;
+    for (int i = 0; i < vm->taskCount; i++) {
+        Task *t = vm->tasks[i];
+        if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
+        ObjOtw *p = t->awaiting;
+        if (p->state == OTW_PENDING && p->isTimer && p->dueAt <= now) {
+            otw_fulfill(p, GHOST_VAL);
+            fired = true;
+        }
+    }
+    return fired;
+}
+
+/* How long until the earliest pending timer anything is waiting on, in
+   milliseconds, or -1 if nothing is waiting on a timer at all. */
+static int next_timer_ms(VM *vm, double now) {
+    double soonest = 0.0;
+    bool any = false;
+    for (int i = 0; i < vm->taskCount; i++) {
+        Task *t = vm->tasks[i];
+        if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
+        ObjOtw *p = t->awaiting;
+        if (p->state != OTW_PENDING || !p->isTimer) continue;
+        if (!any || p->dueAt < soonest) {
+            soonest = p->dueAt;
+            any = true;
+        }
+    }
+    if (!any) return -1;
+    double ms = (soonest - now) * 1000.0;
+    if (ms < 0.0) ms = 0.0;
+    if (ms > 60000.0) ms = 60000.0;
+    return (int)ms;
+}
+
 /* Anything that is waiting and can now stop waiting? Returns true if at least
    one task moved to READY.
  *
- * Two passes, and the order matters. The first is free -- an `otw` that has
- * already settled (another task fulfilled it, or a worker was collected on
- * somebody else's behalf) needs nothing but noticing. Only when nothing at
- * all can move does the second pass block, and it blocks on the *first*
- * waiter in task order rather than on whichever worker happens to finish
- * first, so the ordering a program observes does not depend on the machine
- * it is running on. */
+ * The passes are in order of cost, and the order is what keeps the scheduling
+ * a program observes from depending on the machine it is on. Noticing an
+ * `otw` that has already settled is free. Firing a timer that is already due
+ * is free. Collecting a worker that has already finished is a join that
+ * returns immediately. Only when none of that moves anything does this block
+ * -- and it blocks on *everything at once*, with a timeout set by the
+ * earliest timer, so a worker finishing and a timer coming due both wake it. */
 static bool wake_waiters(VM *vm) {
-    bool moved = false;
+    double now = platform_monotonic_seconds();
+    bool moved = fire_due_timers(vm, now);
+
+    for (int i = 0; i < vm->taskCount; i++) {
+        Task *t = vm->tasks[i];
+        if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
+        if (t->awaiting->state == OTW_PENDING && interns_ready(vm, t->awaiting)) {
+            interns_collect(vm, t->awaiting);
+        }
+    }
     for (int i = 0; i < vm->taskCount; i++) {
         Task *t = vm->tasks[i];
         if (t == NULL || t->state != TASK_WAITING) continue;
@@ -91,18 +139,64 @@ static bool wake_waiters(VM *vm) {
     }
     if (moved) return true;
 
+    /* Nothing has happened yet. Is anything still coming? */
+    int timerMs = next_timer_ms(vm, now);
+    bool anyWorker = false;
     for (int i = 0; i < vm->taskCount; i++) {
         Task *t = vm->tasks[i];
         if (t == NULL || t->state != TASK_WAITING || t->awaiting == NULL) continue;
-        if (!interns_has_worker(vm, t->awaiting)) continue;
-        /* Blocks. Nothing else in this VM can run, so there is nothing to
-           lose by waiting for the thread that can. */
-        interns_collect(vm, t->awaiting);
-        t->state = TASK_READY;
-        t->awaiting = NULL;
+        if (interns_has_worker(vm, t->awaiting)) {
+            anyWorker = true;
+            break;
+        }
+    }
+
+    if (anyWorker) {
+        /* One wait covers both: a finishing worker broadcasts, and the
+           timeout is the next timer. Returns whether or not anything
+           happened -- the caller goes round again either way, and the passes
+           above are what decide. */
+        interns_wait_any(vm, timerMs);
+        return true;
+    }
+    if (timerMs >= 0) {
+        /* Only timers left. Sleeping the whole thread is exactly right here:
+           there is no task that could run and no thread that could finish. */
+        platform_sleep_seconds((double)timerMs / 1000.0);
         return true;
     }
     return false;
+}
+
+/* `interns.wait_up` -- the non-async way to wait. It blocks this whole thread
+   rather than suspending a task, which is what it is for (§2.4: "for code
+   that is not async").
+ *
+ * Only two things can be waited on this way, and the third is refused on
+ * purpose. A worker is joined; a timer is slept through. An `otw` that some
+ * *task* will settle cannot be: the task needs the interpreter, and this call
+ * is holding it -- blocking here would deadlock the program against itself.
+ * `await_fr` is the answer there, and the error says so rather than hanging
+ * or, worse, quietly reporting `LeftOnRead` for something that was not
+ * anybody's fault. */
+void loop_settle_blocking(VM *vm, ObjOtw *p) {
+    while (p->state == OTW_PENDING) {
+        if (interns_has_worker(vm, p)) {
+            interns_collect(vm, p);
+            continue;
+        }
+        if (p->isTimer) {
+            double left = p->dueAt - platform_monotonic_seconds();
+            if (left > 0.0) platform_sleep_seconds(left);
+            otw_fulfill(p, GHOST_VAL);
+            continue;
+        }
+        vm_throw_native(vm, "CantWaitRightNow",
+                        "'wait_up' can only block on an intern or a clock.chill -- that otw belongs to an "
+                        "async_ngl bet, and blocking the whole program is how you stop it from ever finishing. "
+                        "use await_fr.");
+        return;
+    }
 }
 
 /* Nothing is ready and nothing can be woken: every remaining waiter is

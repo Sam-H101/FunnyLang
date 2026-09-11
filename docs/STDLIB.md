@@ -199,9 +199,51 @@ Free functions below; most are also `groupchat` instance methods.
 |---|---|
 | `clock.now()` | The current Unix timestamp, as a float number of seconds. |
 | `clock.now_ms()` | The current Unix timestamp in whole milliseconds. |
-| `clock.touch_grass(seconds?)` | Sleeps for `seconds` (default `0`). |
+| `clock.touch_grass(seconds?)` | Sleeps for `seconds` (default `0`). Blocks the **whole program** — no other task runs either. |
+| `clock.chill(ms?)` | An `otw` that settles after `ms` milliseconds (default `0`). Yields instead of blocking: `await_fr clock.chill(50)` pauses only the awaiting task. |
 | `clock.stopwatch()` | Starts a stopwatch and returns a zero-argument function that, each time it's called, returns the elapsed seconds since `stopwatch()` was called. |
 | `clock.date_yap(fmt?)` | The current local time formatted with a `strftime`-style pattern (default `"%Y-%m-%d %H:%M:%S"`). |
+
+## `interns` — workers on real OS threads
+
+Each hire runs a `.funny` program in its **own VM, on its own thread, with its own heap**. Nothing
+is shared, so nothing needs a lock: arguments are deep-copied in and results deep-copied out. What
+can cross is `ghost`, `boolski`, `numba` (bignums included), `yapstring`, and `stash`/`groupchat`
+recursively containing those. A `bet`, a squad instance, a `pointa`, an `otw` — anything that
+references a heap — is refused with a `TypeVibeMismatch` that names the type, because there is no
+second copy of that heap to reference. A structure containing itself is refused too.
+
+An error raised inside a worker is re-raised in the parent **with its own original flavor**.
+Whatever the worker printed is replayed at the point you waited for it, so two workers' output
+never interleaves by luck.
+
+| Function | Description |
+|---|---|
+| `interns.hire(path, arg?)` | Runs `path` on a new OS thread with `arg` as its assignment; returns an `otw`. `path` may be `.funny` source (compiled first, and cached) or an already-compiled `.funnyc`/`.funnypak`. |
+| `interns.wait_up(x)` | Blocks until `x` settles and is its value, re-raising its error if it rejected. Anything that is not an `otw` is itself. Blocks on an intern or a `clock.chill`; for an `otw` an `async_ngl bet` will settle, use `await_fr`. |
+| `interns.everybody(stash)` | Waits on a `stash` of `otw`s in the order given and returns a `stash` of their values. |
+| `interns.headcount()` | How many interns are worth hiring: the machine's logical CPU count. Not a limit. |
+| `interns.assignment()` | **Inside a worker:** what `hire` was given. |
+| `interns.deliver(v)` | **Inside a worker:** what `wait_up` gets back. Last delivery wins. |
+
+A worker is a *program*, not a function — a top-level script has no `bounce`, so it reads its input
+and returns its answer through the two calls above:
+
+```funny
+// double.funny
+gimme interns
+interns.deliver(interns.assignment() * 2)
+```
+
+```funny
+gimme interns
+yap interns.wait_up(interns.hire("double.funny", 21))   // 42
+```
+
+`interns.assignment()` and `interns.deliver()` outside a worker are an `OutOfPocket`. A worker may
+hire interns of its own; its handles are its own, and anything it leaves unwaited is joined when it
+finishes. Nothing is ever killed — `funny` waits for its workers at exit, because stopping a thread
+mid-allocation leaves a heap nothing can safely free.
 
 ## `computer` — the joke module
 
