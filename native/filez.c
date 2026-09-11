@@ -634,6 +634,21 @@ static Value m_write_blob_atomic(VM *vm, Value *a, int argc) {
     return INT_VAL(b->byteLen);
 }
 
+/* filez.private(path) -- owner-only, for a file that holds a key. On POSIX
+   that is chmod 0600; on Windows it is a no-op, because the equivalent is an
+   ACL rewrite rather than a mode bit, and a silent half-measure would be
+   worse than a documented absence. */
+static Value m_private(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "private");
+    if (!path) return GHOST_VAL;
+    if (!platform_make_private(path)) {
+        io_fail(vm, "private", path, "no such file");
+        return GHOST_VAL;
+    }
+    return BOOL_VAL(true);
+}
+
 static Value m_abs_path(VM *vm, Value *a, int argc) {
     (void)argc;
     const char *path = path_str(vm, a[0], "abs_path");
@@ -674,6 +689,7 @@ static const FilezEntry FILEZ_FUNCTIONS[] = {
     {"yeet_out_atomic", m_yeet_out_atomic, 2, 2},
     {"write_blob_atomic", m_write_blob_atomic, 2, 2},
     {"make_executable", m_make_executable, 1, 1},
+    {"private", m_private, 1, 1},
     {"temp_file", m_temp_file, 0, 1},
     {"abs_path", m_abs_path, 1, 1},
     {"join_path", m_join_path, 1, 255},

@@ -292,6 +292,7 @@ Free functions below; most are also `groupchat` instance methods.
 | `filez.yeet_out_atomic(path, text)` | Writes `text` beside `path`, flushes it to the disk, then `replace`s it into place; returns the codepoint count. A crash mid-write leaves the old file. |
 | `filez.write_blob_atomic(path, b)` | The same for a `blob`; returns the byte count. |
 | `filez.make_executable(path)` | Marks `path` runnable (the executable bits on POSIX; a no-op on Windows). |
+| `filez.private(path)` | Makes `path` owner-only — `chmod 0600` on POSIX, where that is the difference between a key file and a published one. A no-op on Windows, whose equivalent is an ACL rewrite rather than a mode bit. |
 | `filez.temp_file(prefix?)` | Creates an empty file in the OS temp directory and returns its path. Yours to `obliterate`. |
 | `filez.abs_path(path)` | The absolute, resolved form of `path`. |
 | `filez.join_path(...parts)` | Joins path components with the OS separator. |

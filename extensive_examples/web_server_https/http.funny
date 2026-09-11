@@ -353,10 +353,12 @@ flex bet url_decode(s) {
     bounce out.join("")
 }
 
-gimme { utf8_text } from "crypto.funny"
+gimme blob
 
+// A stash of byte values as text. `blob` decodes UTF-8 the same way, lossily,
+// so one bad byte costs one character rather than the whole value.
 bet bytes_to_text(bytes) {
-    bounce utf8_text(bytes)
+    bounce blob.of(bytes).to_yap()
 }
 
 // -- writing a response ------------------------------------------------------------

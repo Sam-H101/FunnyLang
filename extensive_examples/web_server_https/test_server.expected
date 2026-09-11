@@ -1,4 +1,4 @@
--- sha-256 and base64 --
+-- hashing and base64 --
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
 248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
@@ -49,7 +49,8 @@ three a window: [fax, fax, fax, cap, cap] fax
 users: default ["admin", "demo"]
 password: sha256: fax
 email: b64:YWRtaW5AbG9jYWxob3N0 -> admin@localhost
-seal round trip: über ✓ b64:dGVzdGVyQGV4YW1wbGUuY29t
+seal round trip: über ✓ fax
+the same value sealed twice differs: fax
 -- the server, over TLS --
 threads: 4 config at start: default
 health: 200 over TLS 1.2 or newer: fax
@@ -83,9 +84,9 @@ page views from four clients at once: 40 of 40
 every thread reported back: fax
 -- data at rest, afterwards --
 loaded first on the next start: custom
-password: sha256: fax
-display name: b64:VGVzdGVy -> Tester
-email: b64:dGVzdGVyQGV4YW1wbGUuY29t
+password: pbkdf2-sha256$ fax
+display name sealed: fax -> Tester
+email sealed: fax -> tester@example.com
 defaults: {"theme": "dark", "page_size": 10, "landing": "/settings"}
 demo untouched: fax
 the committed default untouched: fax

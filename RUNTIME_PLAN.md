@@ -760,6 +760,13 @@ is timing-dependent by nature; `tests/lang/stdlib/sus_threads` asserts the row c
 that hired nobody, the three keys, and their types. The signal path is checked by hand, because a
 golden cannot press Ctrl-\.
 
+**One primitive added for the examples plan.** `EXAMPLES_PLAN.md`'s rule 1 says an example that
+needs something the runtime does not have gets a small, general primitive rather than a special
+case -- and gets it recorded here. E0 needs its key file to be owner-only, so `filez.private(path)`
+is `chmod 0600` on POSIX and, honestly, a no-op on Windows: the equivalent there is an ACL rewrite
+rather than a mode bit, and a silent half-measure would be worse than a documented absence. It is
+general (any program with a secret in a file wants it), not shaped to this one example.
+
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in
 `CommonCryptorSPI.h`, which the public SDK does not ship. Options, in order of preference: (a)

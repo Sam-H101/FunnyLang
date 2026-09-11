@@ -26,7 +26,7 @@ bet try_parse(text) {
 gimme { html_escape } from "http.funny"
 gimme { ct_equal, session_cookie, cleared_session_cookie, valid_username, valid_email, clean_text,
         password_problem } from "security.funny"
-gimme { hash_password, THEMES, PAGE_SIZES, LANDINGS } from "store.funny"
+gimme { THEMES, PAGE_SIZES, LANDINGS } from "store.funny"
 gimme { static_target, read_static, PAGES } from "static.funny"
 gimme { ask_keeper } from "keeper_client.funny"
 
@@ -205,11 +205,14 @@ async_ngl bet api(ctx) {
         sus (!valid_username(name) || what_is_it(password) != "yapstring" || password.how_thicc() > 128) {
             bounce oops_json(401, "that username and password don't match.")
         }
-        // Hashed here, on whichever of the two dozen threads took the request,
-        // rather than in the keeper: the one thread everybody shares should
-        // not be the one doing the arithmetic.
+        // The password itself goes to the keeper, which owns the stored hash
+        // and is the only thing that can check it: `vault.hash_password`
+        // salts freshly every time, so two hashes of one password differ and
+        // there is nothing a worker could usefully pre-compute. Nothing
+        // leaves this process -- since RUNTIME_PLAN.md R2 the keeper is
+        // reached by a message, not a socket.
         yo reply = await_fr ask_keeper(ctx["link"], who(ctx, {"op": "login", "username": name,
-                                                             "hash": hash_password(password)}))
+                                                             "password": password}))
         yo failed = from_keeper(reply)
         sus (failed != ghost) {
             bounce failed
@@ -296,8 +299,8 @@ async_ngl bet api(ctx) {
             bounce oops_json(400, "that's the same password.")
         }
         yo reply = await_fr ask_keeper(ctx["link"], who(ctx, {"op": "password", "sid": ctx["sid"],
-                                                             "current_hash": hash_password(body["current"]),
-                                                             "new_hash": hash_password(fresh)}))
+                                                             "current": body["current"],
+                                                             "new": fresh}))
         yo failed = from_keeper(reply)
         sus (failed != ghost) {
             bounce failed

@@ -37,6 +37,13 @@ yap json.spill(doc, {"pretty": fax})   // indented, one key per line
 - Going out, NaN and infinity become `null`, `U+2028`/`U+2029` are escaped for the browser on the
   other end, a `blob` becomes base64 text, and a value containing itself is `OutOfPocket`.
 
+### Added: `filez.private(path)`
+
+Makes a file owner-only — `chmod 0600` on POSIX, where that is the difference between a key file
+and a published one. A no-op on Windows, whose equivalent is an ACL rewrite rather than a mode bit;
+saying so is better than a silent half-measure. Added for the HTTPS example's `--key-file`, and
+general enough for anything else that keeps a secret in a file.
+
 ### Added: a dump of what every thread is waiting on
 
 A hung program is the failure mode threads add, and it is the one a stack trace cannot help with:

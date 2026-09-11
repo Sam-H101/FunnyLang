@@ -30,12 +30,18 @@ bet try_parse(text) {
     }
 }
 gimme { ct_equal, new_token, window_hit, window_count, prune_windows } from "security.funny"
-gimme { load_config, save_config, public_user, setting, seal, unseal, load_activity, save_activity,
+gimme vault
+gimme { load_config, save_config, public_user, setting, seal, unseal, use_key, hash_password, check_password,
+        load_activity, save_activity,
         activity_entry, activity_view, default_config_path, custom_config_path, activity_path,
         ACTIVITY_CAP, THEMES, PAGE_SIZES, LANDINGS } from "store.funny"
 
 yo JOB = interns.assignment()
 yo SECRET = JOB["secret"]
+// The same key the main thread loaded, so both halves of this process seal
+// and open the same values. It arrives in the assignment rather than being
+// read twice: one place decides where the key comes from.
+use_key(vault.base64_decode(JOB["key"]))
 yo DEFAULT_PATH = default_config_path(JOB["example_dir"])
 yo CUSTOM_PATH = custom_config_path(JOB["data_dir"])
 yo ACTIVITY_PATH = activity_path(JOB["data_dir"])
@@ -61,9 +67,12 @@ yo RATE_WINDOW = setting(CONFIG, "security", "rate_window_seconds", 10)
 yo LOGIN_FAILURES = setting(CONFIG, "security", "login_failures", 5)
 yo LOGIN_WINDOW = setting(CONFIG, "security", "login_window_seconds", 300)
 
-// A hash no password produces, compared against when the username does not
-// exist, so "no such user" costs the same as "wrong password".
-deadass NOBODY_HASH = "sha256:" + "0" * 64
+// A real hash, of a value nobody has, compared against when the username
+// does not exist -- so "no such user" costs the same PBKDF2 work as a wrong
+// password and the answer cannot be timed. Made once, at start-up: an
+// old-format constant here would have been the fast path, which is the
+// oracle this exists to prevent.
+deadass NOBODY_HASH = hash_password(new_token())
 
 yo SESSIONS = {}
 yo RATE = {}
@@ -157,7 +166,11 @@ bet op_login(msg) {
     yo expected = known ? users[name]["password"] : NOBODY_HASH
     // Compared either way, so an unknown name and a wrong password take the
     // same path and the same time.
-    yo matches = ct_equal(expected, msg.get("hash", ""))
+    // Checked here because here is where the stored hash lives, and
+    // check_password reads the salt and the iteration count out of it.
+    // An unknown name costs the same work as a wrong password: NOBODY_HASH
+    // is a real hash of a value nobody has.
+    yo matches = check_password(msg.get("password", ""), expected)
     sus (!known || !matches) {
         window_hit(LOGIN_FAILS, ip, now, LOGIN_WINDOW, LOGIN_FAILURES)
         // The name somebody typed is not recorded unless it is a real
@@ -241,11 +254,13 @@ bet op_password(msg) {
     }
     yo name = s["user"]
     yo user = CONFIG["users"][name]
-    sus (!ct_equal(user["password"], msg.get("current_hash", ""))) {
+    sus (!check_password(msg.get("current", ""), user["password"])) {
         record_from(msg, name, "password_change_failed", "current password was wrong", 403)
         bounce refuse(403, "your current password isn't right.")
     }
-    user["password"] = msg["new_hash"]
+    // Re-hashed with today's parameters, which is also how a user still on
+    // an old sha256: hash gets a real one: by changing their password.
+    user["password"] = hash_password(msg["new"])
     // Every other session of this user ends: a password change is often
     // somebody locking out whoever else had it.
     grind sid in SESSIONS.keys() {

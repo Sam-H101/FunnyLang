@@ -10,30 +10,38 @@
 // falling back would quietly undo a password change, which is worse than
 // refusing to start and saying why.
 //
-// PROTECTED AT REST, HONESTLY. Two treatments, and every value says which it
-// got with a prefix:
+// PROTECTED AT REST, FOR REAL NOW. Two treatments, and every value says which
+// it got by its own prefix:
 //
-//   "sha256:…"  passwords. One-way. Unsalted, which is the project owner's
-//               call for a demo (PLAN.md §9) -- a real deployment wants a slow,
-//               salted hash like scrypt or Argon2.
-//   "b64:…"     email, display name, client addresses and user agents.
-//               Base64 is an *encoding*: it keeps a value from being read over
-//               a shoulder or matched by a grep, and nothing more. Also the
-//               owner's call, for a proof of concept. It lives behind
-//               seal()/unseal() and nowhere else, so swapping in a real cipher
-//               is a change to two functions.
+//   "pbkdf2-sha256$…"  passwords, through `vault`: PBKDF2-HMAC-SHA256 with a
+//                      fresh salt and 600,000 iterations, checked in constant
+//                      time. One-way, and there is no function here that turns
+//                      one back.
+//   "v1$…"             email, display name, client addresses and user agents,
+//                      through `vault.seal`: AES-256-GCM with a fresh nonce,
+//                      under a key that lives *outside* data/. A key kept next
+//                      to the data it seals is not encryption; it is a
+//                      rearrangement.
 //
-// Only the keeper thread calls the functions that write, so two threads can
-// never write the same file.
+// Both older formats are still read, so upgrading this example does not lock
+// anybody out or lose anything: `sha256:<hex>` passwords still verify (and are
+// replaced with a real hash the next time that password changes), and `b64:`
+// values still decode. Neither is ever written again.
+//
+// Only the keeper calls the functions that write, so two threads can never
+// write the same file.
 
 gimme filez
 gimme yapper
 gimme clock
-gimme { sha256_hex, base64_encode, base64_decode } from "crypto.funny"
+gimme vault
+gimme blob
 gimme json
 
-flex deadass SEALED = "b64:"
-flex deadass HASHED = "sha256:"
+flex deadass SEALED = "v1"
+flex deadass HASHED = "pbkdf2-sha256$"
+flex deadass SEALED_OLD = "b64:"
+flex deadass HASHED_OLD = "sha256:"
 flex deadass ROLES = ["admin", "user"]
 flex deadass THEMES = ["system", "light", "dark"]
 flex deadass PAGE_SIZES = [10, 25, 50, 100]
@@ -42,33 +50,76 @@ flex deadass ACTIVITY_CAP = 5000
 
 flex deadass DEFAULT_PREFS = {"theme": "system", "page_size": 25, "landing": "/activity"}
 
+// -- the key ------------------------------------------------------------------------
+//
+// Loaded once, from --key-file, before anything is read or written. It is not
+// in this module's own data directory and never will be.
+
+yo KEY = ghost
+
+flex bet use_key(key) {
+    KEY = key
+}
+
+bet require_key(what) {
+    sus (KEY == ghost) {
+        chuck oops("SkillIssue", "can't " + what + " before the vault key is loaded.")
+    }
+    bounce KEY
+}
+
 // -- the two treatments -------------------------------------------------------------
 
 flex bet seal(text) {
-    bounce SEALED + base64_encode(to_yap(text))
+    bounce vault.seal(to_yap(text), require_key("seal a value"))
 }
 
-// A sealed value back to text. A value without the prefix is taken as it is --
-// somebody edited the file by hand -- and a damaged one is an error rather
-// than a guess.
+// A sealed value back to text. A value with no prefix at all is taken as it is
+// -- somebody edited the file by hand -- and one that will not open is an
+// error rather than a guess.
 flex bet unseal(value) {
     sus (value == ghost) {
         bounce ""
     }
+    sus (yapper.starts_with(value, SEALED_OLD)) {
+        // Written before this example had a vault: base64, which was never
+        // encryption. Still read, so nobody loses their profile; written back
+        // properly sealed the next time anything changes.
+        yo bytes = vault.base64_decode(yapper.slice(value, SEALED_OLD.how_thicc(), value.how_thicc()))
+        sus (bytes == ghost) {
+            chuck oops("SkillIssue", "a sealed value in the data files is damaged: " + value)
+        }
+        bounce bytes.to_yap()
+    }
     sus (!yapper.starts_with(value, SEALED)) {
         bounce value
     }
-    yo plain = base64_decode(yapper.slice(value, SEALED.how_thicc(), value.how_thicc()))
-    sus (plain == ghost) {
-        chuck oops("SkillIssue", "a sealed value in the data files is damaged: " + value)
+    sketchy {
+        bounce vault.unseal(value, require_key("open a sealed value"))
+    } my_bad (e) {
+        chuck oops("SkillIssue", "a sealed value in the data files won't open with this key -- wrong --key-file?")
     }
-    bounce plain
 }
 
 flex bet hash_password(password) {
-    bounce HASHED + sha256_hex(password)
+    bounce vault.hash_password(password)
 }
 
+// Whether `password` is the one behind `stored`, in constant time. A hash
+// written by an older version of this example is `sha256:<64 hex>`: unsalted,
+// which was always the wrong thing and is why this changed. It still verifies,
+// so upgrading does not lock anybody out, and it is replaced with a real hash
+// the moment that password is changed. The README says so out loud.
+flex bet check_password(password, stored) {
+    sus (what_is_it(stored) != "yapstring") {
+        bounce cap
+    }
+    sus (yapper.starts_with(stored, HASHED_OLD)) {
+        bounce vault.same_secret(vault.sha256(password),
+                                 yapper.slice(stored, HASHED_OLD.how_thicc(), stored.how_thicc()))
+    }
+    bounce vault.check_password(password, stored)
+}
 // -- the config ---------------------------------------------------------------------
 
 flex bet default_config_path(example_dir) {
@@ -125,8 +176,11 @@ flex bet config_problem(cfg) {
             bounce "user '" + name + "' needs a role of admin or user"
         }
         yo pw = u.get("password", "")
-        sus (what_is_it(pw) != "yapstring" || !yapper.starts_with(pw, HASHED) || pw.how_thicc() != 71) {
-            bounce "user '" + name + "' needs a password of the form sha256:<64 hex digits>"
+        yo pw_ok = what_is_it(pw) == "yapstring" &&
+                   (yapper.starts_with(pw, HASHED) ||
+                    (yapper.starts_with(pw, HASHED_OLD) && pw.how_thicc() == 71))
+        sus (!pw_ok) {
+            bounce "user '" + name + "' needs a pbkdf2-sha256$ password (or an old sha256: one)"
         }
         sus (what_is_it(u.get("profile", ghost)) != "groupchat") {
             u["profile"] = {}
@@ -149,7 +203,9 @@ flex bet config_problem(cfg) {
 // The whole config, pretty-printed so a person can read -- and diff -- it.
 flex bet save_config(path, cfg) {
     cfg["customized_at"] = clock.date_yap("%Y-%m-%dT%H:%M:%S")
-    filez.yeet_out(path, json.spill(cfg, {"pretty": fax}))
+    // Atomically: a reader gets the old config or the new one, and a crash
+    // mid-write leaves the old one rather than half of either.
+    filez.yeet_out_atomic(path, json.spill(cfg, {"pretty": fax}))
 }
 
 // What a user looks like to the pages: unsealed, and never the password hash.
@@ -206,9 +262,9 @@ flex bet load_activity(path) {
 
 flex bet save_activity(path, lines) {
     sus (lines.how_thicc() == 0) {
-        filez.yeet_out(path, "[]\n")
+        filez.yeet_out_atomic(path, "[]\n")
     } nah {
-        filez.yeet_out(path, "[\n" + lines.join(",\n") + "\n]\n")
+        filez.yeet_out_atomic(path, "[\n" + lines.join(",\n") + "\n]\n")
     }
 }
 

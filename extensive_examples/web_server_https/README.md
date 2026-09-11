@@ -43,7 +43,6 @@ threads, and a site that remembers things.
 | `static.funny` | The path guard between a URL and a file |
 | `store.funny` | The data files, and what "protected at rest" means here |
 | `security.funny` | Constant-time compare, tokens, the session cookie, rate windows, validation |
-| `crypto.funny` | SHA-256 and base64 |
 | `web/` | The front end: four pages, one stylesheet, a script per page, no framework |
 | `data/config.default.json` | The committed defaults |
 | `certs/` | `make_cert.sh`, the test CA and the PKCS#12 identity — **test material, not secrets** |
@@ -74,19 +73,29 @@ password `funnylang`. The settings page nags until it is changed.
 | `data/config.default.json` | never — it is committed | |
 | `data/config.custom.json` | by the keeper | the first time anybody changes a password, profile or default, and on every change after |
 | `data/activity.json` | by the keeper | at most every quarter second while there is something new, and at shutdown; newest 5,000 kept |
+| `vault.key` (beside the data directory) | by the server, on first run | never inside `data/` — it is the key that data is sealed with |
 
 On start the customization file is read if it exists, the default otherwise. A customization file
 that exists and will not parse **stops the server** instead of falling back — falling back would
 quietly undo a password change. `--data DIR` puts the two written files somewhere else.
 
-**Protected at rest, honestly.** Passwords are stored as `sha256:<hex>`: one-way, but unsalted, which
-was a deliberate choice for a demo and is not what a real deployment should do (it wants scrypt or
-Argon2, with a salt). Email addresses, display names, client addresses and user agents are stored as
-`b64:<base64>`. **Base64 is an encoding, not encryption**: it keeps a value from being read over a
-shoulder or matched by a grep, and anyone with the file can reverse it. That too was a deliberate
-choice for a proof of concept. Both live behind `seal`/`unseal` and `hash_password` in `store.funny`,
-and every value carries its prefix, so replacing either with the real thing is a change in one place.
+**Protected at rest, for real.** Passwords go through `vault.hash_password`: PBKDF2-HMAC-SHA256 with
+a fresh 16-byte salt and 600,000 iterations, stored as `pbkdf2-sha256$<iters>$<salt>$<hash>` and
+checked in constant time. One-way — there is no function here that turns one back. Email addresses,
+display names, client addresses and user agents go through `vault.seal`: AES-256-GCM with a fresh
+nonce every time, stored as `v1$<nonce>$<ciphertext+tag>`.
 
+**The key is not in `data/`.** It lives at `--key-file PATH`, which defaults to `vault.key` *beside*
+the data directory rather than inside it, is generated on first run, and is made owner-only where
+the operating system has a mode bit for that. A key kept next to the data it seals is not
+encryption; it is a rearrangement. Back it up separately: lose it and the sealed fields are gone,
+which is what "encrypted at rest" is supposed to mean.
+
+**Both older formats are still read**, so upgrading this example neither locks anybody out nor
+loses anything. A `sha256:<hex>` password — unsalted, which was always the wrong thing and is why
+this changed — still verifies, and is replaced with a real hash the next time that password is
+changed. A `b64:` value still decodes, and is written back sealed the next time anything about it
+changes. Neither format is ever written again.
 ## Secure by default
 
 None of these has a flag to turn it off.

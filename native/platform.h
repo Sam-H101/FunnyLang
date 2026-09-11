@@ -145,6 +145,14 @@ bool platform_temp_file(const char *prefix, char *out, size_t out_len);
    unconditionally rather than branching at the call site. */
 bool platform_make_executable(const char *path);
 
+
+/* Makes `path` readable and writable by its owner and nobody else -- `chmod
+   0600` on POSIX, where that is the difference between a key file and a
+   published one. A no-op on Windows, whose equivalent is an ACL rewrite that
+   needs far more than a path; the caller is told so by the docs rather than
+   by a silent lie. False only if the file is not there. */
+bool platform_make_private(const char *path);
+
 /* -- console (NATIVE_PLAN.md N6, diagnostics) ------------------------ */
 
 /* True when *stdout* is a terminal. Deliberately stdout and not stderr,

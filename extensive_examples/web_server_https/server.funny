@@ -34,8 +34,9 @@ gimme clock
 gimme filez
 gimme yapper
 gimme { new_token } from "security.funny"
-gimme { load_config, unseal, setting, default_config_path, custom_config_path } from "store.funny"
+gimme { load_config, unseal, setting, use_key, default_config_path, custom_config_path } from "store.funny"
 gimme json
+gimme vault
 gimme { keeper_link, ask_keeper, close_link } from "keeper_client.funny"
 
 flex deadass DEFAULTS = {
@@ -122,6 +123,25 @@ async_ngl bet collect(otw, failures) {
     }
 }
 
+
+// The key everything at rest is sealed with. Outside data/ by default and
+// never inside it: a key kept next to the data it seals is not encryption,
+// it is a rearrangement. Made on first run, owner-only where the OS has a
+// mode bit for that.
+bet load_or_make_key(path) {
+    sus (filez.exists(path)) {
+        yo key = vault.base64_decode(yapper.trim(filez.slurp(path)))
+        sus (key == ghost || how_thicc(key) != 32) {
+            chuck oops("SkillIssue", path + " isn't a vault key: it should be 32 bytes, base64, on one line.")
+        }
+        bounce key
+    }
+    yo fresh = vault.new_key()
+    filez.yeet_out_atomic(path, vault.base64_encode(fresh) + "\n")
+    filez.private(path)
+    bounce fresh
+}
+
 // Runs the whole server until something stops it. `on_ready(info)` is called
 // once everything is listening -- info has the ports, the thread count and
 // which config was loaded -- and `on_log(line)` once per request.
@@ -139,6 +159,10 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
     sus (!filez.is_dir(data_dir)) {
         filez.mkdir(data_dir)
     }
+
+    yo key_path = opts["key_file"] ?? filez.join_path(filez.dir_of(data_dir), "vault.key")
+    yo key = load_or_make_key(key_path)
+    use_key(key)
 
     // Loaded here as well as in the keeper, so a damaged customization file
     // stops the server with a clear message before any thread starts.
@@ -191,6 +215,7 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
             "secret": secret,
             "example_dir": example_dir,
             "data_dir": data_dir,
+            "key": vault.base64_encode(key),
             "budget": opts["requests"],
         })
         yo started_at = clock.now()

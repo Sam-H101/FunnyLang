@@ -862,6 +862,11 @@ bool platform_temp_file(const char *prefix, char *out, size_t out_len) {
     return true;
 }
 
+bool platform_make_private(const char *path) {
+    (void)path; /* Windows: an ACL, not a mode bit -- see platform.h */
+    return true;
+}
+
 bool platform_make_executable(const char *path) {
     (void)path; /* Windows decides by extension, not by a mode bit */
     return true;
@@ -909,6 +914,12 @@ bool platform_temp_file(const char *prefix, char *out, size_t out_len) {
     if (fd < 0) return false;
     close(fd);
     return true;
+}
+
+bool platform_make_private(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    return chmod(path, S_IRUSR | S_IWUSR) == 0;
 }
 
 bool platform_make_executable(const char *path) {
