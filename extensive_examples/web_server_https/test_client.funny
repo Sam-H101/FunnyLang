@@ -109,6 +109,13 @@ bet conversation() {
     say("  CSP:", yapper.starts_with(h.get("content-security-policy", ""), "default-src 'self'"),
         "nosniff:", h.get("x-content-type-options", "") == "nosniff", "frames:", h.get("x-frame-options", ""))
 
+    // A PNG proves the bytes path end to end: the file is read as a blob,
+    // put on the wire as one, and arrives at its true length rather than
+    // the length of what it would become if it went through a yapstring.
+    yo logo = request("GET", "/logo.png")
+    say("logo:", logo["status"], logo["headers"].get("content-type", ""),
+        "bytes:", logo["headers"].get("content-length", ""))
+
     yo gated = request("GET", "/settings")
     say("settings, signed out:", gated["status"], gated["headers"].get("location", ""))
     say("/../etc/passwd:", request("GET", "/../etc/passwd")["status"], "/.env:", request("GET", "/.env")["status"],

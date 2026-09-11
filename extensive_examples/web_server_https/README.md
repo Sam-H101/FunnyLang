@@ -43,7 +43,7 @@ threads, and a site that remembers things.
 | `static.funny` | The path guard between a URL and a file |
 | `store.funny` | The data files, and what "protected at rest" means here |
 | `security.funny` | Constant-time compare, tokens, the session cookie, rate windows, validation |
-| `web/` | The front end: four pages, one stylesheet, a script per page, no framework |
+| `web/` | The front end: four pages, one stylesheet, a script per page, a one-pixel `logo.png` served as bytes, no framework |
 | `data/config.default.json` | The committed defaults |
 | `certs/` | `make_cert.sh`, the test CA and the PKCS#12 identity — **test material, not secrets** |
 | `test_server.funny` | The golden: the pieces, then the real server over real TLS, then the files it wrote |

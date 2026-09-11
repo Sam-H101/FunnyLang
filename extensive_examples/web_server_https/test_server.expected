@@ -30,6 +30,7 @@ a header that tries to add another: cap
 /css/site.css -> /web/css/site.css
 /js/api.js -> /web/js/api.js
 /favicon.svg -> /web/favicon.svg
+/logo.png -> /web/logo.png
 /../etc/passwd refused
 /css/../../x.css refused
 /.env refused
@@ -57,6 +58,7 @@ health: 200 over TLS 1.2 or newer: fax
 home page: 200 text/html; charset=utf-8
   HSTS: max-age=31536000; includeSubDomains
   CSP: fax nosniff: fax frames: DENY
+logo: 200 image/png bytes: 70
 settings, signed out: 303 /login?next=/settings
 /../etc/passwd: 404 /.env: 404 /js/: 404
 POST to a page: 405

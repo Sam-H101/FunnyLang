@@ -88,7 +88,7 @@ yap "a header that tries to add another:",
     yapper.contains(build_response(200, "", {"X-Evil": "a\r\nSet-Cookie: x=1"}, cap), "Set-Cookie")
 
 yap "-- the path guard --"
-grind p in ["/", "/settings", "/css/site.css", "/js/api.js", "/favicon.svg", "/../etc/passwd", "/css/../../x.css",
+grind p in ["/", "/settings", "/css/site.css", "/js/api.js", "/favicon.svg", "/logo.png", "/../etc/passwd", "/css/../../x.css",
             "/.env", "/.git/config", "/css/", "/a\\b.css", "/c:/x.css", "/x.exe", "/%2e%2e/x.css"] {
     yo t = static_target("/web", p)
     yap p, t == ghost ? "refused" : "-> " + yapper.replace(t["file"], "\\", "/")

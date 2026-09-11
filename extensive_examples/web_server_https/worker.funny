@@ -171,7 +171,10 @@ async_ngl bet serve(customer) {
     internet.holler_back(conn, bytes)
     SERVED += 1
     yo user = begin.get("session", ghost) == ghost ? ghost : begin["session"]["user"]["username"]
-    await_fr report(log_line(peer, tls, req["method"], req["target"], answer["status"], yapper.byte_len(bytes), user),
+    // The response may be bytes now (a PNG), and how_thicc on a blob is
+    // already a byte count.
+    yo sent = what_is_it(bytes) == "blob" ? how_thicc(bytes) : yapper.byte_len(bytes)
+    await_fr report(log_line(peer, tls, req["method"], req["target"], answer["status"], sent, user),
                     answer.get("event", ghost), ip, agent)
     bounce ghost
 }

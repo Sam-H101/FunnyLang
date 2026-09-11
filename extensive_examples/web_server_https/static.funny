@@ -23,6 +23,10 @@ flex deadass CONTENT_TYPES = {
     "svg": "image/svg+xml",
     "json": "application/json; charset=utf-8",
     "txt": "text/plain; charset=utf-8",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "ico": "image/vnd.microsoft.icon",
+    "woff2": "font/woff2",
 }
 
 // Pretty URLs for the four pages.
@@ -34,6 +38,11 @@ flex deadass PAGES = {
 }
 
 deadass SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
+
+// Served as bytes, not as text. A PNG read into a yapstring is a PNG with
+// every invalid UTF-8 sequence replaced by U+FFFD -- which is to say, a
+// broken PNG. These go through `blob` from the file to the socket.
+flex deadass BINARY_TYPES = ["png", "jpg", "ico", "woff2"]
 
 // {"file", "type"} for a URL path, or `ghost` if it names nothing servable.
 flex bet static_target(web_dir, url_path) {
@@ -67,7 +76,7 @@ flex bet static_target(web_dir, url_path) {
     grind seg in segments {
         file = filez.join_path(file, seg)
     }
-    bounce {"file": file, "type": CONTENT_TYPES[ext]}
+    bounce {"file": file, "type": CONTENT_TYPES[ext], "binary": BINARY_TYPES.contains(ext)}
 }
 
 bet safe_segment(seg) {
@@ -95,7 +104,7 @@ flex bet read_static(target) {
     sus (!filez.is_file(file)) {
         bounce ghost
     }
-    yo body = filez.slurp(file)
+    yo body = target["binary"] ? filez.read_blob(file) : filez.slurp(file)
     CACHE[file] = body
     bounce body
 }
