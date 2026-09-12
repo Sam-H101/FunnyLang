@@ -7,11 +7,37 @@
    ██╔══╝  ██║   ██║██║╚██╗██║██║╚██╗██║  ╚██╔╝
    ██║     ╚██████╔╝██║ ╚████║██║ ╚████║   ██║
    ╚═╝      ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝   ╚═╝
-        FunnyLang v2.0.0 — it compiles. somehow.
+        FunnyLang v2.1.0 — it compiles. somehow.
 ```
 
 A bytecode-compiled programming language that refuses to take itself seriously — and, as of
 v2.0.0, compiles itself, with a runtime that needs nothing installed.
+
+**New in v2.1.0 — the runtime grew threads.** `gimme interns` had real OS threads already; this is
+the pass that makes the standard library safe on them, and the corpus that proves it.
+
+- **`blob`** — an immutable byte sequence, so a PNG, a key or a request body is bytes rather than a
+  string that happens to survive. `blob.xor(b, key)` masks a run of bytes in one call.
+- **DMs between interns** — `interns.dm` and `check_dms`, so workers pass values to each other and
+  to whoever hired them without a socket in the middle.
+- **`vault`** — password hashing and authenticated encryption from the operating system's own
+  crypto library, never a cipher written here. `sha256`, `hmac_sha256`, and `sha1` for the one
+  handshake that insists on it.
+- **`json`** — parse and spill, in C, where an integer stays an integer and the parser assumes its
+  input was written by somebody hoping it is not JSON.
+- **Atomic file writes**, `filez.private` for a key file, `computer.until_ctrl_c()` for a tidy
+  shutdown, and live output from a worker as it runs rather than replayed when it is joined.
+- **A dump of what every thread is waiting on**, on Ctrl-`\` or over `sus.threads()`.
+- **Kinder parser errors**, and a line may now start with `.` so a long chain reads one step per
+  line.
+- **Eight worked examples** under `extensive_examples/`: a web server, the same over HTTPS,
+  parallel word count, a static site generator, a Lisp, a key-value database, a chat over
+  WebSockets, and checkers in a browser. Each has a README and a golden that CI runs on every
+  platform.
+
+Every stdlib module has a threaded golden that runs the same work on one thread and then on eight
+at once and passes only if all nine answers agree. CI runs that corpus, and the examples, under
+ThreadSanitizer.
 
 ```funny
 bet fizzbuzz(n) {
