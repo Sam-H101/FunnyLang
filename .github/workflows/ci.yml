@@ -211,9 +211,14 @@ jobs:
 
   no-python:
     # NATIVE_PLAN.md N9 task 3, and now N11's whole point made concrete: a
-    # container with a C compiler and *nothing else*. No Python, no pip, no
-    # interpreter at all. If this passes, "FunnyLang needs no Python" is a
-    # fact about the artifact rather than a claim in a README.
+    # container with a C toolchain and *no interpreter*. No Python, no pip,
+    # nothing that could be quietly doing the work. If this passes, "FunnyLang
+    # needs no Python" is a fact about the artifact rather than a claim in a
+    # README.
+    #
+    # It is "no interpreter", not "no libraries": `vault` gets its crypto from
+    # the operating system and never implements a cipher, so it needs
+    # libcrypto present the same way `https` does. See the install step.
     name: no-python (debian, cc only)
     runs-on: ubuntu-latest
     container: debian:12
@@ -223,12 +228,22 @@ jobs:
       FUNNY_NO_NET: "1"
 
     steps:
-      - name: Install a C compiler and nothing else
+      - name: Install a C toolchain and no interpreter
         run: |
           apt-get update
           # git is for actions/checkout; on Debian it recommends perl, not
           # python, and --no-install-recommends keeps even that out.
-          apt-get install -y --no-install-recommends gcc libc6-dev ca-certificates git
+          #
+          # libssl3 provides libcrypto.so.3, which `vault` dlopen's for
+          # password hashing and sealing. It is deliberately not vendored:
+          # every platform ships a reviewed crypto library and FunnyLang
+          # implements no cipher of its own, so the library has to be there.
+          # Without it `vault` raises a clean SkillIssue -- which is correct
+          # behaviour and documented, and also means tests/lang/stdlib's three
+          # vault goldens, and the chat and HTTPS examples, cannot pass in a
+          # container that lacks it. This is the crypto runtime, not an
+          # interpreter, so the job still proves exactly what it is named for.
+          apt-get install -y --no-install-recommends gcc libc6-dev ca-certificates git libssl3
           rm -rf /var/lib/apt/lists/*
 
       - uses: actions/checkout@v4
