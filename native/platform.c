@@ -2516,15 +2516,19 @@ void platform_write_stderr_raw(const char *text) {
 
 /* One helper for both SHA-256 and HMAC-SHA256: CNG spells them the same way,
    with a flag and a key. */
+/* `outLen` because not every digest here is 32 bytes: SHA-1 is 20, and a
+   hardcoded length would quietly write past a caller's buffer or refuse the
+   call outright. */
 static bool cng_hash(const wchar_t *algId, const unsigned char *key, size_t keyLen, const unsigned char *data,
-                     size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+                     size_t len, unsigned char *out, size_t outLen, char *errbuf, size_t errbuf_len) {
     BCRYPT_ALG_HANDLE alg = NULL;
     BCRYPT_HASH_HANDLE hash = NULL;
     ULONG flags = key != NULL ? BCRYPT_ALG_HANDLE_HMAC_FLAG : 0;
     bool ok = false;
     if (BCryptOpenAlgorithmProvider(&alg, algId, NULL, flags) >= 0) {
         if (BCryptCreateHash(alg, &hash, NULL, 0, (PUCHAR)key, (ULONG)keyLen, 0) >= 0) {
-            if (BCryptHashData(hash, (PUCHAR)data, (ULONG)len, 0) >= 0 && BCryptFinishHash(hash, out, 32, 0) >= 0) {
+            if (BCryptHashData(hash, (PUCHAR)data, (ULONG)len, 0) >= 0 &&
+                BCryptFinishHash(hash, out, (ULONG)outLen, 0) >= 0) {
                 ok = true;
             }
             BCryptDestroyHash(hash);
@@ -2536,7 +2540,11 @@ static bool cng_hash(const wchar_t *algId, const unsigned char *key, size_t keyL
 }
 
 bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
-    return cng_hash(BCRYPT_SHA256_ALGORITHM, NULL, 0, data, len, out, errbuf, errbuf_len);
+    return cng_hash(BCRYPT_SHA256_ALGORITHM, NULL, 0, data, len, out, 32, errbuf, errbuf_len);
+}
+
+bool platform_sha1(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    return cng_hash(BCRYPT_SHA1_ALGORITHM, NULL, 0, data, len, out, 20, errbuf, errbuf_len);
 }
 
 bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
@@ -2544,7 +2552,8 @@ bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigne
     /* A zero-length key is legal HMAC, and NULL is how cng_hash is told there
        is no key at all -- so point at something. */
     static const unsigned char empty = 0;
-    return cng_hash(BCRYPT_SHA256_ALGORITHM, key != NULL ? key : &empty, keyLen, data, len, out, errbuf, errbuf_len);
+    return cng_hash(BCRYPT_SHA256_ALGORITHM, key != NULL ? key : &empty, keyLen, data, len, out, 32, errbuf,
+                    errbuf_len);
 }
 
 bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, const unsigned char *salt,
@@ -2624,6 +2633,13 @@ bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, 
     (void)errbuf;
     (void)errbuf_len;
     CC_SHA256(data, (CC_LONG)len, out);
+    return true;
+}
+
+bool platform_sha1(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    (void)errbuf;
+    (void)errbuf_len;
+    CC_SHA1(data, (CC_LONG)len, out);
     return true;
 }
 
@@ -2722,6 +2738,7 @@ static struct {
     int (*PKCS5_PBKDF2_HMAC)(const char *, int, const unsigned char *, int, int, const FunnyEvpMd *, int,
                              unsigned char *);
     const FunnyEvpMd *(*EVP_sha256)(void);
+    const FunnyEvpMd *(*EVP_sha1)(void);
     int (*EVP_Digest)(const void *, size_t, unsigned char *, unsigned int *, const FunnyEvpMd *, void *);
     unsigned char *(*HMAC)(const FunnyEvpMd *, const void *, int, const unsigned char *, size_t, unsigned char *,
                            unsigned int *);
@@ -2755,6 +2772,11 @@ static void libcrypto_load(void) {
     g_crypto.PKCS5_PBKDF2_HMAC = (int (*)(const char *, int, const unsigned char *, int, int, const FunnyEvpMd *, int,
                                           unsigned char *))dlsym(h, "PKCS5_PBKDF2_HMAC");
     g_crypto.EVP_sha256 = (const FunnyEvpMd *(*)(void))dlsym(h, "EVP_sha256");
+    /* Deliberately not in the `complete` check below: SHA-1 is wanted for one
+       handshake, and a libcrypto built without it should still give a program
+       passwords and sealing rather than nothing at all. `platform_sha1` checks
+       for itself. */
+    g_crypto.EVP_sha1 = (const FunnyEvpMd *(*)(void))dlsym(h, "EVP_sha1");
     g_crypto.EVP_Digest =
         (int (*)(const void *, size_t, unsigned char *, unsigned int *, const FunnyEvpMd *, void *))dlsym(h,
                                                                                                          "EVP_Digest");
@@ -2801,6 +2823,20 @@ bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, 
     if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
     unsigned int n = 0;
     if (g_crypto.EVP_Digest(data, len, out, &n, g_crypto.EVP_sha256(), NULL) != 1) {
+        snprintf(errbuf, errbuf_len, "openssl refused that hash.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_sha1(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    if (g_crypto.EVP_sha1 == NULL) {
+        snprintf(errbuf, errbuf_len, "this openssl has no sha-1.");
+        return false;
+    }
+    unsigned int n = 0;
+    if (g_crypto.EVP_Digest(data, len, out, &n, g_crypto.EVP_sha1(), NULL) != 1) {
         snprintf(errbuf, errbuf_len, "openssl refused that hash.");
         return false;
     }

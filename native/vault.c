@@ -325,6 +325,29 @@ static Value m_sha256(VM *vm, Value *a, int argc) {
     return out;
 }
 
+/* SHA-1 is here for exactly one reason, and the documentation says so: RFC
+   6455's WebSocket handshake computes Sec-WebSocket-Accept as
+   base64(sha1(key + GUID)), and that is not negotiable by either end. It is
+   not offered as a general-purpose digest -- SHA-1 is broken against
+   collisions, `sha256` is one line away, and a program reaching for this
+   without a protocol demanding it has picked the wrong one. */
+static Value m_sha1(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const unsigned char *data;
+    size_t len;
+    if (!bytes_of(vm, a[0], "sha1", &data, &len)) return GHOST_VAL;
+    unsigned char digest[20];
+    char errbuf[256];
+    if (!platform_sha1(data, len, digest, errbuf, sizeof errbuf)) {
+        vm_throw_native(vm, "SkillIssue", "%s", errbuf);
+        return GHOST_VAL;
+    }
+    char *hex = blob_hex_encode(digest, sizeof digest);
+    Value out = OBJ_VAL(string_new(&vm->gc, hex, 40));
+    free(hex);
+    return out;
+}
+
 static Value m_hmac_sha256(VM *vm, Value *a, int argc) {
     (void)argc;
     const unsigned char *key, *data;
@@ -400,6 +423,7 @@ static const VaultEntry VAULT_FUNCTIONS[] = {
     {"seal", m_seal, 2, 3},
     {"unseal", m_unseal, 2, 3},
     {"sha256", m_sha256, 1, 1},
+    {"sha1", m_sha1, 1, 1},
     {"hmac_sha256", m_hmac_sha256, 2, 2},
     {"same_secret", m_same_secret, 2, 2},
     {"base64_encode", m_base64_encode, 1, 1},

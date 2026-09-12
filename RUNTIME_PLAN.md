@@ -790,6 +790,24 @@ answers and inventing different punctuation for them would be novelty for its ow
 runtime primitive is needed either way: `internet.hear_them_out(conn, n, ms, {"raw": fax})`
 already reads bytes rather than text, which is the only thing a binary-safe protocol requires.
 
+**E5's primitive, as the plan called for: `vault.sha1`.** `EXAMPLES_PLAN.md` says the chat example
+needs it, and it does: RFC 6455's opening handshake answers a client's `Sec-WebSocket-Key` with
+`base64(sha1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))`, and a browser will not accept
+anything else. Nothing in the runtime could compute it -- `vault` had `sha256`, `hmac_sha256` and
+base64, but no SHA-1, and the whole module deliberately implements no hash of its own.
+
+So it comes from the same place every other hash here does: CNG on Windows, CommonCrypto on macOS,
+the `dlopen`'d OpenSSL on Linux and BSD. Two details worth recording. The Windows helper
+`cng_hash` hardcoded a 32-byte digest, so it grew an output-length argument rather than gaining a
+second copy for twenty bytes. And `EVP_sha1` is resolved on Linux but deliberately left out of the
+symbol-completeness check, so a libcrypto built without SHA-1 still gives a program passwords and
+sealing; only `sha1` itself fails, and it says why.
+
+It is documented as being for that one job. SHA-1 is broken against collisions, and a program
+choosing its own hash should choose `sha256` -- but a protocol that names SHA-1 leaves no choice,
+and the alternative to this primitive was an example implementing a hash by hand, which is exactly
+what `vault` exists to avoid.
+
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in
 `CommonCryptorSPI.h`, which the public SDK does not ship. Options, in order of preference: (a)

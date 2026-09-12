@@ -202,6 +202,7 @@ yap vault.unseal(sealed, key, "account-7")      // balance: 100
 | `vault.seal(plain, key, aad?)` | `"v1$<nonce>$<ciphertext+tag>"` — AES-256-GCM, a fresh 12-byte nonce every time. `plain` is a `yapstring` or a `blob`; `aad` is authenticated but not encrypted, so a sealed value can be bound to the record it belongs to and not be movable to another. |
 | `vault.unseal(sealed, key, aad?)` | The plaintext, as the same type that went in. A wrong key, a wrong `aad` and a single changed byte all raise the same `SkillIssue`: telling them apart is what turns decryption into an oracle. |
 | `vault.sha256(x)` / `vault.hmac_sha256(key, x)` | Hex digests of a `yapstring` or `blob`. |
+| `vault.sha1(x)` | A hex SHA-1 digest. **Here for one job**: RFC 6455's WebSocket handshake, whose `Sec-WebSocket-Accept` is `base64(sha1(key + GUID))` and is not negotiable by either end. SHA-1 is broken against collisions, so anything choosing its own hash wants `sha256` instead. |
 | `vault.same_secret(a, b)` | Constant-time equality — every byte is looked at every time, so the comparison does not say how much of a guess was right. |
 | `vault.base64_encode(x)` / `vault.base64_decode(s)` | `decode` returns a `blob`, or `ghost` if the text is not valid base64. |
 

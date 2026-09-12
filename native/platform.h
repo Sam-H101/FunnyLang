@@ -377,6 +377,13 @@ bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, c
 /* SHA-256 of `data`, 32 bytes into `out`. */
 bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len);
 
+/* SHA-1, into 20 bytes. Here for RFC 6455's WebSocket handshake, which
+   computes Sec-WebSocket-Accept as base64(sha1(key + GUID)) and is not
+   negotiable -- see RUNTIME_PLAN.md §9. Not for anything that needs a hash to
+   be hard to collide with: SHA-1 is broken for that, and `platform_sha256` is
+   right there. */
+bool platform_sha1(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len);
+
 /* HMAC-SHA256, 32 bytes into `out`. */
 bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
                           unsigned char *out, char *errbuf, size_t errbuf_len);
