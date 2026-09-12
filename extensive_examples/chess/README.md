@@ -134,6 +134,41 @@ and the tests are handed.
 Node counts and chosen moves are identical throughout — this removed waste, it
 did not change how the engine plays.
 
+## The transposition table
+
+Chess transposes constantly: 1.Nf3 d5 2.d4 and 1.d4 d5 2.Nf3 reach the same
+board by different roads. Without a table the search works both out from
+scratch, and it does that over and over. With one, the second arrival is a
+lookup.
+
+The subtlety is that alpha-beta does not always learn a position's *value*. It
+cuts off the moment it knows a move is too good or not good enough, and what it
+has established then is only a bound. So every entry records which of the three
+it holds — an exact score, a lower bound, or an upper bound — and a bound is
+only allowed to narrow the window rather than answer outright. Getting that
+wrong produces an engine that is fast and occasionally believes nonsense.
+
+Two things are deliberately kept out of it. Mate scores, because a mate score
+says how far away the mate is *from here*, so filing one away and reading it
+back elsewhere in the tree reads it at the wrong distance. And anything below
+depth 2, because the key is the sixty-four squares joined into a string, which
+is only worth building when the subtree it might save is larger than the key.
+
+| | before | after |
+| --- | --- | --- |
+| depth 3 | 2,500 nodes, 686 ms | **1,530 nodes, 430 ms** |
+| depth 4 | 5,940 nodes, 5,577 ms | **3,384 nodes, 2,927 ms** |
+| depth 5 | 128,630 nodes, 39.8 s | **30,654 nodes, 9.5 s** |
+| depth 4, from the opening | 9,774 nodes, 3,128 ms | **2,741 nodes, 838 ms** |
+
+One thing did change about how it plays. From the opening at depth 3 it now
+answers g1f3 where it used to answer b1c3 — **at the same score of 50**. The two
+are a genuine tie, and because a table hands back bounds as well as exact
+scores, a bound arriving at the root can flip which of two equal moves is met
+first. It is still perfectly deterministic, and the golden still asserts that
+asking twice gives the same answer. Every other assertion in the golden — the
+whole self-play game, every perft count, every rule — is unchanged.
+
 ## Threads
 
 `engine.funny` can split the root across real OS threads. Each worker is a
@@ -159,6 +194,27 @@ sequential figure, and the split is finally worth something:
 | 3 | 697 ms | 1,999 ms | 0.34× |
 | 4 | 5,655 ms | **1,750 ms** | **3.23×** |
 | 5 | 39.8 s | **16.3 s** | **2.44×** |
+
+**And then the transposition table took most of that back.** The two
+optimisations pull against each other: a table pays off by sharing what it has
+learned across the whole tree, and the root split cuts the tree into eight VMs
+that share nothing, so each worker builds its own table from nothing. The same
+measurement, on the same machine, from the same position, after the table:
+
+| depth | one thread | 8 threads | |
+| --- | --- | --- | --- |
+| 4 | **2,927 ms** | 3,612 ms | 0.81× |
+| 5 | 9,513 ms | **8,862 ms** | 1.07× |
+
+The threaded runs look at 2.4× the positions one thread does, and eight
+processors now buy seven percent at depth 5 and a nineteen percent loss at
+depth 4. So `PARALLEL_FROM` is 5 rather than 4 — the point where it stops being
+a loss — and in a served game, which caps at depth 5, the threads now almost
+never run.
+
+That is an honest result rather than a tidy one. Making them worth having again
+would mean handing each worker the parent's table to start from. It is plain
+data, so it can cross; it is also a copy per worker, and it has not been tried.
 
 The move and the score are the same at every depth, always — that is the
 guarantee, and the golden asserts it.
@@ -198,8 +254,12 @@ It plays legal chess. It does not play good chess, and the gap is mostly these:
 - **No endgame knowledge.** The king's table wants a corner, which is right
   while there are pieces about and wrong once there are not. It will not drive
   a lone king to the edge to mate it, and there are no tablebases.
-- **No transposition table**, so the same position reached two ways is searched
-  twice — and across threads, by two workers who cannot tell each other.
+- **The transposition table does not outlive a single search.** A fresh one is
+  built for every move, so what one move works out is thrown away before the
+  next begins. That is deliberate — it keeps `best_move` a function of the
+  position in front of it rather than of the game so far — but a real engine
+  would keep it. Workers do not share one either, which is most of why the
+  threads stopped paying.
 - **No iterative deepening and no clock.** The depth is fixed by the difficulty
   you pick; the engine takes as long as it takes.
 - **Threefold repetition is not seen inside the search** — only at the top

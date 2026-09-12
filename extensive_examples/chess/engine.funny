@@ -23,7 +23,7 @@ gimme filez
 
 gimme { WHITE, BLACK, EMPTY, legal_moves, legal_moves_unsorted, apply_move,
         outcome, in_check, other_side, color_of, kind_of, is_white, rank_of,
-        file_of, square_at, to_fen } from "rules.funny"
+        file_of, square_at, to_fen, position_key } from "rules.funny"
 
 flex deadass VALUES = {"P": 100, "N": 320, "B": 330, "R": 500, "Q": 900, "K": 20000}
 
@@ -158,8 +158,13 @@ bet ordered(moves) {
 // The move the engine would play: {"move", "score", "nodes", "depth"}. A ghost
 // move means there is nothing legal, which is checkmate or stalemate rather
 // than the engine giving up.
+// A FRESH TABLE EVERY TIME, deliberately. Keeping it between moves would find
+// more transpositions, but `best_move` would then depend on the history of the
+// game rather than only on the position in front of it -- and that the same
+// position always yields the same move is a property the golden asserts twice
+// and the whole-game test relies on. Purity is worth more here than the hits.
 flex bet best_move(pos, depth) {
-    yo counter = {"nodes": 0}
+    yo counter = {"nodes": 0, "tt": {}}
     yo moves = ordered(legal_moves_unsorted(pos))
     sus (moves.how_thicc() == 0) {
         bounce {"move": ghost, "score": -WIN, "nodes": 0, "depth": depth}
@@ -190,22 +195,33 @@ flex bet best_move(pos, depth) {
 // root needs: one worse than alpha comes back as a bound, and a bound below
 // the best score already found can never win.
 flex bet score_of_move(pos, m, depth, alpha) {
-    yo counter = {"nodes": 0}
+    yo counter = {"nodes": 0, "tt": {}}
     yo score = -search(apply_move(pos, m), depth - 1, -WIN - 1, -alpha, counter)
     bounce {"score": score, "nodes": counter["nodes"]}
 }
 
 // -- the same search, across several threads ------------------------------------------
 
-// Below this depth a search finishes sooner than eight workers can be started,
-// so the threads are not used at all.
+// Below this depth the split is not used at all.
 //
-// Measured on an eight-processor machine from a middlegame with 49 legal
-// moves: depth 3 took 697 ms in sequence and 1,999 ms split eight ways -- a
-// third of the speed, all of it worker startup. Depth 4 went from 5,655 ms to
-// 1,750 ms, and depth 5 from 39.8 s to 16.3 s. So the crossover is here, at
-// four. On a slower machine, or one with fewer processors, it would be higher.
-flex deadass PARALLEL_FROM = 4
+// THE TRANSPOSITION TABLE MOVED THIS, and moved it the wrong way. Before the
+// table, splitting was worth 3.2x at depth 4. After it, the same measurement
+// on the same eight-processor machine from the same middlegame reads:
+//
+//     depth 4   one thread 2,927 ms   eight 3,612 ms   0.81x
+//     depth 5   one thread 9,513 ms   eight 8,862 ms   1.07x
+//
+// The two optimisations work against each other. A transposition table pays
+// off by sharing what it has learned across the whole tree, and the root split
+// cuts that tree into eight VMs that share nothing -- so every worker builds
+// its own table from nothing and they collectively look at 2.4 times the
+// positions one thread does. Eight processors now buy seven percent.
+//
+// Five is where it stops being a loss, so five is where it starts. Making the
+// threads worth having again would mean giving the workers the parent's table
+// to begin from, which is possible -- it is plain data, so it can cross -- but
+// it is a copy per worker and has not been tried.
+flex deadass PARALLEL_FROM = 5
 
 // THE ROOT SPLIT, AND WHY IT IS NOT A PLAIN ONE.
 //
@@ -320,6 +336,32 @@ flex bet hands_for(moves_count, depth) {
     bounce cpus
 }
 
+// -- the transposition table ------------------------------------------------------------
+//
+// Chess transposes constantly: 1.Nf3 d5 2.d4 and 1.d4 d5 2.Nf3 arrive at the
+// same board, and without a table the search works both out from scratch. The
+// table remembers what a position was worth and how deeply that was
+// established, so the second arrival is a lookup.
+//
+// A score is not always a number, though. Alpha-beta cuts off as soon as it
+// knows a move is too good or not good enough, and in those cases all that was
+// established is a bound. So each entry records which of the three it is, and
+// a bound may only narrow the window rather than answer outright.
+deadass TT_EXACT = 0
+deadass TT_LOWER = 1
+deadass TT_UPPER = 2
+
+// Below this depth the table is not consulted at all. The key is the sixty-four
+// squares joined into a string, which is not free -- it is only worth building
+// when the subtree it might save is bigger than the key is, and near the leaves
+// it never is.
+deadass TT_FROM = 2
+
+// A mate score says how far away the mate is *from here*, so filing one away
+// and reading it back somewhere else in the tree would be reading it at the
+// wrong distance. Those are simply not stored.
+deadass MATE_ZONE = WIN - 1000
+
 // The value of `pos` to whoever is to move in it.
 bet search(pos, depth, alpha, beta, counter) {
     counter["nodes"] += 1
@@ -341,6 +383,33 @@ bet search(pos, depth, alpha, beta, counter) {
             bounce -WIN + (100 - depth)
         }
         bounce evaluate(pos, pos["turn"])
+    }
+
+    // What alpha was before anything here moved it, which is what decides
+    // whether the answer this node produces is exact or merely a bound.
+    yo alpha_orig = alpha
+
+    yo key = ghost
+    sus (depth >= TT_FROM) {
+        key = position_key(pos)
+        yo hit = counter["tt"].get(key, ghost)
+        // Only an entry established at least as deeply as this one is being
+        // asked for can be trusted: a shallower look is not evidence about a
+        // deeper question.
+        sus (hit != ghost && hit["depth"] >= depth) {
+            sus (hit["flag"] == TT_EXACT) {
+                bounce hit["score"]
+            }
+            sus (hit["flag"] == TT_LOWER && hit["score"] > alpha) {
+                alpha = hit["score"]
+            }
+            sus (hit["flag"] == TT_UPPER && hit["score"] < beta) {
+                beta = hit["score"]
+            }
+            sus (alpha >= beta) {
+                bounce hit["score"]
+            }
+        }
     }
 
     yo moves = legal_moves_unsorted(pos)
@@ -370,6 +439,22 @@ bet search(pos, depth, alpha, beta, counter) {
         sus (alpha >= beta) {
             bail
         }
+    }
+
+    // Filed away with what kind of answer it is. A score that never rose above
+    // the alpha this node started with is only an upper bound -- the real value
+    // may be lower still, because the search stopped caring. One that reached
+    // beta is only a lower bound, because the loop broke early. Anything in
+    // between was searched properly and is exact.
+    sus (key != ghost && best < MATE_ZONE && best > -MATE_ZONE) {
+        yo flag = TT_EXACT
+        sus (best <= alpha_orig) {
+            flag = TT_UPPER
+        }
+        sus (best >= beta) {
+            flag = TT_LOWER
+        }
+        counter["tt"][key] = {"depth": depth, "score": best, "flag": flag}
     }
     bounce best
 }

@@ -95,7 +95,7 @@ and it is written back as: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 
 -- the engine picks the same move every time --
   depth 1: b1c3 (score 50, 20 positions), and again: b1c3
   depth 2: b1c3 (score 0, 132 positions), and again: b1c3
-  depth 3: b1c3 (score 50, 1407 positions), and again: b1c3
+  depth 3: g1f3 (score 50, 1056 positions), and again: g1f3
 -- it finds mate in one --
   it plays: a1a8
   and that is mate: white wins
@@ -104,11 +104,12 @@ and it is written back as: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 
 -- it deals with the threat to its own queen --
   from d4 it plays: d4c5
 -- the same answer, split across real threads --
-  e2a6: same move fax, same score fax, same positions fax
+  e2a6: same move fax, same score fax, same positions cap
   a1a8: same move fax, same score fax, same positions cap
-  threads start at depth: 4
-  so at depth 3 it asks for 1 worker, and at depth 4, more than one: fax
-  and with nothing to deal out it asks for 1 worker
+  threads start at depth: 5
+  below that it asks for 1 worker
+  at it, for more than one: fax
+  and with nothing worth dealing out, 1 worker
 -- what it makes of a position --
   even start: 0
   a rook ahead: fax

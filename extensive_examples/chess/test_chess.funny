@@ -259,15 +259,16 @@ yap "-- the same answer, split across real threads --"
 // whatever it decides, the answer may not change: the same move and the same
 // score, every time. That is the guarantee.
 //
-// The number of positions looked at is deliberately *not* part of it, and the
-// two positions here show why. The parent searches the best-ordered move
-// itself and hands the resulting alpha to every worker, which is what stops
-// the count exploding -- without it the workers search with the window wide
-// open and it was thirteen times higher at depth 4. But it only comes back
-// exactly equal when the best move is also the first one searched, as it is in
-// the first position, where it is a capture. In the second the best move is a
-// quiet back-rank mate that sorts after the captures, so the workers start
-// from a weaker alpha and cannot narrow each other's, and they look at more.
+// The number of positions looked at is deliberately *not* part of it. The
+// parent searches the best-ordered move itself and hands the resulting alpha
+// to every worker, which is what stops the count exploding -- without it the
+// workers search with the window wide open and it was thirteen times higher at
+// depth 4. But equal it is not, for two reasons that both cut the same way:
+// each worker is a separate VM with its own fresh transposition table, so none
+// of them can reuse what the others have worked out, where one thread fills a
+// single table and reads it back all search long; and a worker whose slice
+// does not contain the best move never gets to narrow its own alpha the way a
+// sequential search narrows its own.
 grind fen in [TRICKY, BACK_RANK] {
     yo p = from_fen(fen)
     yo one = best_move(p, 3)
@@ -278,9 +279,12 @@ grind fen in [TRICKY, BACK_RANK] {
         ", same positions " + to_yap(one["nodes"] == many["nodes"])
 }
 yap "  threads start at depth:", PARALLEL_FROM
-yap "  so at depth 3 it asks for", hands_for(30, 3), "worker, and at depth 4, more than one:",
-    hands_for(30, 4) > 1
-yap "  and with nothing to deal out it asks for", hands_for(2, 5), "worker"
+// Printed as a count below the threshold and as a yes-or-no above it, because
+// above it the answer is the machine's processor count and a golden may not
+// depend on how many the machine running it happens to have.
+yap "  below that it asks for", hands_for(30, PARALLEL_FROM - 1), "worker"
+yap "  at it, for more than one:", hands_for(30, PARALLEL_FROM) > 1
+yap "  and with nothing worth dealing out,", hands_for(2, PARALLEL_FROM), "worker"
 
 yap "-- what it makes of a position --"
 yap "  even start:", evaluate(new_board(), WHITE)
