@@ -1,0 +1,28 @@
+-- the tokenizer --
+["the", "quick", "brown", "fox"]
+["don't", "stop", "tis", "merely", "ends"]
+naïve café résumé
+["a", "b", "c"]
+[]
+-- the corpus --
+files: 12
+-- every strategy, same answer --
+pool, 4 workers: 12 files 468 words
+  gamma 234
+  beta 156
+  alpha 78
+pool, 1 worker: 12 files 468 words
+  gamma 234
+  beta 156
+  alpha 78
+static, 4 workers: 12 files 468 words
+  gamma 234
+  beta 156
+  alpha 78
+one intern per file: 12 files 468 words
+  gamma 234
+  beta 156
+  alpha 78
+-- they agree --
+words: fax
+top five identical: fax

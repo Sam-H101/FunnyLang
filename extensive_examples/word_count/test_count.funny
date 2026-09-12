@@ -1,0 +1,87 @@
+// test_count.funny — word_count end to end, on a corpus whose answer is known.
+//
+// `funny test extensive_examples` runs this. The corpus is generated here
+// rather than committed, so the expected counts are arithmetic rather than
+// something somebody once measured: file `k` holds the word `alpha` k times,
+// `beta` twice that and `gamma` three times it. Nothing printed depends on
+// timing, on how many threads this machine has, or on which worker finished
+// first -- which is the property a parallel counter has to have before
+// anybody should believe its answer.
+
+gimme filez
+gimme { words_of, top_words, files_under } from "words.funny"
+gimme { count_corpus } from "counter.funny"
+
+yo HERE = filez.dir_of(the_script())
+
+// -- part one: what counts as a word ---------------------------------------------
+
+yap "-- the tokenizer --"
+yap words_of("The quick brown fox.")
+yap words_of("don't stop -- 'tis merely ends'")
+// Joined rather than printed as a stash: a stash renders its strings the
+// way `sheesh` would, with non-ASCII escaped, and the whole point of this
+// line is that the accented words came through as themselves.
+yap words_of("naïve café, RÉSUMÉ").join(" ")
+yap words_of("123 456 a1b2c3")
+yap words_of("")
+
+// -- the corpus ------------------------------------------------------------------
+//
+// Twelve files across two directories. The totals are sums anybody can check
+// by hand: alpha 78, beta 156, gamma 234, and 468 words in all.
+
+yo CORPUS = filez.temp_file("wordcount") + "_corpus"
+filez.mkdir(CORPUS)
+filez.mkdir(filez.join_path(CORPUS, "deeper"))
+
+grind k from 1 to 13 {
+    yo parts = []
+    grind i from 0 to k {
+        parts.yeet_in("alpha")
+    }
+    grind i from 0 to k * 2 {
+        parts.yeet_in("beta")
+    }
+    grind i from 0 to k * 3 {
+        parts.yeet_in("gamma")
+    }
+    yo dir = k % 3 == 0 ? filez.join_path(CORPUS, "deeper") : CORPUS
+    filez.yeet_out(filez.join_path(dir, "file" + to_yap(k) + ".txt"), parts.join(" ") + "\n")
+}
+
+yap "-- the corpus --"
+yap "files:", files_under(CORPUS).how_thicc()
+
+// -- part two: every strategy gives the same answer --------------------------------
+
+bet report(name, result) {
+    yap name + ":", result["files"], "files", result["words"], "words"
+    grind pair in top_words(result["counts"], 3) {
+        yap "  " + pair[0] + " " + to_yap(pair[1])
+    }
+}
+
+yo pool4 = await_fr count_corpus(HERE, CORPUS, 4, "pool")
+yo pool1 = await_fr count_corpus(HERE, CORPUS, 1, "pool")
+yo static4 = await_fr count_corpus(HERE, CORPUS, 4, "static")
+yo per_file = await_fr count_corpus(HERE, CORPUS, 4, "file")
+
+yap "-- every strategy, same answer --"
+report("pool, 4 workers", pool4)
+report("pool, 1 worker", pool1)
+report("static, 4 workers", static4)
+report("one intern per file", per_file)
+
+yap "-- they agree --"
+yap "words:", pool4["words"] == pool1["words"] && pool4["words"] == static4["words"] &&
+    pool4["words"] == per_file["words"]
+yap "top five identical:", to_yap(top_words(pool4["counts"], 5)) == to_yap(top_words(pool1["counts"], 5)) &&
+    to_yap(top_words(pool4["counts"], 5)) == to_yap(top_words(static4["counts"], 5)) &&
+    to_yap(top_words(pool4["counts"], 5)) == to_yap(top_words(per_file["counts"], 5))
+
+grind p in files_under(CORPUS) {
+    filez.obliterate(p)
+}
+filez.obliterate(filez.join_path(CORPUS, "deeper"))
+filez.obliterate(CORPUS)

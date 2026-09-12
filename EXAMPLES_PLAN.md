@@ -234,7 +234,7 @@ $ funny run extensive_examples/proxy/proxy.funny -- 8443 --to localhost:9001,loc
 - [x] Golden byte-identical on all platforms; README numbers updated (keeper before/after)
 
 ### E1 — word count
-- [ ] Pool over DMs; static and per-file strategies for comparison; generated-corpus golden; README with timings
+- [x] Pool over DMs; static and per-file strategies for comparison; generated-corpus golden; README with timings
 
 ### E2 — site generator
 - [ ] `markdown.funny` with CommonMark examples as goldens; front matter; layouts; index, tags, feed, sitemap; `example/` and `expected/`
