@@ -23,6 +23,7 @@
 
 gimme filez
 gimme yapper
+gimme computer
 gimme { run_server } from "server.funny"
 
 bet usage() {
@@ -90,9 +91,13 @@ bet main(raw_args) {
         }
     }
 
+    // Ctrl-C stops it tidily: the listeners close, whatever is mid-request
+    // finishes, and the activity file is written before this returns.
+    // A second Ctrl-C still ends the process, so a shutdown that hangs is
+    // not a trap.
     yo summary = ghost
     sketchy {
-        summary = await_fr run_server(here, opts, ready, lowkey (line) => yell(line))
+        summary = await_fr run_server(here, opts, ready, computer.until_ctrl_c())
     } my_bad (e) {
         yell("couldn't start: " + e.message)
         bounce 1

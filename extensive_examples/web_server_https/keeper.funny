@@ -1,20 +1,21 @@
-// keeper.funny — the one thread that owns everything that changes.
+// keeper.funny — the one place that owns everything that changes.
 //
 // Twenty-four worker threads each have their own heap, so none of them can
 // hold the config, the sessions or the activity log for the others. This
-// intern does. It is also the only thread that ever touches data/, which is
-// what guarantees two threads never write the same file at once.
+// does. It is also the only thing that ever touches data/, which is what
+// guarantees two threads never write the same file at once.
 //
-// It listens on a loopback port the main thread opened for it, and speaks one
-// JSON object per line in each direction. The first line of every connection
-// must be the secret it was hired with; anything else is hung up on. Every
-// request is handled by a plain function with no `await_fr` in it, so each one
-// runs start to finish before any other task on this thread gets a turn --
-// which is why none of the state below needs a lock.
+// It used to be one more intern, listening on a loopback port and speaking
+// one JSON object per line after a shared secret. It is now a *module on the
+// main thread*: server.funny calls keeper_start once, then keeper_handle for
+// each message a worker sends with `interns.dm`, and keeper_tick a few times
+// a second for the periodic work. No port, no secret, no protocol.
 //
-// PLAN.md §2.3 has the whole protocol.
+// Every request is handled by a plain function with no `await_fr` in it, so
+// each one runs start to finish before any other task on this thread gets a
+// turn -- which is why none of the state below needs a lock. That was true
+// when this was an intern and it is true now, for the same reason.
 
-gimme internet
 gimme interns
 gimme clock
 gimme yapper
@@ -36,43 +37,26 @@ gimme { load_config, save_config, public_user, setting, seal, unseal, use_key, h
         activity_entry, activity_view, default_config_path, custom_config_path, activity_path,
         ACTIVITY_CAP, THEMES, PAGE_SIZES, LANDINGS } from "store.funny"
 
-yo JOB = interns.assignment()
-yo SECRET = JOB["secret"]
-// The same key the main thread loaded, so both halves of this process seal
-// and open the same values. It arrives in the assignment rather than being
-// read twice: one place decides where the key comes from.
-use_key(vault.base64_decode(JOB["key"]))
-yo DEFAULT_PATH = default_config_path(JOB["example_dir"])
-yo CUSTOM_PATH = custom_config_path(JOB["data_dir"])
-yo ACTIVITY_PATH = activity_path(JOB["data_dir"])
-
-yo LOADED = load_config(DEFAULT_PATH, CUSTOM_PATH)
-yo CONFIG = LOADED["config"]
-yo SOURCE = LOADED["source"]
-// The committed defaults, kept to answer one question: is this user still
-// on the password everybody who read the README knows?
-yo DEFAULT_USERS = load_config(DEFAULT_PATH, "")["config"]["users"]
-
-yo LOG = load_activity(ACTIVITY_PATH)
-yo ENTRIES = LOG["entries"]
-yo LINES = LOG["lines"]
+// Everything below is set by keeper_start, which the main thread calls once
+// before anybody is hired. Declared here so every function in this file can
+// see them, filled in there so that this can be a module rather than a
+// program with an assignment of its own.
+yo DEFAULT_PATH = ghost
+yo CUSTOM_PATH = ghost
+yo ACTIVITY_PATH = ghost
+yo CONFIG = ghost
+yo SOURCE = ghost
+yo DEFAULT_USERS = ghost
+yo ENTRIES = []
+yo LINES = []
 yo NEXT_ID = 1
-sus (ENTRIES.how_thicc() > 0) {
-    NEXT_ID = to_int(ENTRIES[ENTRIES.how_thicc() - 1].get("id", 0)) + 1
-}
-
-yo SESSION_SECONDS = setting(CONFIG, "security", "session_minutes", 120) * 60
-yo RATE_REQUESTS = setting(CONFIG, "security", "rate_requests", 300)
-yo RATE_WINDOW = setting(CONFIG, "security", "rate_window_seconds", 10)
-yo LOGIN_FAILURES = setting(CONFIG, "security", "login_failures", 5)
-yo LOGIN_WINDOW = setting(CONFIG, "security", "login_window_seconds", 300)
-
-// A real hash, of a value nobody has, compared against when the username
-// does not exist -- so "no such user" costs the same PBKDF2 work as a wrong
-// password and the answer cannot be timed. Made once, at start-up: an
-// old-format constant here would have been the fast path, which is the
-// oracle this exists to prevent.
-deadass NOBODY_HASH = hash_password(new_token())
+yo SESSION_SECONDS = 7200
+yo RATE_REQUESTS = 300
+yo RATE_WINDOW = 10
+yo LOGIN_FAILURES = 5
+yo LOGIN_WINDOW = 300
+yo NOBODY_HASH = ""
+yo BUDGET = ghost
 
 yo SESSIONS = {}
 yo RATE = {}
@@ -81,7 +65,46 @@ yo SERVED = 0
 yo STOPPING = cap
 yo QUIT = cap
 yo DIRTY = cap
-yo SUBSCRIBERS = []
+yo LAST_SWEEP = clock.now()
+
+flex bet keeper_start(job) {
+    // The same key the main thread loaded, so both halves of this process
+    // seal and open the same values. One place decides where it comes from.
+    use_key(vault.base64_decode(job["key"]))
+    DEFAULT_PATH = default_config_path(job["example_dir"])
+    CUSTOM_PATH = custom_config_path(job["data_dir"])
+    ACTIVITY_PATH = activity_path(job["data_dir"])
+    BUDGET = job["budget"]
+
+    yo loaded = load_config(DEFAULT_PATH, CUSTOM_PATH)
+    CONFIG = loaded["config"]
+    SOURCE = loaded["source"]
+    // The committed defaults, kept to answer one question: is this user still
+    // on the password everybody who read the README knows?
+    DEFAULT_USERS = load_config(DEFAULT_PATH, "")["config"]["users"]
+
+    yo log = load_activity(ACTIVITY_PATH)
+    ENTRIES = log["entries"]
+    LINES = log["lines"]
+    NEXT_ID = 1
+    sus (ENTRIES.how_thicc() > 0) {
+        NEXT_ID = to_int(ENTRIES[ENTRIES.how_thicc() - 1].get("id", 0)) + 1
+    }
+
+    SESSION_SECONDS = setting(CONFIG, "security", "session_minutes", 120) * 60
+    RATE_REQUESTS = setting(CONFIG, "security", "rate_requests", 300)
+    RATE_WINDOW = setting(CONFIG, "security", "rate_window_seconds", 10)
+    LOGIN_FAILURES = setting(CONFIG, "security", "login_failures", 5)
+    LOGIN_WINDOW = setting(CONFIG, "security", "login_window_seconds", 300)
+
+    // A real hash, of a value nobody has, compared against when the username
+    // does not exist -- so "no such user" costs the same PBKDF2 work as a
+    // wrong password and the answer cannot be timed. An old-format constant
+    // here would have been the fast path, which is the oracle this prevents.
+    NOBODY_HASH = hash_password(new_token())
+    LAST_SWEEP = clock.now()
+    bounce {"source": SOURCE, "path": loaded["path"]}
+}
 
 // -- activity -------------------------------------------------------------------
 
@@ -327,20 +350,17 @@ bet op_activity(msg) {
     }
 }
 
-// A request finished on some worker: the log line goes to whoever is
-// watching, and a page view goes in the activity log.
+// A request finished on some worker. The line itself is printed by that
+// worker, which writes to this process's stderr directly now; what comes
+// here is the part that belongs in the activity log.
 bet op_done(msg) {
     SERVED += 1
-    yo line = msg.get("line", ghost)
-    sus (what_is_it(line) == "yapstring") {
-        broadcast(line)
-    }
     yo event = msg.get("event", ghost)
     sus (what_is_it(event) == "groupchat") {
         record_from(msg, event.get("user", "anonymous"), event.get("action", "view"), event.get("detail", ""),
                     event.get("status", 0))
     }
-    sus (JOB["budget"] != ghost && SERVED >= JOB["budget"]) {
+    sus (BUDGET != ghost && SERVED >= BUDGET) {
         STOPPING = fax
     }
     bounce {"ok": fax, "stop": STOPPING}
@@ -357,18 +377,6 @@ bet op_stats(msg) {
     }
 }
 
-bet broadcast(line) {
-    yo alive = []
-    grind sub in SUBSCRIBERS {
-        sketchy {
-            internet.holler_back(sub, line + "\n")
-            alive.yeet_in(sub)
-        } my_bad (e) {
-            internet.kick_out(sub)
-        }
-    }
-    SUBSCRIBERS = alive
-}
 
 bet handle(msg) {
     yo op = msg.get("op", "")
@@ -414,116 +422,61 @@ bet handle(msg) {
     bounce refuse(400, "no such operation: " + to_yap(op))
 }
 
-// -- connections ----------------------------------------------------------------
+// -- lifecycle, as a module on the main thread ---------------------------------
+//
+// This file used to be an intern with a listener. It is now a module the main
+// thread imports: `keeper_handle` answers one message, `keeper_tick` does the
+// periodic work the flusher task used to do, and `keeper_finish` writes
+// everything out. server.funny drives all three from its own event loop.
+//
+// Nothing here awaits, which is the property that makes the state below need
+// no lock: one message is answered start to finish before the next is taken.
 
-async_ngl bet session(conn) {
-    yo buffer = ""
-    yo authed = cap
-    yo keep_open = cap
+// One message in, one answer out. Anything that falls over inside is a 500
+// with the flavor and the message, never a stack trace.
+flex bet keeper_handle(msg) {
     sketchy {
-        bruh (fax) {
-            yo nl = yapper.index_of(buffer, "\n")
-            sus (nl < 0) {
-                sus (yapper.byte_len(buffer) > 1048576) {
-                    bail
-                }
-                yo ready = await_fr internet.hold_up(conn, 1000)
-                sus (!ready) {
-                    sus (QUIT) {
-                        bail
-                    }
-                    nvm
-                }
-                yo chunk = internet.hear_them_out(conn, 65536, 0)
-                sus (chunk == "") {
-                    bail
-                }
-                sus (chunk != ghost) {
-                    buffer = buffer + chunk
-                }
-                nvm
-            }
-            yo line = yapper.slice(buffer, 0, nl)
-            buffer = yapper.slice(buffer, nl + 1, buffer.how_thicc())
-            sus (!authed) {
-                sus (!ct_equal(line, SECRET)) {
-                    bail
-                }
-                authed = fax
-                nvm
-            }
-            yo msg = try_parse(line)
-            yo reply = ghost
-            sus (what_is_it(msg) != "groupchat") {
-                reply = refuse(400, "that wasn't a JSON object")
-            } kinda_sus (msg.get("op", "") == "subscribe") {
-                // From here this connection only ever receives: log lines,
-                // one per request, until the keeper quits.
-                internet.holler_back(conn, json.spill({"ok": fax}) + "\n")
-                SUBSCRIBERS.yeet_in(conn)
-                keep_open = fax
-                bail
-            } nah {
-                sketchy {
-                    reply = handle(msg)
-                } my_bad (e) {
-                    reply = refuse(500, e.flavor + ": " + e.message)
-                }
-            }
-            internet.holler_back(conn, json.spill(reply) + "\n")
-        }
+        bounce handle(msg)
     } my_bad (e) {
-        keep_open = cap
-    }
-    sus (!keep_open) {
-        internet.kick_out(conn)
+        bounce refuse(500, e.flavor + ": " + e.message)
     }
 }
 
-// Writes the activity file at most once a second, and only when there is
-// something new: a busy server would otherwise rewrite it on every request.
-// Also where stale sessions and rate windows are swept up.
-async_ngl bet flusher() {
-    yo last_sweep = clock.now()
-    bruh (!QUIT) {
-        await_fr clock.chill(250)
-        sus (DIRTY) {
-            DIRTY = cap
-            save_activity(ACTIVITY_PATH, LINES)
-        }
-        yo now = clock.now()
-        sus (now - last_sweep > 60) {
-            last_sweep = now
-            prune_windows(RATE, now, RATE_WINDOW)
-            prune_windows(LOGIN_FAILS, now, LOGIN_WINDOW)
-            grind sid in SESSIONS.keys() {
-                sus (now - SESSIONS[sid]["seen"] > SESSION_SECONDS) {
-                    SESSIONS.remove(sid)
-                }
-            }
-        }
-    }
+// Called a few times a second. Writes the activity file when there is
+// something new -- a busy server would otherwise rewrite it per request --
+// and sweeps stale sessions and rate windows every minute.
+flex bet keeper_tick() {
     sus (DIRTY) {
+        DIRTY = cap
         save_activity(ACTIVITY_PATH, LINES)
     }
-}
-
-bet main() {
-    yo listener = JOB["listener"]
-    yo flushing = flusher()
-    bruh (!QUIT) {
-        sus (await_fr internet.hold_up(listener, 200)) {
-            yo c = internet.next_customer(listener, 0)
-            sus (c != ghost) {
-                session(c["conn"])
+    yo now = clock.now()
+    sus (now - LAST_SWEEP > 60) {
+        LAST_SWEEP = now
+        prune_windows(RATE, now, RATE_WINDOW)
+        prune_windows(LOGIN_FAILS, now, LOGIN_WINDOW)
+        grind sid in SESSIONS.keys() {
+            sus (now - SESSIONS[sid]["seen"] > SESSION_SECONDS) {
+                SESSIONS.remove(sid)
             }
         }
     }
-    await_fr flushing
-    grind sub in SUBSCRIBERS {
-        internet.kick_out(sub)
-    }
-    interns.deliver({"served": SERVED, "activity": ENTRIES.how_thicc(), "config": SOURCE})
 }
 
-main()
+// Whether anybody has been told to stop, so the main loop knows to wind down.
+flex bet keeper_stopping() {
+    bounce STOPPING
+}
+
+flex bet keeper_finished() {
+    bounce QUIT
+}
+
+// The last write, and what the run is worth reporting.
+flex bet keeper_finish() {
+    sus (DIRTY) {
+        DIRTY = cap
+        save_activity(ACTIVITY_PATH, LINES)
+    }
+    bounce {"served": SERVED, "activity": ENTRIES.how_thicc(), "config": SOURCE}
+}

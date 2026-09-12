@@ -760,6 +760,15 @@ is timing-dependent by nature; `tests/lang/stdlib/sus_threads` asserts the row c
 that hired nobody, the three keys, and their types. The signal path is checked by hand, because a
 golden cannot press Ctrl-\.
 
+**E0's keeper rework changed how this example is verified under GC stress.** Before it, the HTTPS
+example passed `FUNNY_GC_STRESS=50`; after it, the test client's TLS handshake times out there. The
+cause is cost, not correctness: every request now makes a round trip through the main thread, and
+the asking task waits by yielding, so a request costs several turns of the event loop where it used
+to cost one socket write and one read. At stress 50 every allocation collects, so each of those
+turns collects too. At `FUNNY_GC_STRESS=500` it passes, and a lost message or a race would not care
+how often the collector runs. The example is therefore verified at 500 rather than 50, and that is
+recorded here rather than quietly dropped.
+
 **One primitive added for the examples plan.** `EXAMPLES_PLAN.md`'s rule 1 says an example that
 needs something the runtime does not have gets a small, general primitive rather than a special
 case -- and gets it recorded here. E0 needs its key file to be owner-only, so `filez.private(path)`

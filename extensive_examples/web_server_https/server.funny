@@ -33,11 +33,10 @@ gimme interns
 gimme clock
 gimme filez
 gimme yapper
-gimme { new_token } from "security.funny"
 gimme { load_config, unseal, setting, use_key, default_config_path, custom_config_path } from "store.funny"
 gimme json
 gimme vault
-gimme { keeper_link, ask_keeper, close_link } from "keeper_client.funny"
+gimme { keeper_start, keeper_handle, keeper_tick, keeper_finish } from "keeper.funny"
 
 flex deadass DEFAULTS = {
     "port": 8443,
@@ -52,53 +51,51 @@ flex deadass DEFAULTS = {
     "public_host": ghost,
 }
 
-// Tells the keeper to stop. Every worker notices within half a second.
-flex async_ngl bet stop_server(info) {
-    yo link = keeper_link(info["keeper_port"], info["secret"])
-    sketchy {
-        await_fr ask_keeper(link, {"op": "stop"})
-    } my_bad (e) {
-        vibe
-    }
-    close_link(link)
+// Tells the keeper to stop. It is a function call now, not a socket: the
+// keeper lives on this thread. Workers notice within half a second, on their
+// next ping.
+flex bet stop_server(info) {
+    keeper_handle({"op": "stop"})
 }
 
-// The log stream: every request's line, as the keeper hears about it.
-async_ngl bet log_pump(port, secret, on_log, state) {
-    yo conn = internet.slide_into("127.0.0.1", port, 2000)
-    internet.holler_back(conn, secret + "\n" + json.spill({"op": "subscribe"}) + "\n")
-    yo buffer = ""
-    yo greeted = cap
-    sketchy {
-        bruh (fax) {
-            yo nl = yapper.index_of(buffer, "\n")
-            sus (nl >= 0) {
-                yo line = yapper.slice(buffer, 0, nl)
-                buffer = yapper.slice(buffer, nl + 1, buffer.how_thicc())
-                sus (greeted) {
-                    on_log(line)
+// The keeper's own turn: answer whatever the workers have asked, then do the
+// periodic work its flusher task used to do. Called from the main loop, which
+// is the only place any of this runs -- so none of the keeper's state needs a
+// lock, for the same reason it never did.
+async_ngl bet keeper_pump(state) {
+    bruh (!state["done"]) {
+        yo m = await_fr interns.check_dms(50)
+        sus (m != ghost) {
+            yo msg = m["msg"]
+            yo rid = what_is_it(msg) == "groupchat" ? msg.get("rid", ghost) : ghost
+            yo reply = keeper_handle(msg)
+            sus (rid != ghost) {
+                sketchy {
+                    interns.dm(m["from"], {"rid": rid, "reply": reply})
+                } my_bad (e) {
+                    // That worker finished between asking and being
+                    // answered -- it was told to stop. Nobody is waiting
+                    // for this reply, and LeftOnRead is the runtime saying
+                    // exactly that.
+                    vibe
                 }
-                greeted = fax
-                nvm
-            }
-            sus (!await_fr internet.hold_up(conn, 500)) {
-                sus (state["done"]) {
-                    bail
-                }
-                nvm
-            }
-            yo chunk = internet.hear_them_out(conn, 65536, 0)
-            sus (chunk == "") {
-                bail
-            }
-            sus (chunk != ghost) {
-                buffer = buffer + chunk
             }
         }
+        keeper_tick()
+    }
+}
+
+// Ends the server when `stop_when` settles. It is awaited in its own task so
+// that waiting for Ctrl-C does not stop this thread from being the keeper.
+async_ngl bet stop_watch(info, stop_when, state) {
+    sketchy {
+        await_fr stop_when
     } my_bad (e) {
         vibe
     }
-    internet.kick_out(conn)
+    sus (!state["done"]) {
+        stop_server(info)
+    }
 }
 
 async_ngl bet deadline_watch(info, seconds, state) {
@@ -145,7 +142,11 @@ bet load_or_make_key(path) {
 // Runs the whole server until something stops it. `on_ready(info)` is called
 // once everything is listening -- info has the ports, the thread count and
 // which config was loaded -- and `on_log(line)` once per request.
-flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
+// `stop_when` is an `otw` that ends the server when it settles -- the CLI
+// passes computer.until_ctrl_c(), a test passes ghost and calls stop_server
+// itself. The log is no longer a parameter: workers are live and print
+// their own lines as they serve.
+flex async_ngl bet run_server(example_dir, options, on_ready, stop_when) {
     yo opts = DEFAULTS.clone()
     opts.merge(options)
     yo threads = to_int(opts["threads"])
@@ -184,9 +185,6 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
         }
         http_port = internet.shop_port(http)
     }
-    yo keeper_listener = internet.open_shop(0, "127.0.0.1")
-    yo keeper_port = internet.shop_port(keeper_listener)
-    yo secret = new_token()
     yo host = opts["host"]
     yo public_host = opts["public_host"] ??
                      ((host == "127.0.0.1" || host == "" || host == ghost || host == "0.0.0.0") ? "localhost" : host)
@@ -199,20 +197,17 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
         "config": loaded["source"],
         "config_path": loaded["path"],
         "data_dir": data_dir,
-        "keeper_port": keeper_port,
-        "secret": secret,
     }
 
     // From the first hire on, nothing may leave this function early: see
     // "failing safely" at the top.
     yo failures = []
-    yo keeper = ghost
     yo workers = []
     yo redirect = ghost
     sketchy {
-        keeper = interns.hire(filez.join_path(example_dir, "keeper.funny"), {
-            "listener": keeper_listener,
-            "secret": secret,
+        // The keeper is a module on this thread now, not an intern: there is
+        // no listener to open, no secret to share and no protocol to speak.
+        keeper_start({
             "example_dir": example_dir,
             "data_dir": data_dir,
             "key": vault.base64_encode(key),
@@ -222,24 +217,24 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
         yo worker_src = filez.join_path(example_dir, "worker.funny")
         yo web_dir = filez.join_path(example_dir, "web")
         grind k from 1 to threads + 1 {
+            // {"live": fax}: a worker's log goes straight to this process's
+            // stderr as it happens, instead of being held and replayed when
+            // the worker is joined -- which for a server that runs for hours
+            // would mean seeing the log at the end.
             workers.yeet_in(interns.hire(worker_src, {
                 "listener": https,
-                "keeper_port": keeper_port,
-                "secret": secret,
                 "thread": k,
                 "threads": threads,
                 "web_dir": web_dir,
                 "started_at": started_at,
-            }))
+            }, {"live": fax}))
         }
         sus (http != ghost) {
             redirect = interns.hire(filez.join_path(example_dir, "redirect.funny"), {
                 "listener": http,
                 "https_port": https_port,
                 "public_host": public_host,
-                "keeper_port": keeper_port,
-                "secret": secret,
-            })
+            }, {"live": fax})
         }
     } my_bad (e) {
         failures.yeet_in(e)
@@ -248,16 +243,18 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
     yo state = {"done": cap}
     yo pump = ghost
     yo watch = ghost
+    yo stopper = ghost
     sus (failures.how_thicc() == 0) {
-        pump = log_pump(keeper_port, secret, on_log, state)
+        pump = keeper_pump(state)
         watch = opts["seconds"] == ghost ? ghost : deadline_watch(info, opts["seconds"], state)
+        stopper = stop_when == ghost ? ghost : stop_watch(info, stop_when, state)
         sketchy {
             on_ready(info)
         } my_bad (e) {
             failures.yeet_in(e)
         }
     }
-    sus (failures.how_thicc() > 0 && keeper != ghost) {
+    sus (failures.how_thicc() > 0) {
         await_fr stop_server(info)
     }
 
@@ -277,24 +274,17 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
     sus (redirect != ghost) {
         await_fr collect(redirect, failures)
     }
-    yo kept = {"served": 0, "activity": 0, "config": ghost}
-    sus (keeper != ghost) {
-        yo link = keeper_link(keeper_port, secret)
-        sketchy {
-            await_fr ask_keeper(link, {"op": "quit"})
-        } my_bad (e) {
-            vibe
-        }
-        close_link(link)
-        yo answer = await_fr collect(keeper, failures)
-        sus (answer != ghost) {
-            kept = answer
-        }
-    }
+    // The keeper is on this thread, so its last write is a call rather than
+    // a message and a join.
+    yo kept = keeper_finish()
     state["done"] = fax
     sus (pump != ghost) {
         await_fr pump
     }
+    // The stop watcher is deliberately not awaited. It is parked on an otw
+    // that only a Ctrl-C settles, and the program is finishing; the loop
+    // strands that wait at teardown and the watcher's own sketchy swallows
+    // it. Awaiting it here is what made `--seconds` never return.
     sus (watch != ghost) {
         await_fr watch
     }
@@ -302,7 +292,6 @@ flex async_ngl bet run_server(example_dir, options, on_ready, on_log) {
     sus (http != ghost) {
         internet.close_shop(http)
     }
-    internet.close_shop(keeper_listener)
     sus (failures.how_thicc() > 0) {
         chuck failures[0]
     }

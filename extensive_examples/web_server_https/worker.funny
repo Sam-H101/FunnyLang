@@ -24,7 +24,7 @@ gimme json
 yo JOB = interns.assignment()
 yo THREAD = JOB["thread"]
 yo LISTENER = JOB["listener"]
-yo LINK = keeper_link(JOB["keeper_port"], JOB["secret"])
+yo LINK = keeper_link()
 
 // Past this many connections in flight on one thread, new ones are closed
 // at once rather than queued: memory is finite and the other threads exist.
@@ -94,8 +94,13 @@ async_ngl bet finish_handshake(conn) {
     bounce fax
 }
 
+// The line is printed here, on the thread that served the request: a live
+// worker writes straight to this process's stderr, so there is nothing to
+// forward and nothing to subscribe to. What still goes to the keeper is
+// the part it owns -- the activity entry.
 async_ngl bet report(line, event, ip, agent) {
-    yo reply = await_fr ask_keeper(LINK, {"op": "done", "line": line, "event": event, "ip": ip, "agent": agent,
+    yell(line)
+    yo reply = await_fr ask_keeper(LINK, {"op": "done", "event": event, "ip": ip, "agent": agent,
                                           "thread": THREAD})
     sus (reply.get("stop", cap)) {
         STOPPING = fax

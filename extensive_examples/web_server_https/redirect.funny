@@ -17,7 +17,7 @@ gimme { keeper_link, ask_keeper, close_link } from "keeper_client.funny"
 
 yo JOB = interns.assignment()
 yo LISTENER = JOB["listener"]
-yo LINK = keeper_link(JOB["keeper_port"], JOB["secret"])
+yo LINK = keeper_link()
 yo STOPPING = cap
 yo IN_FLIGHT = 0
 yo SERVED = 0
@@ -73,7 +73,9 @@ async_ngl bet serve(customer) {
     SERVED += 1
     yo line = clock.date_yap("%H:%M:%S") + "  http  " + customer["peer"] + "  " +
               (req["ok"] ? req["method"] + " " + yapper.slice(target, 0, 120) : "(refused)") + "  -> " + to_yap(status)
-    yo reply = await_fr ask_keeper(LINK, {"op": "done", "line": line})
+    // Printed here rather than forwarded: this listener is live too.
+    yell(line)
+    yo reply = await_fr ask_keeper(LINK, {"op": "done"})
     sus (reply.get("stop", cap)) {
         STOPPING = fax
     }

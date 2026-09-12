@@ -134,12 +134,36 @@ server**: the main thread opens the secure listener, and every worker is handed 
 accepts from it. The kernel gives each connection to one of them. Each worker is also an event loop,
 so it serves many connections at once — 24 threads each doing what `web_server/` does on one.
 
-Twenty-four heaps cannot share a session table. The **keeper** is one more intern that owns
-everything shared, and the only thread that ever writes to `data/`. Workers ask it over loopback, one
-JSON object per line, after a random secret as the first line of every connection. Every request it
-handles runs start to finish without awaiting anything, so its state needs no lock either. The
-request log travels the same way: a worker's own output is held until it finishes, so each worker
-tells the keeper, and the keeper streams the lines to the main thread, which prints them.
+Twenty-four heaps cannot share a session table. The **keeper** owns everything shared — the config,
+the sessions, the activity log, the rate limits, the stop flag — and is the only thing that writes
+to `data/`. It used to be one more intern with a loopback listener, reached by one JSON object per
+line after a shared secret. It is now a *module on the main thread*, and a worker reaches it with
+`interns.dm`: no port, no secret, no encoder, no connection pool, and nothing on the machine that
+could dial it.
+
+What a connection gave for free was correlation — an answer came back on the connection that asked.
+A VM has one inbox and a worker runs many requests at once, so each request carries a number, one
+task per worker owns the inbox and files each reply under its number, and the asking task yields
+until its own appears. Every message the keeper answers runs start to finish without awaiting
+anything, so its state still needs no lock.
+
+The request log used to travel the same way: workers told the keeper, the keeper streamed the lines
+to the main thread. Workers are hired `{"live": fax}` now, so each one writes its own lines straight
+to this process's stderr as it serves, and the `subscribe` op is gone.
+
+**What the keeper change cost.** The same fixed workload — `test_server.funny`, which drives about
+ninety requests over real TLS including forty page views from four clients at once — three runs
+each, same machine, same runtime binary, only the example's sources differing:
+
+| | loopback keeper | keeper over DMs |
+|---|---|---|
+| `test_server.funny`, end to end | 4.36 / 4.21 / 4.04 s | 4.29 / 4.28 / 4.27 s |
+
+Which is to say: no measurable difference, and that is the honest answer. The work a request does
+is dominated by the TLS handshake; what changed underneath it is that the round trip to the keeper
+no longer involves a socket, an encoder, a parser and a connection pool. What the rework bought is
+not speed — it is that there is no loopback port to dial, no shared secret to leak, and about a
+hundred and fifty fewer lines to be wrong.
 
 Measured on an 8-core machine under WSL2, `--threads 1` against the default 24, TLS 1.3 throughout,
 with the per-address rate limit raised so it did not interfere:
