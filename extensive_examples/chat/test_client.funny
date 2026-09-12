@@ -61,8 +61,28 @@ bet join_room(client, user, room) {
     send_text(client, json.spill({"op": "join", "user": user, "room": room}))
 }
 
-// Reads until `want(msg)` is happy or the deadline passes. Every wait has one:
-// a golden that can hang is a golden that will, on the slowest machine in CI.
+// Every message anybody said, recorded the moment it is seen -- wherever it is
+// seen.
+//
+// This is a shared list rather than something the collecting loop builds,
+// because of a bug worth remembering. `until` reads messages while it waits
+// for a particular one, and used to discard everything that did not match. A
+// `said` push that arrived while a client was waiting for its join reply, or
+// for a `who` answer, was therefore thrown away and never counted -- so a
+// client could be sent six messages and report five. Whether it happened
+// depended entirely on when the other clients happened to speak, which made it
+// a failure that appears on one machine and not another.
+yo HEARD = []
+
+bet record(parsed) {
+    sus (parsed != ghost && parsed.get("push", "") == "said") {
+        HEARD.yeet_in(parsed["user"] + ": " + parsed["text"])
+    }
+}
+
+// Reads until `want(msg)` is happy or the deadline passes, recording anything
+// said on the way past. Every wait has a deadline: a golden that can hang is a
+// golden that will, on the slowest machine in CI.
 bet until(client, seconds, want) {
     yo deadline = clock.now() + seconds
     bruh (clock.now() < deadline) {
@@ -79,6 +99,7 @@ bet until(client, seconds, want) {
         } my_bad (e) {
             nvm
         }
+        record(parsed)
         sus (want(parsed)) {
             bounce parsed
         }
@@ -129,15 +150,24 @@ sus (job["script"] == "chat") {
         send_text(c, json.spill({"op": "say", "text": text}))
     }
 
-    // Collect every message from everybody, this client's own included: the
+    // Keep reading until everybody's messages have arrived. `HEARD` already
+    // holds anything that turned up while this client was joining or asking
+    // who was here, so this loop is only finishing the job rather than
+    // starting it.
+    //
+    // Every message from everybody counts, this client's own included: the
     // boss fans out to the worker that sent it too, because the person who
     // typed it expects to see it appear like everybody else does.
-    yo heard = []
     yo deadline = clock.now() + 90
-    bruh (heard.how_thicc() < job["expect_total"] && clock.now() < deadline) {
+    bruh (HEARD.how_thicc() < job["expect_total"] && clock.now() < deadline) {
         yo m = receive_message(c)
+        // Nothing arrived just now. That is not a reason to stop: the messages
+        // being waited for are sent by other clients on other threads, and one
+        // quiet moment says nothing about whether more are coming. Abandoning
+        // here is how this reported five of six and blamed the server.
         sus (m == ghost) {
-            bail
+            await_fr clock.chill(20)
+            nvm
         }
         sus (m["kind"] != "text") {
             nvm
@@ -148,13 +178,11 @@ sus (job["script"] == "chat") {
         } my_bad (e) {
             nvm
         }
-        sus (parsed != ghost && parsed.get("push", "") == "said") {
-            heard.yeet_in(parsed["user"] + ": " + parsed["text"])
-        }
+        record(parsed)
     }
     // Sorted, because three clients speaking at once have no order anybody
     // can predict, and asserting on one would be asserting on the scheduler.
-    say(job["name"] + " heard " + to_yap(heard.how_thicc()) + ": " + to_yap(sorted_strings(heard)))
+    say(job["name"] + " heard " + to_yap(HEARD.how_thicc()) + ": " + to_yap(sorted_strings(HEARD)))
 }
 
 // -- the control frames, on a real socket -----------------------------------------------

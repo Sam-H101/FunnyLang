@@ -186,7 +186,21 @@ bet fill_to(r, n) {
             bounce cap
         }
         yo chunk = r["more"]()
-        sus (chunk == ghost || chunk == "" || how_thicc(chunk) == 0) {
+        // `ghost` and `""` are not the same thing, and treating them alike was
+        // a bug worth naming. `internet.hear_them_out` gives `""` when the
+        // other end has closed, and `ghost` when it simply said nothing in
+        // time -- and on a TLS connection it can say `ghost` immediately after
+        // the loop reported the socket readable, because what arrived was part
+        // of a record rather than a whole one.
+        //
+        // Marking the reader closed on `ghost` therefore killed a perfectly
+        // healthy connection after one quiet moment, and every read after that
+        // returned nothing for ever. A timeout means "not yet": the caller
+        // decides whether to wait again.
+        sus (chunk == ghost) {
+            bounce cap
+        }
+        sus (chunk == "" || how_thicc(chunk) == 0) {
             r["closed"] = fax
             bounce cap
         }
