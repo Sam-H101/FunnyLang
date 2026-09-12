@@ -1,0 +1,107 @@
+// serve.funny — the command line.
+//
+//     funny run extensive_examples/chat/serve.funny
+//     funny run extensive_examples/chat/serve.funny -- 8443 --threads 8
+//     funny run extensive_examples/chat/serve.funny -- 8443 --pfx ../web_server_https/certs/site.p12
+//
+//   PORT                 the port (default 8443; 0 picks a free one)
+//   --host H             where to listen (default 127.0.0.1 -- loopback only)
+//   --threads N          acceptor threads (default 8, 1 to 64)
+//   --pfx FILE           a PKCS#12 identity; with one, the server speaks TLS
+//   --pfx-password PW    its password
+//   --web DIR            the page to serve (default: this example's web/)
+//   --seconds N          stop after N seconds
+//
+// Everything interesting is in server.funny, worker.funny and rooms.funny.
+// This reads flags and prints.
+
+gimme filez
+gimme yapper
+gimme computer
+gimme { run_chat } from "server.funny"
+
+bet usage() {
+    yell("usage: serve.funny [PORT] [--host H] [--threads N] [--pfx FILE] [--pfx-password PW]")
+    yell("                   [--web DIR] [--seconds N]")
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo opts = {}
+    yo takes_value = {
+        "--host": "host", "--threads": "threads", "--pfx": "pfx",
+        "--pfx-password": "password", "--web": "web_dir", "--seconds": "seconds",
+    }
+    yo numeric = ["threads", "seconds"]
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (takes_value.has(a)) {
+            sus (i + 1 >= args.how_thicc()) {
+                yell(a + " needs a value.")
+                usage()
+                bounce 2
+            }
+            yo key = takes_value[a]
+            opts[key] = numeric.contains(key) ? to_numba(args[i + 1]) : args[i + 1]
+            i += 2
+        } kinda_sus (yapper.starts_with(a, "-")) {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        } nah {
+            opts["port"] = to_int(a)
+            i += 1
+        }
+    }
+
+    yo here = filez.dir_of(the_script())
+
+    // A relative --pfx is relative to where you typed it, which is what a
+    // person means; an absolute one is left alone.
+    sus (opts.has("pfx") && !filez.is_file(opts["pfx"])) {
+        yo beside = filez.join_path(here, opts["pfx"])
+        sus (filez.is_file(beside)) {
+            opts["pfx"] = beside
+        }
+    }
+
+    bet ready(info) {
+        yo scheme = info["secure"] ? "https" : "http"
+        yo shown = info["host"] == "0.0.0.0" ? "<this machine>" : "localhost"
+        yell("chat at " + scheme + "://" + shown + ":" + to_yap(info["port"]) + " on " +
+             to_yap(info["threads"]) + " threads — ctrl-c to stop")
+        sus (!info["secure"]) {
+            yell("(no --pfx, so this is plain http: fine on loopback, not on a network)")
+        }
+    }
+
+    yo summary = ghost
+    sketchy {
+        summary = await_fr run_chat(here, opts, ready, computer.until_ctrl_c())
+    } my_bad (e) {
+        yell("couldn't start: " + e.message)
+        bounce 1
+    }
+
+    yell("said " + to_yap(summary["said"]) + " messages, " + to_yap(summary["joined"]) +
+         " joins, pushed " + to_yap(summary["pushed"]) + " times. closing up.")
+    grind row in summary["per_thread"] {
+        sus (row["served"] > 0 || row["frames_in"] > 0) {
+            yell("  thread " + to_yap(row["thread"]) + ": " + to_yap(row["served"]) + " requests, " +
+                 to_yap(row["frames_in"]) + " frames in, " + to_yap(row["frames_out"]) + " out")
+        }
+    }
+    bounce 0
+}
+
+dip(main(the_args()))

@@ -823,6 +823,50 @@ pad and any stream-combining step are others, and none of them mentions WebSocke
 alternative was shrinking the example's largest message until the interpreter could cope, which
 would have made the runtime's limits decide what the example demonstrates.
 
+**A limitation found while building E5, recorded rather than worked around quietly.** An
+`interns` worker cannot use a module reached through a parent directory. A two-file reproduction
+is enough: `alpha/kid.funny` does `gimme { greet } from "../beta/shared.funny"`, and hiring it
+raises `ImportSkillIssue '../beta/shared.funny' isn't in this bundle.` Building that same file
+standalone succeeds -- `funny build alpha/kid.funny` produces a two-module bundle -- and hiring
+the *prebuilt* `.funnypak` fails identically, so this is the loader rather than compilation.
+
+`selfhost/bundler.funny` says why in its own comment: a module's key in a bundle is its path
+relative to the **entry** file's directory. A `../` import produces a key that climbs out of that
+root, and nothing resolves it back on the way in.
+
+This matters because `EXAMPLES_PLAN.md`'s E5 says the chat is built on `web_server_https/` with
+its modules "imported from `../web_server_https/`", and its acceptor threads are `interns`. That
+is not achievable as written: the moment those workers are hired, every cross-example import is
+unreachable. **E5 therefore carries its own `http.funny` and `static.funny`** -- smaller than the
+HTTPS example's, being a chat server's share of them -- and the deviation is recorded here and in
+that example's README rather than presented as the plan's design.
+
+Fixing the loader is the better answer and is deliberately not attempted here: keying bundles in a
+way that admits paths above the entry changes the toolchain, needs the blob regenerated and the
+bootstrap fixed point re-verified, and is a runtime change wearing an example's clothes. It is
+worth doing on its own terms.
+
+**E5 is verified under GC stress at 500, not 50** -- the same call E0 needed, for the same reason
+and with the same evidence. At `FUNNY_GC_STRESS=50` the chat golden does not merely run slowly, it
+fails to connect at all: `couldn't get through to 127.0.0.1:<port>`. A chat message crosses three
+VMs -- a client worker, an acceptor worker, and the boss that owns the room -- and every hop is
+several turns of an event loop. At stress 50 every allocation collects, so each of those turns
+collects too, and the acceptor cannot reach `next_customer` inside the client's dial timeout.
+
+That is cost, not correctness: a lost message or a race would not care how often the collector
+runs. At 500 it passes.
+
+**ThreadSanitizer earned its place on the same example.** With the collector's pressure removed it
+still failed, and differently: one client in six was missing one message from the *middle* of the
+run, which is not what a deadline expiring looks like. It was a real defect. A worker recorded
+which room a connection had joined only *after* the boss answered the join, while the boss began
+fanning messages to that room the moment it recorded it -- so a message broadcast inside that
+window arrived at the worker, was filtered out as "not in that room", and was lost. The window is
+minute at full speed and about ten times wider under the sanitizer, which is the only reason it was
+ever seen. Recording the room before asking closes it, and the suite is 8/8 under ThreadSanitizer
+with no race warnings. The deadlines in `test_client.funny` were raised as well, so that an
+instrumented run is not fighting the clock while it does it.
+
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in
 `CommonCryptorSPI.h`, which the public SDK does not ship. Options, in order of preference: (a)

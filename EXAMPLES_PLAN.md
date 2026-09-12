@@ -246,8 +246,8 @@ $ funny run extensive_examples/proxy/proxy.funny -- 8443 --to localhost:9001,loc
 - [x] Log + snapshot storage with atomic writes; protocol (decision logged); commands; expiry; CLI and client library; restart golden
 
 ### E5 — chat
-- [ ] `ws.funny`, `ws_client.funny`; rooms over DMs; the page; presence via E4 (optional); golden with three clients
-- [ ] `vault.sha1` in `RUNTIME_PLAN.md` §9
+- [x] `ws.funny`, `ws_client.funny`; rooms over DMs; the page; presence via E4 (optional); golden with three clients
+- [x] `vault.sha1` in `RUNTIME_PLAN.md` §9
 
 ### E6 — reverse proxy
 - [ ] Pinned-CA client per request; streaming; balancing; health; golden with two backends and a failure
