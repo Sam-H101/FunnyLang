@@ -353,7 +353,16 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           set -eu
+          # libssl3 provides libcrypto.so.3, which `vault` dlopen's. FunnyLang
+          # implements no cipher of its own and takes crypto from the operating
+          # system, so a container without it cannot pass the three vault
+          # goldens in tests/lang/stdlib -- `vault` raises a clean SkillIssue
+          # instead, which is correct and documented. Installing it here keeps
+          # this step testing what it is for: that the published binary runs on
+          # Debian 12's glibc.
           docker run --rm -v "$PWD:/w" -w /w -e FUNNY_NO_NET=1 debian:12 \
-            sh -c './published/${{ matrix.bin }} --version && \
+            sh -c 'apt-get update >/dev/null && \
+                   apt-get install -y --no-install-recommends libssl3 >/dev/null && \
+                   ./published/${{ matrix.bin }} --version && \
                    ./published/${{ matrix.bin }} run examples/hello.funny && \
                    ./published/${{ matrix.bin }} test tests/lang'
