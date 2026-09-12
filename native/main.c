@@ -31,11 +31,13 @@
 #include "sus.h"
 #include "toolchain_blob.h"
 
-/* Kept in step with selfhost/cli.funny's own VERSION/BYTECODE_VERSION by
-   `tests/native/test_native_cli.py`, which reads both and compares them --
-   two copies of a version string is exactly the kind of thing that drifts
-   silently. */
-#define FUNNY_VERSION "2.0.0"
+/* The version lives in three places and they must be moved together:
+   here, `selfhost/cli.funny` and `selfhost/vibe.funny`. A test used to read
+   them and compare -- `tests/native/test_native_cli.py` -- but N11 removed
+   every `.py` from the repository and the CI job that proves there are none,
+   so nothing checks this any more. Three copies of a version string is
+   exactly the kind of thing that drifts silently, and now it can. */
+#define FUNNY_VERSION "2.1.0"
 #define FUNNY_BYTECODE_VERSION 2
 
 static uint8_t *read_file(const char *path, size_t *outLen) {
