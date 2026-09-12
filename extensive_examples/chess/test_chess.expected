@@ -85,6 +85,9 @@ and it is written back as: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 
   but not b2: cap
   h2 is covered by the black king though: fax
   the white king is at: a1
+-- a carried hash matches one worked out from scratch --
+  hashes checked: 115
+  that drifted: 0
 -- perft, from the opening --
   depth 1: 20 ok
   depth 2: 400 ok

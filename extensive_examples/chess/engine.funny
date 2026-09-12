@@ -370,11 +370,19 @@ deadass TT_EXACT = 0
 deadass TT_LOWER = 1
 deadass TT_UPPER = 2
 
-// Below this depth the table is not consulted at all. The key is the sixty-four
-// squares joined into a string, which is not free -- it is only worth building
-// when the subtree it might save is bigger than the key is, and near the leaves
-// it never is.
-deadass TT_FROM = 2
+// Below this depth the table is not consulted.
+//
+// It was 2, and for a good reason at the time: the key used to be the
+// sixty-four squares joined into a string, which was only worth building when
+// the subtree it might save was larger than the key itself, and near the
+// leaves it never was.
+//
+// The key is now a number the position carries and updates as moves are made,
+// so that reasoning has expired. Probing a ply shallower costs almost nothing
+// -- and it is the only way the hash can pay for itself at all, since it does
+// not make an existing probe faster, it makes more of them affordable, and
+// more probes are what turn into fewer nodes.
+deadass TT_FROM = 1
 
 // A mate score says how far away the mate is *from here*, so filing one away
 // and reading it back somewhere else in the tree would be reading it at the
@@ -410,7 +418,10 @@ bet search(pos, depth, alpha, beta, counter) {
 
     yo key = ghost
     sus (depth >= TT_FROM) {
-        key = position_key(pos)
+        // The position carries its own hash, kept up to date by `apply_move`.
+        // This used to join the sixty-four squares into a string at every node
+        // that reached here.
+        key = pos["hash"]
         yo hit = counter["tt"].get(key, ghost)
         // Only an entry established at least as deeply as this one is being
         // asked for can be trusted: a shallower look is not evidence about a

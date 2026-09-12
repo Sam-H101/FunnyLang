@@ -63,12 +63,13 @@ From the opening position:
 | depth | nodes | time |
 | --- | --- | --- |
 | 1 | 20 | 0 ms |
-| 2 | 400 | 18 ms |
-| 3 | 8,902 | 0.32 s |
-| 4 | 197,281 | 9.0 s |
+| 2 | 400 | 4 ms |
+| 3 | 8,902 | 0.11 s |
+| 4 | 197,281 | 2.5 s |
 
-All four agree. The golden asserts depths 1 to 3, because depth 4 is nine
-seconds to confirm something the position below establishes far more sharply.
+All four agree. The golden asserts depths 1 to 3, because even at two and a half
+seconds depth 4 is a long time to spend confirming something the position below
+establishes far more sharply.
 
 The times are as the code stands, after the optimisation work described below;
 the counts are facts about chess and never move, which is exactly why they make
@@ -315,12 +316,63 @@ rather than a set to be hashed.
 Node counts are identical and the golden came out byte-identical, which is what
 makes this one easy to trust: it removes work without changing a single answer.
 
-The unevenness points at what is next. Depth 4 gained two and a half times and
-depth 5 only one and a half, because deeper searches put far more nodes through
-the transposition table — and every one of those builds its key by joining
-sixty-four squares into a string. Replacing that with a Zobrist hash, an integer
-updated by XOR as each move is made rather than rebuilt from nothing, is the
-obvious next move.
+The unevenness pointed at what came next. Depth 4 gained two and a half times
+and depth 5 only one and a half, because deeper searches put far more nodes
+through the transposition table — and every one of those was building its key by
+joining sixty-four squares into a string.
+
+## The position as one number, and why that was not enough
+
+A Zobrist hash. Every (piece, square) pairing gets a random number, as do the
+side to move, each castling right, and each file a pawn may be taken on in
+passing; the hash of a position is all the applicable ones XOR'd together. XOR
+being its own inverse is the whole trick: a move does not need the hash rebuilt,
+only the departing piece XOR'd out and the arriving one XOR'd in.
+
+**On its own it made the engine slower** — five to nine percent — and the reason
+is worth writing down, because the reasoning error is an easy one.
+
+The string key was only ever built at nodes the table actually probed. Those
+were a *minority*: the tree is dominated by leaves and near-leaves that never
+looked at the table at all. The incremental hash, by contrast, lives inside
+`apply_move`, which is the single hottest function in the program. The change
+moved work off a few nodes and onto every move made anywhere in the search.
+
+The worst of it was the part that had seemed most careful. Rather than duplicate
+the logic in `lose_castling_rights`, the rights were *diffed* — recorded before,
+compared after — which allocated a fresh record and walked it twice on every
+move. The safety argument was right and the placement was wrong. Castling rights
+can only change when a king moves or a corner square is left or landed on, so a
+few integer comparisons now let the great majority of moves skip the diff, the
+rights update, and the list of pairs `lose_castling_rights` rebuilds each call.
+
+That brought it back to level, which is not the same as paying for itself. A
+cheap key does not make an existing probe faster — it makes *more* probes
+affordable. So `TT_FROM` dropped from 2 to 1, and that is where the gain is:
+
+| | nodes | time |
+| --- | --- | --- |
+| depth 4, before | 5,940 | 1,577 ms |
+| depth 4, after | **5,499** | **1,286 ms** |
+| depth 5, before | 112,097 | 17,071 ms |
+| depth 5, after | **98,233** | **15,361 ms** |
+
+Seven to twelve percent fewer positions looked at, and depth 4 eighteen percent
+faster. The chain is cheap key → affordable to probe a ply shallower → less
+searching, and no link of it works without the others.
+
+**The string key stays for threefold repetition.** That is a rule of chess
+rather than an optimisation, it is checked once per real move rather than at
+every node, and a hash collision there would invent a draw that never happened —
+which is precisely the bug that had to be fixed earlier. There is nothing to win
+and a rule to lose.
+
+The golden asserts the hash directly rather than waiting for a wrong move to
+betray it. Every legal move from five positions — chosen between them to reach a
+capture, an en passant, a castling rook, a promotion, and every way a castling
+right can be given up — is made, and the carried hash is compared against one
+computed honestly from the board. A hash that drifts does not fail loudly; it
+just quietly answers for the wrong position.
 
 ## Threads
 

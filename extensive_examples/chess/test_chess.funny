@@ -30,8 +30,8 @@ gimme yapper
 
 gimme { WHITE, BLACK, new_board, from_fen, to_fen, legal_moves, apply_move,
         outcome, render, find_move, in_check, attacked_by, king_square,
-        count_material, position_key, rank_of, file_of, square_at, square_name,
-        square_index } from "rules.funny"
+        count_material, position_key, position_hash, rank_of, file_of,
+        square_at, square_name, square_index } from "rules.funny"
 gimme { best_move, best_move_parallel, hands_for, evaluate, play_one, DEPTHS,
         VALUES, PARALLEL_FROM } from "engine.funny"
 
@@ -183,6 +183,45 @@ yap "  but not b2:", attacked_by(board["squares"], square_index("b2"), BLACK)
 // which is the point of asking about a square rather than about a piece.
 yap "  h2 is covered by the black king though:", attacked_by(board["squares"], square_index("h2"), BLACK)
 yap "  the white king is at:", square_name(king_square(board["squares"], WHITE))
+
+yap "-- a carried hash matches one worked out from scratch --"
+// `apply_move` carries the position hash forward by XORing out what left and
+// XORing in what arrived, instead of walking the board again. Every single
+// mutation has to be mirrored: the capture, the pawn taken in passing that is
+// not on the square landed on, the rook that moves when the king castles, the
+// promotion, each castling right given up, the en-passant square opening and
+// closing again, and the side to move.
+//
+// Miss one and nothing breaks loudly -- the transposition table simply starts
+// answering for a position that is not the one being asked about. So rather
+// than wait for that to surface as a wrong move somewhere, every legal move
+// from each of these positions is made and the carried hash is compared
+// against an honest one. The positions are chosen to reach every case above.
+deadass HASH_CASES = [
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    "8/8/8/3pP3/8/8/8/K6k w - d6 0 1",
+    "1n6/P7/8/8/8/8/8/K6k w - - 0 1",
+    "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+]
+yo hash_checks = 0
+yo hash_drifted = 0
+grind fen in HASH_CASES {
+    yo p = from_fen(fen)
+    hash_checks += 1
+    sus (p["hash"] != position_hash(p)) {
+        hash_drifted += 1
+    }
+    grind m in legal_moves(p) {
+        yo after = apply_move(p, m)
+        hash_checks += 1
+        sus (after["hash"] != position_hash(after)) {
+            hash_drifted += 1
+        }
+    }
+}
+yap "  hashes checked:", hash_checks
+yap "  that drifted:", hash_drifted
 
 // -- part two: perft ---------------------------------------------------------------
 

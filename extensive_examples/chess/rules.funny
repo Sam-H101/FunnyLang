@@ -161,6 +161,96 @@ flex bet piece_for(side, kind) {
 
 // `castling` is the four rights, each still available or not. `ep` is the
 // square a pawn may be captured *on* by en passant, or -1.
+// -- the position as one number ----------------------------------------------------
+//
+// A Zobrist hash. Every (piece, square) pairing gets its own random number, as
+// do the side to move, each castling right, and each file a pawn may be taken
+// on in passing. The hash of a position is all of the applicable ones XOR'd
+// together.
+//
+// The point is that XOR is its own inverse, so a move does not need the hash
+// rebuilt: XOR out what left, XOR in what arrived, and the answer is the same
+// as if the whole board had been walked. That turns the sixty-four-square scan
+// the transposition table used to do at every node into a handful of
+// operations.
+//
+// These numbers only have to be well spread, not unguessable -- but they *do*
+// have to be the same on every run, or a golden that depends on which
+// positions the table recognises would not reproduce. Hence a fixed seed.
+//
+// They are kept under 2^48 rather than a full 64 bits to stay clear of any
+// promotion to big integers. The birthday bound there is still about sixteen
+// million positions before a collision is likely, against a table that holds a
+// few thousand.
+deadass HASH_BITS = 281474976710655
+
+yo ZSEED = 20250912
+
+bet next_random() {
+    ZSEED = (ZSEED * 1103515245 + 12345) & HASH_BITS
+    // The low bits of a plain linear generator are poor, and every bit matters
+    // when the values are going to be XOR'd together, so fold the high ones down.
+    yo v = ZSEED ^ (ZSEED >> 17)
+    bounce v & HASH_BITS
+}
+
+// One number per piece per square. Row 0 is the empty square and is never
+// consulted -- an empty square contributes nothing to the hash.
+bet build_piece_hashes() {
+    yo table = []
+    grind p from 0 to 13 {
+        yo row = []
+        grind s from 0 to 64 {
+            row.yeet_in(next_random())
+        }
+        table.yeet_in(row)
+    }
+    bounce table
+}
+
+bet build_file_hashes() {
+    yo out = []
+    grind f from 0 to 8 {
+        out.yeet_in(next_random())
+    }
+    bounce out
+}
+
+deadass Z_PIECE = build_piece_hashes()
+deadass Z_SIDE = next_random()
+deadass Z_CASTLE = {"K": next_random(), "Q": next_random(),
+                    "k": next_random(), "q": next_random()}
+deadass Z_EP = build_file_hashes()
+
+// The hash worked out from nothing, by walking the whole board.
+//
+// `apply_move` does not call this -- it updates the hash as it goes, which is
+// the entire point. This exists to seed a position, and so that the golden can
+// assert the two agree: an incremental hash that drifts from the honest one
+// would quietly poison the transposition table and be very hard to find.
+flex bet position_hash(pos) {
+    yo h = 0
+    yo squares = pos["squares"]
+    grind n from 0 to 64 {
+        yo p = squares[n]
+        sus (p != EMPTY) {
+            h = h ^ Z_PIECE[p][n]
+        }
+    }
+    sus (pos["turn"] == BLACK) {
+        h = h ^ Z_SIDE
+    }
+    grind k in ["K", "Q", "k", "q"] {
+        sus (pos["castling"][k]) {
+            h = h ^ Z_CASTLE[k]
+        }
+    }
+    sus (pos["ep"] >= 0) {
+        h = h ^ Z_EP[file_of(pos["ep"])]
+    }
+    bounce h
+}
+
 flex bet new_board() {
     yo squares = []
     grind i from 0 to 64 {
@@ -173,14 +263,17 @@ flex bet new_board() {
         squares[square_at(6, f)] = PAWN + BLACK_OFFSET
         squares[square_at(7, f)] = BACK[f] + BLACK_OFFSET
     }
-    bounce {
+    yo built = {
         "squares": squares,
         "turn": WHITE,
         "castling": {"K": fax, "Q": fax, "k": fax, "q": fax},
         "ep": -1,
         "quiet": 0,
         "moves": 0,
+        "hash": 0,
     }
+    built["hash"] = position_hash(built)
+    bounce built
 }
 
 flex bet clone_board(pos) {
@@ -199,6 +292,8 @@ flex bet clone_board(pos) {
         "ep": pos["ep"],
         "quiet": pos["quiet"],
         "moves": pos["moves"],
+        // Copied rather than recomputed: the clone is the same position.
+        "hash": pos["hash"],
     }
 }
 
@@ -703,22 +798,51 @@ flex bet apply_move(pos, m) {
     yo side = pos["turn"]
     yo piece = m["piece"]
 
+    // The hash is carried forward rather than rebuilt: every change to the
+    // board below is mirrored by an XOR here, and XOR being its own inverse is
+    // what makes that exact. Every one of these has to be right -- a single
+    // missed mutation and the table starts answering for the wrong position.
+    yo h = next["hash"]
+
+    // The mover leaves its square.
+    h = h ^ Z_PIECE[piece][m["from"]]
     sq[m["from"]] = EMPTY
-    sq[m["to"]] = m["promotion"] == EMPTY ? piece : m["promotion"]
+
+    // Whatever was standing on the destination goes -- unless this is en
+    // passant, where the pawn being taken is not on that square at all.
+    sus (m["special"] != "ep" && m["captured"] != EMPTY && m["captured"] != ghost) {
+        h = h ^ Z_PIECE[m["captured"]][m["to"]]
+    }
+    // And the mover arrives, as whatever it has become.
+    yo landed = m["promotion"] == EMPTY ? piece : m["promotion"]
+    sq[m["to"]] = landed
+    h = h ^ Z_PIECE[landed][m["to"]]
 
     sus (m["special"] == "ep") {
         // The captured pawn is not on the square the capturer lands on.
-        sq[square_at(rank_of(m["from"]), file_of(m["to"]))] = EMPTY
+        yo victim = square_at(rank_of(m["from"]), file_of(m["to"]))
+        h = h ^ Z_PIECE[sq[victim]][victim]
+        sq[victim] = EMPTY
     }
     sus (m["special"] == "castle-short") {
         yo back = rank_of(m["from"])
-        sq[square_at(back, 5)] = sq[square_at(back, 7)]
-        sq[square_at(back, 7)] = EMPTY
+        yo rook_from = square_at(back, 7)
+        yo rook_to = square_at(back, 5)
+        yo rook = sq[rook_from]
+        h = h ^ Z_PIECE[rook][rook_from]
+        h = h ^ Z_PIECE[rook][rook_to]
+        sq[rook_to] = rook
+        sq[rook_from] = EMPTY
     }
     sus (m["special"] == "castle-long") {
         yo back = rank_of(m["from"])
-        sq[square_at(back, 3)] = sq[square_at(back, 0)]
-        sq[square_at(back, 0)] = EMPTY
+        yo rook_from = square_at(back, 0)
+        yo rook_to = square_at(back, 3)
+        yo rook = sq[rook_from]
+        h = h ^ Z_PIECE[rook][rook_from]
+        h = h ^ Z_PIECE[rook][rook_to]
+        sq[rook_to] = rook
+        sq[rook_from] = EMPTY
     }
 
     // A double pawn move leaves a square behind it that can be captured on,
@@ -728,12 +852,43 @@ flex bet apply_move(pos, m) {
     // ends at a newline unless it is inside brackets, and `m["special"] ==
     // "double"` is a complete expression, so the `?` below it would begin a
     // new statement and fail to parse.
+    // The old en-passant square stops being available and a new one may open.
+    sus (pos["ep"] >= 0) {
+        h = h ^ Z_EP[file_of(pos["ep"])]
+    }
     next["ep"] = -1
     sus (m["special"] == "double") {
         next["ep"] = square_at((rank_of(m["from"]) + rank_of(m["to"])) \ 2, file_of(m["from"]))
     }
+    sus (next["ep"] >= 0) {
+        h = h ^ Z_EP[file_of(next["ep"])]
+    }
 
-    lose_castling_rights(next, m)
+    // Castling rights can only change when a king moves, or when one of the
+    // four corner squares is left or landed on -- a rook moving off its home
+    // square, or being taken on it. That is a handful of integer comparisons,
+    // and the great majority of moves fail it and skip everything below.
+    //
+    // Worth skipping, because everything below is expensive: the rights are
+    // diffed rather than reasoned about a second time, which means building a
+    // record of them and walking it twice, and `lose_castling_rights` itself
+    // rebuilds a list of square-and-right pairs every time it is called. Doing
+    // all that on every move in the search was most of what made the hash cost
+    // more than it saved.
+    yo corner = m["from"] == 0 || m["from"] == 7 || m["from"] == 56 || m["from"] == 63 ||
+                m["to"] == 0 || m["to"] == 7 || m["to"] == 56 || m["to"] == 63
+    sus (kind_of(piece) == KING || corner) {
+        yo rights_before = {}
+        grind k in ["K", "Q", "k", "q"] {
+            rights_before[k] = next["castling"][k]
+        }
+        lose_castling_rights(next, m)
+        grind k in ["K", "Q", "k", "q"] {
+            sus (rights_before[k] != next["castling"][k]) {
+                h = h ^ Z_CASTLE[k]
+            }
+        }
+    }
 
     // The fifty-move counter resets on a capture or a pawn move, and on
     // nothing else.
@@ -743,7 +898,9 @@ flex bet apply_move(pos, m) {
         next["quiet"] = pos["quiet"] + 1
     }
     next["turn"] = other_side(side)
+    h = h ^ Z_SIDE
     next["moves"] = pos["moves"] + 1
+    next["hash"] = h
     bounce next
 }
 
@@ -907,14 +1064,17 @@ flex bet from_fen(text) {
         ep = square_index(parts[3])
     }
 
-    bounce {
+    yo built = {
         "squares": squares,
         "turn": yapper.whisper(parts[1]) == "b" ? BLACK : WHITE,
         "castling": rights,
         "ep": ep,
         "quiet": parts.how_thicc() > 4 ? to_int(parts[4]) : 0,
         "moves": 0,
+        "hash": 0,
     }
+    built["hash"] = position_hash(built)
+    bounce built
 }
 
 // The position as FEN, so what `from_fen` reads it can also write.
