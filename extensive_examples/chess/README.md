@@ -400,29 +400,38 @@ sequential figure, and the split is finally worth something:
 | 4 | 5,655 ms | **1,750 ms** | **3.23×** |
 | 5 | 39.8 s | **16.3 s** | **2.44×** |
 
-As everything else got faster, the split's position moved. Measured as the code
-now stands, on the same machine and from the same position:
+Every time the single-threaded engine got faster, the split's position got
+worse. Measured as the code now stands, on the same machine and from the same
+position:
 
 | depth | one thread | 8 threads | |
 | --- | --- | --- | --- |
-| 4 | 3,945 ms | 3,844 ms | 1.03× |
-| 5 | 24,136 ms | **11,343 ms** | **2.13×** |
+| 4 | 5,499 nodes, **1,314 ms** | 5,940 nodes, 4,370 ms | 0.30× |
+| 5 | 98,233 nodes, 15,332 ms | 127,853 nodes, **7,316 ms** | **2.10×** |
 
-At depth 4 it is a wash — the workers cannot recover what it costs to start
-eight VMs. At depth 5 it is worth having. So `PARALLEL_FROM` is 5: below it
-`hands_for` asks for one worker and the game runs in sequence.
+At depth 4 the split is now a serious loss — it was 0.64× before the Zobrist
+work and it is 0.30× after, and nothing about the split changed. Sequential got
+faster and the workers did not follow.
 
-The one thing the workers give up is the transposition table, since each is a
-separate VM and none of them can see what the others have learned. That shows
-in the node counts — 128,630 split against 112,097 in sequence at depth 5 —
-and it is why the speedup is 2.1× rather than something closer to the number of
-processors. Handing each worker the parent's table to start from would help; it
-is plain data, so it can cross, but it is a copy per worker and has not been
-tried.
+The node counts say why. **Each worker is a separate VM with its own
+transposition table, built from nothing and shared with nobody.** So the workers
+never get the benefit of probing a ply shallower that the sequential search now
+enjoys: split, depth 4 looks at 5,940 positions, which is precisely the figure
+sequential had *before* `TT_FROM` dropped to 1. Set against a search that now
+finishes in 1.3 seconds, eight VM startups are most of the budget.
+
+At depth 5 the tree is large enough to absorb all that and the split earns a
+real 2.10×. So `PARALLEL_FROM` stays at 5: below it, `hands_for` asks for one
+worker and the game runs in sequence.
+
+Handing each worker the parent's table to start from is the obvious repair —
+it is plain data, so it can cross — but it is a copy per worker, and it has not
+been tried.
 
 An earlier version of this README claimed the table had made the threads
 worthless. That was measured against the broken key described above, whose
-false hits made the sequential search look far better than it was.
+false hits made the sequential search look far better than it was. The threads
+are not worthless; they are simply worth nothing until depth 5.
 
 ## Thinking while you are thinking
 
