@@ -1,46 +1,84 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>checkers</title>
+<!-- Bootstrap, vendored rather than fetched: this page is served under
+     `default-src 'self'` and is meant to work on a machine with no network. -->
+<link rel="stylesheet" href="/vendor/bootstrap.min.css">
 <link rel="stylesheet" href="/style.css">
 </head>
-<body>
-<header>
-  <h1>checkers</h1>
-  <p id="status" class="status">starting…</p>
-</header>
+<body class="bg-body">
 
-<main>
-  <div id="board" class="board" role="grid" aria-label="checkers board"></div>
+<div class="container py-4">
 
-  <aside class="side">
-    <h2>the game</h2>
-    <dl class="facts">
-      <dt>you</dt><dd id="you">red</dd>
-      <dt>engine</dt><dd id="engine">black</dd>
-      <dt>your pieces</dt><dd id="redcount">12</dd>
-      <dt>its pieces</dt><dd id="blackcount">12</dd>
-      <dt>last move</dt><dd id="lastmove">—</dd>
-      <dt>it looked at</dt><dd id="nodes">—</dd>
-      <dt>it reckons</dt><dd id="verdict">—</dd>
-    </dl>
+  <header class="d-flex align-items-baseline flex-wrap gap-3 mb-4">
+    <h1 class="h3 mb-0 fw-semibold">checkers</h1>
+    <p id="status" class="mb-0 text-body-secondary" role="status" aria-live="polite">starting…</p>
+  </header>
 
-    <h2>new game</h2>
-    <form id="newgame" class="newgame">
-      <label for="depth">how far it looks ahead</label>
-      <select id="depth" name="depth">
-        <option value="1">1 — careless</option>
-        <option value="3" selected>3 — reasonable</option>
-        <option value="5">5 — slow and hard</option>
-      </select>
-      <button type="submit">start again</button>
-    </form>
+  <div class="row g-4">
 
-    <p class="note">Captures are compulsory. A jump that can carry on, must.</p>
-  </aside>
-</main>
+    <!-- The board is two layers. Underneath, sixty-four squares in a grid,
+         which take the clicks. On top, one absolutely-placed disc per piece,
+         which is what lets a piece slide and hop from square to square rather
+         than vanishing here and reappearing there. -->
+    <div class="col-lg-8">
+      <div class="card shadow-sm border-secondary-subtle">
+        <div class="card-body p-2 p-sm-3">
+          <div class="board" id="board">
+            <div class="squares" id="squares" role="grid" aria-label="checkers board"></div>
+            <div class="pieces" id="pieces" aria-hidden="true"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
+      <div class="card shadow-sm border-secondary-subtle mb-4">
+        <div class="card-header text-uppercase small text-body-secondary fw-semibold">the game</div>
+        <ul class="list-group list-group-flush">
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">you</span><span id="you">red</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">engine</span><span id="engine">black</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">your pieces</span><span id="redcount">12</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">its pieces</span><span id="blackcount">12</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">it replied</span><span id="lastmove">—</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">it looked at</span><span id="nodes">—</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">it reckons</span><span id="verdict">—</span></li>
+        </ul>
+      </div>
+
+      <div class="card shadow-sm border-secondary-subtle">
+        <div class="card-header text-uppercase small text-body-secondary fw-semibold">new game</div>
+        <div class="card-body">
+          <form id="newgame">
+            <label class="form-label small text-body-secondary" for="depth">how far it looks ahead</label>
+            <select class="form-select mb-3" id="depth" name="depth">
+              <option value="1">1 — careless</option>
+              <option value="3" selected>3 — reasonable</option>
+              <option value="5">5 — slow, and better</option>
+            </select>
+            <button class="btn btn-success w-100" type="submit">start again</button>
+          </form>
+        </div>
+      </div>
+
+      <p class="small text-body-secondary mt-3 mb-0">
+        Captures are compulsory, and a jump that can carry on must.
+        Click one of your pieces, then a marked square.
+      </p>
+    </div>
+
+  </div>
+</div>
 
 <script src="/js/checkers.js"></script>
 </body>

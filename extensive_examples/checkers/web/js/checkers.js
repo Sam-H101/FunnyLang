@@ -1,19 +1,27 @@
-// checkers.js — the board, and clicking on it. No framework, no dependencies.
+// checkers.js — the board, the clicking, and the moving.
 //
 // The page knows no rules. Every legal move arrives with the state, so a click
-// is only ever "is this square in the list I was given" — which means the page
-// and the engine can never disagree about whether a capture was compulsory,
-// and a page that got out of step redraws instead of guessing.
+// is only ever "is this square in the list I was given", and the page and the
+// engine can never disagree about whether a capture was compulsory. A page
+// that falls out of step asks for the state again rather than guessing.
+//
+// WHY PIECES ARE THEIR OWN LAYER. The squares are a grid and never move. The
+// pieces sit above them, absolutely placed, and are put where they belong with
+// a transform. Moving one is then a matter of animating that transform, so a
+// piece slides to its square and hops over what it takes -- which is the whole
+// difference between seeing a move and being shown a new position.
+//
+// The server sends `played`: the moves since the page last looked, each with
+// the squares it travelled through. The destination alone would not do, because
+// a double jump has to be seen to hop twice.
 
-(function () {
+(() => {
   "use strict";
 
-  var state = null;
-  var picked = null;      // the square a piece was picked up from
-  var busy = false;
-
-  var els = {
-    board: document.getElementById("board"),
+  const SQUARE = 12.5;                 // one square, as a percentage of the board
+  const els = {
+    squares: document.getElementById("squares"),
+    pieces: document.getElementById("pieces"),
     status: document.getElementById("status"),
     you: document.getElementById("you"),
     engine: document.getElementById("engine"),
@@ -26,150 +34,252 @@
     depth: document.getElementById("depth")
   };
 
-  // Square n (1-32) to its row and column, the same arithmetic rules.funny
-  // does: only dark squares are playable, and on even rows those are the odd
-  // columns.
-  function rowOf(n) { return Math.floor((n - 1) / 4); }
-  function colOf(n) {
-    var row = rowOf(n);
-    var offset = (n - 1) % 4;
-    return row % 2 === 0 ? offset * 2 + 1 : offset * 2;
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  let state = null;
+  let picked = null;                   // the square a piece was picked up from
+  let busy = false;
+  const discs = new Map();             // square number -> the element standing on it
+  const cells = new Map();             // square number -> its button
+  let trail = [];                      // squares the last move touched
+
+  // Square 1-32 to row and column, the same arithmetic rules.funny does: only
+  // dark squares are playable, and on even rows those are the odd columns.
+  const rowOf = (n) => Math.floor((n - 1) / 4);
+  const colOf = (n) => (rowOf(n) % 2 === 0 ? ((n - 1) % 4) * 2 + 1 : ((n - 1) % 4) * 2);
+  const at = (n) => `translate(${colOf(n) * 100}%, ${rowOf(n) * 100}%)`;
+
+  // -- the squares, built once --------------------------------------------
+
+  function buildSquares() {
+    const frag = document.createDocumentFragment();
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const dark = (row + col) % 2 === 1;
+        if (!dark) {
+          const light = document.createElement("div");
+          light.className = "sq";
+          frag.appendChild(light);
+          continue;
+        }
+        const n = row * 4 + Math.floor(col / 2) + 1;
+        const cell = document.createElement("button");
+        cell.type = "button";
+        cell.className = "sq dark playable";
+        cell.setAttribute("aria-label", `square ${n}`);
+        const num = document.createElement("span");
+        num.className = "n";
+        num.textContent = String(n);
+        cell.appendChild(num);
+        cell.addEventListener("click", () => onSquare(n));
+        cells.set(n, cell);
+        frag.appendChild(cell);
+      }
+    }
+    els.squares.appendChild(frag);
   }
 
-  function status(text, cls) {
-    els.status.textContent = text;
-    els.status.className = "status" + (cls ? " " + cls : "");
+  // -- the pieces ----------------------------------------------------------
+
+  function makeDisc(piece, n) {
+    const el = document.createElement("div");
+    el.className = "piece " + (piece === "r" || piece === "R" ? "red" : "black");
+    el.style.transform = at(n);
+    if (piece === "R" || piece === "B") {
+      const k = document.createElement("span");
+      k.className = "king";
+      k.textContent = "K";
+      el.appendChild(k);
+    }
+    els.pieces.appendChild(el);
+    return el;
   }
+
+  // Rebuilds the piece layer from a board. Used at the start, after a new
+  // game, and to settle any drift once the animations have finished.
+  function settle(squares) {
+    discs.forEach((el) => el.remove());
+    discs.clear();
+    for (let n = 1; n <= 32; n++) {
+      const piece = squares[n];
+      if (piece) discs.set(n, makeDisc(piece, n));
+    }
+  }
+
+  // One move, shown. The piece travels through every square on its path,
+  // lifting between each pair so a jump looks like a jump.
+  async function animate(mv) {
+    const el = discs.get(mv.from);
+    if (!el) return;
+
+    const path = mv.path && mv.path.length > 1 ? mv.path : [mv.from, mv.to];
+    const jumping = mv.captures && mv.captures.length > 0;
+
+    if (!still.matches) {
+      const frames = [];
+      for (let i = 0; i < path.length; i++) {
+        if (i > 0) {
+          // A lifted midpoint between each pair of squares. Halfway across,
+          // and a little above the board.
+          const midCol = (colOf(path[i - 1]) + colOf(path[i])) / 2;
+          const midRow = (rowOf(path[i - 1]) + rowOf(path[i])) / 2;
+          const lift = jumping ? 34 : 14;
+          frames.push({
+            transform: `translate(${midCol * 100}%, ${midRow * 100}%) translateY(-${lift}%) scale(1.06)`,
+            offset: (i - 0.5) / (path.length - 1)
+          });
+        }
+        frames.push({ transform: at(path[i]), offset: i / (path.length - 1) });
+      }
+
+      el.style.zIndex = "2";
+      const run = el.animate(frames, {
+        duration: Math.round(220 * (path.length - 1) + 90),
+        easing: "cubic-bezier(.32,.72,.35,1)",
+        fill: "none"
+      });
+
+      // Each captured piece goes as the jumper passes over it.
+      (mv.captures || []).forEach((square, i) => {
+        const victim = discs.get(square);
+        if (!victim) return;
+        setTimeout(() => victim.classList.add("taken"), 140 + i * 220);
+      });
+
+      await run.finished.catch(() => {});
+      el.style.zIndex = "";
+    }
+
+    el.style.transform = at(mv.to);
+    discs.delete(mv.from);
+    (mv.captures || []).forEach((square) => {
+      const victim = discs.get(square);
+      if (victim) victim.remove();
+      discs.delete(square);
+    });
+    discs.set(mv.to, el);
+
+    if (mv.promotes && !el.querySelector(".king")) {
+      const k = document.createElement("span");
+      k.className = "king";
+      k.textContent = "K";
+      el.appendChild(k);
+    }
+    trail = path.slice();
+  }
+
+  // -- drawing everything that is not a piece --------------------------------
 
   function movesFrom(square) {
-    if (!state) return [];
-    return state.legal.filter(function (m) { return m.from === square; });
+    return state ? state.legal.filter((m) => m.from === square) : [];
   }
 
   function moveBetween(from, to) {
-    return state.legal.filter(function (m) { return m.from === from && m.to === to; })[0] || null;
+    return state ? state.legal.find((m) => m.from === from && m.to === to) || null : null;
   }
 
   function draw() {
     if (!state) return;
-    els.board.textContent = "";
+    const mine = state.turn === state.human && state.outcome === null && !busy;
+    const targets = picked === null ? [] : movesFrom(picked);
 
-    var targets = picked === null ? [] : movesFrom(picked).map(function (m) { return m.to; });
-    var captureTargets = picked === null ? [] : movesFrom(picked)
-      .filter(function (m) { return m.captures.length > 0; })
-      .map(function (m) { return m.to; });
-
-    var lastSquares = [];
-    state.legal.forEach(function () { /* no-op: keeps the closure honest */ });
-
-    for (var row = 0; row < 8; row++) {
-      for (var col = 0; col < 8; col++) {
-        var dark = (row + col) % 2 === 1;
-        var n = dark ? row * 4 + Math.floor(col / 2) + 1 : 0;
-        var cell;
-
-        if (!dark) {
-          cell = document.createElement("div");
-          cell.className = "square light";
-          els.board.appendChild(cell);
-          continue;
-        }
-
-        cell = document.createElement("button");
-        cell.type = "button";
-        cell.className = "square dark playable";
-        cell.setAttribute("aria-label", "square " + n);
-
-        var num = document.createElement("span");
-        num.className = "num";
-        num.textContent = String(n);
-        cell.appendChild(num);
-
-        var piece = state.squares[n];
-        if (piece) {
-          var disc = document.createElement("span");
-          var red = piece === "r" || piece === "R";
-          disc.className = "piece " + (red ? "red" : "black");
-          if (piece === "R" || piece === "B") disc.textContent = "K";
-          cell.appendChild(disc);
-        }
-
-        if (picked === n) cell.className += " picked";
-        if (targets.indexOf(n) >= 0) {
-          cell.className += " target";
-          if (captureTargets.indexOf(n) >= 0) cell.className += " capture";
-        }
-        if (lastSquares.indexOf(n) >= 0) cell.className += " wasmoved";
-
-        cell.disabled = busy || state.outcome !== null || state.turn !== state.human;
-        cell.addEventListener("click", onSquare.bind(null, n));
-        els.board.appendChild(cell);
-      }
-    }
+    cells.forEach((cell, n) => {
+      cell.classList.toggle("picked", picked === n);
+      const t = targets.find((m) => m.to === n);
+      cell.classList.toggle("target", Boolean(t));
+      cell.classList.toggle("capture", Boolean(t && t.captures.length > 0));
+      cell.classList.toggle("trail", trail.includes(n));
+      cell.disabled = !mine;
+    });
 
     els.you.textContent = state.human;
     els.engine.textContent = state.human === "red" ? "black" : "red";
-    els.redcount.textContent = state.red.men + " + " + state.red.kings + " kings";
-    els.blackcount.textContent = state.black.men + " + " + state.black.kings + " kings";
-    els.lastmove.textContent = state.last_engine ? state.last_engine : "—";
-    els.nodes.textContent = state.nodes ? state.nodes.toLocaleString() + " positions" : "—";
+    els.redcount.textContent = `${state.red.men} + ${state.red.kings} kings`;
+    els.blackcount.textContent = `${state.black.men} + ${state.black.kings} kings`;
+    els.lastmove.textContent = state.last_engine || "—";
+    els.nodes.textContent = state.nodes ? `${state.nodes.toLocaleString()} positions` : "—";
     els.verdict.textContent = state.verdict || "—";
 
-    if (state.outcome === "draw") status("a draw.", "over");
-    else if (state.outcome) status(state.outcome + " wins.", "over");
-    else if (busy) status("thinking…", "thinking");
-    else if (state.turn === state.human) {
-      status(state.forced ? "your move, and you must capture" : "your move", "yours");
-    } else status("thinking…", "thinking");
+    const s = els.status;
+    s.className = "mb-0";
+    if (state.outcome === "draw") { s.textContent = "a draw."; s.classList.add("text-warning"); }
+    else if (state.outcome) { s.textContent = `${state.outcome} wins.`; s.classList.add("text-warning"); }
+    else if (busy) { s.textContent = "thinking…"; s.classList.add("text-body-secondary"); }
+    else if (mine) {
+      s.textContent = state.forced ? "your move, and you must capture" : "your move";
+      s.classList.add("text-success");
+    } else { s.textContent = "thinking…"; s.classList.add("text-body-secondary"); }
+  }
+
+  // -- talking to the server -------------------------------------------------
+
+  async function show(fresh) {
+    if (!fresh || !fresh.ok) return false;
+    const played = fresh.played || [];
+    state = fresh;
+    picked = null;
+    for (const mv of played) await animate(mv);
+    settle(fresh.squares);      // corrects any drift, and crowns anything crowned
+    draw();
+    return true;
+  }
+
+  async function post(path, body) {
+    try {
+      const r = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      return await r.json();
+    } catch { return null; }
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch("/api/state");
+      const fresh = await r.json();
+      if (fresh && fresh.ok) { state = fresh; picked = null; trail = []; settle(fresh.squares); draw(); }
+    } catch {
+      els.status.textContent = "cannot reach the server";
+      els.status.className = "mb-0 text-warning";
+    }
   }
 
   function onSquare(n) {
     if (busy || !state || state.outcome !== null || state.turn !== state.human) return;
-
     if (picked !== null) {
-      var move = moveBetween(picked, n);
+      const move = moveBetween(picked, n);
       if (move) { send(move); return; }
     }
-    // Picking up: only a square this side can actually move from.
-    if (movesFrom(n).length > 0) picked = (picked === n ? null : n);
-    else picked = null;
+    picked = movesFrom(n).length > 0 && picked !== n ? n : null;
     draw();
   }
 
-  function send(move) {
+  async function send(move) {
     busy = true;
     picked = null;
+    trail = [];
     draw();
-    post("/api/move", { from: move.from, to: move.to }).then(function (fresh) {
-      busy = false;
-      if (fresh && fresh.ok) { state = fresh; draw(); }
-      else { status(fresh && fresh.error ? fresh.error : "the server refused that", "over"); refresh(); }
-    });
+    const fresh = await post("/api/move", { from: move.from, to: move.to });
+    busy = false;
+    if (!(await show(fresh))) {
+      els.status.textContent = (fresh && fresh.error) || "the server refused that";
+      els.status.className = "mb-0 text-warning";
+      await refresh();
+    }
   }
 
-  function post(path, body) {
-    return fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    }).then(function (r) { return r.json(); }).catch(function () { return null; });
-  }
-
-  function refresh() {
-    return fetch("/api/state").then(function (r) { return r.json(); }).then(function (fresh) {
-      if (fresh && fresh.ok) { state = fresh; picked = null; draw(); }
-    }).catch(function () { status("cannot reach the server", "over"); });
-  }
-
-  els.newgame.addEventListener("submit", function (e) {
+  els.newgame.addEventListener("submit", async (e) => {
     e.preventDefault();
     busy = true;
-    status("dealing…", "thinking");
-    post("/api/new", { depth: Number(els.depth.value) }).then(function (fresh) {
-      busy = false;
-      if (fresh && fresh.ok) { state = fresh; picked = null; draw(); }
-    });
+    trail = [];
+    draw();
+    const fresh = await post("/api/new", { depth: Number(els.depth.value) });
+    busy = false;
+    if (fresh && fresh.ok) { state = fresh; picked = null; settle(fresh.squares); draw(); }
   });
 
+  buildSquares();
   refresh();
 })();

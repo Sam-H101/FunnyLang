@@ -46,6 +46,9 @@ yo DEPTH = 3
 yo WEB_DIR = ghost
 yo STOPPING = cap
 yo SERVED = 0
+yo PFX = ghost
+yo PFX_PASSWORD = "funnylang"
+yo NO_TLS = cap
 
 // -- the game -------------------------------------------------------------------------
 
@@ -58,8 +61,27 @@ bet start_game(depth) {
         "last_engine": ghost,
         "nodes": 0,
         "verdict": "",
+        // The moves played since the page last looked, in order, each with the
+        // squares it travelled through and the pieces it took. The page needs
+        // the *path* rather than just the destination: a piece that jumps
+        // twice should be seen to hop twice, and a capture should be seen to
+        // be taken rather than simply cease to exist.
+        "played": [],
     }
     bounce GAME
+}
+
+// One entry in that list.
+bet remember(move, side) {
+    GAME["played"].yeet_in({
+        "side": side,
+        "from": move["from"],
+        "to": move["to"],
+        "path": move["path"],
+        "captures": move["captures"],
+        "promotes": move["promotes"],
+        "notation": move["notation"],
+    })
 }
 
 // Everything the page needs to draw itself and to know what may be clicked.
@@ -96,6 +118,7 @@ bet state_json() {
         "depth": GAME["depth"],
         "nodes": GAME["nodes"],
         "verdict": GAME["verdict"],
+        "played": GAME["played"],
     })
 }
 
@@ -113,6 +136,7 @@ bet engine_reply() {
     }
     GAME["board"] = apply_move(board, thought["move"])
     GAME["last_engine"] = thought["move"]["notation"]
+    remember(thought["move"], other_side(GAME["human"]))
     GAME["nodes"] = thought["nodes"]
     GAME["verdict"] = verdict(GAME["board"], -thought["score"])
 }
@@ -166,8 +190,12 @@ bet route(req) {
                                                   "state": "stale"}))
         }
 
+        // Cleared first: `played` is what has happened *since the page last
+        // looked*, so it starts empty and collects this move and the reply.
+        GAME["played"] = []
         GAME["board"] = apply_move(GAME["board"], chosen)
         GAME["last_human"] = chosen["notation"]
+        remember(chosen, GAME["human"])
         engine_reply()
         bounce json_response(200, state_json())
     }
@@ -208,9 +236,40 @@ bet parse_body(req) {
 // One connection, start to finish. Every read waits on the event loop rather
 // than on the socket, so a browser that opens a connection and says nothing
 // costs one parked task instead of the whole server.
+// How long a client gets to complete a TLS handshake before it is dropped.
+deadass HANDSHAKE_MS = 5000
+
+// A connection accepted from a secure listener arrives with its TLS session
+// not yet negotiated, and nothing can be read until it is. It is driven a step
+// at a time, waiting on the event loop in between, so a slow client costs its
+// own task and nobody else's.
+//
+// For a plain listener this returns `fax` straight away and costs nothing,
+// which is why there is one code path rather than two.
+async_ngl bet finish_handshake(conn) {
+    yo deadline = clock.now() + HANDSHAKE_MS / 1000.0
+    bruh (!internet.handshake(conn)) {
+        yo left = to_int((deadline - clock.now()) * 1000.0)
+        sus (left <= 0) {
+            bounce cap
+        }
+        sus (!await_fr internet.hold_up(conn, left)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
 async_ngl bet handle(customer) {
     yo conn = customer["conn"]
     sketchy {
+        // Plain HTTP sent to the TLS port, a client that speaks only TLS 1.0,
+        // or one that connected and then said nothing: all end here, and all
+        // of them are the client's business rather than a reason to log.
+        sus (!await_fr finish_handshake(conn)) {
+            internet.kick_out(conn)
+            bounce ghost
+        }
         yo req = await_fr read_request(lowkey (ms) => read_more(conn, ms))
         sus (!req["ok"]) {
             sus (req["status"] != ghost) {
@@ -284,6 +343,15 @@ bet main(raw_args) {
         } kinda_sus (a == "--seconds" && i + 1 < args.how_thicc()) {
             seconds = to_numba(args[i + 1])
             i += 2
+        } kinda_sus (a == "--pfx" && i + 1 < args.how_thicc()) {
+            PFX = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--pfx-password" && i + 1 < args.how_thicc()) {
+            PFX_PASSWORD = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--no-tls") {
+            NO_TLS = fax
+            i += 1
         } kinda_sus (yapper.starts_with(a, "-")) {
             yell("don't know " + a + ".")
             usage()
@@ -299,16 +367,38 @@ bet main(raw_args) {
     WEB_DIR = filez.join_path(filez.dir_of(the_script()), "web")
     start_game(DEPTH)
 
+    // TLS unless told otherwise. The identity is this example's own test
+    // certificate, signed by a test CA that nothing else trusts -- a browser
+    // will warn, and should, because that is what an unknown CA is for. It is
+    // test material and not a secret; `certs/make_cert.sh` makes a new pair.
+    sus (PFX == ghost && !NO_TLS) {
+        yo beside = filez.join_path(filez.dir_of(the_script()), "certs/site.p12")
+        sus (filez.is_file(beside)) {
+            PFX = beside
+        }
+    }
+
     yo listener = ghost
+    yo secure = PFX != ghost && !NO_TLS
     sketchy {
-        listener = internet.open_shop(port, host)
+        sus (secure) {
+            listener = internet.open_secure_shop(port, host, {"pfx": PFX, "password": PFX_PASSWORD})
+        } nah {
+            listener = internet.open_shop(port, host)
+        }
     } my_bad (e) {
         yell("couldn't start: " + e.message)
         bounce 1
     }
     yo bound = internet.shop_port(listener)
-    yell("checkers at http://" + (host == "0.0.0.0" ? "<this machine>" : "localhost") + ":" +
+    yo scheme = secure ? "https" : "http"
+    yell("checkers at " + scheme + "://" + (host == "0.0.0.0" ? "<this machine>" : "localhost") + ":" +
          to_yap(bound) + " — ctrl-c to stop")
+    sus (!secure) {
+        yell("(plain http: fine on loopback, and not on a network)")
+    } nah {
+        yell("(a test certificate, so your browser will warn about the issuer -- that is correct)")
+    }
     yell("you are red and move first; the engine is black, looking " + to_yap(DEPTH) + " moves ahead")
 
     watch_for_ctrl_c()

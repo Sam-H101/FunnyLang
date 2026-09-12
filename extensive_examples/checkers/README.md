@@ -5,12 +5,21 @@ are all FunnyLang except the page's own JavaScript, which has no framework and n
 
 ```console
 $ funny run extensive_examples/checkers/serve.funny
-checkers at http://localhost:8080 — ctrl-c to stop
+checkers at https://localhost:8080 — ctrl-c to stop
+(a test certificate, so your browser will warn about the issuer -- that is correct)
 you are red and move first; the engine is black, looking 3 moves ahead
+
+$ funny run extensive_examples/checkers/serve.funny -- 8443 --host 0.0.0.0
+$ funny run extensive_examples/checkers/serve.funny -- 8080 --no-tls
 
 $ funny run extensive_examples/checkers/play.funny -- --depth 5
 $ funny run extensive_examples/checkers/play.funny -- --self --moves 40
 ```
+
+It serves over TLS by default, using `certs/site.p12` — this example's own test identity, signed by a
+test CA that nothing on earth trusts. A browser will warn about the issuer, which is exactly what an
+unknown CA is for; accept it for localhost, or import `certs/ca.pem`. `certs/make_cert.sh` makes a
+fresh pair. `--no-tls` serves plain HTTP instead, and `--pfx FILE` uses a real identity.
 
 | | |
 |---|---|
@@ -20,6 +29,8 @@ $ funny run extensive_examples/checkers/play.funny -- --self --moves 40
 | `http.funny`, `static.funny` | Enough HTTP to serve a page and take a move |
 | `play.funny` | The same game in a terminal |
 | `web/` | The board you click on |
+| `web/vendor/` | Bootstrap 5.3.3, vendored rather than fetched from a CDN |
+| `certs/` | The test CA and identity — **test material, not secrets** |
 | `test_checkers.funny` | The golden: the rules, the engine, and a whole game |
 
 `funny test extensive_examples` runs the golden on every platform CI builds.
@@ -99,5 +110,15 @@ played to a draw — runs in **1.7 seconds**.
 - **Single-threaded, on purpose.** One board, one player, and the only expensive thing is the engine
   thinking about one position. Threads would add a lock around the board and buy nothing. The event
   loop is there so a favicon request cannot queue behind a search.
-- **Plain HTTP on loopback.** There is no TLS and no authentication, because there is nothing to
-  protect and nobody to authenticate.
+- **TLS, but with a certificate nothing trusts.** The identity in `certs/` is test material. It
+  proves the transport works, not that the server is who it says it is, and a browser is right to
+  say so. There is still no authentication: anyone who can reach the port can play.
+- **The framework is vendored, not built.** `web/vendor/bootstrap.min.css` is Bootstrap 5.3.3 as
+  published, 233 KB, MIT licensed, committed rather than fetched — the page is served under
+  `default-src 'self'` and is meant to work with no network. There is no build step, no tree
+  shaking, and most of that file is unused.
+- **The board itself is not Bootstrap.** No framework draws an eight-by-eight draughts board with
+  pieces that hop between squares, so `web/style.css` does that part: a grid for the squares, a
+  layer of absolutely-placed discs above it, and the Web Animations API to move them. A piece's
+  size comes from its square and never from what is written on it, which is what stops a crowned
+  king resizing the grid.
