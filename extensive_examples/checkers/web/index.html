@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>checkers</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>checkers</h1>
+  <p id="status" class="status">starting…</p>
+</header>
+
+<main>
+  <div id="board" class="board" role="grid" aria-label="checkers board"></div>
+
+  <aside class="side">
+    <h2>the game</h2>
+    <dl class="facts">
+      <dt>you</dt><dd id="you">red</dd>
+      <dt>engine</dt><dd id="engine">black</dd>
+      <dt>your pieces</dt><dd id="redcount">12</dd>
+      <dt>its pieces</dt><dd id="blackcount">12</dd>
+      <dt>last move</dt><dd id="lastmove">—</dd>
+      <dt>it looked at</dt><dd id="nodes">—</dd>
+      <dt>it reckons</dt><dd id="verdict">—</dd>
+    </dl>
+
+    <h2>new game</h2>
+    <form id="newgame" class="newgame">
+      <label for="depth">how far it looks ahead</label>
+      <select id="depth" name="depth">
+        <option value="1">1 — careless</option>
+        <option value="3" selected>3 — reasonable</option>
+        <option value="5">5 — slow and hard</option>
+      </select>
+      <button type="submit">start again</button>
+    </form>
+
+    <p class="note">Captures are compulsory. A jump that can carry on, must.</p>
+  </aside>
+</main>
+
+<script src="/js/checkers.js"></script>
+</body>
+</html>

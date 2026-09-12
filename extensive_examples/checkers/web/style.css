@@ -1,0 +1,105 @@
+/* No inline styles anywhere: this is served under `default-src 'self'` with no
+   'unsafe-inline', so a style attribute would simply not apply. */
+
+:root {
+  --bg: #16181d;
+  --panel: #1e222a;
+  --line: #2c313b;
+  --text: #e8eaef;
+  --dim: #98a0b0;
+  --light-square: #d8d2c4;
+  --dark-square: #6d5a49;
+  --red-piece: #d0534f;
+  --red-edge: #8f3532;
+  --black-piece: #24262c;
+  --black-edge: #05060a;
+  --pick: #f0c674;
+  --target: #7fd1b9;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0 auto;
+  padding: 1.25rem;
+  max-width: 54rem;
+  font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+h1 { font-size: 1.3rem; margin: 0 0 .75rem; letter-spacing: .02em; }
+h2 { font-size: .8rem; margin: 0 0 .5rem; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+
+.status { margin: 0 0 .75rem; color: var(--dim); }
+.status.yours { color: var(--target); }
+.status.over { color: var(--pick); font-weight: 600; }
+.status.thinking { color: var(--dim); font-style: italic; }
+
+main { display: grid; grid-template-columns: minmax(0, 1fr) 14rem; gap: 1.25rem; align-items: start; }
+@media (max-width: 44rem) { main { grid-template-columns: 1fr; } }
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  border: 3px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  aspect-ratio: 1 / 1;
+  width: 100%;
+}
+
+.square { position: relative; display: flex; align-items: center; justify-content: center; }
+.square.light { background: var(--light-square); }
+.square.dark { background: var(--dark-square); }
+
+/* Only dark squares are ever playable, so only they are ever buttons. */
+.square.playable { cursor: pointer; border: 0; padding: 0; }
+.square.playable:disabled { cursor: default; }
+
+.num {
+  position: absolute; top: 2px; left: 4px;
+  font-size: .6rem; color: rgba(255, 255, 255, .28);
+  font-variant-numeric: tabular-nums;
+}
+
+.piece {
+  width: 72%; height: 72%;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.1rem; font-weight: 700;
+}
+.piece.red { background: var(--red-piece); border: 3px solid var(--red-edge); color: #fde8e7; }
+.piece.black { background: var(--black-piece); border: 3px solid var(--black-edge); color: #cfd4de; }
+
+.square.picked { outline: 4px solid var(--pick); outline-offset: -4px; }
+.square.target::after {
+  content: "";
+  width: 28%; height: 28%;
+  border-radius: 50%;
+  background: var(--target);
+  opacity: .85;
+}
+.square.capture::after { width: 40%; height: 40%; background: var(--red-piece); }
+.square.wasmoved { box-shadow: inset 0 0 0 3px rgba(240, 198, 116, .5); }
+
+.side { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .9rem; }
+
+.facts { display: grid; grid-template-columns: auto 1fr; gap: .2rem .6rem; margin: 0 0 1.2rem; }
+.facts dt { color: var(--dim); font-size: .85rem; }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.newgame { display: grid; gap: .5rem; }
+label { color: var(--dim); font-size: .85rem; }
+
+select, button {
+  font: inherit;
+  border-radius: 6px;
+  padding: .45rem .6rem;
+}
+select { background: var(--bg); color: var(--text); border: 1px solid var(--line); }
+button { background: var(--target); color: #10241f; border: 0; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+
+.note { color: var(--dim); font-size: .8rem; margin: 1rem 0 0; }

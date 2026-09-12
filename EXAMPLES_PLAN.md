@@ -1,6 +1,10 @@
 # FunnyLang — Examples Plan: six more `extensive_examples/`
 
-> **Status:** planned, nothing built.
+> **Status:** built. E0 through E6 are in `extensive_examples/`, each with a README and a golden
+> that `funny test extensive_examples` runs on every platform. Two runtime primitives were added
+> along the way under rule 1 below, and both are recorded in `RUNTIME_PLAN.md` §9: `vault.sha1` for
+> E5's WebSocket handshake, and `blob.xor` for its frame masking. E6 was changed from a reverse
+> proxy to a checkers game partway through, at the owner's request.
 > **Prerequisite:** `RUNTIME_PLAN.md`, complete. Each example below says which of its milestones it
 > leans on; three of the six could be written against today's runtime, but the plan is sequenced
 > to run after it so that none of them has to be rewritten when it lands.
@@ -38,7 +42,7 @@
 | E3 | A Lisp | `extensive_examples/lisp/` | the language carrying a language | nothing new; R8 for readability |
 | E4 | Key-value database | `extensive_examples/kv/` | persistence, a wire protocol, a CLI client | R1 blob, R6 atomic replace, R5 Ctrl-C, R7 json |
 | E5 | Chat over WebSockets | `extensive_examples/chat/` | DMs at their best; binary framing; broadcast | R1, R2, R3, R4, R5, R7 |
-| E6 | Reverse proxy | `extensive_examples/proxy/` | the TLS client with a pinned CA; streaming bytes | R1, R2 |
+| E6 | Checkers in a browser | `extensive_examples/checkers/` | a game engine, and a page to play it on | nothing new |
 
 E1–E3 first because they are small and independent. E4 and E6 are medium. E5 is the big one and
 comes after E4, whose framing and client code it reuses.
@@ -199,29 +203,35 @@ chat at https://localhost:8443 on 8 threads — ctrl-c to stop
   as sets. Ping/pong, a close handshake, a masked frame, a 2 MB message fragmented.
 - **~1,400 lines.**
 
-### E6 — Reverse proxy (`proxy/`)
+### E6 — Checkers, in a browser (`checkers/`)
 
 ```console
-$ funny run extensive_examples/proxy/proxy.funny -- 8443 --to localhost:9001,localhost:9002 --ca certs/ca.pem
+$ funny run extensive_examples/checkers/serve.funny -- 8080
+checkers at http://localhost:8080 — ctrl-c to stop
+
+$ funny run extensive_examples/checkers/play.funny -- --depth 5
+red to play, and must capture: 22x15
 ```
 
-- **Shape**: TLS in front (`open_secure_shop`), N backends behind, each an instance of
-  `web_server_https/` started by the golden (or `--start N` for the demo). Every request is a new
-  `slide_into(backend, {"tls": fax, "ca": …, "server_name": "localhost"})` — the pinned-CA client
-  doing real work — with the request forwarded byte for byte as a `blob`, and the response streamed
-  back as it arrives (`hear_them_out` raw → `holler_back`), so a large response never sits in
-  memory whole.
-- **Balancing**: round-robin by default; `--least-connections`; a backend that refuses a connection
-  is marked down for 5 s and retried. `X-Forwarded-For` and `X-Forwarded-Proto` added;
-  `Connection` and hop-by-hop headers stripped; `Host` rewritten.
-- **Threads**: acceptor workers as in `web_server_https/`; the balancer's state (which backend is
-  next, which are down) is on the main thread and asked with DMs — a small, cheap message per
-  request, which is a good measurement of what a DM costs.
-- **Golden**: two backends on ports the OS picks, the proxy in front, a client intern sends 40
-  requests and checks each answered 200 and that both backends saw some (via `/api/health`'s
-  thread/backend id); one backend stopped mid-run and every request still answered.
-- **README**: requests per second through the proxy versus direct, on one and on eight threads.
-  **~600 lines.**
+- **The game, properly**: English draughts. Men move and capture forwards only, kings both ways,
+  **captures are compulsory**, a jump that can be continued must be, and a man crowned in the
+  middle of a jump stops there. That last trio is what casual implementations leave out, and
+  leaving them out makes a different game. `rules.funny` answers two questions and knows nothing
+  else: what are the legal moves, and what does this move lead to. It never changes the board it is
+  handed, because the engine searches by making moves on copies and throwing them away.
+- **FunnyLang is the opponent**: `engine.funny` is negamax with alpha-beta pruning to a fixed
+  depth, scoring material and position, with deterministic move ordering — the same position always
+  produces the same move, which is what lets a golden hold a whole game still. Difficulty is depth.
+- **The page**: an eight-by-eight board in HTML and CSS, click a piece and then a square, legal
+  destinations marked, compulsory captures shown as compulsory. No framework, no inline script, and
+  a policy of `default-src 'self'`. `serve.funny` is a small JSON API over the same modules:
+  `POST /api/new`, `POST /api/move`, `GET /api/state`.
+- **And a terminal**: `play.funny` is the same rules and the same engine against a text board,
+  which is what makes all of it testable with no socket in sight.
+- **Golden**: legal moves from set positions, including a forced capture and a double jump;
+  promotion, and that promotion ends the turn; the engine's move from fixed positions at a fixed
+  depth; and a whole engine-versus-engine game played to its end and asserted move for move.
+  **~900 lines.**
 
 ---
 
@@ -250,7 +260,7 @@ $ funny run extensive_examples/proxy/proxy.funny -- 8443 --to localhost:9001,loc
 - [x] `vault.sha1` in `RUNTIME_PLAN.md` §9
 
 ### E6 — reverse proxy
-- [ ] Pinned-CA client per request; streaming; balancing; health; golden with two backends and a failure
+- [x] Rules with compulsory capture and multi-jump; a negamax engine; JSON API and a board in the browser; a terminal player; golden with a whole engine-versus-engine game
 
 ---
 
@@ -264,7 +274,7 @@ $ funny run extensive_examples/proxy/proxy.funny -- 8443 --to localhost:9001,loc
 | E3 | 900 |
 | E4 | 800 |
 | E5 | 1,400 |
-| E6 | 600 |
+| E6 | 900 |
 | READMEs | 900 |
 
 ---

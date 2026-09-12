@@ -1,0 +1,190 @@
+// engine.funny — FunnyLang playing checkers.
+//
+// Negamax with alpha-beta pruning. Negamax is minimax written once instead of
+// twice: rather than one branch that maximises and another that minimises,
+// every position is scored from the point of view of whoever is to move, and
+// the value of a position is the best reply's value **negated**. One line
+// carries it:
+//
+//     score = -search(after_the_move, depth - 1, -beta, -alpha)
+//
+// Alpha-beta is the observation that most of the tree need never be looked at.
+// Alpha is the best this side has already secured; beta is the best the other
+// side has. If a reply is found that is better for the mover than beta, the
+// opponent would never have allowed this position, so the rest of its siblings
+// cannot matter and the search stops there. It changes nothing about which
+// move is chosen and removes most of the work.
+//
+// DETERMINISM IS A FEATURE HERE. Moves are searched in `rules.funny`'s sorted
+// order, and a move must be strictly better to displace the one already found,
+// so the same position always produces the same move. That is what lets the
+// golden play a whole game and assert it move for move -- and it means a
+// player can learn the engine's habits, which for a demonstration is a fair
+// trade for being able to test it at all.
+
+gimme { RED, BLACK, RED_MAN, RED_KING, BLACK_MAN, BLACK_KING, EMPTY,
+        legal_moves, apply_move, outcome, other_side, owner_of, is_king,
+        row_of, col_of, count_pieces } from "rules.funny"
+
+// A king is worth more than a man, but not two men: trading two men for a king
+// is usually bad, and the numbers should say so.
+flex deadass MAN_VALUE = 100
+flex deadass KING_VALUE = 175
+
+// Bigger than any real score, and small enough to negate without trouble.
+flex deadass WIN = 1000000
+
+// How the three difficulties differ, and the only thing that differs.
+flex deadass DEPTHS = {"easy": 1, "normal": 3, "hard": 5}
+
+// -- scoring a position ---------------------------------------------------------------
+
+// From `side`'s point of view: positive is good for `side`. Material first,
+// because material is almost all of checkers, then three small positional
+// terms that break ties sensibly rather than arbitrarily.
+flex bet evaluate(board, side) {
+    yo score = 0
+    grind n from 1 to 33 {
+        yo piece = board["squares"][n]
+        sus (piece == EMPTY) {
+            nvm
+        }
+        yo mine = owner_of(piece) == side
+        yo value = is_king(piece) ? KING_VALUE : MAN_VALUE
+
+        // A man is worth a little more the closer it is to being crowned.
+        sus (!is_king(piece)) {
+            yo row = row_of(n)
+            yo advanced = owner_of(piece) == RED ? 7 - row : row
+            value += advanced * 3
+        }
+
+        // The middle of the board is worth holding: a piece on the edge has
+        // half the moves and cannot be jumped, which sounds good and means it
+        // is doing nothing.
+        yo col = col_of(n)
+        sus (col >= 2 && col <= 5) {
+            value += 4
+        }
+
+        // Men on their own back rank cannot be got behind, and stop the
+        // opponent crowning. Worth keeping a couple there early.
+        sus (!is_king(piece)) {
+            yo home = owner_of(piece) == RED ? 7 : 0
+            sus (row_of(n) == home) {
+                value += 6
+            }
+        }
+
+        score += mine ? value : -value
+    }
+    bounce score
+}
+
+// -- searching ----------------------------------------------------------------------
+
+// The move the engine would play, and what it thinks of the position.
+// `{"move", "score", "nodes", "depth"}`, or a ghost move when there is nothing
+// legal -- which means the game is over, not that the engine gave up.
+flex bet best_move(board, depth) {
+    yo counter = {"nodes": 0}
+    yo moves = legal_moves(board)
+    sus (moves.how_thicc() == 0) {
+        bounce {"move": ghost, "score": -WIN, "nodes": 0, "depth": depth}
+    }
+
+    yo best = ghost
+    yo best_score = -WIN - 1
+    yo alpha = -WIN - 1
+    grind move in moves {
+        yo score = -search(apply_move(board, move), depth - 1, -WIN - 1, -alpha, counter)
+        // Strictly better, so the first move in sorted order wins a tie and
+        // the engine is reproducible.
+        sus (score > best_score) {
+            best_score = score
+            best = move
+        }
+        sus (score > alpha) {
+            alpha = score
+        }
+    }
+    bounce {"move": best, "score": best_score, "nodes": counter["nodes"], "depth": depth}
+}
+
+// The value of `board` to whoever is to move in it.
+bet search(board, depth, alpha, beta, counter) {
+    counter["nodes"] += 1
+
+    yo moves = legal_moves(board)
+
+    // No legal move is a loss for the side to move. `depth` is added so that a
+    // loss further away scores better than one right now: an engine that is
+    // losing anyway should still make the opponent work, and one that is
+    // winning should finish rather than dawdle.
+    sus (moves.how_thicc() == 0) {
+        bounce -WIN + (100 - depth)
+    }
+    sus (board["quiet"] >= 80) {
+        bounce 0
+    }
+    sus (depth <= 0) {
+        bounce evaluate(board, board["turn"])
+    }
+
+    yo best = -WIN - 1
+    grind move in moves {
+        yo score = -search(apply_move(board, move), depth - 1, -beta, -alpha, counter)
+        sus (score > best) {
+            best = score
+        }
+        sus (best > alpha) {
+            alpha = best
+        }
+        // The opponent would never have let this position happen, so nothing
+        // else here can matter.
+        sus (alpha >= beta) {
+            bail
+        }
+    }
+    bounce best
+}
+
+// -- playing --------------------------------------------------------------------------
+
+flex bet depth_for(difficulty) {
+    bounce DEPTHS.get(difficulty, DEPTHS["normal"])
+}
+
+// One move, played. The board that comes back is a new one; the old is
+// untouched.
+flex bet play_one(board, depth) {
+    yo thought = best_move(board, depth)
+    sus (thought["move"] == ghost) {
+        bounce {"board": board, "move": ghost, "score": thought["score"], "nodes": thought["nodes"]}
+    }
+    bounce {
+        "board": apply_move(board, thought["move"]),
+        "move": thought["move"],
+        "score": thought["score"],
+        "nodes": thought["nodes"],
+    }
+}
+
+// What the engine makes of the position, in words a person can read. Positive
+// is good for whoever is to move.
+flex bet verdict(board, score) {
+    sus (score > WIN - 1000) {
+        bounce board["turn"] + " is winning"
+    }
+    sus (score < -(WIN - 1000)) {
+        bounce other_side(board["turn"]) + " is winning"
+    }
+    yo pieces = to_yap(to_int(score / MAN_VALUE * 10) / 10.0)
+    sus (score > 60) {
+        bounce board["turn"] + " is ahead by about " + pieces + " of a man"
+    }
+    sus (score < -60) {
+        bounce other_side(board["turn"]) + " is ahead"
+    }
+    bounce "about level"
+}
