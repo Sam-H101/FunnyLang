@@ -1,0 +1,48 @@
+// search_worker.funny — one slice of a root search, on its own thread.
+//
+// A worker is a program rather than a function: it reads its assignment, does
+// the work, and delivers an answer. `engine.funny` hires one of these per
+// processor and deals the root moves out between them.
+//
+// Everything that crosses the boundary is plain data, because that is all that
+// can: each worker is a separate VM with a separate heap, and a `bet` or a
+// board object has nowhere to land on the other side. So the position arrives
+// as FEN and the moves arrive as notations, and both are turned back into real
+// values here, against the same rules module the parent is using.
+//
+// The `alpha` in the assignment is what the parent already knows it can get
+// from the best-ordered move, which it searched itself before hiring anybody.
+// Starting from it is the difference between this being worth doing and being
+// four times slower than one thread -- see the note in engine.funny.
+//
+//     in   {"fen": "...", "moves": ["e2e4", ...], "depth": 5, "alpha": 31}
+//     out  [{"notation": "e2e4", "score": 31, "nodes": 9182}, ...]
+
+gimme interns
+
+gimme { from_fen, legal_moves_unsorted, find_move } from "rules.funny"
+gimme { score_of_move } from "engine.funny"
+
+yo job = interns.assignment()
+yo pos = from_fen(job["fen"])
+
+// Generated here rather than sent: a move is a structure with a piece, a
+// capture and a special case in it, and rebuilding it from the position is
+// both cheaper than copying it across and proof that both sides agree about
+// what is legal.
+yo moves = legal_moves_unsorted(pos)
+
+yo out = []
+grind notation in job["moves"] {
+    yo m = find_move(moves, notation)
+    // A move the parent thought was legal and this worker does not is not
+    // something to guess about. Skipping it leaves it unscored, and the parent
+    // treats an unscored move as one it will not play.
+    sus (m == ghost) {
+        nvm
+    }
+    yo got = score_of_move(pos, m, job["depth"], job["alpha"])
+    out.yeet_in({"notation": notation, "score": got["score"], "nodes": got["nodes"]})
+}
+
+interns.deliver(out)

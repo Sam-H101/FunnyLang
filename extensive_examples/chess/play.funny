@@ -26,7 +26,7 @@ gimme yapper
 gimme { WHITE, BLACK, new_board, from_fen, to_fen, legal_moves, apply_move,
         outcome, render, find_move, in_check, other_side, position_key,
         count_material } from "rules.funny"
-gimme { best_move, evaluate, verdict } from "engine.funny"
+gimme { best_move_parallel, hands_for, verdict } from "engine.funny"
 
 bet usage() {
     yell("usage: play.funny [--depth N] [--side w|b] [--self] [--moves N] [--fen FEN]")
@@ -141,7 +141,7 @@ bet main(raw_args) {
         yo checked = in_check(pos, pos["turn"])
 
         sus (self_play || pos["turn"] != human) {
-            yo thought = best_move(pos, depth)
+            yo thought = best_move_parallel(pos, depth, hands_for(moves.how_thicc(), depth))
             yo m = thought["move"]
             pos = apply_move(pos, m)
             seen[position_key(pos)] = seen.get(position_key(pos), 0) + 1

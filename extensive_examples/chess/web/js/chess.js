@@ -23,9 +23,24 @@
 (() => {
   "use strict";
 
-  // The solid figures for both colours: an outline in the opposite colour is
-  // what separates them, and that stays legible on both shades of square.
-  const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+  // TWO GLYPH SETS, NOT ONE COLOURED TWO WAYS. The obvious approach -- solid
+  // figures throughout, told apart by CSS `color` -- does not survive contact
+  // with U+265F BLACK CHESS PAWN, which is a standard emoji. A browser renders
+  // it from the emoji font, where `color` means nothing, so both sides' pawns
+  // came out the same black picture while every other piece coloured properly.
+  //
+  // So: the outline figures for white and the solid ones for black, which is
+  // how a printed diagram does it, and U+FE0E after each to ask for the text
+  // form rather than the emoji one. The two sides now differ in shape as well
+  // as in colour, which also means they stay distinct if a font substitutes.
+  const TEXT = "︎";
+  const WHITE_GLYPH = { k: "♔", q: "♕", r: "♖", b: "♗", n: "♘", p: "♙" };
+  const BLACK_GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+
+  // Upper case is white, the way the board itself is written.
+  const isWhite = (piece) => piece === piece.toUpperCase();
+  const glyphFor = (piece) =>
+    ((isWhite(piece) ? WHITE_GLYPH : BLACK_GLYPH)[piece.toLowerCase()] || "") + TEXT;
 
   const els = {
     squares: document.getElementById("squares"),
@@ -101,12 +116,11 @@
 
   function makePiece(piece, n) {
     const el = document.createElement("div");
-    // Upper case is white, the way the board itself is written.
-    el.className = "piece " + (piece === piece.toUpperCase() ? "white" : "black");
+    el.className = "piece " + (isWhite(piece) ? "white" : "black");
     el.style.transform = at(n);
     const g = document.createElement("span");
     g.className = "glyph";
-    g.textContent = GLYPH[piece.toLowerCase()] || "";
+    g.textContent = glyphFor(piece);
     el.appendChild(g);
     els.pieces.appendChild(el);
     return el;
@@ -179,9 +193,10 @@
       pieces.set(mv.rook_to, rook);
     }
 
+    // The promotion carries its own case, so the new piece keeps its side.
     if (mv.promotion) {
       const g = el.querySelector(".glyph");
-      if (g) g.textContent = GLYPH[mv.promotion.toLowerCase()] || g.textContent;
+      if (g) g.textContent = glyphFor(mv.promotion);
     }
     trail = [mv.from, mv.to];
   }

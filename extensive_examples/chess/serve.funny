@@ -37,7 +37,7 @@ gimme { WHITE, BLACK, EMPTY, new_board, legal_moves, apply_move, outcome,
         find_move_between, find_move, count_material, other_side, in_check,
         king_square, position_key, square_at, rank_of, file_of,
         to_fen } from "rules.funny"
-gimme { best_move, verdict } from "engine.funny"
+gimme { best_move_parallel, hands_for, verdict } from "engine.funny"
 gimme { read_request, build_response, json_response, STATUS_TEXT, SECURITY_HEADERS } from "http.funny"
 gimme { static_target, read_static } from "static.funny"
 
@@ -180,7 +180,11 @@ bet engine_reply() {
         GAME["last_engine"] = ghost
         bounce ghost
     }
-    yo thought = best_move(board, GAME["depth"])
+    // `hands_for` decides whether threads are worth it at all: at the depths
+    // the easy and normal settings use they are not, and it says so by asking
+    // for one.
+    yo hands = hands_for(legal_moves(board).how_thicc(), GAME["depth"])
+    yo thought = best_move_parallel(board, GAME["depth"], hands)
     sus (thought["move"] == ghost) {
         bounce ghost
     }

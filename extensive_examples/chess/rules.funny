@@ -423,7 +423,15 @@ bet castling_moves(pos, n, piece, side, out) {
 // Every legal move: the pseudo-legal ones, minus any that leaves the mover's
 // own king attacked. Sorted, so the same position always produces the same
 // list in the same order and an engine searching it is reproducible.
-flex bet legal_moves(pos) {
+// Every legal move, in the order the board was scanned in. That order is
+// settled -- squares are walked from a1 upwards -- but it is not the order a
+// person would want to read.
+//
+// This exists for the search, which re-orders by its own criteria at every
+// single node and breaks its ties on the notation anyway. Handing it a sorted
+// list buys it nothing and costs a sort per node, which at a busy middlegame
+// position was 43% of the whole cost of generating moves.
+flex bet legal_moves_unsorted(pos) {
     yo side = pos["turn"]
     yo out = []
     grind m in pseudo_moves(pos) {
@@ -432,7 +440,13 @@ flex bet legal_moves(pos) {
             out.yeet_in(m)
         }
     }
-    bounce sorted_moves(out)
+    bounce out
+}
+
+// The same moves, in a settled order, which is what everything outside the
+// search wants: the golden prints these lists and the page is handed them.
+flex bet legal_moves(pos) {
+    bounce sorted_moves(legal_moves_unsorted(pos))
 }
 
 // `in_check` after a move has already flipped the turn, so the side asked
@@ -445,27 +459,17 @@ bet in_check_for(pos, side) {
     bounce attacked_by(pos["squares"], k, other_side(side))
 }
 
+// By notation, which is what makes every list this module hands out readable
+// and reproducible. The list given is not disturbed.
+//
+// The sort is the runtime's. What used to be here was a selection sort that
+// tracked which indices it had already taken in a dictionary keyed by
+// `to_yap(i)` -- so every step of an O(n^2) inner loop paid for a number to
+// string conversion and a hash lookup. It was 43% of the time spent generating
+// legal moves.
 flex bet sorted_moves(moves) {
-    yo out = []
-    yo used = {}
-    grind n from 0 to moves.how_thicc() {
-        yo best = ghost
-        yo best_at = -1
-        grind i from 0 to moves.how_thicc() {
-            sus (used.has(to_yap(i))) {
-                nvm
-            }
-            sus (best == ghost || moves[i]["notation"] < best["notation"]) {
-                best = moves[i]
-                best_at = i
-            }
-        }
-        sus (best_at < 0) {
-            bail
-        }
-        used[to_yap(best_at)] = fax
-        out.yeet_in(best)
-    }
+    yo out = moves.clone()
+    out.sort(lowkey (a, b) => a["notation"] > b["notation"] ? 1 : -1)
     bounce out
 }
 

@@ -5,7 +5,8 @@
 //
 //   1. the rules, from positions set up by hand
 //   2. perft, the standard move-generation count
-//   3. the engine, choosing from fixed positions at fixed depths
+//   3. the engine, choosing from fixed positions at fixed depths -- including
+//      that splitting the search across real threads picks the same move
 //   4. a complete game, engine against engine, asserted move for move
 //
 // PERFT IS THE ONE THAT MATTERS. Counting the leaf nodes reachable in exactly
@@ -31,7 +32,8 @@ gimme { WHITE, BLACK, new_board, from_fen, to_fen, legal_moves, apply_move,
         outcome, render, find_move, in_check, attacked_by, king_square,
         count_material, position_key, rank_of, file_of, square_at, square_name,
         square_index } from "rules.funny"
-gimme { best_move, evaluate, play_one, DEPTHS, VALUES } from "engine.funny"
+gimme { best_move, best_move_parallel, hands_for, evaluate, play_one, DEPTHS,
+        VALUES, PARALLEL_FROM } from "engine.funny"
 
 bet notations(moves) {
     yo out = []
@@ -250,6 +252,35 @@ yap "-- it deals with the threat to its own queen --"
 // the pawn is better, and the engine can see that at depth 2.
 yo save_it = best_move(from_fen("4k3/8/8/2p5/3Q4/8/8/4K3 w - - 0 1"), 2)
 yap "  from d4 it plays:", save_it["move"]["notation"]
+
+yap "-- the same answer, split across real threads --"
+// The root split deals most of the moves out to workers on OS threads. Whether
+// it is worth doing depends on the depth, and `hands_for` decides that -- but
+// whatever it decides, the answer may not change: the same move and the same
+// score, every time. That is the guarantee.
+//
+// The number of positions looked at is deliberately *not* part of it, and the
+// two positions here show why. The parent searches the best-ordered move
+// itself and hands the resulting alpha to every worker, which is what stops
+// the count exploding -- without it the workers search with the window wide
+// open and it was thirteen times higher at depth 4. But it only comes back
+// exactly equal when the best move is also the first one searched, as it is in
+// the first position, where it is a capture. In the second the best move is a
+// quiet back-rank mate that sorts after the captures, so the workers start
+// from a weaker alpha and cannot narrow each other's, and they look at more.
+grind fen in [TRICKY, BACK_RANK] {
+    yo p = from_fen(fen)
+    yo one = best_move(p, 3)
+    yo many = best_move_parallel(p, 3, 4)
+    yap "  " + one["move"]["notation"] +
+        ": same move " + to_yap(one["move"]["notation"] == many["move"]["notation"]) +
+        ", same score " + to_yap(one["score"] == many["score"]) +
+        ", same positions " + to_yap(one["nodes"] == many["nodes"])
+}
+yap "  threads start at depth:", PARALLEL_FROM
+yap "  so at depth 3 it asks for", hands_for(30, 3), "worker, and at depth 4, more than one:",
+    hands_for(30, 4) > 1
+yap "  and with nothing to deal out it asks for", hands_for(2, 5), "worker"
 
 yap "-- what it makes of a position --"
 yap "  even start:", evaluate(new_board(), WHITE)

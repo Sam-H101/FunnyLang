@@ -17,9 +17,13 @@
 // move's coordinates -- because a golden that plays a whole game cannot
 // tolerate an engine that shuffles equal moves.
 
-gimme { WHITE, BLACK, EMPTY, legal_moves, apply_move, outcome, in_check,
-        other_side, color_of, kind_of, is_white, rank_of, file_of,
-        square_at } from "rules.funny"
+gimme stash
+gimme interns
+gimme filez
+
+gimme { WHITE, BLACK, EMPTY, legal_moves, legal_moves_unsorted, apply_move,
+        outcome, in_check, other_side, color_of, kind_of, is_white, rank_of,
+        file_of, square_at, to_fen } from "rules.funny"
 
 flex deadass VALUES = {"P": 100, "N": 320, "B": 330, "R": 500, "Q": 900, "K": 20000}
 
@@ -118,42 +122,35 @@ flex bet evaluate(pos, side) {
 // Captures first, most valuable victim taken by the least valuable attacker,
 // then everything else. Ties break on the move's own coordinates, so the order
 // is total and the engine is reproducible.
-bet ordered(moves) {
-    yo scored = []
-    grind m in moves {
-        yo gain = 0
-        sus (m["captured"] != EMPTY && m["captured"] != ghost) {
-            gain = VALUES.get(kind_of(m["captured"]), 0) * 10 - VALUES.get(kind_of(m["piece"]), 0)
-        }
-        sus (m["promotion"] != "") {
-            gain += VALUES.get(kind_of(m["promotion"]), 0)
-        }
-        scored.yeet_in({"move": m, "gain": gain})
+// What taking this move is worth on the face of it: a big victim taken by a
+// small attacker scores highest, and a promotion is worth what it becomes.
+bet gain_of(m) {
+    yo gain = 0
+    sus (m["captured"] != EMPTY && m["captured"] != ghost) {
+        gain = VALUES.get(kind_of(m["captured"]), 0) * 10 - VALUES.get(kind_of(m["piece"]), 0)
     }
+    sus (m["promotion"] != "") {
+        gain += VALUES.get(kind_of(m["promotion"]), 0)
+    }
+    bounce gain
+}
 
-    yo out = []
-    yo used = {}
-    grind n from 0 to scored.how_thicc() {
-        yo best = ghost
-        yo best_at = -1
-        grind i from 0 to scored.how_thicc() {
-            sus (used.has(to_yap(i))) {
-                nvm
-            }
-            sus (best == ghost || scored[i]["gain"] > best["gain"] ||
-                 (scored[i]["gain"] == best["gain"] &&
-                  scored[i]["move"]["notation"] < best["move"]["notation"])) {
-                best = scored[i]
-                best_at = i
-            }
-        }
-        sus (best_at < 0) {
-            bail
-        }
-        used[to_yap(best_at)] = fax
-        out.yeet_in(best["move"])
-    }
-    bounce out
+// One string key per move, and `sort_by` builds each of them exactly once --
+// which is the reason it is used here rather than a comparator, since a
+// comparator would recompute the gain on every one of an insertion sort's
+// comparisons.
+//
+// The gain is subtracted from a number larger than any of them so that a plain
+// ascending sort puts the best capture first; zero-padded so the text compares
+// the way the number would; and the notation appended so that equal moves fall
+// in a settled order and the engine stays reproducible.
+//
+// What used to be here was a selection sort over a dictionary of used indices,
+// keyed by `to_yap(i)`. Between this and the one in rules.funny, putting moves
+// in order cost more than working out what they were.
+bet ordered(moves) {
+    bounce stash.sort_by(moves, lowkey (m) =>
+        to_yap(300000 - gain_of(m)).pad_left(7, "0") + m["notation"])
 }
 
 // -- searching ----------------------------------------------------------------------------
@@ -163,7 +160,7 @@ bet ordered(moves) {
 // than the engine giving up.
 flex bet best_move(pos, depth) {
     yo counter = {"nodes": 0}
-    yo moves = ordered(legal_moves(pos))
+    yo moves = ordered(legal_moves_unsorted(pos))
     sus (moves.how_thicc() == 0) {
         bounce {"move": ghost, "score": -WIN, "nodes": 0, "depth": depth}
     }
@@ -186,11 +183,167 @@ flex bet best_move(pos, depth) {
     bounce {"move": best, "score": best_score, "nodes": counter["nodes"], "depth": depth}
 }
 
+// The value of one move, searched on its own, with everything below `alpha`
+// allowed to be cut off. Pass `-WIN - 1` to open the window completely.
+//
+// A move whose real value is above alpha comes back exact, which is all the
+// root needs: one worse than alpha comes back as a bound, and a bound below
+// the best score already found can never win.
+flex bet score_of_move(pos, m, depth, alpha) {
+    yo counter = {"nodes": 0}
+    yo score = -search(apply_move(pos, m), depth - 1, -WIN - 1, -alpha, counter)
+    bounce {"score": score, "nodes": counter["nodes"]}
+}
+
+// -- the same search, across several threads ------------------------------------------
+
+// Below this depth a search finishes sooner than eight workers can be started,
+// so the threads are not used at all.
+//
+// Measured on an eight-processor machine from a middlegame with 49 legal
+// moves: depth 3 took 697 ms in sequence and 1,999 ms split eight ways -- a
+// third of the speed, all of it worker startup. Depth 4 went from 5,655 ms to
+// 1,750 ms, and depth 5 from 39.8 s to 16.3 s. So the crossover is here, at
+// four. On a slower machine, or one with fewer processors, it would be higher.
+flex deadass PARALLEL_FROM = 4
+
+// THE ROOT SPLIT, AND WHY IT IS NOT A PLAIN ONE.
+//
+// Every legal move from the position is scored, and the moves are dealt out to
+// `hands` workers. Each worker is a real OS thread with its own VM and its own
+// heap, so nothing is shared and nothing needs a lock -- what crosses is text:
+// a position as FEN and a list of move notations, with a score per move coming
+// back.
+//
+// THE ELDEST BROTHER GOES FIRST. The obvious split -- hand every move straight
+// out -- was measured at *a quarter of the speed* of one thread, because every
+// worker searched with the window wide open and so re-derived all the work
+// that a shared, narrowing alpha would have pruned away. At depth 4 it looked
+// at 76,742 positions where one thread needed 5,940. Alpha-beta at the root
+// gets its power from having already found something good, and splitting the
+// root throws exactly that away.
+//
+// So the best-ordered move is searched here, in full, before anybody is hired,
+// and the alpha it establishes is handed to every worker. They start knowing
+// what they have to beat, and a move that cannot beat it is cut off as cheaply
+// as it would have been in sequence.
+//
+// The moves are then dealt round-robin rather than in blocks: the ordering
+// puts the sharpest moves first and those are much the slowest to search, so a
+// block split would hand the first worker every expensive move and leave the
+// rest with nothing to do.
+//
+// The answer does not depend on any of it. The best move is chosen by walking
+// the same ordered list with the same strictly-better rule the sequential
+// search uses, so a tie goes to the same move whichever worker finished first,
+// and both the move and its score match what one thread would have found.
+flex bet best_move_parallel(pos, depth, hands) {
+    yo moves = ordered(legal_moves_unsorted(pos))
+    sus (moves.how_thicc() == 0) {
+        bounce {"move": ghost, "score": -WIN, "nodes": 0, "depth": depth}
+    }
+    // Whether threads are worth it at all is `hands_for`'s decision, not this
+    // function's: keeping the policy at the call site is what lets the
+    // benchmark force a split at any depth and measure where the crossover
+    // actually is.
+    sus (hands < 2 || moves.how_thicc() < 3) {
+        bounce best_move(pos, depth)
+    }
+
+    yo head = score_of_move(pos, moves[0], depth, -WIN - 1)
+    yo alpha = head["score"]
+    yo nodes = head["nodes"]
+
+    yo rest = []
+    grind i from 1 to moves.how_thicc() {
+        rest.yeet_in(moves[i]["notation"])
+    }
+    yo lots = []
+    grind i from 0 to hands {
+        lots.yeet_in([])
+    }
+    grind i from 0 to rest.how_thicc() {
+        lots[i % hands].yeet_in(rest[i])
+    }
+
+    // Named absolutely. A bare "search_worker.funny" is resolved against the
+    // process's working directory rather than against the file asking for it,
+    // so it is only ever found when `funny` happened to be started from this
+    // directory -- which, run as an example from the top of the repository, it
+    // never is.
+    yo worker = filez.join_path(filez.dir_of(the_script()), "search_worker.funny")
+    yo fen = to_fen(pos)
+    yo hired = []
+    grind lot in lots {
+        sus (lot.how_thicc() > 0) {
+            hired.yeet_in(interns.hire(worker, {"fen": fen, "moves": lot,
+                                                "depth": depth, "alpha": alpha}))
+        }
+    }
+
+    yo scores = {}
+    scores[moves[0]["notation"]] = head["score"]
+    grind batch in interns.everybody(hired) {
+        grind got in batch {
+            scores[got["notation"]] = got["score"]
+            nodes += got["nodes"]
+        }
+    }
+
+    yo best = ghost
+    yo best_score = -WIN - 1
+    grind m in moves {
+        yo score = scores.get(m["notation"], -WIN - 1)
+        sus (score > best_score) {
+            best_score = score
+            best = m
+        }
+    }
+    bounce {"move": best, "score": best_score, "nodes": nodes, "depth": depth}
+}
+
+// How many workers are worth using, which is the whole of the policy. One
+// means "do it in sequence": below PARALLEL_FROM a search finishes sooner than
+// workers can be started, and a position with almost nothing to play has
+// nothing worth dealing out.
+flex bet hands_for(moves_count, depth) {
+    sus (depth < PARALLEL_FROM || moves_count < 3) {
+        bounce 1
+    }
+    // The best-ordered move is searched by the parent before anybody is hired,
+    // so it is the remainder that get dealt out.
+    yo rest = moves_count - 1
+    yo cpus = interns.headcount()
+    sus (cpus > rest) {
+        bounce rest
+    }
+    bounce cpus
+}
+
 // The value of `pos` to whoever is to move in it.
 bet search(pos, depth, alpha, beta, counter) {
     counter["nodes"] += 1
 
-    yo moves = legal_moves(pos)
+    // THE LEAF COMES FIRST, AND THAT IS THE WHOLE OPTIMISATION. Generating
+    // every legal move at a leaf -- only ever to notice there were none of
+    // them -- was by a wide margin the most expensive thing this search did.
+    // Leaves are the overwhelming majority of any tree, and a legal move list
+    // costs a board copy and a check test *per pseudo-move* to build.
+    //
+    // Checkmate still has to be right, so it is asked about in the cheap
+    // order: a single check test, and only if the side to move is actually in
+    // check is the move list built to see whether it can do anything about it.
+    // Being in check is rare, so that cost is paid rarely. A stalemate exactly
+    // on the horizon is scored as a position rather than as a draw, which is a
+    // real if small loss and is written down in the README.
+    sus (depth <= 0) {
+        sus (in_check(pos, pos["turn"]) && legal_moves_unsorted(pos).how_thicc() == 0) {
+            bounce -WIN + (100 - depth)
+        }
+        bounce evaluate(pos, pos["turn"])
+    }
+
+    yo moves = legal_moves_unsorted(pos)
 
     // No legal move: checkmate if in check, stalemate if not. The depth is
     // added to the mate score so that a mate further away is worth less than
@@ -201,9 +354,6 @@ bet search(pos, depth, alpha, beta, counter) {
     }
     sus (pos["quiet"] >= 100) {
         bounce 0
-    }
-    sus (depth <= 0) {
-        bounce evaluate(pos, pos["turn"])
     }
 
     yo best = -WIN - 1

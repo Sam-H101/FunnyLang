@@ -23,11 +23,12 @@ funny run extensive_examples/chess/play.funny -- --self --depth 3
 | --- | --- |
 | `rules.funny` | the rules of chess, and nothing else |
 | `engine.funny` | negamax with alpha-beta, piece-square tables, move ordering |
+| `search_worker.funny` | one slice of a root search, run on its own thread |
 | `serve.funny` | the HTTPS server and the three-route JSON API |
 | `play.funny` | the same game in a terminal |
 | `http.funny` | request parsing and response building |
 | `static.funny` | serving files from `web/` without serving anything else |
-| `test_chess.funny` | the golden: rules, perft, engine, and a whole game |
+| `test_chess.funny` | the golden: rules, perft, engine, threads, and a whole game |
 | `web/` | the page, the stylesheet, the browser client, vendored Bootstrap |
 | `certs/` | a test certificate, and the script that made it |
 
@@ -45,7 +46,8 @@ knight could have gone there, and that disambiguation is a feature this does
 not have.
 
 `rules.funny` reads and writes FEN, which is how the tests set up a position
-that the opening would take thirty moves to reach.
+that the opening would take thirty moves to reach — and how a position is
+handed to a worker on another thread, since nothing else can cross.
 
 ## Is it right?
 
@@ -78,10 +80,6 @@ r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1
 
 It gives 48 and 2,039 at depths 1 and 2, and both agree.
 
-That works out at roughly 15,000 positions a second, which is what a
-tree-walking interpreter costs and is the reason the engine looks three or four
-moves ahead rather than eight.
-
 ## The engine
 
 Negamax with alpha-beta, and two things chess needs that draughts did not:
@@ -100,6 +98,91 @@ so the same position always produces the same move. That is what lets the
 golden assert a whole game move for move rather than merely that one was
 played.
 
+## Making it faster
+
+The first version took about a second to reply at depth 3 and ten at depth 4,
+which is long enough to be unpleasant in a browser. Three things were wrong,
+and none of them was the search algorithm.
+
+**Leaves were generating moves they never used.** The search asked "is this
+checkmate?" before it asked "am I at the bottom?", so every leaf — the
+overwhelming majority of the tree — built a full legal move list, costing a
+board copy and a check test per pseudo-move, and then threw it away. Asking in
+the cheap order instead (one check test, and the move list only if the side to
+move is actually in check) leaves checkmate correctly detected and skips the
+work everywhere else.
+
+**Sorting cost more than generating.** Both the rules and the engine sorted
+moves with a hand-rolled selection sort that tracked which indices it had used
+in a dictionary keyed by `to_yap(i)` — so an O(n²) inner loop paid for a
+number-to-string conversion and a hash lookup every step. At a 49-move
+middlegame position that was 43% of the entire cost of producing legal moves.
+They now use the runtime's own `sort` and `stash.sort_by`.
+
+**The search was sorting twice.** `legal_moves` returned a sorted list and the
+engine immediately re-ordered it by its own criteria. The search now uses
+`legal_moves_unsorted` and sorts once; the sorted form is still what the page
+and the tests are handed.
+
+| | before | after |
+| --- | --- | --- |
+| 200 × `sorted_moves` | 284 ms | **1 ms** |
+| 200 × `legal_moves` | 660 ms | 403 ms |
+| best move, depth 3 | 1,023 ms | **690 ms** |
+| best move, depth 4 | 10,066 ms | **5,601 ms** |
+
+Node counts and chosen moves are identical throughout — this removed waste, it
+did not change how the engine plays.
+
+## Threads
+
+`engine.funny` can split the root across real OS threads. Each worker is a
+whole VM with its own heap, so nothing is shared and nothing needs a lock: a
+position crosses as FEN, a list of moves crosses as notations, and a score per
+move comes back.
+
+**The obvious way to do this is much slower than not doing it.** Handing every
+root move straight out to a worker was measured at **a quarter the speed of one
+thread**. Alpha-beta at the root gets its power from having already found
+something good: once one move is known to be worth 220, every later move can be
+refuted cheaply. Workers searching with the window wide open re-derive all of
+that. At depth 4 the split looked at **76,742 positions where one thread needed
+5,940**.
+
+So the best-ordered move is searched by the parent *before anybody is hired*,
+and the alpha it establishes is handed to every worker. They begin knowing what
+they have to beat. With that, the node count comes back to exactly the
+sequential figure, and the split is finally worth something:
+
+| depth | one thread | 8 threads | |
+| --- | --- | --- | --- |
+| 3 | 697 ms | 1,999 ms | 0.34× |
+| 4 | 5,655 ms | **1,750 ms** | **3.23×** |
+| 5 | 39.8 s | **16.3 s** | **2.44×** |
+
+The move and the score are the same at every depth, always — that is the
+guarantee, and the golden asserts it.
+
+The node count is a different matter. In the position above it comes out
+exactly equal to the sequential figure, but only because the best move there is
+a capture, so the ordering searched it first and the alpha the parent handed
+over was already the final one. Where the best move is quiet — a back-rank mate,
+say — it sorts after the captures, the workers start from a weaker alpha, and
+they cannot narrow one another's the way a sequential search narrows its own.
+They then look at somewhat more than one thread would. The golden contains one
+position of each kind so that both behaviours are on the record.
+
+Below depth 4 the search finishes sooner than eight workers can be started, so
+`hands_for` asks for one worker and the game runs in sequence. That threshold
+is `PARALLEL_FROM`, and on a slower machine or one with fewer processors it
+would be higher. The "hard" difficulty is depth 4, so it is the setting that
+gets the 3.2×.
+
+One wrinkle worth knowing if you write something similar: `interns.hire` with a
+bare relative path resolves it against the **process's working directory**, not
+against the file asking for it. The worker is therefore named with an absolute
+path built from `the_script()`.
+
 ## What it is not
 
 It plays legal chess. It does not play good chess, and the gap is mostly these:
@@ -108,12 +191,15 @@ It plays legal chess. It does not play good chess, and the gap is mostly these:
   middle of a sequence of captures, so it can misjudge a position where pieces
   are still hanging at the last ply. This is the single largest weakness and
   the usual first thing a real engine adds.
+- **A stalemate exactly on the horizon is scored as a position**, not as a
+  draw. That is the price of not generating moves at leaves; checkmate is still
+  detected, and one ply further up both are.
 - **No opening book**, so the first few moves are whatever the tables like.
 - **No endgame knowledge.** The king's table wants a corner, which is right
   while there are pieces about and wrong once there are not. It will not drive
   a lone king to the edge to mate it, and there are no tablebases.
 - **No transposition table**, so the same position reached two ways is searched
-  twice.
+  twice — and across threads, by two workers who cannot tell each other.
 - **No iterative deepening and no clock.** The depth is fixed by the difficulty
   you pick; the engine takes as long as it takes.
 - **Threefold repetition is not seen inside the search** — only at the top
@@ -161,6 +247,15 @@ and the glyph is sized from the board rather than from its box. A queen and a
 pawn therefore take identical space, and promoting cannot resize a square or
 shift the grid.
 
+White uses the outline figures (♔♕♖♗♘♙) and black the solid ones (♚♛♜♝♞♟),
+rather than one set coloured two ways. That is not a style choice: **U+265F
+BLACK CHESS PAWN is a standard emoji**, so a browser draws it from the emoji
+font, where CSS `color` means nothing — which made every pawn on the board come
+out black whichever side it belonged to, while the five figures that are not
+emoji coloured correctly. Each glyph is followed by U+FE0E to ask for the text
+form, and the sides now differ in shape as well as in colour, so they stay
+distinct even if a font substitutes.
+
 Bootstrap is vendored into `web/vendor/` rather than fetched: the page is served
 under `default-src 'self'` and is meant to work on a machine with no network.
 
@@ -174,13 +269,15 @@ makes a fresh pair.
 Run with `--no-tls` for plain HTTP, which is fine on loopback and not on a
 network.
 
-## One thread, and not even apologetically
+## One thread for the serving, several for the thinking
 
-There is one board, one player, and the only expensive thing that happens is
-the engine thinking, which is work for one core on one position. Threads would
-add a lock around the board and buy nothing. The event loop is there so that a
-second tab, a favicon request or a health check cannot sit in the queue behind
-a search.
+The server itself is single-threaded and unapologetically so. There is one
+board and one player, and connections are handled by tasks on an event loop, so
+a second tab, a favicon request or a health check cannot sit in the queue
+behind a search. Threads would add a lock around the board and buy nothing.
+
+The threads are inside the search instead, where the work actually is, and they
+share nothing at all — which is why they need no lock either.
 
 ## The tests
 
@@ -189,7 +286,9 @@ funny test extensive_examples/chess
 ```
 
 Four parts, each able to fail on its own: the rules from positions set up by
-hand, perft, the engine choosing from fixed positions at fixed depths, and a
-complete game of engine against itself asserted move for move. No sockets
-anywhere — the server is a thin wrapper around these modules, and what a
-wrapper is worth testing for is that it wraps, not the rules of chess.
+hand, perft, the engine choosing from fixed positions at fixed depths — which
+includes the threaded split picking the same move and score as one thread — and
+a complete game of engine against itself asserted move for move. No sockets
+anywhere — the server
+is a thin wrapper around these modules, and what a wrapper is worth testing for
+is that it wraps, not the rules of chess.

@@ -143,12 +143,19 @@
 
 /* The glyph is sized from the board, never from the box it sits in, so a queen
    and a pawn occupy identical space and a promotion cannot resize anything.
-   Both colours use the solid figures: an outline drawn in the opposite colour
-   is what separates them, which stays legible on both shades of square. */
+   White uses the outline figures and black the solid ones, so the sides differ
+   in shape and not only in colour -- see chess.js for why that matters.
+
+   `font-variant-emoji: text` is the other half of that: U+265F is a valid
+   emoji, and without being told otherwise a browser will draw it from the
+   emoji font, which ignores `color`. The font stack names monochrome symbol
+   faces first for the same reason. */
 .piece .glyph {
   font-size: 9.6cqi;
   line-height: 1;
-  font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "DejaVu Sans", system-ui, sans-serif;
+  font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "DejaVu Sans",
+               "Liberation Sans", "Arial Unicode MS", system-ui, sans-serif;
+  font-variant-emoji: text;
   pointer-events: none;
   user-select: none;
 }
