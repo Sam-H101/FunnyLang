@@ -570,10 +570,91 @@ bet castling_moves(pos, n, piece, side, out) {
 // single node and breaks its ties on the notation anyway. Handing it a sorted
 // list buys it nothing and costs a sort per node, which at a busy middlegame
 // position was 43% of the whole cost of generating moves.
+// The squares holding a piece that is pinned against its own king.
+//
+// A piece is pinned when it is the only thing standing between its king and an
+// enemy slider. Walking out from the king along the eight rays finds every one
+// of them in a single pass: take the first piece along a ray, and if it is ours
+// and the next piece beyond it is an enemy slider that travels that way, the
+// first one is pinned.
+//
+// Usually this returns nothing at all, which is the point. It is a short list
+// searched linearly rather than a set, because nothing is the common case and
+// two is a lot.
+bet pinned_squares(squares, king, enemy) {
+    yo pinned = []
+    grind pair in [[DIAGONAL_RAYS[king], BISHOP], [STRAIGHT_RAYS[king], ROOK]] {
+        grind ray in pair[0] {
+            yo own = -1
+            grind s in ray {
+                yo p = squares[s]
+                sus (p == EMPTY) {
+                    nvm
+                }
+                sus (own < 0) {
+                    // The first piece along this ray. If it belongs to the
+                    // enemy then it is doing the attacking, not the shielding,
+                    // and nothing behind it is pinned.
+                    sus (color_of(p) == enemy) {
+                        bail
+                    }
+                    own = s
+                    nvm
+                }
+                // The second piece. If it is an enemy slider that moves along
+                // this ray, the first piece cannot leave it.
+                sus (color_of(p) == enemy && (kind_of(p) == pair[1] || kind_of(p) == QUEEN)) {
+                    pinned.yeet_in(own)
+                }
+                bail
+            }
+        }
+    }
+    bounce pinned
+}
+
+// Every legal move, in the order the board was scanned in.
+//
+// WHAT THIS USED TO DO, AND WHY IT WAS SLOW. It applied every pseudo-move to a
+// copy of the board and asked whether the king was left in check -- so a node
+// with forty pseudo-moves cloned the whole board forty times, kept thirty-nine
+// of them and threw the copies away. That was the single most expensive thing
+// in the search.
+//
+// It is also almost always unnecessary. A move can only expose your own king if
+// the piece that moved was shielding it, and a piece that shields the king is
+// exactly a pinned piece. So there are only four cases that need checking at
+// all: you are already in check, the king itself is moving, the moving piece is
+// pinned, or it is an en passant capture -- which is the awkward one, because
+// it removes a pawn from a square the capturer never touches and can open a
+// rank that nothing else would.
+//
+// Everything else is legal without the board ever being copied.
 flex bet legal_moves_unsorted(pos) {
+    yo squares = pos["squares"]
     yo side = pos["turn"]
+    yo enemy = other_side(side)
+    yo king = king_square(squares, side)
+
+    // No king at all means a position set up by hand for a test. Rather than
+    // reason about a board that cannot occur in a game, simulate everything.
+    yo checked = fax
+    yo pinned = []
+    sus (king >= 0) {
+        checked = attacked_by(squares, king, enemy)
+        sus (!checked) {
+            pinned = pinned_squares(squares, king, enemy)
+        }
+    }
+
     yo out = []
     grind m in pseudo_moves(pos) {
+        yo risky = checked || m["from"] == king || m["special"] == "ep" ||
+                   pinned.contains(m["from"])
+        sus (!risky) {
+            out.yeet_in(m)
+            nvm
+        }
         yo after = apply_move(pos, m)
         sus (!in_check_for(after, side)) {
             out.yeet_in(m)

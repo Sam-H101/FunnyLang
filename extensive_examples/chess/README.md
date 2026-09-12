@@ -234,6 +234,10 @@ of this work it went:
 | the transposition table | 392 ms (it does nothing for move generation, as expected) |
 | the attack tables | **303 ms** |
 | the integer encoding | **261 ms** |
+| not copying the board (below) | **94 ms** |
+
+The last of those is the largest single step, and it came from doing less work
+rather than doing the same work faster.
 
 Node counts are identical to the digit, and the golden came out byte-identical.
 That is the point: this changes how the same work is done, not what work is
@@ -270,6 +274,53 @@ depth 3 went 686 → 485 ms and depth 4 went 5,577 → 3,945 ms.
 
 This is also the change that exposed the key collision, since giving every
 square a character was exactly the fix for it.
+
+## Not copying the board forty times a node
+
+Generating legal moves meant applying every pseudo-move to a *copy* of the
+board and asking whether the king had been left in check. A position with forty
+pseudo-moves therefore cloned the whole board forty times — sixty-four squares
+and the castling record each time — kept thirty-nine of the answers, and threw
+all forty copies away. It was the most expensive thing in the search by a wide
+margin.
+
+It is also nearly always unnecessary, and the reason is a small piece of
+reasoning rather than a faster copy. A move can only expose your own king if
+the piece that moved was shielding it — and a piece that shields the king is
+precisely a **pinned** piece. So only four kinds of move need checking at all:
+
+- you are already in check,
+- the king itself is moving,
+- the moving piece is pinned,
+- or it is an en passant capture — the awkward one, because it removes a pawn
+  from a square the capturer never lands on, and can open a rank that no other
+  move could.
+
+Everything else is legal, and provably so, without the board being touched.
+
+Finding the pinned pieces is one pass outward from the king along the eight
+rays, which `DIAGONAL_RAYS` and `STRAIGHT_RAYS` already hold: take the first
+piece along a ray, and if it is yours and the next piece beyond it is an enemy
+slider that travels that way, the first one cannot move off the ray. Usually it
+finds nothing, which is the point — so it returns a short list to be scanned
+rather than a set to be hashed.
+
+| | before | after |
+| --- | --- | --- |
+| 200 × `legal_moves` | 261 ms | **94 ms** |
+| depth 3 | 485 ms | **373 ms** |
+| depth 4 | 3,945 ms | **1,577 ms** |
+| depth 5 | 24,136 ms | **17,071 ms** |
+
+Node counts are identical and the golden came out byte-identical, which is what
+makes this one easy to trust: it removes work without changing a single answer.
+
+The unevenness points at what is next. Depth 4 gained two and a half times and
+depth 5 only one and a half, because deeper searches put far more nodes through
+the transposition table — and every one of those builds its key by joining
+sixty-four squares into a string. Replacing that with a Zobrist hash, an integer
+updated by XOR as each move is made rather than rebuilt from nothing, is the
+obvious next move.
 
 ## Threads
 
