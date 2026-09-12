@@ -3,17 +3,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "blob.h"
 #include "clock.h"
 #include "computer.h"
 #include "filez.h"
 #include "gc.h"
 #include "groupchat.h"
 #include "internet.h"
+#include "json.h"
 #include "interns.h"
 #include "mafs.h"
 #include "rizz.h"
 #include "stash.h"
 #include "sus.h"
+#include "vault.h"
 #include "vm.h"
 #include "yapper.h"
 
@@ -41,6 +44,9 @@ typedef struct {
 
 static const StdlibEntry STDLIB_REGISTRY[] = {
     {"mafs", mafs_build},
+    {"blob", blob_build},
+    {"vault", vault_build},
+    {"json", json_build},
     {"yapper", yapper_build},
     {"stash", stash_build},
     {"groupchat", groupchat_build},

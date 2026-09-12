@@ -1,0 +1,4 @@
+// The same answer for a parameter name.
+bet f(from) {
+    bounce 1
+}

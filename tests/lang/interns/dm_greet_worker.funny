@@ -1,0 +1,6 @@
+// Says hello without being asked, which is the half of message passing a
+// return value cannot do.
+gimme interns
+
+interns.dm("boss", "from the worker")
+interns.deliver("bye")

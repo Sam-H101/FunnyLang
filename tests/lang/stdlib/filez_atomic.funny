@@ -1,0 +1,38 @@
+// tests/lang/stdlib/filez_atomic.funny -- RUNTIME_PLAN.md R6. Writing a file
+// in place has a window where it holds neither the old contents nor the new
+// ones; these write beside it and move it over in one step, so a reader sees
+// one or the other and a crash leaves the old one. A golden cannot cut the
+// power, so what it checks is the visible half: the contents afterwards, and
+// that a move really is a move.
+gimme filez
+gimme blob
+
+yo path = filez.temp_file("atomictext")
+yap filez.yeet_out_atomic(path, "hello")
+yap filez.slurp(path)
+yap filez.yeet_out_atomic(path, "goodbye")
+yap filez.slurp(path)
+
+yo bin = filez.temp_file("atomicblob")
+yap filez.write_blob_atomic(bin, blob.of([0, 1, 2, 255]))
+yap filez.read_blob(bin).to_hex()
+
+// `from` is a keyword, so the source of the move is `source`.
+yo source = filez.temp_file("src")
+yo onto = filez.temp_file("dst")
+filez.yeet_out(source, "new contents")
+filez.yeet_out(onto, "old contents")
+yap filez.replace(source, onto)
+yap filez.exists(source)
+yap filez.slurp(onto)
+
+sketchy {
+    filez.replace(filez.join_path(filez.dir_of(onto), "definitely-not-here"), onto)
+} my_bad (e) {
+    yap e.flavor
+}
+
+filez.obliterate(path)
+filez.obliterate(bin)
+filez.obliterate(onto)
+yap filez.exists(onto)

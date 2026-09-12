@@ -1,0 +1,108 @@
+// static.funny — files out of web/, and nothing else.
+//
+// The same discipline as `web_server_https/static.funny`, and here for the
+// same reason its sibling `http.funny` is: a worker cannot import through a
+// parent directory (RUNTIME_PLAN.md §9), so this example carries its own.
+//
+// The whole defence is that a file path is never *derived from* the URL; it is
+// *rebuilt from* pieces of it that passed a check. Each segment must be one to
+// sixty-four characters from a small safe alphabet and must not begin with a
+// dot -- so no `..`, no `.env`, no hidden directories -- and the last must
+// carry an extension this serves. Separators, backslashes, colons, percent
+// signs and NULs cannot survive the alphabet, so neither can any of the
+// encodings people use to smuggle them. There are no directory listings,
+// because a directory has no extension.
+
+gimme filez
+gimme yapper
+
+flex deadass CONTENT_TYPES = {
+    "html": "text/html; charset=utf-8",
+    "css": "text/css; charset=utf-8",
+    "js": "text/javascript; charset=utf-8",
+    "svg": "image/svg+xml",
+    "json": "application/json; charset=utf-8",
+    "txt": "text/plain; charset=utf-8",
+    "png": "image/png",
+    "ico": "image/vnd.microsoft.icon",
+}
+
+// One pretty URL, because there is one page.
+flex deadass PAGES = {
+    "/": "index.html",
+}
+
+deadass SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
+
+// Served as bytes rather than text. A PNG read into a yapstring is a PNG with
+// every invalid UTF-8 sequence replaced by U+FFFD, which is to say a broken
+// PNG.
+flex deadass BINARY_TYPES = ["png", "ico"]
+
+// {"file", "type", "binary"} for a URL path, or ghost if it names nothing
+// servable.
+flex bet static_target(web_dir, url_path) {
+    yo segments = []
+    sus (PAGES.has(url_path)) {
+        segments = [PAGES[url_path]]
+    } nah {
+        sus (!yapper.starts_with(url_path, "/") || url_path.how_thicc() > 256) {
+            bounce ghost
+        }
+        segments = yapper.split(yapper.slice(url_path, 1, url_path.how_thicc()), "/")
+    }
+    sus (segments.how_thicc() == 0 || segments.how_thicc() > 8) {
+        bounce ghost
+    }
+    grind seg in segments {
+        sus (!safe_segment(seg)) {
+            bounce ghost
+        }
+    }
+
+    yo last = segments[segments.how_thicc() - 1]
+    yo dot = yapper.index_of(yapper.reverse(last), ".")
+    sus (dot < 0) {
+        bounce ghost
+    }
+    yo ext = yapper.whisper(yapper.slice(last, last.how_thicc() - dot, last.how_thicc()))
+    sus (!CONTENT_TYPES.has(ext)) {
+        bounce ghost
+    }
+
+    yo file = web_dir
+    grind seg in segments {
+        file = filez.join_path(file, seg)
+    }
+    bounce {"file": file, "type": CONTENT_TYPES[ext], "binary": BINARY_TYPES.contains(ext)}
+}
+
+bet safe_segment(seg) {
+    sus (seg.how_thicc() < 1 || seg.how_thicc() > 64 || yapper.starts_with(seg, ".")) {
+        bounce cap
+    }
+    grind ch in seg {
+        sus (!yapper.contains(SAFE, ch)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+// Each worker keeps what it has read. web/ is small and does not change under
+// a running server; restart to pick up an edit.
+yo CACHE = {}
+
+// The file's contents, or ghost if there is no such file.
+flex bet read_static(target) {
+    yo file = target["file"]
+    sus (CACHE.has(file)) {
+        bounce CACHE[file]
+    }
+    sus (!filez.is_file(file)) {
+        bounce ghost
+    }
+    yo body = target["binary"] ? filez.read_blob(file) : filez.slurp(file)
+    CACHE[file] = body
+    bounce body
+}

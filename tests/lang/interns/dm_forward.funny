@@ -1,0 +1,14 @@
+// tests/lang/interns/dm_forward.funny -- a worker that hires a worker and
+// passes messages along. Worker-to-worker is deliberately not a thing: a VM
+// can post to an intern it hired and to whoever hired it, and forwarding is
+// how anything else is said.
+gimme interns
+gimme filez
+
+yo dir = filez.dir_of(the_script())
+yo w = interns.hire(filez.join_path(dir, "dm_middle_worker.funny"), dir)
+interns.dm(w, "ping")
+
+yo back = interns.wait_up(interns.check_dms())
+yap back["msg"]
+yap interns.wait_up(w)

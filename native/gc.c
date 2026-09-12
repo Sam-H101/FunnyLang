@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "bignum.h"
+#include "blob.h"
 #include "error.h"
 #include "frames.h"
 #include "builtins.h"
@@ -53,6 +54,12 @@ static void free_object(Obj *obj) {
         case OBJ_BIGNUM:
             bignum_free((ObjBignum *)obj);
             return;
+        case OBJ_BLOB: {
+            ObjBlob *b = (ObjBlob *)obj;
+            free(b->bytes);
+            free(b);
+            return;
+        }
         case OBJ_STRING: {
             ObjString *s = (ObjString *)obj;
             free(s->chars);
@@ -206,6 +213,7 @@ void gc_mark_value(GC *gc, Value v) {
 static void blacken_object(GC *gc, Obj *obj) {
     switch (obj->type) {
         case OBJ_BIGNUM:
+        case OBJ_BLOB:
         case OBJ_STRING:
             return;
         case OBJ_UPVALUE: {

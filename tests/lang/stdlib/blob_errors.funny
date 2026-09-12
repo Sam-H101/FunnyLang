@@ -1,0 +1,17 @@
+// tests/lang/stdlib/blob_errors.funny -- a blob refuses the things it should
+// refuse. It is not a string with different accessors: `"a" + b` is a type
+// error rather than a guess about which encoding was meant, and a blob never
+// changes in place.
+gimme blob
+
+yo b = blob.from_yap("hi")
+
+sketchy { yap "a" + b } my_bad (e) { yap e.flavor }
+sketchy { b[0] = 1 } my_bad (e) { yap e.flavor + ": " + e.message }
+sketchy { yap blob.from_hex("zz") } my_bad (e) { yap e.flavor }
+sketchy { yap blob.from_base64("!!!!") } my_bad (e) { yap e.flavor }
+sketchy { yap blob.of([256]) } my_bad (e) { yap e.flavor }
+sketchy { yap b[99] } my_bad (e) { yap e.flavor }
+sketchy { yap "hi" in b } my_bad (e) { yap e.flavor }
+sketchy { yap b.split(blob.of([])) } my_bad (e) { yap e.flavor }
+sketchy { yap b.nonsense } my_bad (e) { yap e.flavor }

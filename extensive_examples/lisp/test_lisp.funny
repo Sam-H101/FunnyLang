@@ -1,0 +1,184 @@
+// test_lisp.funny — the Lisp, against committed answers.
+//
+// Three parts. The reader has to turn text into structure and print it back
+// unchanged; the evaluator has to get a list of small things right; and each
+// program under `examples/` has to produce exactly the bytes in the `.expected`
+// file beside it.
+//
+// The third part is the one that matters. Those files are committed, so a
+// change to the evaluator shows up as a diff in the review rather than as a
+// surprise later, and each of them is a program a reader can run by hand:
+//
+//     funny run extensive_examples/lisp/lisp.funny examples/queens.lisp
+//
+// Output is captured rather than printed, which is the only difference between
+// testing an example and running one.
+
+gimme filez
+gimme yapper
+gimme { NIL, write_str, display_str, is_nil } from "values.funny"
+gimme { read_all } from "reader.funny"
+gimme { eval, new_env } from "eval.funny"
+gimme { install, capture_on, capture_off } from "builtins.funny"
+
+yo HERE = filez.dir_of(the_script())
+yo EXAMPLES = filez.join_path(HERE, "examples")
+
+// A fresh world per program, so one example cannot define something another
+// depends on by accident.
+bet fresh_env() {
+    yo env = new_env(ghost)
+    install(env, HERE)
+    grind form in read_all(filez.slurp(filez.join_path(HERE, "prelude.lisp"))) {
+        eval(form, env)
+    }
+    bounce env
+}
+
+// -- part one: reading and printing ------------------------------------------------
+
+yap "-- reader --"
+grind src in ["(a b c)", "'(1 2 . 3)", "`(a ,b ,@c)", "(quote x)", "()",
+              "#t #f 42 -3.5 +1 1+ -", "(a (b (c)))"] {
+    yo out = []
+    grind form in read_all(src) {
+        out.yeet_in(write_str(form))
+    }
+    yap "  " + src + "  ->  " + out.join(" ")
+}
+
+yap "-- reader errors --"
+grind bad in ["(a", ")", "(a . )", "(. a)"] {
+    sketchy {
+        read_all(bad)
+        yap "  " + bad + "  ->  no error, which is wrong"
+    } my_bad (e) {
+        yap "  " + bad + "  ->  " + e.flavor
+    }
+}
+
+// -- part two: the evaluator, one small thing at a time -------------------------------
+
+yap "-- evaluator --"
+yo env = fresh_env()
+
+bet check(src) {
+    yo last = NIL
+    grind form in read_all(src) {
+        last = eval(form, env)
+    }
+    yap "  " + src + "  =>  " + write_str(last)
+}
+
+check("(+ 1 2 3)")
+check("(* 2 (+ 3 4))")
+check("(- 10)")
+check("(< 1 2 3)")
+check("(< 1 3 2)")
+check("(if (= 1 1) 'yes 'no)")
+check("(if #f 'yes)")
+check("(cond ((= 1 2) 'a) ((= 1 1) 'b) (else 'c))")
+check("(let ((a 1) (b 2)) (+ a b))")
+check("((lambda (x) (* x x)) 9)")
+check("((lambda (a . rest) rest) 1 2 3)")
+check("(begin 1 2 3)")
+check("(and 1 2)")
+check("(and 1 #f 2)")
+check("(or #f 7)")
+check("(car '(1 2 3))")
+check("(cdr '(1 2 3))")
+check("(cons 0 '(1 2))")
+check("(append '(1 2) '(3) '(4 5))")
+check("(reverse '(1 2 3))")
+check("(length '(1 2 3))")
+check("(map (lambda (x) (* x 10)) '(1 2 3))")
+check("(filter even? '(1 2 3 4 5 6))")
+check("(reduce + 0 '(1 2 3 4))")
+check("(equal? '(1 (2 3)) '(1 (2 3)))")
+check("(eq? 'a 'a)")
+check("(string-append \"a\" \"b\")")
+check("(number->string 42)")
+check("(string->number \"nope\")")
+check("(define counter 0)")
+check("(set! counter (+ counter 1))")
+check("counter")
+check("(when #t 'ran)")
+check("(unless #t 'ran)")
+check("`(1 ,(+ 1 1) ,@(list 3 4))")
+
+yap "-- evaluator errors --"
+grind bad in ["(car '())", "(nope 1)", "(set! never 1)", "(1 2 3)",
+              "((lambda (x) x))", "(/ 1 0)", "(+ 1 'a)"] {
+    sketchy {
+        grind form in read_all(bad) {
+            eval(form, env)
+        }
+        yap "  " + bad + "  ->  no error, which is wrong"
+    } my_bad (e) {
+        yap "  " + bad + "  ->  " + e.flavor
+    }
+}
+
+// -- part three: every example, against its committed answer ---------------------------
+
+yap "-- examples --"
+yo names = []
+grind name in filez.list_dir(EXAMPLES) {
+    sus (yapper.ends_with(name, ".lisp")) {
+        names.yeet_in(name)
+    }
+}
+
+// Sorted, so the report is the same on every platform however the filesystem
+// lists a directory.
+yo sorted = []
+yo taken = {}
+grind n from 0 to names.how_thicc() {
+    yo best = ghost
+    grind name in names {
+        sus (!taken.has(name) && (best == ghost || name < best)) {
+            best = name
+        }
+    }
+    taken[best] = fax
+    sorted.yeet_in(best)
+}
+
+yo failures = 0
+grind name in sorted {
+    yo path = filez.join_path(EXAMPLES, name)
+    yo golden = yapper.slice(path, 0, path.how_thicc() - 5) + ".expected"
+
+    yo actual = ghost
+    sketchy {
+        yo world = fresh_env()
+        capture_on()
+        grind form in read_all(filez.slurp(path)) {
+            eval(form, world)
+        }
+        actual = capture_off()
+    } my_bad (e) {
+        // Capture has to be turned off even when the program raised, or every
+        // later example would write into a buffer nobody reads.
+        capture_off()
+        actual = ghost
+        yap "  " + name + ": raised " + e.flavor + ": " + e.message
+        failures += 1
+    }
+
+    sus (actual != ghost) {
+        sus (!filez.is_file(golden)) {
+            yap "  " + name + ": no .expected beside it"
+            failures += 1
+        } kinda_sus (actual == filez.slurp(golden)) {
+            yap "  " + name + ": same as its .expected"
+        } nah {
+            yap "  " + name + ": DIFFERS from its .expected"
+            failures += 1
+            grind line in yapper.lines(actual) {
+                yap "      got: " + line
+            }
+        }
+    }
+}
+yap "examples that differ:", failures

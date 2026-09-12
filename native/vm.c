@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "bignum.h"
+#include "blob.h"
 #include "builtins.h"
 #include "error.h"
 #include "groupchat.h"
@@ -35,6 +36,7 @@
 #include "loop.h"
 #include "otw.h"
 #include "squad.h"
+#include "status.h"
 #include "task.h"
 #include "stash.h"
 #include "da_string.h"
@@ -111,6 +113,7 @@ static const char *type_name_of(Value v) {
     if (IS_BOOL(v)) return "boolski";
     if (IS_INT(v) || IS_FLOAT(v) || IS_BIGNUM(v)) return "numba";
     if (IS_STRING(v)) return "yapstring";
+    if (IS_BLOB(v)) return "blob";
     if (IS_OBJ(v)) {
         switch (AS_OBJ(v)->type) {
             case OBJ_CLOSURE:
@@ -218,6 +221,16 @@ static char *display_value_rec(VM *vm, Value v, SeenStack *seen);
 
 static char *repr_value_rec(VM *vm, Value v, SeenStack *seen) {
     if (IS_STRING(v)) return json_quote_string(AS_STRING(v)->chars, AS_STRING(v)->byteLen);
+    if (IS_BLOB(v)) {
+        ObjBlob *b = AS_BLOB(v);
+        uint32_t show = b->byteLen < 16 ? b->byteLen : 16;
+        char *hex = blob_hex_encode(b->bytes, show);
+        char buf[128];
+        snprintf(buf, sizeof buf, "<blob %u byte%s%s%s%s>", b->byteLen, b->byteLen == 1 ? "" : "s",
+                 show > 0 ? ": " : "", hex, show < b->byteLen ? "..." : "");
+        free(hex);
+        return dup_str(buf);
+    }
     return display_value_rec(vm, v, seen);
 }
 
@@ -251,6 +264,15 @@ static char *display_value_rec(VM *vm, Value v, SeenStack *seen) {
     if (IS_BIGNUM(v)) return bignum_to_decimal_string(AS_BIGNUM(v));
     if (IS_FLOAT(v)) return funny_format_float(AS_FLOAT(v));
     if (IS_STRING(v)) return dup_str(AS_STRING(v)->chars);
+    if (IS_BLOB(v)) {
+        /* `<blob 4127 bytes>`. Printing the bytes themselves would spray a
+           PNG across somebody's terminal, and the length is the one thing
+           worth knowing at a glance; `sheesh` shows the first 16 in hex. */
+        ObjBlob *b = AS_BLOB(v);
+        char buf[64];
+        snprintf(buf, sizeof buf, "<blob %u byte%s>", b->byteLen, b->byteLen == 1 ? "" : "s");
+        return dup_str(buf);
+    }
     if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_POINTA) {
         ObjPointa *p = (ObjPointa *)AS_OBJ(v);
         char buf[128];
@@ -645,6 +667,13 @@ void vm_init(VM *vm) {
     vm->programArgs = GHOST_VAL;
     vm->scriptPath = NULL;
 
+    /* One xoshiro256** generator per VM, not one per process: see rizz.c. */
+    memset(vm->rngState, 0, sizeof vm->rngState);
+    vm->rngSeeded = false;
+    vm->inbox = NULL;
+    vm->statusSlot = -1;
+    vm->liveStreams = false;
+
     vm->unit = NULL;
     vm->pak = NULL;
     vm->pakModuleCache = GHOST_VAL;
@@ -668,6 +697,8 @@ void vm_init(VM *vm) {
     vm->ownedUnits = NULL;
     vm->ownedUnitCount = 0;
     vm->ownedUnitCapacity = 0;
+    /* Last, so the row exists for every wait this VM will ever do. */
+    status_register(vm, "vm");
 }
 
 /* -- tasks ---------------------------------------------------------------- */
@@ -773,6 +804,10 @@ void vm_destroy(VM *vm) {
        (the runner, sus.run_bytecode, a REPL session, a worker finishing its
        own program) so that none of them can forget. */
     interns_join_owned_by(vm);
+    /* Then the inbox, and anything still in it. After the join, because a
+       worker that is still running can still post to its parent. */
+    interns_vm_teardown(vm);
+    status_leave(vm);
 
     for (int i = 0; i < vm->loadingCount; i++) free(vm->loadingModules[i]);
     free(vm->loadingModules);
@@ -1409,6 +1444,15 @@ static Value vm_add(VM *vm, Value a, Value b) {
         memcpy(buf, sa->chars, sa->byteLen);
         memcpy(buf + sa->byteLen, sb->chars, sb->byteLen);
         ObjString *r = string_new(&vm->gc, buf, sa->byteLen + sb->byteLen);
+        free(buf);
+        return OBJ_VAL(r);
+    }
+    if (IS_BLOB(a) && IS_BLOB(b)) {
+        ObjBlob *ba = AS_BLOB(a), *bb = AS_BLOB(b);
+        uint8_t *buf = (uint8_t *)malloc((size_t)ba->byteLen + bb->byteLen + 1);
+        memcpy(buf, ba->bytes, ba->byteLen);
+        memcpy(buf + ba->byteLen, bb->bytes, bb->byteLen);
+        ObjBlob *r = blob_new(&vm->gc, buf, ba->byteLen + bb->byteLen);
         free(buf);
         return OBJ_VAL(r);
     }
@@ -2059,6 +2103,8 @@ static void do_invoke(VM *vm, ObjString *name, int argc) {
         fn = numba_find_method(name->chars, &minArity, &maxArity);
     } else if (IS_STRING(obj)) {
         fn = yapstring_find_method(name->chars, &minArity, &maxArity);
+    } else if (IS_BLOB(obj)) {
+        fn = blob_find_method(name->chars, &minArity, &maxArity);
     }
     if (fn == NULL) {
         if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_MODULE) {
@@ -2164,6 +2210,15 @@ static Value vm_get_prop(VM *vm, Value obj, ObjString *name) {
         }
         vm_throw_fmt(vm, "WhoDis", "error objects don't have '%s'.", name->chars);
         return GHOST_VAL;
+    }
+    if (IS_BLOB(obj)) {
+        int minArity, maxArity;
+        NativeMethodFn fn = blob_find_method(name->chars, &minArity, &maxArity);
+        if (fn == NULL) {
+            vm_throw_fmt(vm, "WhoDis", "a blob doesn't have '%s'.", name->chars);
+            return GHOST_VAL;
+        }
+        return OBJ_VAL(bound_native_new(&vm->gc, obj, fn, name->chars, minArity, maxArity));
     }
     if (IS_OBJ(obj) && (AS_OBJ(obj)->type == OBJ_STASH || AS_OBJ(obj)->type == OBJ_GROUPCHAT || AS_OBJ(obj)->type == OBJ_POINTA)) {
         int minArity, maxArity;
@@ -2299,6 +2354,25 @@ static Value vm_get_index(VM *vm, Value obj, Value key) {
         uint32_t seqLen = utf8_seq_len(str->chars, str->byteLen, byteStart);
         return OBJ_VAL(string_new(&vm->gc, str->chars + byteStart, seqLen));
     }
+    if (IS_BLOB(obj)) {
+        ObjBlob *b = AS_BLOB(obj);
+        if (!IS_INT_LIKE(key)) {
+            vm_throw_fmt(vm, "TypeVibeMismatch", "can't index a blob with a %s.", type_name_of(key));
+            return GHOST_VAL;
+        }
+        int64_t k = as_int64_like(key);
+        int64_t n = b->byteLen;
+        int64_t idx = k < 0 ? k + n : k;
+        if (idx < 0 || idx >= n) {
+            vm_throw_fmt(vm, "OutOfPocket", "index %lld on a blob of length %lld.", (long long)k, (long long)n);
+            return GHOST_VAL;
+        }
+        /* One byte, as a numba 0-255 -- not a one-byte blob. Indexing a
+           yapstring gives a one-character yapstring because a character is
+           the unit a string is made of; the unit a blob is made of is a
+           number. */
+        return INT_VAL(b->bytes[idx]);
+    }
     if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_GROUPCHAT) {
         ObjGroupChat *g = (ObjGroupChat *)AS_OBJ(obj);
         GroupChatEntry *e = groupchat_find(g, key);
@@ -2337,6 +2411,13 @@ static Value vm_get_index(VM *vm, Value obj, Value key) {
 }
 
 static void vm_set_index(VM *vm, Value obj, Value key, Value value) {
+    if (IS_BLOB(obj)) {
+        /* Immutable, exactly like a yapstring, and for the same reasons: it
+           travels to interns, it is used as a groupchat key, and neither is
+           safe if it can change underneath. Build with blob.join. */
+        vm_throw(vm, "ImmutableVibes", "a blob is deadass. build a new one with blob.join.");
+        return;
+    }
     if (IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_STASH) {
         ObjStash *s = (ObjStash *)AS_OBJ(obj);
         if (!IS_INT_LIKE(key)) {
@@ -2422,7 +2503,8 @@ static Value vm_get_slice(VM *vm, Value obj, Value startV, Value stopV, Value st
     }
     bool isStash = IS_OBJ(obj) && AS_OBJ(obj)->type == OBJ_STASH;
     bool isString = IS_STRING(obj);
-    if (!isStash && !isString) {
+    bool isBlob = IS_BLOB(obj);
+    if (!isStash && !isString && !isBlob) {
         if (IS_GHOST(obj)) {
             vm_throw(vm, "GhostError", "can't slice ghost.");
         } else {
@@ -2430,7 +2512,9 @@ static Value vm_get_slice(VM *vm, Value obj, Value startV, Value stopV, Value st
         }
         return GHOST_VAL;
     }
-    int64_t length = isStash ? ((ObjStash *)AS_OBJ(obj))->count : (int64_t)AS_STRING(obj)->codepointCount;
+    int64_t length = isStash    ? ((ObjStash *)AS_OBJ(obj))->count
+                     : isBlob ? (int64_t)AS_BLOB(obj)->byteLen
+                              : (int64_t)AS_STRING(obj)->codepointCount;
     int64_t step = IS_GHOST(stepV) ? 1 : as_int64_like(stepV);
     if (step == 0) {
         vm_throw(vm, "MathAintMathin", "slice step can't be zero.");
@@ -2454,6 +2538,21 @@ static Value vm_get_slice(VM *vm, Value obj, Value startV, Value stopV, Value st
             for (int64_t i = start; i > stop; i += step) buf[n++] = s->items[i];
         }
         ObjStash *r = stash_new(&vm->gc, buf, (int)count);
+        free(buf);
+        return OBJ_VAL(r);
+    }
+    if (isBlob) {
+        /* Byte-wise, with the same stride and reversal rules as a stash --
+           no codepoint table to build, because there are no codepoints. */
+        ObjBlob *b = AS_BLOB(obj);
+        uint8_t *buf = count > 0 ? (uint8_t *)malloc((size_t)count) : NULL;
+        int64_t n = 0;
+        if (step > 0) {
+            for (int64_t i = start; i < stop; i += step) buf[n++] = b->bytes[i];
+        } else {
+            for (int64_t i = start; i > stop; i += step) buf[n++] = b->bytes[i];
+        }
+        ObjBlob *r = blob_new(&vm->gc, buf, (uint32_t)count);
         free(buf);
         return OBJ_VAL(r);
     }
@@ -2623,6 +2722,15 @@ static ObjIterator *make_iterator(VM *vm, Value iterable) {
         }
         ObjIterator *it = iterator_new(&vm->gc, chars, (int)str->codepointCount);
         free(chars);
+        return it;
+    }
+    if (IS_BLOB(iterable)) {
+        /* One numba per byte, matching what `b[i]` gives. */
+        ObjBlob *b = AS_BLOB(iterable);
+        Value *items = b->byteLen > 0 ? (Value *)malloc((size_t)b->byteLen * sizeof(Value)) : NULL;
+        for (uint32_t i = 0; i < b->byteLen; i++) items[i] = INT_VAL(b->bytes[i]);
+        ObjIterator *it = iterator_new(&vm->gc, items, (int)b->byteLen);
+        free(items);
         return it;
     }
     if (IS_OBJ(iterable) && AS_OBJ(iterable)->type == OBJ_GROUPCHAT) {
@@ -2902,6 +3010,22 @@ static VmResult vm_execute_inner(VM *vm, int baseFrameCount, Value *resultOut) {
                     result = false;
                     for (int i = 0; i < g->count; i++) {
                         if (vm_value_equal(vm, a, g->entries[i].key)) { result = true; break; }
+                    }
+                } else if (IS_BLOB(b)) {
+                    /* A numba asks "is this byte in there"; a blob asks "is
+                       this run of bytes in there". Nothing else is a
+                       sensible question to ask of bytes. */
+                    ObjBlob *hay = AS_BLOB(b);
+                    if (IS_BLOB(a)) {
+                        ObjBlob *needle = AS_BLOB(a);
+                        result = bytes_contains((const char *)hay->bytes, hay->byteLen,
+                                                (const char *)needle->bytes, needle->byteLen);
+                    } else if (IS_INT(a) && AS_INT(a) >= 0 && AS_INT(a) <= 255) {
+                        result = memchr(hay->bytes, (int)AS_INT(a), hay->byteLen) != NULL;
+                    } else {
+                        vm_throw(vm, "TypeVibeMismatch", "'in' on a blob wants a numba 0-255 or another blob.");
+                        gc_pop_temp(&vm->gc);
+                        break;
                     }
                 } else if (IS_STRING(b)) {
                     if (!IS_STRING(a)) {
@@ -3396,13 +3520,28 @@ static VmResult vm_execute_inner(VM *vm, int baseFrameCount, Value *resultOut) {
                 uint8_t newline = code[frame->ip++];
                 char *parts[256];
                 size_t lens[256];
-                for (int i = argc - 1; i >= 0; i--) parts[i] = value_to_display_len(vm, pop(vm), &lens[i]);
+                size_t total = newline ? 1 : 0;
+                for (int i = argc - 1; i >= 0; i--) {
+                    parts[i] = value_to_display_len(vm, pop(vm), &lens[i]);
+                    total += lens[i] + (i > 0 ? 1 : 0);
+                }
+                /* Assembled first, then written with a single fwrite -- not
+                   one write per argument. A `live` intern (RUNTIME_PLAN.md
+                   R4) shares the real stdout with every other thread, and
+                   the C library's per-call stream lock is the only thing
+                   keeping two lines from interleaving mid-word. */
+                char *line = (char *)malloc(total > 0 ? total : 1);
+                size_t o = 0;
                 for (int i = 0; i < argc; i++) {
-                    if (i > 0) fputc(' ', vm->out);
-                    fwrite(parts[i], 1, lens[i], vm->out); /* not fputs: the display may contain NULs */
+                    if (i > 0) line[o++] = ' ';
+                    memcpy(line + o, parts[i], lens[i]); /* not fputs: a display may contain NULs */
+                    o += lens[i];
                     free(parts[i]);
                 }
-                if (newline) fputc('\n', vm->out);
+                if (newline) line[o++] = '\n';
+                fwrite(line, 1, o, vm->out);
+                free(line);
+                if (vm->liveStreams) fflush(vm->out);
                 break;
             }
             case OP_HALT:

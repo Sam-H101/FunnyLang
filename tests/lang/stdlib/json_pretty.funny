@@ -1,0 +1,12 @@
+// tests/lang/stdlib/json_pretty.funny -- the form meant for a file a person
+// opens, and diffs. It ends with a newline, which is why "END" is printed
+// after it rather than leaving the golden ambiguous about trailing blanks.
+gimme json
+gimme blob
+
+yo doc = {"name": "sam", "tags": ["a", "b"], "nested": {"n": 1}}
+yap json.spill(doc, {"pretty": fax}) + "END"
+
+// JSON has no bytes, so a blob goes out as base64 text. It does not come back
+// as a blob: nothing in the text says it was one.
+yap json.spill(blob.of([1, 2, 3]))

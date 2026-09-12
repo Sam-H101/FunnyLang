@@ -1,0 +1,241 @@
+// test_chat.funny — the rooms, the protocol, and three clients in one room.
+//
+// `funny test extensive_examples` runs this. Three parts, each able to fail on
+// its own:
+//
+//   1. the rooms, with no threads and no sockets
+//   2. RFC 6455, driven from strings rather than a connection
+//   3. a real server on a real port, with three clients in three workers
+//
+// Port 0 means "pick one nobody is using", so this never gambles on a fixed
+// number being free. The clients are `interns` because a server parked in
+// `accept` and a client parked in `connect` cannot be the same thread, and
+// because three clients taking turns would never show that a message reaches
+// everybody.
+
+gimme filez
+gimme blob
+gimme clock
+gimme interns
+gimme json
+gimme yapper
+
+gimme { new_rooms, handle, who_in, stats, HISTORY_PER_ROOM } from "rooms.funny"
+gimme { accept_key, handshake, is_upgrade, encode_frame, apply_mask, text_frame,
+        ping_frame, close_frame, new_reader, read_frame, read_message,
+        OP_TEXT, OP_BINARY, OP_CONTINUATION } from "ws.funny"
+gimme { run_chat, stop_chat } from "server.funny"
+
+yo HERE = filez.dir_of(the_script())
+
+// -- part one: the rooms ---------------------------------------------------------------
+
+yap "-- the rooms --"
+yo state = new_rooms()
+
+yo first = handle(state, {"op": "join", "cid": "a1", "user": "ada", "room": "lobby"}, "w1")
+yap "join answers with history and who:", first["reply"]["ok"],
+    to_yap(first["reply"]["history"]), to_yap(first["reply"]["who"])
+yap "join broadcasts:", first["broadcast"][0]["push"], first["broadcast"][0]["user"]
+
+handle(state, {"op": "join", "cid": "b1", "user": "grace", "room": "lobby"}, "w2")
+handle(state, {"op": "join", "cid": "c1", "user": "alan", "room": "other"}, "w2")
+yap "who is in lobby:", to_yap(who_in(state, "lobby"))
+yap "who is in other:", to_yap(who_in(state, "other"))
+
+yo spoke = handle(state, {"op": "say", "cid": "a1", "text": "hello all"}, "w1")
+yap "say broadcasts:", spoke["broadcast"][0]["push"], spoke["broadcast"][0]["user"],
+    to_yap(spoke["broadcast"][0]["text"]), to_yap(spoke["broadcast"][0]["room"])
+
+// A room hears its own and nobody else's: the broadcast names the room, and a
+// worker writes it only to connections in that room.
+yap "the broadcast names one room:", to_yap(spoke["broadcast"][0]["room"] == "lobby")
+
+yap "say before join:", to_yap(handle(state, {"op": "say", "cid": "nope", "text": "hi"}, "w1")["reply"])
+yap "join with no name:", to_yap(handle(state, {"op": "join", "cid": "d1", "user": "", "room": "x"}, "w1")["reply"])
+yap "empty message:", to_yap(handle(state, {"op": "say", "cid": "a1", "text": ""}, "w1")["reply"])
+yap "unknown op:", to_yap(handle(state, {"op": "dance"}, "w1")["reply"])
+
+// Typing is a flag, and only changes travel.
+yo t1 = handle(state, {"op": "typing", "cid": "a1", "on": fax}, "w1")
+yap "typing broadcasts once:", t1["broadcast"].how_thicc()
+yo t2 = handle(state, {"op": "typing", "cid": "a1", "on": fax}, "w1")
+yap "the same flag again says nothing:", t2["broadcast"].how_thicc()
+
+// History is a window, not a wall.
+grind i from 0 to HISTORY_PER_ROOM + 10 {
+    handle(state, {"op": "say", "cid": "a1", "text": "line " + to_yap(i)}, "w1")
+}
+yo hist = handle(state, {"op": "history", "room": "lobby"}, "w1")["reply"]["history"]
+yap "history is capped at:", hist.how_thicc()
+yap "and keeps the newest:", to_yap(hist[hist.how_thicc() - 1]["text"])
+
+yo gone = handle(state, {"op": "leave", "cid": "b1"}, "w2")
+yap "leave broadcasts:", gone["broadcast"][0]["push"], gone["broadcast"][0]["user"]
+yap "who is left:", to_yap(who_in(state, "lobby"))
+
+yo s = stats(state)
+yap "stats:", s["rooms"], s["connections"], s["said"] > 0, s["joined"]
+
+// -- part two: RFC 6455, with no socket -------------------------------------------------
+
+yap "-- the protocol --"
+
+bet reader_over(bytes) {
+    yo sent = {"done": cap}
+    bounce new_reader(lowkey () {
+        sus (sent["done"]) { bounce "" }
+        sent["done"] = fax
+        bounce bytes
+    })
+}
+
+// The worked example from the RFC itself.
+yap "accept key:", accept_key("dGhlIHNhbXBsZSBub25jZQ==")
+yo shake = handshake({"upgrade": "websocket", "connection": "Upgrade",
+                      "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="})
+yap "handshake:", shake["status"], to_yap(yapper.contains(shake["response"], "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="))
+yap "not an upgrade:", to_yap(handshake({"upgrade": "h2c"})["status"])
+yap "wrong version:", to_yap(handshake({"upgrade": "websocket", "connection": "upgrade",
+                                        "sec-websocket-version": "8", "sec-websocket-key": "x"})["status"])
+
+yap "-- frames on the wire --"
+yap "text:", text_frame("hi", ghost).to_hex()
+yap "ping:", ping_frame(blob.from_yap("p"), ghost).to_hex()
+yap "close 1000:", close_frame(1000, "bye", ghost).to_hex()
+yap "126 bytes:", encode_frame(OP_BINARY, blob.of([0] * 126), fax, ghost).to_hex()[0:12]
+yap "65536 bytes:", encode_frame(OP_BINARY, blob.of([0] * 65536), fax, ghost).to_hex()[0:24]
+
+yo key = blob.of([1, 2, 3, 4])
+yap "-- masking --"
+yo plain = blob.from_yap("mask me")
+yap "its own inverse:", to_yap(apply_mask(apply_mask(plain, key), key) == plain)
+yo from_client = text_frame("hello", key)
+yap "a client masks:", from_client.to_hex()
+yo decoded = read_frame(reader_over(from_client))
+yap "and the server reads it:", decoded["was_masked"], to_yap(decoded["payload"].to_yap())
+
+yap "-- fragmentation --"
+yo a = encode_frame(OP_TEXT, blob.from_yap("frag"), cap, key)
+yo b = encode_frame(OP_CONTINUATION, blob.from_yap("mented"), cap, key)
+yo c = encode_frame(OP_CONTINUATION, blob.from_yap(" fine"), fax, key)
+yap read_message(reader_over(a + b + c))["text"]
+
+// Two megabytes, fragmented, at the layer where fragmentation and masking
+// actually live. It is done here rather than over a socket on purpose: pushing
+// 2 MB of JSON to three clients would measure the escaper, not the protocol.
+// `blob.xor` is why this is affordable at all -- RUNTIME_PLAN.md §9.
+yap "-- two megabytes, in fragments --"
+// From a repeated string rather than a two-million-element stash: the stash
+// would be built one boxed number at a time, which costs far more than the
+// thing being measured.
+yo big = blob.from_yap(yapper.repeat("X", 2 * 1024 * 1024))
+yo pieces = []
+yo at = 0
+yo started = clock.now()
+bruh (at < how_thicc(big)) {
+    yo stop = at + 65536 < how_thicc(big) ? at + 65536 : how_thicc(big)
+    pieces.yeet_in(encode_frame(at == 0 ? OP_TEXT : OP_CONTINUATION, big[at:stop],
+                                stop >= how_thicc(big), blob.of([9, 8, 7, 6])))
+    at = stop
+}
+yo whole = read_message(reader_over(blob.of([]).join(pieces)))
+yap "frames:", pieces.how_thicc()
+yap "reassembled bytes:", how_thicc(whole["data"])
+yap "every byte survived:", to_yap(whole["data"] == big)
+
+yap "-- frames it refuses --"
+grind bad in [blob.of([0xF1, 0x00]), blob.of([0x83, 0x00]), blob.of([0x89, 0xFE, 0x00, 0xFF]),
+              blob.of([0x09, 0x00]), blob.of([0x80, 0x00])] {
+    sketchy {
+        read_message(reader_over(bad))
+        yap "  no error, which is wrong"
+    } my_bad (e) {
+        yap "  " + e.message
+    }
+}
+
+// -- part three: a real server, three real clients ---------------------------------------
+
+yap "-- three clients in one room --"
+
+yo READY = {"port": ghost}
+bet on_ready(info) {
+    READY["port"] = info["port"]
+}
+
+// The server runs as a task on this thread: `run_chat` does not return until
+// something stops it, and the clients have to be hired while it is listening.
+yo server = run_chat(HERE, {"port": 0, "host": "127.0.0.1", "threads": 2}, on_ready, ghost)
+
+yo waited = 0
+bruh (READY["port"] == ghost && waited < 10000) {
+    await_fr clock.chill(20)
+    waited += 20
+}
+yap "bound a port:", to_yap(READY["port"] != ghost && READY["port"] > 0)
+
+deadass SAYS = {
+    "ada": ["ada one", "ada two"],
+    "grace": ["grace one", "grace two"],
+    "alan": ["alan one", "alan two"],
+}
+yo names = ["ada", "alan", "grace"]
+yo total = 6
+
+yo clients = []
+grind name in names {
+    clients.yeet_in(interns.hire(filez.join_path(HERE, "test_client.funny"), {
+        "port": READY["port"],
+        "name": name,
+        "room": "lobby",
+        "script": "chat",
+        "says": SAYS[name],
+        "expect_members": names.how_thicc(),
+        "expect_total": total,
+    }))
+}
+
+// `await_fr`, not `interns.wait_up`: wait_up blocks the whole thread, so the
+// server's own tasks would never get a turn and both ends would sit there
+// waiting for each other.
+//
+// A client's failure is caught and printed rather than raised. An intern
+// re-raises its error in whoever waited for it, and at that point the message
+// is all there is -- so letting it fly would end the golden with a flavor and
+// no hint of which client, or where.
+grind client in clients {
+    sketchy {
+        grind line in await_fr client {
+            yap "  " + line
+        }
+    } my_bad (e) {
+        yap "  a client fell over: " + e.flavor + ": " + e.message
+    }
+}
+
+// The control frames and the closing handshake, on a real socket.
+yo pinger = interns.hire(filez.join_path(HERE, "test_client.funny"), {
+    "port": READY["port"], "name": "pinger", "room": "lobby", "script": "ping",
+    "says": [], "expect_members": 1, "expect_total": 0,
+})
+grind line in await_fr pinger {
+    yap "  " + line
+}
+
+// A large message over the wire, fragmented by the client.
+yo big_one = interns.hire(filez.join_path(HERE, "test_client.funny"), {
+    "port": READY["port"], "name": "bigmouth", "room": "big", "script": "big",
+    "says": [], "expect_members": 1, "expect_total": 0, "size": 262144,
+})
+grind line in await_fr big_one {
+    yap "  " + line
+}
+
+stop_chat()
+yo summary = await_fr server
+yap "-- what the server saw --"
+yap "messages said:", summary["said"]
+yap "joins:", summary["joined"]
+yap "pushes fanned out:", summary["pushed"] > 0
+yap "-- done --"

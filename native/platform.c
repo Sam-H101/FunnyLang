@@ -100,9 +100,16 @@ typedef int SockFd;
 #include <string.h>
 #include <time.h>
 
+/* The reentrant strerror (RUNTIME_PLAN.md R0): plain strerror may hand back
+   a buffer shared by every thread. POSIX's XSI strerror_r and MSVC's
+   strerror_s both fill the caller's buffer and return 0 on success. */
 static void set_errbuf(char *errbuf, size_t n, int err) {
     if (!errbuf || n == 0) return;
-    snprintf(errbuf, n, "%s", strerror(err));
+#ifdef _WIN32
+    if (strerror_s(errbuf, n, err) != 0) snprintf(errbuf, n, "error %d", err);
+#else
+    if (strerror_r(err, errbuf, n) != 0) snprintf(errbuf, n, "error %d", err);
+#endif
 }
 
 #ifdef _WIN32
@@ -646,16 +653,24 @@ double platform_now_seconds(void) {
 
 #ifdef _WIN32
 
+/* The counter's frequency is fixed at boot, but the first read of it was a
+   plain `static bool init`: a second thread could see `init` set before
+   `freq` was (RUNTIME_PLAN.md R0). INIT_ONCE orders them. */
+static LARGE_INTEGER g_qpcFreq;
+static INIT_ONCE g_qpcOnce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK qpc_freq_cb(PINIT_ONCE once, PVOID param, PVOID *context) {
+    (void)once;
+    (void)param;
+    (void)context;
+    QueryPerformanceFrequency(&g_qpcFreq);
+    return TRUE;
+}
+
 double platform_monotonic_seconds(void) {
-    static LARGE_INTEGER freq;
-    static bool init = false;
-    if (!init) {
-        QueryPerformanceFrequency(&freq);
-        init = true;
-    }
+    InitOnceExecuteOnce(&g_qpcOnce, qpc_freq_cb, NULL, NULL);
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    return (double)now.QuadPart / (double)freq.QuadPart;
+    return (double)now.QuadPart / (double)g_qpcFreq.QuadPart;
 }
 
 void platform_sleep_seconds(double seconds) {
@@ -847,6 +862,11 @@ bool platform_temp_file(const char *prefix, char *out, size_t out_len) {
     return true;
 }
 
+bool platform_make_private(const char *path) {
+    (void)path; /* Windows: an ACL, not a mode bit -- see platform.h */
+    return true;
+}
+
 bool platform_make_executable(const char *path) {
     (void)path; /* Windows decides by extension, not by a mode bit */
     return true;
@@ -896,6 +916,12 @@ bool platform_temp_file(const char *prefix, char *out, size_t out_len) {
     return true;
 }
 
+bool platform_make_private(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    return chmod(path, S_IRUSR | S_IWUSR) == 0;
+}
+
 bool platform_make_executable(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) return false;
@@ -928,14 +954,20 @@ bool platform_net_disabled(void) {
 
 #ifdef _WIN32
 
-static void ensure_winsock(void) {
-    static bool started = false;
-    if (!started) {
-        WSADATA wsaData;
-        WSAStartup(MAKEWORD(2, 2), &wsaData);
-        started = true;
-    }
+/* Once per process, and not with a plain `static bool`: two interns opening
+   their first socket at the same moment could both see it unset, or one
+   could go on to use Winsock before the other's WSAStartup returned
+   (RUNTIME_PLAN.md R0). */
+static INIT_ONCE g_winsockOnce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK winsock_start_cb(PINIT_ONCE once, PVOID param, PVOID *context) {
+    (void)once;
+    (void)param;
+    (void)context;
+    WSADATA wsaData;
+    WSAStartup(MAKEWORD(2, 2), &wsaData);
+    return TRUE;
 }
+static void ensure_winsock(void) { InitOnceExecuteOnce(&g_winsockOnce, winsock_start_cb, NULL, NULL); }
 
 static void sock_set_nonblocking(SockFd fd, bool nonblocking) {
     u_long mode = nonblocking ? 1 : 0;
@@ -1055,7 +1087,7 @@ static bool sock_set_reuseaddr(SockFd fd) {
 }
 
 static const char *sock_last_error(char *buf, size_t len) {
-    snprintf(buf, len, "%s", strerror(errno));
+    set_errbuf(buf, len, errno);
     return buf;
 }
 
@@ -2258,6 +2290,647 @@ bool platform_random_bytes(unsigned char *out, size_t n) {
 }
 #endif
 
+/* -- atomic replacement (RUNTIME_PLAN.md R6) ------------------------------ */
+
+bool platform_write_file_durable(const char *path, const unsigned char *data, size_t len, char *errbuf,
+                                 size_t errbuf_len) {
+    FILE *f = fopen_utf8(path, "wb");
+    if (!f) {
+        set_errbuf(errbuf, errbuf_len, errno);
+        return false;
+    }
+    size_t written = len > 0 ? fwrite(data, 1, len, f) : 0;
+    if (written != len) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    if (fflush(f) != 0) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    /* Out of the C library's buffer is not the same as onto the disk, and
+       the whole point of writing beside the target is that a crash leaves
+       the old file rather than a new half-written one. */
+#ifdef _WIN32
+    int sync_rc = _commit(_fileno(f));
+#else
+    int sync_rc = fsync(fileno(f));
+#endif
+    if (sync_rc != 0) {
+        int e = errno;
+        fclose(f);
+        set_errbuf(errbuf, errbuf_len, e);
+        return false;
+    }
+    if (fclose(f) != 0) {
+        set_errbuf(errbuf, errbuf_len, errno);
+        return false;
+    }
+    return true;
+}
+
+#ifdef _WIN32
+
+bool platform_replace_file(const char *from, const char *to, char *errbuf, size_t errbuf_len) {
+    wchar_t *wfrom = widen(from);
+    wchar_t *wto = widen(to);
+    if (wfrom == NULL || wto == NULL) {
+        free(wfrom);
+        free(wto);
+        set_errbuf(errbuf, errbuf_len, ENOENT);
+        return false;
+    }
+    /* MOVEFILE_REPLACE_EXISTING is the "over the old one" half;
+       MOVEFILE_WRITE_THROUGH is the "and it survives losing power" half. */
+    BOOL ok = MoveFileExW(wfrom, wto, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    DWORD err = ok ? 0 : GetLastError();
+    free(wfrom);
+    free(wto);
+    if (!ok) {
+        set_errbuf_win32(errbuf, errbuf_len, err);
+        return false;
+    }
+    return true;
+}
+
+#else
+
+bool platform_replace_file(const char *from, const char *to, char *errbuf, size_t errbuf_len) {
+    if (rename(from, to) != 0) {
+        set_errbuf(errbuf, errbuf_len, errno);
+        return false;
+    }
+    /* The rename itself is atomic to any reader. Making it survive a power
+       cut also needs the *directory* entry flushed -- otherwise the data is
+       on the disk and the name still points at the old file. Best effort:
+       a filesystem that refuses to open its own directory is not a reason
+       to report a write that did happen as a failure. */
+    char dir[4352];
+    snprintf(dir, sizeof dir, "%s", to);
+    char *slash = strrchr(dir, '/');
+    if (slash != NULL) {
+        *slash = '\0';
+    } else {
+        dir[0] = '\0';
+    }
+    int fd = open(dir[0] != '\0' ? dir : ".", O_RDONLY);
+    if (fd >= 0) {
+        fsync(fd);
+        close(fd);
+    }
+    return true;
+}
+
+#endif
+
+/* -- interrupts (RUNTIME_PLAN.md R5) --------------------------------------
+ *
+ * The handler sets a flag and nothing else. Not a condition variable, not a
+ * write to a pipe, not a malloc: almost nothing is safe to call inside a
+ * signal handler, and the loop is already awake often enough to notice.
+ */
+
+#ifdef _WIN32
+
+static volatile LONG g_dumpRequested = 0;
+static void (*g_rawDump)(void) = NULL;
+static volatile LONG g_interrupted = 0;
+static INIT_ONCE g_interruptOnce = INIT_ONCE_STATIC_INIT;
+
+static BOOL WINAPI console_ctrl_handler(DWORD type) {
+    if (type == CTRL_BREAK_EVENT) {
+        /* RUNTIME_PLAN.md R9: Ctrl-Break asks what every thread is
+           waiting on, the way SIGQUIT does on POSIX. It is not an
+           interrupt and must not shut anything down. */
+        InterlockedExchange(&g_dumpRequested, 1);
+        if (g_rawDump != NULL) g_rawDump();
+        return TRUE;
+    }
+    if (type != CTRL_C_EVENT) return FALSE;
+    /* FALSE the second time: the default action is to end the process, which
+       is what somebody pressing Ctrl-C again is asking for. */
+    return InterlockedExchange(&g_interrupted, 1) == 0;
+}
+
+static BOOL CALLBACK interrupt_install_cb(PINIT_ONCE once, PVOID param, PVOID *context) {
+    (void)once;
+    (void)param;
+    (void)context;
+    SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+    return TRUE;
+}
+
+void platform_on_interrupt(void) { InitOnceExecuteOnce(&g_interruptOnce, interrupt_install_cb, NULL, NULL); }
+
+bool platform_interrupt_seen(void) { return InterlockedCompareExchange(&g_interrupted, 0, 0) != 0; }
+
+#else
+
+static volatile sig_atomic_t g_interrupted = 0;
+
+static void interrupt_handler(int sig) {
+    (void)sig;
+    g_interrupted = 1;
+    /* Back to the default for the next one, so a shutdown that itself hangs
+       is still interruptible. signal() is one of the few calls POSIX
+       guarantees is safe from inside a handler. */
+    signal(SIGINT, SIG_DFL);
+}
+
+void platform_on_interrupt(void) { signal(SIGINT, interrupt_handler); }
+
+bool platform_interrupt_seen(void) { return g_interrupted != 0; }
+
+#endif
+
+/* -- the thread dump's own plumbing (RUNTIME_PLAN.md R9) ------------------ */
+
+#ifdef _WIN32
+
+
+void platform_write_stderr_raw(const char *text) {
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD written = 0;
+    if (h != INVALID_HANDLE_VALUE) WriteFile(h, text, (DWORD)strlen(text), &written, NULL);
+}
+
+void platform_on_dump_request(void (*rawDump)(void)) {
+    g_rawDump = rawDump;
+    /* The same console handler answers both events; installing it twice is
+       what INIT_ONCE is there to prevent. */
+    InitOnceExecuteOnce(&g_interruptOnce, interrupt_install_cb, NULL, NULL);
+}
+
+bool platform_take_dump_request(void) { return InterlockedExchange(&g_dumpRequested, 0) != 0; }
+
+#else
+
+static volatile sig_atomic_t g_dumpRequested = 0;
+static void (*g_rawDump)(void) = NULL;
+
+/* Two things, both safe here: set a flag, and write bytes. The flag is for
+   the threads that do reach a wait point and can print a proper, locked
+   table; the write is for the program where none of them ever will. */
+static void dump_handler(int sig) {
+    (void)sig;
+    g_dumpRequested = 1;
+    if (g_rawDump != NULL) g_rawDump();
+}
+
+void platform_on_dump_request(void (*rawDump)(void)) {
+    g_rawDump = rawDump;
+    signal(SIGQUIT, dump_handler);
+}
+
+bool platform_take_dump_request(void) {
+    if (g_dumpRequested == 0) return false;
+    g_dumpRequested = 0;
+    return true;
+}
+
+void platform_write_stderr_raw(const char *text) {
+    size_t len = strlen(text);
+    ssize_t wrote = write(2, text, len);
+    (void)wrote; /* a diagnostic that cannot be written is not worth an error */
+}
+
+#endif
+
+/* -- cryptography (RUNTIME_PLAN.md R3) -------------------------------------
+ *
+ * Nothing below implements a cipher or a hash. Each backend asks the OS for
+ * the one it already ships and has already had reviewed: CNG on Windows,
+ * CommonCrypto on macOS, and on Linux/BSD the same dlopen'd OpenSSL `https`
+ * uses -- libcrypto this time, opened separately, because libssl is loaded
+ * RTLD_LOCAL and a dependency's symbols are not visible through it.
+ *
+ * The per-OS includes sit in this section rather than at the top of the file
+ * so that the whole feature is one readable block.
+ */
+
+#ifdef _WIN32
+
+/* One helper for both SHA-256 and HMAC-SHA256: CNG spells them the same way,
+   with a flag and a key. */
+/* `outLen` because not every digest here is 32 bytes: SHA-1 is 20, and a
+   hardcoded length would quietly write past a caller's buffer or refuse the
+   call outright. */
+static bool cng_hash(const wchar_t *algId, const unsigned char *key, size_t keyLen, const unsigned char *data,
+                     size_t len, unsigned char *out, size_t outLen, char *errbuf, size_t errbuf_len) {
+    BCRYPT_ALG_HANDLE alg = NULL;
+    BCRYPT_HASH_HANDLE hash = NULL;
+    ULONG flags = key != NULL ? BCRYPT_ALG_HANDLE_HMAC_FLAG : 0;
+    bool ok = false;
+    if (BCryptOpenAlgorithmProvider(&alg, algId, NULL, flags) >= 0) {
+        if (BCryptCreateHash(alg, &hash, NULL, 0, (PUCHAR)key, (ULONG)keyLen, 0) >= 0) {
+            if (BCryptHashData(hash, (PUCHAR)data, (ULONG)len, 0) >= 0 &&
+                BCryptFinishHash(hash, out, (ULONG)outLen, 0) >= 0) {
+                ok = true;
+            }
+            BCryptDestroyHash(hash);
+        }
+        BCryptCloseAlgorithmProvider(alg, 0);
+    }
+    if (!ok) snprintf(errbuf, errbuf_len, "windows refused that hashing operation.");
+    return ok;
+}
+
+bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    return cng_hash(BCRYPT_SHA256_ALGORITHM, NULL, 0, data, len, out, 32, errbuf, errbuf_len);
+}
+
+bool platform_sha1(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    return cng_hash(BCRYPT_SHA1_ALGORITHM, NULL, 0, data, len, out, 20, errbuf, errbuf_len);
+}
+
+bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
+                          unsigned char *out, char *errbuf, size_t errbuf_len) {
+    /* A zero-length key is legal HMAC, and NULL is how cng_hash is told there
+       is no key at all -- so point at something. */
+    static const unsigned char empty = 0;
+    return cng_hash(BCRYPT_SHA256_ALGORITHM, key != NULL ? key : &empty, keyLen, data, len, out, 32, errbuf,
+                    errbuf_len);
+}
+
+bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, const unsigned char *salt,
+                            size_t saltLen, int iterations, unsigned char *out, size_t outLen, char *errbuf,
+                            size_t errbuf_len) {
+    BCRYPT_ALG_HANDLE alg = NULL;
+    bool ok = false;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC_FLAG) >= 0) {
+        ok = BCryptDeriveKeyPBKDF2(alg, (PUCHAR)password, (ULONG)passwordLen, (PUCHAR)salt, (ULONG)saltLen,
+                                   (ULONGLONG)iterations, out, (ULONG)outLen, 0) >= 0;
+        BCryptCloseAlgorithmProvider(alg, 0);
+    }
+    if (!ok) snprintf(errbuf, errbuf_len, "windows refused that key derivation.");
+    return ok;
+}
+
+/* Sealing and opening differ only in which call and which way the tag goes,
+   so they share everything up to that point. */
+static bool cng_gcm(bool sealing, const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                    size_t aadLen, const unsigned char *in, size_t inLen, unsigned char *out, unsigned char *tag,
+                    char *errbuf, size_t errbuf_len) {
+    BCRYPT_ALG_HANDLE alg = NULL;
+    BCRYPT_KEY_HANDLE hKey = NULL;
+    bool ok = false;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, NULL, 0) >= 0) {
+        if (BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_GCM,
+                              sizeof(BCRYPT_CHAIN_MODE_GCM), 0) >= 0 &&
+            BCryptGenerateSymmetricKey(alg, &hKey, NULL, 0, (PUCHAR)key, 32, 0) >= 0) {
+            BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
+            BCRYPT_INIT_AUTH_MODE_INFO(info);
+            info.pbNonce = (PUCHAR)nonce;
+            info.cbNonce = 12;
+            info.pbAuthData = (PUCHAR)(aadLen > 0 ? aad : NULL);
+            info.cbAuthData = (ULONG)aadLen;
+            info.pbTag = tag;
+            info.cbTag = 16;
+            ULONG done = 0;
+            if (sealing) {
+                ok = BCryptEncrypt(hKey, (PUCHAR)in, (ULONG)inLen, &info, NULL, 0, out, (ULONG)inLen, &done, 0) >= 0;
+            } else {
+                ok = BCryptDecrypt(hKey, (PUCHAR)in, (ULONG)inLen, &info, NULL, 0, out, (ULONG)inLen, &done, 0) >= 0;
+            }
+            BCryptDestroyKey(hKey);
+        }
+        BCryptCloseAlgorithmProvider(alg, 0);
+    }
+    if (!ok) {
+        snprintf(errbuf, errbuf_len, "%s",
+                 sealing ? "windows refused that encryption." : "that sealed value won't open.");
+    }
+    return ok;
+}
+
+bool platform_aes_gcm_seal(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *plain, size_t plainLen, unsigned char *cipherOut,
+                           unsigned char *tagOut, char *errbuf, size_t errbuf_len) {
+    return cng_gcm(true, key, nonce, aad, aadLen, plain, plainLen, cipherOut, tagOut, errbuf, errbuf_len);
+}
+
+bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
+                           unsigned char *plainOut, char *errbuf, size_t errbuf_len) {
+    /* BCryptDecrypt takes the tag through a non-const field it may write to,
+       so it gets a copy rather than the caller's buffer. */
+    unsigned char tagCopy[16];
+    memcpy(tagCopy, tag, 16);
+    return cng_gcm(false, key, nonce, aad, aadLen, cipher, cipherLen, plainOut, tagCopy, errbuf, errbuf_len);
+}
+
+#elif defined(__APPLE__)
+
+#include <CommonCrypto/CommonCrypto.h>
+#include <CommonCrypto/CommonKeyDerivation.h>
+#include <dlfcn.h>
+
+bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    (void)errbuf;
+    (void)errbuf_len;
+    CC_SHA256(data, (CC_LONG)len, out);
+    return true;
+}
+
+bool platform_sha1(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    (void)errbuf;
+    (void)errbuf_len;
+    CC_SHA1(data, (CC_LONG)len, out);
+    return true;
+}
+
+bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
+                          unsigned char *out, char *errbuf, size_t errbuf_len) {
+    (void)errbuf;
+    (void)errbuf_len;
+    CCHmac(kCCHmacAlgSHA256, key, keyLen, data, len, out);
+    return true;
+}
+
+bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, const unsigned char *salt,
+                            size_t saltLen, int iterations, unsigned char *out, size_t outLen, char *errbuf,
+                            size_t errbuf_len) {
+    int rc = CCKeyDerivationPBKDF(kCCPBKDF2, (const char *)password, passwordLen, salt, saltLen, kCCPRFHmacAlgSHA256,
+                                  (unsigned int)iterations, out, outLen);
+    if (rc != kCCSuccess) {
+        snprintf(errbuf, errbuf_len, "macos refused that key derivation.");
+        return false;
+    }
+    return true;
+}
+
+/* AES-GCM is the one thing CommonCrypto exports but does not declare in the
+   public SDK: the one-shots live in CommonCryptorSPI.h, which ships with the
+   OS and not with Xcode. RUNTIME_PLAN.md §9 chose to resolve them at run time
+   with local prototypes -- the same pattern Linux already uses for OpenSSL --
+   rather than switch macOS to a different construction, which would make the
+   `v1$` format mean two different things depending on where it was written. */
+typedef int32_t (*CCGcmSealFn)(uint32_t alg, const void *key, size_t keyLen, const void *iv, size_t ivLen,
+                               const void *aData, size_t aDataLen, const void *dataIn, size_t dataInLen,
+                               void *dataOut, void *tagOut, size_t tagLen);
+typedef int32_t (*CCGcmOpenFn)(uint32_t alg, const void *key, size_t keyLen, const void *iv, size_t ivLen,
+                               const void *aData, size_t aDataLen, const void *dataIn, size_t dataInLen,
+                               void *dataOut, const void *tagIn, size_t tagLen);
+
+static CCGcmSealFn g_ccGcmSeal;
+static CCGcmOpenFn g_ccGcmOpen;
+static pthread_once_t g_ccGcmOnce = PTHREAD_ONCE_INIT;
+
+static void cc_gcm_load(void) {
+    g_ccGcmSeal = (CCGcmSealFn)dlsym(RTLD_DEFAULT, "CCCryptorGCMOneshotEncrypt");
+    g_ccGcmOpen = (CCGcmOpenFn)dlsym(RTLD_DEFAULT, "CCCryptorGCMOneshotDecrypt");
+}
+
+#define NO_GCM_MSG "this macos doesn't expose AES-GCM (CCCryptorGCMOneshotEncrypt), so vault can't seal here."
+
+bool platform_aes_gcm_seal(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *plain, size_t plainLen, unsigned char *cipherOut,
+                           unsigned char *tagOut, char *errbuf, size_t errbuf_len) {
+    pthread_once(&g_ccGcmOnce, cc_gcm_load);
+    if (g_ccGcmSeal == NULL) {
+        snprintf(errbuf, errbuf_len, "%s", NO_GCM_MSG);
+        return false;
+    }
+    if (g_ccGcmSeal(kCCAlgorithmAES, key, 32, nonce, 12, aadLen > 0 ? aad : NULL, aadLen, plain, plainLen, cipherOut,
+                    tagOut, 16) != kCCSuccess) {
+        snprintf(errbuf, errbuf_len, "macos refused that encryption.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
+                           unsigned char *plainOut, char *errbuf, size_t errbuf_len) {
+    pthread_once(&g_ccGcmOnce, cc_gcm_load);
+    if (g_ccGcmOpen == NULL) {
+        snprintf(errbuf, errbuf_len, "%s", NO_GCM_MSG);
+        return false;
+    }
+    if (g_ccGcmOpen(kCCAlgorithmAES, key, 32, nonce, 12, aadLen > 0 ? aad : NULL, aadLen, cipher, cipherLen, plainOut,
+                    tag, 16) != kCCSuccess) {
+        snprintf(errbuf, errbuf_len, "that sealed value won't open.");
+        return false;
+    }
+    return true;
+}
+
+#else
+
+/* libcrypto, opened at run time exactly like libssl above and for the same
+   reason: this binary still builds and runs on a machine with no OpenSSL at
+   all, and says so clearly when asked for something it cannot do. */
+typedef struct funny_evp_md_st FunnyEvpMd;
+typedef struct funny_evp_cipher_st FunnyEvpCipher;
+typedef struct funny_evp_cipher_ctx_st FunnyEvpCipherCtx;
+
+/* ABI values, unchanged across every 1.1.0/3.x release. */
+#define FUNNY_EVP_CTRL_GCM_SET_IVLEN 0x09
+#define FUNNY_EVP_CTRL_GCM_GET_TAG 0x10
+#define FUNNY_EVP_CTRL_GCM_SET_TAG 0x11
+
+static struct {
+    void *handle;
+    int (*PKCS5_PBKDF2_HMAC)(const char *, int, const unsigned char *, int, int, const FunnyEvpMd *, int,
+                             unsigned char *);
+    const FunnyEvpMd *(*EVP_sha256)(void);
+    const FunnyEvpMd *(*EVP_sha1)(void);
+    int (*EVP_Digest)(const void *, size_t, unsigned char *, unsigned int *, const FunnyEvpMd *, void *);
+    unsigned char *(*HMAC)(const FunnyEvpMd *, const void *, int, const unsigned char *, size_t, unsigned char *,
+                           unsigned int *);
+    FunnyEvpCipherCtx *(*EVP_CIPHER_CTX_new)(void);
+    void (*EVP_CIPHER_CTX_free)(FunnyEvpCipherCtx *);
+    const FunnyEvpCipher *(*EVP_aes_256_gcm)(void);
+    int (*EVP_EncryptInit_ex)(FunnyEvpCipherCtx *, const FunnyEvpCipher *, void *, const unsigned char *,
+                              const unsigned char *);
+    int (*EVP_EncryptUpdate)(FunnyEvpCipherCtx *, unsigned char *, int *, const unsigned char *, int);
+    int (*EVP_EncryptFinal_ex)(FunnyEvpCipherCtx *, unsigned char *, int *);
+    int (*EVP_DecryptInit_ex)(FunnyEvpCipherCtx *, const FunnyEvpCipher *, void *, const unsigned char *,
+                              const unsigned char *);
+    int (*EVP_DecryptUpdate)(FunnyEvpCipherCtx *, unsigned char *, int *, const unsigned char *, int);
+    int (*EVP_DecryptFinal_ex)(FunnyEvpCipherCtx *, unsigned char *, int *);
+    int (*EVP_CIPHER_CTX_ctrl)(FunnyEvpCipherCtx *, int, int, void *);
+} g_crypto;
+
+static const char *const LIBCRYPTO_SONAMES[] = {"libcrypto.so.3", "libcrypto.so.1.1", "libcrypto.so"};
+#define LIBCRYPTO_SONAME_COUNT (int)(sizeof(LIBCRYPTO_SONAMES) / sizeof(LIBCRYPTO_SONAMES[0]))
+#define NO_LIBCRYPTO_MSG \
+    "vault needs OpenSSL, and none could be loaded here (tried libcrypto.so.3, libcrypto.so.1.1, libcrypto.so)."
+
+static pthread_once_t g_cryptoOnce = PTHREAD_ONCE_INIT;
+
+static void libcrypto_load(void) {
+    for (int i = 0; i < LIBCRYPTO_SONAME_COUNT && !g_crypto.handle; i++) {
+        g_crypto.handle = dlopen(LIBCRYPTO_SONAMES[i], RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (!g_crypto.handle) return;
+    void *h = g_crypto.handle;
+    g_crypto.PKCS5_PBKDF2_HMAC = (int (*)(const char *, int, const unsigned char *, int, int, const FunnyEvpMd *, int,
+                                          unsigned char *))dlsym(h, "PKCS5_PBKDF2_HMAC");
+    g_crypto.EVP_sha256 = (const FunnyEvpMd *(*)(void))dlsym(h, "EVP_sha256");
+    /* Deliberately not in the `complete` check below: SHA-1 is wanted for one
+       handshake, and a libcrypto built without it should still give a program
+       passwords and sealing rather than nothing at all. `platform_sha1` checks
+       for itself. */
+    g_crypto.EVP_sha1 = (const FunnyEvpMd *(*)(void))dlsym(h, "EVP_sha1");
+    g_crypto.EVP_Digest =
+        (int (*)(const void *, size_t, unsigned char *, unsigned int *, const FunnyEvpMd *, void *))dlsym(h,
+                                                                                                         "EVP_Digest");
+    g_crypto.HMAC = (unsigned char *(*)(const FunnyEvpMd *, const void *, int, const unsigned char *, size_t,
+                                        unsigned char *, unsigned int *))dlsym(h, "HMAC");
+    g_crypto.EVP_CIPHER_CTX_new = (FunnyEvpCipherCtx * (*)(void)) dlsym(h, "EVP_CIPHER_CTX_new");
+    g_crypto.EVP_CIPHER_CTX_free = (void (*)(FunnyEvpCipherCtx *))dlsym(h, "EVP_CIPHER_CTX_free");
+    g_crypto.EVP_aes_256_gcm = (const FunnyEvpCipher *(*)(void))dlsym(h, "EVP_aes_256_gcm");
+    g_crypto.EVP_EncryptInit_ex = (int (*)(FunnyEvpCipherCtx *, const FunnyEvpCipher *, void *, const unsigned char *,
+                                           const unsigned char *))dlsym(h, "EVP_EncryptInit_ex");
+    g_crypto.EVP_EncryptUpdate = (int (*)(FunnyEvpCipherCtx *, unsigned char *, int *, const unsigned char *,
+                                          int))dlsym(h, "EVP_EncryptUpdate");
+    g_crypto.EVP_EncryptFinal_ex =
+        (int (*)(FunnyEvpCipherCtx *, unsigned char *, int *))dlsym(h, "EVP_EncryptFinal_ex");
+    g_crypto.EVP_DecryptInit_ex = (int (*)(FunnyEvpCipherCtx *, const FunnyEvpCipher *, void *, const unsigned char *,
+                                           const unsigned char *))dlsym(h, "EVP_DecryptInit_ex");
+    g_crypto.EVP_DecryptUpdate = (int (*)(FunnyEvpCipherCtx *, unsigned char *, int *, const unsigned char *,
+                                          int))dlsym(h, "EVP_DecryptUpdate");
+    g_crypto.EVP_DecryptFinal_ex =
+        (int (*)(FunnyEvpCipherCtx *, unsigned char *, int *))dlsym(h, "EVP_DecryptFinal_ex");
+    g_crypto.EVP_CIPHER_CTX_ctrl = (int (*)(FunnyEvpCipherCtx *, int, int, void *))dlsym(h, "EVP_CIPHER_CTX_ctrl");
+
+    bool complete = g_crypto.PKCS5_PBKDF2_HMAC && g_crypto.EVP_sha256 && g_crypto.EVP_Digest && g_crypto.HMAC &&
+                    g_crypto.EVP_CIPHER_CTX_new && g_crypto.EVP_CIPHER_CTX_free && g_crypto.EVP_aes_256_gcm &&
+                    g_crypto.EVP_EncryptInit_ex && g_crypto.EVP_EncryptUpdate && g_crypto.EVP_EncryptFinal_ex &&
+                    g_crypto.EVP_DecryptInit_ex && g_crypto.EVP_DecryptUpdate && g_crypto.EVP_DecryptFinal_ex &&
+                    g_crypto.EVP_CIPHER_CTX_ctrl;
+    if (!complete) {
+        dlclose(h);
+        g_crypto.handle = NULL;
+    }
+}
+
+static bool ensure_libcrypto(char *errbuf, size_t errbuf_len) {
+    pthread_once(&g_cryptoOnce, libcrypto_load);
+    if (!g_crypto.handle) {
+        snprintf(errbuf, errbuf_len, "%s", NO_LIBCRYPTO_MSG);
+        return false;
+    }
+    return true;
+}
+
+bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    unsigned int n = 0;
+    if (g_crypto.EVP_Digest(data, len, out, &n, g_crypto.EVP_sha256(), NULL) != 1) {
+        snprintf(errbuf, errbuf_len, "openssl refused that hash.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_sha1(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    if (g_crypto.EVP_sha1 == NULL) {
+        snprintf(errbuf, errbuf_len, "this openssl has no sha-1.");
+        return false;
+    }
+    unsigned int n = 0;
+    if (g_crypto.EVP_Digest(data, len, out, &n, g_crypto.EVP_sha1(), NULL) != 1) {
+        snprintf(errbuf, errbuf_len, "openssl refused that hash.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
+                          unsigned char *out, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    unsigned int n = 0;
+    if (g_crypto.HMAC(g_crypto.EVP_sha256(), key, (int)keyLen, data, len, out, &n) == NULL) {
+        snprintf(errbuf, errbuf_len, "openssl refused that hmac.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, const unsigned char *salt,
+                            size_t saltLen, int iterations, unsigned char *out, size_t outLen, char *errbuf,
+                            size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    if (g_crypto.PKCS5_PBKDF2_HMAC((const char *)password, (int)passwordLen, salt, (int)saltLen, iterations,
+                                   g_crypto.EVP_sha256(), (int)outLen, out) != 1) {
+        snprintf(errbuf, errbuf_len, "openssl refused that key derivation.");
+        return false;
+    }
+    return true;
+}
+
+bool platform_aes_gcm_seal(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *plain, size_t plainLen, unsigned char *cipherOut,
+                           unsigned char *tagOut, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    FunnyEvpCipherCtx *ctx = g_crypto.EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        snprintf(errbuf, errbuf_len, "openssl wouldn't start a cipher.");
+        return false;
+    }
+    bool ok = false;
+    int n = 0;
+    int produced = 0;
+    if (g_crypto.EVP_EncryptInit_ex(ctx, g_crypto.EVP_aes_256_gcm(), NULL, NULL, NULL) == 1 &&
+        g_crypto.EVP_CIPHER_CTX_ctrl(ctx, FUNNY_EVP_CTRL_GCM_SET_IVLEN, 12, NULL) == 1 &&
+        g_crypto.EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce) == 1) {
+        ok = true;
+        if (aadLen > 0) ok = g_crypto.EVP_EncryptUpdate(ctx, NULL, &n, aad, (int)aadLen) == 1;
+        if (ok && plainLen > 0) {
+            ok = g_crypto.EVP_EncryptUpdate(ctx, cipherOut, &n, plain, (int)plainLen) == 1;
+            produced = n;
+        }
+        if (ok) ok = g_crypto.EVP_EncryptFinal_ex(ctx, cipherOut + produced, &n) == 1;
+        if (ok) ok = g_crypto.EVP_CIPHER_CTX_ctrl(ctx, FUNNY_EVP_CTRL_GCM_GET_TAG, 16, tagOut) == 1;
+    }
+    g_crypto.EVP_CIPHER_CTX_free(ctx);
+    if (!ok) snprintf(errbuf, errbuf_len, "openssl refused that encryption.");
+    return ok;
+}
+
+bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
+                           unsigned char *plainOut, char *errbuf, size_t errbuf_len) {
+    if (!ensure_libcrypto(errbuf, errbuf_len)) return false;
+    FunnyEvpCipherCtx *ctx = g_crypto.EVP_CIPHER_CTX_new();
+    if (ctx == NULL) {
+        snprintf(errbuf, errbuf_len, "openssl wouldn't start a cipher.");
+        return false;
+    }
+    bool ok = false;
+    int n = 0;
+    int produced = 0;
+    unsigned char tagCopy[16];
+    memcpy(tagCopy, tag, 16);
+    if (g_crypto.EVP_DecryptInit_ex(ctx, g_crypto.EVP_aes_256_gcm(), NULL, NULL, NULL) == 1 &&
+        g_crypto.EVP_CIPHER_CTX_ctrl(ctx, FUNNY_EVP_CTRL_GCM_SET_IVLEN, 12, NULL) == 1 &&
+        g_crypto.EVP_DecryptInit_ex(ctx, NULL, NULL, key, nonce) == 1) {
+        ok = true;
+        if (aadLen > 0) ok = g_crypto.EVP_DecryptUpdate(ctx, NULL, &n, aad, (int)aadLen) == 1;
+        if (ok && cipherLen > 0) {
+            ok = g_crypto.EVP_DecryptUpdate(ctx, plainOut, &n, cipher, (int)cipherLen) == 1;
+            produced = n;
+        }
+        if (ok) ok = g_crypto.EVP_CIPHER_CTX_ctrl(ctx, FUNNY_EVP_CTRL_GCM_SET_TAG, 16, tagCopy) == 1;
+        /* The tag is checked here, in Final: a wrong key, a wrong aad and one
+           flipped bit all arrive as the same answer, which is the property
+           that makes this authenticated encryption rather than encryption. */
+        if (ok) ok = g_crypto.EVP_DecryptFinal_ex(ctx, plainOut + produced, &n) == 1;
+    }
+    g_crypto.EVP_CIPHER_CTX_free(ctx);
+    if (!ok) snprintf(errbuf, errbuf_len, "that sealed value won't open.");
+    return ok;
+}
+
+#endif
+
 /* -- TLS on listening and dialled sockets (web_server_https PLAN.md §3) ----
  *
  * Two pieces. A side table, shared by every thread, mapping a handle to the
@@ -2576,7 +3249,9 @@ static TlsServer *tlsb_server_load(const char *pfxPath, const char *password, ch
     if (!sslx_ready(err, errLen)) return NULL;
     FILE *f = fopen(pfxPath, "rb");
     if (f == NULL) {
-        snprintf(err, errLen, "can't read the certificate file '%s': %s.", pfxPath, strerror(errno));
+        char why[128];
+        set_errbuf(why, sizeof why, errno);
+        snprintf(err, errLen, "can't read the certificate file '%s': %s.", pfxPath, why);
         return NULL;
     }
     g_sslx.ERR_clear_error();

@@ -8,6 +8,8 @@
 //   --http-port N        the plain-http redirect port (default 8080)
 //   --no-http            no plain-http listener at all
 //   --threads N          acceptor threads (default 24, 1 to 64)
+//   --key-file PATH      the key everything at rest is sealed with (default:
+//                        vault.key beside the data directory, made on first run)
 //   --data DIR           where config.custom.json and activity.json live
 //                        (default: this example's data/)
 //   --pfx FILE           a PKCS#12 identity instead of certs/site.p12
@@ -21,6 +23,7 @@
 
 gimme filez
 gimme yapper
+gimme computer
 gimme { run_server } from "server.funny"
 
 bet usage() {
@@ -41,7 +44,7 @@ bet main(raw_args) {
     yo takes_value = {
         "--host": "host", "--http-port": "http_port", "--threads": "threads", "--data": "data_dir",
         "--pfx": "pfx", "--pfx-password": "password", "--public-host": "public_host",
-        "--seconds": "seconds", "--requests": "requests",
+        "--seconds": "seconds", "--requests": "requests", "--key-file": "key_file",
     }
     yo numeric = ["http_port", "threads", "seconds", "requests"]
     yo i = 0
@@ -88,9 +91,13 @@ bet main(raw_args) {
         }
     }
 
+    // Ctrl-C stops it tidily: the listeners close, whatever is mid-request
+    // finishes, and the activity file is written before this returns.
+    // A second Ctrl-C still ends the process, so a shutdown that hangs is
+    // not a trap.
     yo summary = ghost
     sketchy {
-        summary = await_fr run_server(here, opts, ready, lowkey (line) => yell(line))
+        summary = await_fr run_server(here, opts, ready, computer.until_ctrl_c())
     } my_bad (e) {
         yell("couldn't start: " + e.message)
         bounce 1

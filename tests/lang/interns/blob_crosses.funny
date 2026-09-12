@@ -1,0 +1,12 @@
+// tests/lang/interns/blob_crosses.funny -- RUNTIME_PLAN.md R1: a blob is a
+// portable value, so it can be handed to an intern and come back. Each side
+// gets its own copy on its own heap; nothing is shared.
+gimme interns
+gimme blob
+gimme filez
+
+yo worker = filez.join_path(filez.dir_of(the_script()), "blob_worker.funny")
+yo got = interns.wait_up(interns.hire(worker, blob.from_yap("hi")))
+yap what_is_it(got)
+yap got.to_yap()
+yap how_thicc(got)

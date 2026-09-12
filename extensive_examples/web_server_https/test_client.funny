@@ -11,7 +11,7 @@
 gimme internet
 gimme interns
 gimme yapper
-gimme { parse_json, to_json } from "json.funny"
+gimme json
 
 yo JOB = interns.assignment()
 
@@ -76,7 +76,7 @@ bet request(method, path, extra = ghost, body = "") {
 
 bet json_body(reply) {
     sketchy {
-        bounce parse_json(reply["body"])
+        bounce json.parse(reply["body"])
     } my_bad (e) {
         bounce {}
     }
@@ -87,7 +87,7 @@ bet post(path, value, extra = ghost) {
     sus (extra != ghost) {
         headers.merge(extra)
     }
-    bounce request("POST", path, headers, to_json(value))
+    bounce request("POST", path, headers, json.spill(value))
 }
 
 // -- the scripted conversation ----------------------------------------------------
@@ -108,6 +108,13 @@ bet conversation() {
     say("  HSTS:", h.get("strict-transport-security", ""))
     say("  CSP:", yapper.starts_with(h.get("content-security-policy", ""), "default-src 'self'"),
         "nosniff:", h.get("x-content-type-options", "") == "nosniff", "frames:", h.get("x-frame-options", ""))
+
+    // A PNG proves the bytes path end to end: the file is read as a blob,
+    // put on the wire as one, and arrives at its true length rather than
+    // the length of what it would become if it went through a yapstring.
+    yo logo = request("GET", "/logo.png")
+    say("logo:", logo["status"], logo["headers"].get("content-type", ""),
+        "bytes:", logo["headers"].get("content-length", ""))
 
     yo gated = request("GET", "/settings")
     say("settings, signed out:", gated["status"], gated["headers"].get("location", ""))

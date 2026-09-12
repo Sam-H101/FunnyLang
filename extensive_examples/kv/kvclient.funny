@@ -1,0 +1,160 @@
+// kvclient.funny — talking to the server, as a library.
+//
+// `cli.funny` is one caller; another example can `gimme` this and use the
+// store as a place to keep things. Every call is one command and one reply on
+// a connection held open, which is what the protocol is for.
+//
+//     gimme { connect, set, get, close } from "kvclient.funny"
+//
+//     yo c = connect("127.0.0.1", 6380)
+//     set(c, "greeting", blob.from_yap("yo"))
+//     yap get(c, "greeting").to_yap()
+//     close(c)
+//
+// Values are blobs both ways. A convenience that took strings would have to
+// guess an encoding, and the one thing this store promises is that the bytes
+// you put in are the bytes you get out.
+
+gimme internet
+gimme blob
+gimme yapper
+
+gimme { new_reader, read_reply } from "protocol.funny"
+
+flex deadass DEFAULT_TIMEOUT_MS = 5000
+
+flex bet connect(host, port, timeout_ms) {
+    yo ms = timeout_ms ?? DEFAULT_TIMEOUT_MS
+    yo conn = internet.slide_into(host, port, ms)
+    yo client = {"conn": conn, "timeout": ms}
+    client["reader"] = new_reader(lowkey () => internet.hear_them_out(conn, 65536, ms, {"raw": fax}))
+    bounce client
+}
+
+flex bet close(client) {
+    internet.kick_out(client["conn"])
+}
+
+// One command, one reply. Raises on a connection that ended mid-answer,
+// because a client that carries on after that is reading the next reply as
+// this one.
+flex bet send(client, line, values) {
+    yo parts = [blob.from_yap(line)]
+    grind v in values ?? [] {
+        parts.yeet_in(v)
+        parts.yeet_in(blob.from_yap("\r\n"))
+    }
+    internet.holler_back(client["conn"], blob.of([]).join(parts))
+    yo reply = read_reply(client["reader"])
+    sus (reply == ghost) {
+        chuck oops("SkillIssue", "the server closed the connection without answering.")
+    }
+    bounce reply
+}
+
+// An error reply becomes a raised error here, so a caller that does not check
+// cannot carry on with a mistake. `try_*` is not offered: the reply is right
+// there for anyone who wants it from `send`.
+bet demand(reply, what) {
+    sus (reply["kind"] == "error") {
+        yo at = yapper.index_of(reply["value"], " ")
+        yo flavor = at > 0 ? yapper.slice(reply["value"], 0, at) : "SkillIssue"
+        yo message = at > 0 ? yapper.slice(reply["value"], at + 1, reply["value"].how_thicc())
+                            : reply["value"]
+        chuck oops(flavor, what + ": " + message)
+    }
+    bounce reply
+}
+
+// -- the commands ---------------------------------------------------------------------
+
+flex bet ping(client) {
+    bounce demand(send(client, "PING\r\n", []), "PING")["value"]
+}
+
+flex bet set(client, key, value) {
+    demand(send(client, "SET " + key + " " + to_yap(how_thicc(value)) + "\r\n", [value]), "SET")
+    bounce fax
+}
+
+// ghost when there is no such key, which is not the same as an empty value.
+flex bet get(client, key) {
+    yo reply = demand(send(client, "GET " + key + "\r\n", []), "GET")
+    bounce reply["kind"] == "nil" ? ghost : reply["value"]
+}
+
+flex bet del(client, key) {
+    bounce demand(send(client, "DEL " + key + "\r\n", []), "DEL")["value"] == 1
+}
+
+flex bet exists(client, key) {
+    bounce demand(send(client, "EXISTS " + key + "\r\n", []), "EXISTS")["value"] == 1
+}
+
+flex bet keys(client, pattern) {
+    yo reply = demand(send(client, "KEYS " + (pattern ?? "*") + "\r\n", []), "KEYS")
+    yo out = []
+    grind item in reply["value"] {
+        out.yeet_in(item == ghost ? ghost : item.to_yap())
+    }
+    bounce out
+}
+
+flex bet expire(client, key, seconds) {
+    bounce demand(send(client, "EXPIRE " + key + " " + to_yap(seconds) + "\r\n", []),
+                  "EXPIRE")["value"] == 1
+}
+
+flex bet ttl(client, key) {
+    bounce demand(send(client, "TTL " + key + "\r\n", []), "TTL")["value"]
+}
+
+flex bet incr(client, key) {
+    bounce demand(send(client, "INCR " + key + "\r\n", []), "INCR")["value"]
+}
+
+flex bet mget(client, key_list) {
+    yo reply = demand(send(client, "MGET " + key_list.join(" ") + "\r\n", []), "MGET")
+    bounce reply["value"]
+}
+
+flex bet mset(client, pairs) {
+    // `pairs` is a stash of [key, blob]. The count goes first so the server
+    // knows when it has them all without a terminator a value could contain.
+    yo line = "MSET " + to_yap(pairs.how_thicc()) + "\r\n"
+    yo parts = [blob.from_yap(line)]
+    grind p in pairs {
+        parts.yeet_in(blob.from_yap(p[0] + " " + to_yap(how_thicc(p[1])) + "\r\n"))
+        parts.yeet_in(p[1])
+        parts.yeet_in(blob.from_yap("\r\n"))
+    }
+    internet.holler_back(client["conn"], blob.of([]).join(parts))
+    yo reply = read_reply(client["reader"])
+    sus (reply == ghost) {
+        chuck oops("SkillIssue", "the server closed the connection without answering.")
+    }
+    demand(reply, "MSET")
+    bounce fax
+}
+
+flex bet flush(client) {
+    bounce demand(send(client, "FLUSH\r\n", []), "FLUSH")["value"]
+}
+
+flex bet info(client) {
+    yo text = demand(send(client, "INFO\r\n", []), "INFO")["value"].to_yap()
+    yo out = {}
+    grind line in yapper.lines(text) {
+        yo at = yapper.index_of(line, ":")
+        sus (at > 0) {
+            out[yapper.slice(line, 0, at)] = yapper.slice(line, at + 1, line.how_thicc())
+        }
+    }
+    bounce out
+}
+
+// Asks the server to stop. It answers first, so this returns rather than
+// seeing a closed socket.
+flex bet stop(client) {
+    bounce demand(send(client, "STOP\r\n", []), "STOP")["value"]
+}

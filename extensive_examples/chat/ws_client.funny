@@ -1,0 +1,212 @@
+// ws_client.funny — the other half of ws.funny.
+//
+// A WebSocket client: dial, ask to upgrade, check the answer, then send and
+// receive frames. It exists for the golden -- three of these, in three
+// workers, talking to one server -- and it is the same library a program would
+// use to talk to somebody else's WebSocket.
+//
+// The only real difference from the server's half is that **a client masks
+// every frame and a server masks none**. The key is four random bytes per
+// frame, from the operating system's generator rather than `rizz`'s
+// clock-seeded one: masking is not a secret, but a predictable key is exactly
+// the thing the rule exists to prevent, so the honest source is the cheap one
+// to use.
+
+gimme internet
+gimme blob
+gimme yapper
+gimme vault
+gimme rizz
+
+gimme { encode_frame, text_frame, binary_frame, ping_frame, pong_frame, close_frame,
+        new_reader, read_message, accept_key,
+        OP_TEXT, OP_BINARY, OP_CONTINUATION } from "ws.funny"
+
+flex deadass DEFAULT_TIMEOUT_MS = 10000
+
+// Sixteen random bytes, base64. The server hashes it straight back, so it
+// proves nothing about anybody -- but a client that sent a constant would let
+// a cache answer one connection with another's reply.
+bet fresh_key() {
+    bounce vault.base64_encode(blob.from_hex(rizz.entropy(16)))
+}
+
+bet fresh_mask() {
+    bounce blob.from_hex(rizz.entropy(4))
+}
+
+// Dials and completes the handshake, or raises saying what came back instead.
+// `opts` may carry `tls`, `ca` and `server_name`, which go straight to
+// `internet.slide_into`, so this speaks `wss://` as readily as `ws://`.
+flex bet connect(host, port, path, opts) {
+    yo settings = opts ?? {}
+    yo timeout = settings.get("timeout_ms", DEFAULT_TIMEOUT_MS)
+    yo conn = ghost
+    sus (settings.get("tls", cap)) {
+        yo dial = {"timeout_ms": timeout, "tls": fax}
+        sus (settings.has("ca")) {
+            dial["ca"] = settings["ca"]
+        }
+        sus (settings.has("server_name")) {
+            dial["server_name"] = settings["server_name"]
+        }
+        conn = internet.slide_into(host, port, dial)
+    } nah {
+        conn = internet.slide_into(host, port, timeout)
+    }
+
+    yo key = fresh_key()
+    yo request = "GET " + (path ?? "/") + " HTTP/1.1\r\n" +
+                 "Host: " + host + ":" + to_yap(port) + "\r\n" +
+                 "Upgrade: websocket\r\n" +
+                 "Connection: Upgrade\r\n" +
+                 "Sec-WebSocket-Key: " + key + "\r\n" +
+                 "Sec-WebSocket-Version: 13\r\n"
+    grind name in settings.get("headers", {}).keys() {
+        request = request + name + ": " + settings["headers"][name] + "\r\n"
+    }
+    internet.holler_back(conn, request + "\r\n")
+
+    // The response head is text and ends at a blank line. Whatever arrived
+    // after it is the first frame bytes, and is kept.
+    yo seen = blob.of([])
+    yo split_at = -1
+    bruh (split_at < 0) {
+        yo chunk = internet.hear_them_out(conn, 65536, timeout, {"raw": fax})
+        sus (chunk == ghost || how_thicc(chunk) == 0) {
+            internet.kick_out(conn)
+            chuck oops("SkillIssue", "the server closed before finishing the handshake.")
+        }
+        seen = seen + chunk
+        split_at = seen.index_of(blob.from_yap("\r\n\r\n"))
+    }
+    yo head = seen[0:split_at].to_yap()
+    yo leftover = seen[split_at + 4:how_thicc(seen)]
+
+    yo lines = yapper.lines(yapper.replace(head, "\r\n", "\n"))
+    sus (!yapper.contains(lines[0], " 101")) {
+        internet.kick_out(conn)
+        chuck oops("SkillIssue", "the server answered " + yapper.trim(lines[0]) + " rather than 101.")
+    }
+
+    // The accept value is checked, not trusted. A proxy that did not
+    // understand the upgrade cannot produce it, which is the entire reason
+    // the RFC specifies it.
+    yo want = accept_key(key)
+    yo got = ""
+    grind i from 1 to lines.how_thicc() {
+        yo at = yapper.index_of(lines[i], ":")
+        sus (at > 0 && yapper.whisper(yapper.trim(yapper.slice(lines[i], 0, at))) == "sec-websocket-accept") {
+            got = yapper.trim(yapper.slice(lines[i], at + 1, lines[i].how_thicc()))
+        }
+    }
+    sus (got != want) {
+        internet.kick_out(conn)
+        chuck oops("SkillIssue", "Sec-WebSocket-Accept was " + (got == "" ? "absent" : got) +
+                   ", and this key wanted " + want + ".")
+    }
+
+    yo client = {"conn": conn, "timeout": timeout, "open": fax}
+    // The bytes that arrived alongside the handshake are the start of the
+    // frame stream, so the reader is primed with them rather than losing them.
+    yo primed = {"first": leftover, "used": cap}
+    client["reader"] = new_reader(lowkey () {
+        sus (!primed["used"]) {
+            primed["used"] = fax
+            sus (how_thicc(primed["first"]) > 0) {
+                bounce primed["first"]
+            }
+        }
+        bounce internet.hear_them_out(conn, 65536, client["timeout"], {"raw": fax})
+    })
+    bounce client
+}
+
+// -- sending -------------------------------------------------------------------------
+
+flex bet send_text(client, text) {
+    internet.holler_back(client["conn"], text_frame(text, fresh_mask()))
+}
+
+flex bet send_binary(client, bytes) {
+    internet.holler_back(client["conn"], binary_frame(bytes, fresh_mask()))
+}
+
+// Deliberately available: a message split across frames is the case a server
+// most often gets wrong, and the golden sends one.
+flex bet send_fragmented(client, text, piece_size) {
+    yo bytes = blob.from_yap(text)
+    yo n = how_thicc(bytes)
+    yo at = 0
+    yo first = fax
+    bruh (at < n) {
+        yo stop = at + piece_size < n ? at + piece_size : n
+        yo last = stop >= n
+        internet.holler_back(client["conn"],
+                             encode_frame(first ? OP_TEXT : OP_CONTINUATION,
+                                          bytes[at:stop], last, fresh_mask()))
+        first = cap
+        at = stop
+    }
+}
+
+flex bet send_ping(client, payload) {
+    internet.holler_back(client["conn"], ping_frame(payload ?? blob.of([]), fresh_mask()))
+}
+
+flex bet send_pong(client, payload) {
+    internet.holler_back(client["conn"], pong_frame(payload ?? blob.of([]), fresh_mask()))
+}
+
+// -- receiving ------------------------------------------------------------------------
+
+// One message, or a control frame the caller should answer. ghost when the
+// other end stopped talking.
+flex bet receive(client) {
+    bounce read_message(client["reader"])
+}
+
+// Receives until a data message arrives, answering pings on the way. What a
+// caller that only wants chat messages actually wants.
+flex bet receive_message(client) {
+    bruh (fax) {
+        yo m = receive(client)
+        sus (m == ghost) {
+            bounce ghost
+        }
+        sus (m["kind"] == "ping") {
+            send_pong(client, m["data"])
+            nvm
+        }
+        sus (m["kind"] == "pong") {
+            nvm
+        }
+        bounce m
+    }
+}
+
+// -- closing --------------------------------------------------------------------------
+
+// The closing handshake: send a close frame, wait for the other end's, then
+// drop the socket. Waiting matters -- closing the socket immediately can lose
+// bytes the server had already written.
+flex bet close(client, code, reason) {
+    sus (!client["open"]) {
+        bounce ghost
+    }
+    client["open"] = cap
+    sketchy {
+        internet.holler_back(client["conn"], close_frame(code ?? 1000, reason ?? "", fresh_mask()))
+        bruh (fax) {
+            yo m = read_message(client["reader"])
+            sus (m == ghost || m["kind"] == "close") {
+                bail
+            }
+        }
+    } my_bad (e) {
+        // The server dropped the connection rather than answering. Nothing
+        // left to be tidy about.
+        vibe
+    }
+    internet.kick_out(client["conn"])
+}

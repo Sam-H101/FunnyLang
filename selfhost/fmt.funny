@@ -94,12 +94,12 @@ flex bet fmt_stmt(f, node, depth) {
         sus (node["initializer"] == ghost) {
             emit(f, depth, "yo " + node["name"])
         } nah {
-            emit(f, depth, "yo " + node["name"] + " = " + fmt_expr(node["initializer"]))
+            emit(f, depth, "yo " + node["name"] + " = " + fmt_expr(node["initializer"], depth))
         }
         bounce ghost
     }
     sus (kind == "ConstDecl") {
-        emit(f, depth, "deadass " + node["name"] + " = " + fmt_expr(node["initializer"]))
+        emit(f, depth, "deadass " + node["name"] + " = " + fmt_expr(node["initializer"], depth))
         bounce ghost
     }
     sus (kind == "FuncDecl") {
@@ -147,7 +147,7 @@ flex bet fmt_stmt(f, node, depth) {
         sus (node["value"] == ghost) {
             emit(f, depth, "bounce")
         } nah {
-            emit(f, depth, "bounce " + fmt_expr(node["value"]))
+            emit(f, depth, "bounce " + fmt_expr(node["value"], depth))
         }
         bounce ghost
     }
@@ -174,7 +174,7 @@ flex bet fmt_stmt(f, node, depth) {
         bounce ghost
     }
     sus (kind == "Chuck") {
-        emit(f, depth, "chuck " + fmt_expr(node["value"]))
+        emit(f, depth, "chuck " + fmt_expr(node["value"], depth))
         bounce ghost
     }
     sus (kind == "Import") {
@@ -219,7 +219,7 @@ flex bet fmt_stmt(f, node, depth) {
         bounce ghost
     }
     sus (kind == "ExprStmt") {
-        emit(f, depth, fmt_expr(node["expr"]))
+        emit(f, depth, fmt_expr(node["expr"], depth))
         bounce ghost
     }
     sus (kind == "VibeStmt") {
@@ -251,7 +251,7 @@ flex bet fmt_stmt(f, node, depth) {
 
 // -- expressions ------------------------------------------------------------
 
-flex bet fmt_expr(node) {
+flex bet fmt_expr(node, depth = 0) {
     yo kind = node["node"]
     sus (kind == "Literal") {
         bounce lit_of(node["value"])
@@ -311,10 +311,10 @@ flex bet fmt_expr(node) {
         grind a in node["args"] {
             args.yeet_in(fmt_expr(a))
         }
-        bounce fmt_expr(node["callee"]) + "(" + args.join(", ") + ")"
+        bounce fmt_expr(node["callee"], depth) + "(" + args.join(", ") + ")"
     }
     sus (kind == "Index") {
-        bounce fmt_expr(node["obj"]) + "[" + fmt_expr(node["index"]) + "]"
+        bounce fmt_expr(node["obj"], depth) + "[" + fmt_expr(node["index"]) + "]"
     }
     sus (kind == "Slice") {
         yo start = node["start"] != ghost ? fmt_expr(node["start"]) : ""
@@ -325,10 +325,18 @@ flex bet fmt_expr(node) {
         bounce fmt_expr(node["obj"]) + "[" + start + ":" + stop + "]"
     }
     sus (kind == "Get") {
-        bounce fmt_expr(node["obj"]) + "." + node["name"]
+        // RUNTIME_PLAN.md R8: a chain the author broke across lines stays
+        // broken, one step per line, indented one level past its statement.
+        sus (node.get("broke_line", cap)) {
+            bounce fmt_expr(node["obj"], depth) + "\n" + repeat_indent(depth + 1) + "." + node["name"]
+        }
+        bounce fmt_expr(node["obj"], depth) + "." + node["name"]
     }
     sus (kind == "SafeGet") {
-        bounce fmt_expr(node["obj"]) + "?." + node["name"]
+        sus (node.get("broke_line", cap)) {
+            bounce fmt_expr(node["obj"], depth) + "\n" + repeat_indent(depth + 1) + "?." + node["name"]
+        }
+        bounce fmt_expr(node["obj"], depth) + "?." + node["name"]
     }
     sus (kind == "StashLit") {
         yo elems = []

@@ -1,0 +1,176 @@
+// test_checkers.funny — the rules, the engine, and a whole game.
+//
+// `funny test extensive_examples` runs this. Three parts, each able to fail on
+// its own:
+//
+//   1. the rules, from positions set up by hand
+//   2. the engine, choosing from fixed positions at fixed depths
+//   3. a complete game, engine against engine, asserted move for move
+//
+// The third is only possible because the engine is deterministic: moves are
+// searched in sorted order and a move must be strictly better to displace the
+// one already found, so the same position always produces the same move. A
+// golden that played a whole game against a tie-breaking coin could assert
+// nothing.
+//
+// No sockets anywhere. The server is a thin wrapper around these modules, and
+// what a wrapper is worth testing for is that it wraps -- not the rules of
+// draughts, which are here.
+
+gimme yapper
+
+gimme { RED, BLACK, RED_MAN, RED_KING, BLACK_MAN, BLACK_KING, EMPTY,
+        new_board, legal_moves, apply_move, outcome, render, find_move,
+        find_move_between, count_pieces, other_side, row_of, col_of, square_at,
+        owner_of, is_king } from "rules.funny"
+gimme { best_move, evaluate, play_one, depth_for, DEPTHS } from "engine.funny"
+
+// A board with only the pieces named, for testing a rule without playing
+// thirty moves to reach it. `pieces` is square number to piece.
+bet position(pieces, turn) {
+    yo board = new_board()
+    grind n from 1 to 33 {
+        board["squares"][n] = EMPTY
+    }
+    grind at in pieces.keys() {
+        board["squares"][to_int(at)] = pieces[at]
+    }
+    board["turn"] = turn
+    board["quiet"] = 0
+    bounce board
+}
+
+bet notations(moves) {
+    yo out = []
+    grind m in moves {
+        out.yeet_in(m["notation"])
+    }
+    bounce out
+}
+
+// -- part one: the rules -----------------------------------------------------------
+
+yap "-- the board --"
+yo start = new_board()
+yap render(start)
+yap "red to play:", to_yap(notations(legal_moves(start)))
+
+yo after = apply_move(start, find_move(legal_moves(start), "22-18"))
+yap "black to play:", to_yap(notations(legal_moves(after)))
+
+yap "-- squares are numbered the way the game numbers them --"
+grind n in [1, 4, 5, 8, 28, 29, 32] {
+    yap "  " + to_yap(n) + ": row " + to_yap(row_of(n)) + " col " + to_yap(col_of(n)) +
+        " and back again " + to_yap(square_at(row_of(n), col_of(n)))
+}
+yap "  a light square is 0:", square_at(0, 0), square_at(7, 7)
+yap "  off the board is 0:", square_at(-1, 1), square_at(8, 1)
+
+yap "-- a capture is compulsory --"
+// Red on 22, black on 18, nothing behind it: red must jump, and the quiet
+// moves that would otherwise be legal are gone.
+yo forced = position({"22": RED_MAN, "18": BLACK_MAN, "31": RED_MAN}, RED)
+yap "only the jump:", to_yap(notations(legal_moves(forced)))
+
+yap "-- a jump that can carry on, must --"
+// One red man, two black men placed so the jump continues: this is one move,
+// not two, and it is written as one.
+yo double = position({"29": RED_MAN, "25": BLACK_MAN, "17": BLACK_MAN}, RED)
+yo chain = legal_moves(double)
+yap "the chain:", to_yap(notations(chain))
+sus (chain.how_thicc() > 0) {
+    yap "captures in one move:", chain[0]["captures"].how_thicc()
+    yo done = apply_move(double, chain[0])
+    yap "both are gone:", to_yap(count_pieces(done, BLACK)["total"])
+}
+
+yap "-- a man may not jump backwards, a king may --"
+yo backward = position({"18": RED_MAN, "22": BLACK_MAN}, RED)
+yap "the man cannot:", to_yap(notations(legal_moves(backward)))
+yo king_back = position({"18": RED_KING, "22": BLACK_MAN}, RED)
+yap "the king can:", to_yap(notations(legal_moves(king_back)))
+
+yap "-- promotion, and that it ends the turn --"
+// A red man on 6 jumping to 1 lands on the back rank. It is crowned, and it
+// stops there even though a king could have jumped again.
+yo crowning = position({"10": RED_MAN, "6": BLACK_MAN, "14": BLACK_MAN, "7": BLACK_MAN}, RED)
+yo crown_moves = legal_moves(crowning)
+yap "moves:", to_yap(notations(crown_moves))
+grind m in crown_moves {
+    sus (m["promotes"]) {
+        yo done = apply_move(crowning, m)
+        yap "  " + m["notation"] + " crowns, and stops: " + done["squares"][m["to"]] +
+            ", captures " + to_yap(m["captures"].how_thicc())
+    }
+}
+
+yap "-- a side with no move has lost --"
+yo stuck = position({"32": RED_MAN, "27": BLACK_MAN, "28": BLACK_MAN, "23": BLACK_MAN, "24": BLACK_MAN}, RED)
+yap "red is trapped:", to_yap(notations(legal_moves(stuck))), to_yap(outcome(stuck))
+yo swept = position({"1": BLACK_MAN}, RED)
+yap "red has nothing left:", to_yap(outcome(swept))
+
+// -- part two: the engine ----------------------------------------------------------
+
+yap "-- the engine picks the same move every time --"
+grind depth in [1, 2, 3] {
+    yo first = best_move(new_board(), depth)
+    yo again = best_move(new_board(), depth)
+    yap "  depth " + to_yap(depth) + ": " + first["move"]["notation"] +
+        " (score " + to_yap(first["score"]) + ", " + to_yap(first["nodes"]) + " positions)" +
+        ", and again: " + again["move"]["notation"]
+}
+
+yap "-- a capture it could not refuse if it wanted to --"
+// Black man on 18 with nothing defending it, red to move: the capture is
+// compulsory anyway, which is the point -- the engine cannot do otherwise.
+yo gift = position({"22": RED_MAN, "18": BLACK_MAN, "29": RED_MAN, "1": BLACK_MAN}, RED)
+yo taken = best_move(gift, 3)
+yap "  it plays:", taken["move"]["notation"]
+
+yap "-- it does not walk into a capture when it has a choice --"
+// Red to move with two quiet moves: one hands a man over, the other does not.
+yo careful = position({"22": RED_MAN, "23": RED_MAN, "15": BLACK_MAN, "1": BLACK_MAN}, RED)
+yo prudent = best_move(careful, 3)
+yap "  from " + to_yap(notations(legal_moves(careful))) + " it plays " + prudent["move"]["notation"]
+
+yap "-- what it makes of a position --"
+yap "  even start:", evaluate(new_board(), RED)
+yo up_a_man = position({"22": RED_MAN, "23": RED_MAN, "10": BLACK_MAN}, RED)
+yap "  a man ahead:", evaluate(up_a_man, RED) > 90
+yap "  and from the other side:", evaluate(up_a_man, BLACK) < -90
+
+// -- part three: a whole game --------------------------------------------------------
+
+yap "-- the engine against itself --"
+// Depth 2 for both sides: deep enough to be a real game, shallow enough that
+// this runs in a golden on every platform CI builds.
+yo board = new_board()
+yo played = []
+yo nodes = 0
+bruh (outcome(board) == ghost && board["moves"] < 400) {
+    yo turn = play_one(board, 2)
+    sus (turn["move"] == ghost) {
+        bail
+    }
+    played.yeet_in(turn["move"]["notation"])
+    nodes += turn["nodes"]
+    board = turn["board"]
+}
+
+yap "moves played:", played.how_thicc()
+yap "positions looked at:", nodes > 0
+grind i from 0 to played.how_thicc() {
+    sus (i % 10 == 0) {
+        yo line = []
+        grind k from i to (i + 10 < played.how_thicc() ? i + 10 : played.how_thicc()) {
+            line.yeet_in(played[k])
+        }
+        yap "  " + yapper.pad_left(to_yap(i + 1), 3) + ". " + line.join("  ")
+    }
+}
+yap "result:", to_yap(outcome(board))
+yap "red left:", to_yap(count_pieces(board, RED)["total"]),
+    "black left:", to_yap(count_pieces(board, BLACK)["total"])
+yap render(board)
+yap "-- done --"

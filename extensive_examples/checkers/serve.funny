@@ -1,0 +1,428 @@
+// serve.funny — the board in a browser, and the engine behind it.
+//
+//     funny run extensive_examples/checkers/serve.funny
+//     funny run extensive_examples/checkers/serve.funny -- 8080 --depth 5
+//
+//   PORT            the port (default 8080; 0 picks a free one)
+//   --host H        where to listen (default 127.0.0.1 -- loopback only)
+//   --depth N       how far the engine looks ahead (default 3)
+//   --seconds N     stop after N seconds
+//
+// ONE THREAD, AND NOT EVEN APOLOGETICALLY. This is a single-player game on
+// somebody's own machine: there is one board, one player, and the only
+// expensive thing that happens is the engine thinking, which is work for one
+// core on one position. Threads would add a lock around the board and buy
+// nothing. The event loop is here so that a second browser tab, a favicon
+// request or a health check cannot sit in the queue behind a search.
+//
+// The API is three routes and holds one game:
+//
+//   GET  /api/state              the board as it stands
+//   POST /api/new                start again; {"depth": n} optional
+//   POST /api/move               {"from": n, "to": n}, then the engine replies
+//
+// One game per server, not per browser: this is a program you run to play a
+// game, and pretending to have sessions it does not have would be worse than
+// saying so.
+
+gimme internet
+gimme clock
+gimme yapper
+gimme json
+gimme filez
+gimme computer
+
+gimme { RED, BLACK, new_board, legal_moves, apply_move, outcome, find_move_between,
+        find_move, count_pieces, other_side, owner_of } from "rules.funny"
+gimme { best_move, depth_for, verdict } from "engine.funny"
+gimme { read_request, build_response, json_response, STATUS_TEXT, SECURITY_HEADERS } from "http.funny"
+gimme { static_target, read_static } from "static.funny"
+
+flex deadass DEFAULT_PORT = 8080
+flex deadass READ_TIMEOUT_MS = 10000
+
+yo GAME = ghost
+yo DEPTH = 3
+yo WEB_DIR = ghost
+yo STOPPING = cap
+yo SERVED = 0
+yo PFX = ghost
+yo PFX_PASSWORD = "funnylang"
+yo NO_TLS = cap
+
+// -- the game -------------------------------------------------------------------------
+
+bet start_game(depth) {
+    GAME = {
+        "board": new_board(),
+        "human": RED,
+        "depth": depth,
+        "last_human": ghost,
+        "last_engine": ghost,
+        "nodes": 0,
+        "verdict": "",
+        // The moves played since the page last looked, in order, each with the
+        // squares it travelled through and the pieces it took. The page needs
+        // the *path* rather than just the destination: a piece that jumps
+        // twice should be seen to hop twice, and a capture should be seen to
+        // be taken rather than simply cease to exist.
+        "played": [],
+    }
+    bounce GAME
+}
+
+// One entry in that list.
+bet remember(move, side) {
+    GAME["played"].yeet_in({
+        "side": side,
+        "from": move["from"],
+        "to": move["to"],
+        "path": move["path"],
+        "captures": move["captures"],
+        "promotes": move["promotes"],
+        "notation": move["notation"],
+    })
+}
+
+// Everything the page needs to draw itself and to know what may be clicked.
+// The legal moves travel with the state, so the page never has to know a rule:
+// it highlights what it was given, and a click that is not in the list cannot
+// be made.
+bet state_json() {
+    yo board = GAME["board"]
+    yo moves = legal_moves(board)
+    yo listed = []
+    grind m in moves {
+        listed.yeet_in({
+            "from": m["from"],
+            "to": m["to"],
+            "notation": m["notation"],
+            "captures": m["captures"],
+            "path": m["path"],
+        })
+    }
+    yo over = outcome(board)
+    bounce json.spill({
+        "ok": fax,
+        "squares": board["squares"],
+        "turn": board["turn"],
+        "human": GAME["human"],
+        "moves": board["moves"],
+        "legal": listed,
+        "forced": moves.how_thicc() > 0 && moves[0]["captures"].how_thicc() > 0,
+        "outcome": over,
+        "last_human": GAME["last_human"],
+        "last_engine": GAME["last_engine"],
+        "red": count_pieces(board, RED),
+        "black": count_pieces(board, BLACK),
+        "depth": GAME["depth"],
+        "nodes": GAME["nodes"],
+        "verdict": GAME["verdict"],
+        "played": GAME["played"],
+    })
+}
+
+// The engine's turn, if it is the engine's turn. One move, not a chain of
+// them: a multi-jump is already one move.
+bet engine_reply() {
+    yo board = GAME["board"]
+    sus (outcome(board) != ghost || board["turn"] == GAME["human"]) {
+        GAME["last_engine"] = ghost
+        bounce ghost
+    }
+    yo thought = best_move(board, GAME["depth"])
+    sus (thought["move"] == ghost) {
+        bounce ghost
+    }
+    GAME["board"] = apply_move(board, thought["move"])
+    GAME["last_engine"] = thought["move"]["notation"]
+    remember(thought["move"], other_side(GAME["human"]))
+    GAME["nodes"] = thought["nodes"]
+    GAME["verdict"] = verdict(GAME["board"], -thought["score"])
+}
+
+// -- the routes -------------------------------------------------------------------------
+
+bet route(req) {
+    sus (req["path"] == "/api/state" && req["method"] == "GET") {
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/new" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        yo depth = DEPTH
+        sus (asked != ghost && asked.has("depth")) {
+            depth = to_int(asked["depth"])
+            sus (depth < 1) { depth = 1 }
+            sus (depth > 9) { depth = 9 }
+        }
+        start_game(depth)
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/move" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce json_response(400, json.spill({"ok": cap, "error": "that wasn't JSON"}))
+        }
+        sus (GAME["board"]["turn"] != GAME["human"]) {
+            bounce json_response(409, json.spill({"ok": cap, "error": "it isn't your turn"}))
+        }
+        sus (outcome(GAME["board"]) != ghost) {
+            bounce json_response(409, json.spill({"ok": cap, "error": "the game is over"}))
+        }
+
+        yo moves = legal_moves(GAME["board"])
+        // Either spelling: a square pair, which is what a click gives, or the
+        // notation, which is what a person types. Written out rather than as a
+        // ternary across three lines, because a statement ends at a newline
+        // unless it is inside brackets -- so that spelling is a parse error.
+        yo chosen = ghost
+        sus (asked.has("notation")) {
+            chosen = find_move(moves, asked["notation"])
+        } nah {
+            chosen = find_move_between(moves, to_int(asked.get("from", 0)), to_int(asked.get("to", 0)))
+        }
+        sus (chosen == ghost) {
+            // The legal list goes back with the refusal, so a page that got
+            // out of step can redraw rather than guess.
+            bounce json_response(422, json.spill({"ok": cap, "error": "not a legal move",
+                                                  "state": "stale"}))
+        }
+
+        // Cleared first: `played` is what has happened *since the page last
+        // looked*, so it starts empty and collects this move and the reply.
+        GAME["played"] = []
+        GAME["board"] = apply_move(GAME["board"], chosen)
+        GAME["last_human"] = chosen["notation"]
+        remember(chosen, GAME["human"])
+        engine_reply()
+        bounce json_response(200, state_json())
+    }
+
+    // Anything else is a file, and static_target decides whether it is one.
+    sus (req["method"] != "GET" && req["method"] != "HEAD") {
+        bounce json_response(405, json.spill({"ok": cap, "error": "not a thing you can do here"}))
+    }
+    yo target = static_target(WEB_DIR, req["path"])
+    sus (target == ghost) {
+        bounce build_response(404, "no such page\n",
+                              {"Content-Type": "text/plain; charset=utf-8"}, req["method"] == "HEAD")
+    }
+    yo body = read_static(target)
+    sus (body == ghost) {
+        bounce build_response(404, "no such page\n",
+                              {"Content-Type": "text/plain; charset=utf-8"}, req["method"] == "HEAD")
+    }
+    yo headers = {"Content-Type": target["type"]}
+    headers.merge(SECURITY_HEADERS)
+    bounce build_response(200, body, headers, req["method"] == "HEAD")
+}
+
+bet parse_body(req) {
+    sus (yapper.trim(req["body"]) == "") {
+        bounce {}
+    }
+    sketchy {
+        yo parsed = json.parse(req["body"])
+        bounce what_is_it(parsed) == "groupchat" ? parsed : ghost
+    } my_bad (e) {
+        bounce ghost
+    }
+}
+
+// -- the socket loop ----------------------------------------------------------------------
+
+// One connection, start to finish. Every read waits on the event loop rather
+// than on the socket, so a browser that opens a connection and says nothing
+// costs one parked task instead of the whole server.
+// How long a client gets to complete a TLS handshake before it is dropped.
+deadass HANDSHAKE_MS = 5000
+
+// A connection accepted from a secure listener arrives with its TLS session
+// not yet negotiated, and nothing can be read until it is. It is driven a step
+// at a time, waiting on the event loop in between, so a slow client costs its
+// own task and nobody else's.
+//
+// For a plain listener this returns `fax` straight away and costs nothing,
+// which is why there is one code path rather than two.
+async_ngl bet finish_handshake(conn) {
+    yo deadline = clock.now() + HANDSHAKE_MS / 1000.0
+    bruh (!internet.handshake(conn)) {
+        yo left = to_int((deadline - clock.now()) * 1000.0)
+        sus (left <= 0) {
+            bounce cap
+        }
+        sus (!await_fr internet.hold_up(conn, left)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+async_ngl bet handle(customer) {
+    yo conn = customer["conn"]
+    sketchy {
+        // Plain HTTP sent to the TLS port, a client that speaks only TLS 1.0,
+        // or one that connected and then said nothing: all end here, and all
+        // of them are the client's business rather than a reason to log.
+        sus (!await_fr finish_handshake(conn)) {
+            internet.kick_out(conn)
+            bounce ghost
+        }
+        yo req = await_fr read_request(lowkey (ms) => read_more(conn, ms))
+        sus (!req["ok"]) {
+            sus (req["status"] != ghost) {
+                internet.holler_back(conn, build_response(req["status"],
+                                                          STATUS_TEXT.get(req["status"], "no") + "\n",
+                                                          {"Content-Type": "text/plain; charset=utf-8"}))
+            }
+        } nah {
+            SERVED += 1
+            yo answer = ghost
+            sketchy {
+                answer = route(req)
+            } my_bad (e) {
+                // A route that falls over is one 500, not a dead game.
+                yell("500 on " + req["method"] + " " + req["path"] + ": " + e.flavor + ": " + e.message)
+                answer = json_response(500, json.spill({"ok": cap, "error": e.flavor + ": " + e.message}))
+            }
+            internet.holler_back(conn, answer)
+        }
+    } my_bad (e) {
+        vibe
+    }
+    internet.kick_out(conn)
+}
+
+async_ngl bet read_more(conn, ms) {
+    sus (!await_fr internet.hold_up(conn, ms)) {
+        bounce ghost
+    }
+    bounce internet.hear_them_out(conn, 65536, 0)
+}
+
+async_ngl bet watch_for_ctrl_c() {
+    sketchy {
+        await_fr computer.until_ctrl_c()
+        yell("")
+        yell("ctrl-c — closing up.")
+        STOPPING = fax
+    } my_bad (e) {
+        vibe
+    }
+}
+
+bet usage() {
+    yell("usage: serve.funny [PORT] [--host H] [--depth N] [--seconds N]")
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo port = DEFAULT_PORT
+    yo host = "127.0.0.1"
+    yo seconds = ghost
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--host" && i + 1 < args.how_thicc()) {
+            host = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--depth" && i + 1 < args.how_thicc()) {
+            DEPTH = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--seconds" && i + 1 < args.how_thicc()) {
+            seconds = to_numba(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--pfx" && i + 1 < args.how_thicc()) {
+            PFX = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--pfx-password" && i + 1 < args.how_thicc()) {
+            PFX_PASSWORD = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--no-tls") {
+            NO_TLS = fax
+            i += 1
+        } kinda_sus (yapper.starts_with(a, "-")) {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        } nah {
+            port = to_int(a)
+            i += 1
+        }
+    }
+    sus (DEPTH < 1) { DEPTH = 1 }
+    sus (DEPTH > 9) { DEPTH = 9 }
+
+    WEB_DIR = filez.join_path(filez.dir_of(the_script()), "web")
+    start_game(DEPTH)
+
+    // TLS unless told otherwise. The identity is this example's own test
+    // certificate, signed by a test CA that nothing else trusts -- a browser
+    // will warn, and should, because that is what an unknown CA is for. It is
+    // test material and not a secret; `certs/make_cert.sh` makes a new pair.
+    sus (PFX == ghost && !NO_TLS) {
+        yo beside = filez.join_path(filez.dir_of(the_script()), "certs/site.p12")
+        sus (filez.is_file(beside)) {
+            PFX = beside
+        }
+    }
+
+    yo listener = ghost
+    yo secure = PFX != ghost && !NO_TLS
+    sketchy {
+        sus (secure) {
+            listener = internet.open_secure_shop(port, host, {"pfx": PFX, "password": PFX_PASSWORD})
+        } nah {
+            listener = internet.open_shop(port, host)
+        }
+    } my_bad (e) {
+        yell("couldn't start: " + e.message)
+        bounce 1
+    }
+    yo bound = internet.shop_port(listener)
+    yo scheme = secure ? "https" : "http"
+    yell("checkers at " + scheme + "://" + (host == "0.0.0.0" ? "<this machine>" : "localhost") + ":" +
+         to_yap(bound) + " — ctrl-c to stop")
+    sus (!secure) {
+        yell("(plain http: fine on loopback, and not on a network)")
+    } nah {
+        yell("(a test certificate, so your browser will warn about the issuer -- that is correct)")
+    }
+    yell("you are red and move first; the engine is black, looking " + to_yap(DEPTH) + " moves ahead")
+
+    watch_for_ctrl_c()
+
+    yo deadline = seconds == ghost ? ghost : clock.now() + seconds
+    bruh (!STOPPING) {
+        sus (deadline != ghost && clock.now() >= deadline) {
+            bail
+        }
+        sus (!await_fr internet.hold_up(listener, 250)) {
+            nvm
+        }
+        yo customer = internet.next_customer(listener, 0)
+        sus (customer == ghost) {
+            nvm
+        }
+        // Not awaited: calling an `async_ngl bet` starts a task and comes
+        // straight back, so the loop is accepting again at once.
+        handle(customer)
+    }
+
+    internet.close_shop(listener)
+    yell("served " + to_yap(SERVED) + " requests. closing up.")
+    bounce 0
+}
+
+dip(main(the_args()))

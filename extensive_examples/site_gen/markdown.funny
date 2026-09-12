@@ -1,0 +1,285 @@
+// markdown.funny — Markdown to HTML, the everyday subset.
+//
+// Headings, paragraphs, emphasis, links, images, code spans, fenced code,
+// ordered and unordered lists, block quotes and horizontal rules. That is
+// what people actually write; it is not all of CommonMark, and the README
+// says exactly which parts are missing rather than letting you find out.
+//
+// Raw HTML in the source is **escaped**, not passed through. A site generator
+// that passes HTML through is a sanitizer as well, and this one is not: if you
+// write `<script>` in a post, you get `&lt;script&gt;` on the page.
+//
+// The shape is the obvious one: split into lines, walk them, and let each
+// block construct consume as many lines as it owns. Inline markup is a second
+// pass over the text of a block, because emphasis cannot span a paragraph.
+
+gimme yapper
+
+flex deadass BULLETS = ["- ", "* ", "+ "]
+
+// -- escaping ---------------------------------------------------------------------
+
+flex bet escape_html(text) {
+    yo out = yapper.replace(text, "&", "&amp;")
+    out = yapper.replace(out, "<", "&lt;")
+    out = yapper.replace(out, ">", "&gt;")
+    out = yapper.replace(out, "\"", "&quot;")
+    bounce out
+}
+
+// A URL inside href="" or src="". Quotes and angle brackets cannot survive,
+// which is what stops a link from closing the attribute and writing its own.
+bet escape_url(url) {
+    bounce escape_html(yapper.trim(url))
+}
+
+// -- inline -----------------------------------------------------------------------
+
+// `code`, **strong**, *emphasis*, [links](url), ![images](url), in one pass.
+// Code spans come first and swallow whatever is inside them: that is what
+// makes `**not bold**` render as literal asterisks.
+flex bet inline_html(text) {
+    yo out = []
+    yo plain = []
+    yo i = 0
+    yo n = text.how_thicc()
+
+    bet flush() {
+        sus (plain.how_thicc() > 0) {
+            out.yeet_in(escape_html(plain.join("")))
+            plain = []
+        }
+    }
+
+    bruh (i < n) {
+        yo ch = text[i]
+
+        sus (ch == "`") {
+            yo close = find_from(text, "`", i + 1)
+            sus (close > 0) {
+                flush()
+                out.yeet_in("<code>" + escape_html(yapper.slice(text, i + 1, close)) + "</code>")
+                i = close + 1
+                nvm
+            }
+        }
+
+        sus (ch == "!" && i + 1 < n && text[i + 1] == "[") {
+            yo img = read_link(text, i + 1)
+            sus (img != ghost) {
+                flush()
+                out.yeet_in("<img src=\"" + escape_url(img["url"]) + "\" alt=\"" + escape_html(img["text"]) + "\">")
+                i = img["end"]
+                nvm
+            }
+        }
+
+        sus (ch == "[") {
+            yo link = read_link(text, i)
+            sus (link != ghost) {
+                flush()
+                out.yeet_in("<a href=\"" + escape_url(link["url"]) + "\">" + inline_html(link["text"]) + "</a>")
+                i = link["end"]
+                nvm
+            }
+        }
+
+        sus (ch == "*" || ch == "_") {
+            yo double = i + 1 < n && text[i + 1] == ch
+            yo marker = double ? ch + ch : ch
+            yo close = find_from(text, marker, i + marker.how_thicc())
+            sus (close > 0 && close > i + marker.how_thicc()) {
+                flush()
+                yo inner = inline_html(yapper.slice(text, i + marker.how_thicc(), close))
+                out.yeet_in(double ? "<strong>" + inner + "</strong>" : "<em>" + inner + "</em>")
+                i = close + marker.how_thicc()
+                nvm
+            }
+        }
+
+        plain.yeet_in(ch)
+        i += 1
+    }
+    flush()
+    bounce out.join("")
+}
+
+// Where `needle` next appears at or after `start`, or -1.
+bet find_from(text, needle, start) {
+    yo rest = yapper.slice(text, start, text.how_thicc())
+    yo at = yapper.index_of(rest, needle)
+    bounce at < 0 ? -1 : at + start
+}
+
+// `[text](url)` starting at `open`, or ghost if it is not one.
+bet read_link(text, open) {
+    yo close = find_from(text, "]", open + 1)
+    sus (close < 0 || close + 1 >= text.how_thicc() || text[close + 1] != "(") {
+        bounce ghost
+    }
+    yo end = find_from(text, ")", close + 2)
+    sus (end < 0) {
+        bounce ghost
+    }
+    bounce {
+        "text": yapper.slice(text, open + 1, close),
+        "url": yapper.slice(text, close + 2, end),
+        "end": end + 1,
+    }
+}
+
+// -- blocks -------------------------------------------------------------------------
+
+bet is_blank(line) {
+    bounce yapper.trim(line) == ""
+}
+
+bet bullet_of(line) {
+    grind b in BULLETS {
+        sus (yapper.starts_with(line, b)) {
+            bounce b
+        }
+    }
+    bounce ghost
+}
+
+// "1. " or "12. " -- the number itself is not kept, because HTML numbers the
+// list and disagreeing with it helps nobody.
+bet ordered_rest(line) {
+    yo digits = 0
+    bruh (digits < line.how_thicc() && line[digits] >= "0" && line[digits] <= "9") {
+        digits += 1
+    }
+    sus (digits == 0 || digits + 1 >= line.how_thicc() || line[digits] != ".") {
+        bounce ghost
+    }
+    sus (line[digits + 1] != " ") {
+        bounce ghost
+    }
+    bounce yapper.slice(line, digits + 2, line.how_thicc())
+}
+
+bet is_rule(line) {
+    yo t = yapper.trim(line)
+    grind mark in ["---", "***", "___"] {
+        sus (t == mark || (yapper.starts_with(t, mark) && only_of(t, mark[0]))) {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
+bet only_of(text, ch) {
+    grind c in text {
+        sus (c != ch) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+bet heading_level(line) {
+    yo level = 0
+    bruh (level < line.how_thicc() && line[level] == "#") {
+        level += 1
+    }
+    sus (level == 0 || level > 6 || level >= line.how_thicc() || line[level] != " ") {
+        bounce 0
+    }
+    bounce level
+}
+
+// The whole document.
+flex bet to_html(text) {
+    yo lines = yapper.lines(yapper.replace(text, "\r\n", "\n"))
+    yo out = []
+    yo i = 0
+    yo n = lines.how_thicc()
+
+    bruh (i < n) {
+        yo line = lines[i]
+
+        sus (is_blank(line)) {
+            i += 1
+            nvm
+        }
+
+        // Fenced code. Everything inside is literal, including anything that
+        // looks like Markdown, which is the point of a fence.
+        sus (yapper.starts_with(yapper.trim(line), "```")) {
+            yo info = yapper.trim(yapper.slice(yapper.trim(line), 3, yapper.trim(line).how_thicc()))
+            yo body = []
+            i += 1
+            bruh (i < n && !yapper.starts_with(yapper.trim(lines[i]), "```")) {
+                body.yeet_in(lines[i])
+                i += 1
+            }
+            i += 1
+            yo open = info == "" ? "<pre><code>" : "<pre><code class=\"language-" + escape_html(info) + "\">"
+            out.yeet_in(open + escape_html(body.join("\n")) + "\n</code></pre>")
+            nvm
+        }
+
+        sus (is_rule(line)) {
+            out.yeet_in("<hr>")
+            i += 1
+            nvm
+        }
+
+        yo level = heading_level(line)
+        sus (level > 0) {
+            yo body = yapper.slice(line, level + 1, line.how_thicc())
+            out.yeet_in("<h" + to_yap(level) + ">" + inline_html(yapper.trim(body)) + "</h" + to_yap(level) + ">")
+            i += 1
+            nvm
+        }
+
+        // Block quote: every following `>` line belongs to it, and what is
+        // inside is Markdown in its own right.
+        sus (yapper.starts_with(line, ">")) {
+            yo inner = []
+            bruh (i < n && yapper.starts_with(lines[i], ">")) {
+                yo rest = yapper.slice(lines[i], 1, lines[i].how_thicc())
+                inner.yeet_in(yapper.starts_with(rest, " ") ? yapper.slice(rest, 1, rest.how_thicc()) : rest)
+                i += 1
+            }
+            out.yeet_in("<blockquote>\n" + to_html(inner.join("\n")) + "\n</blockquote>")
+            nvm
+        }
+
+        sus (bullet_of(line) != ghost) {
+            yo items = []
+            bruh (i < n && bullet_of(lines[i]) != ghost) {
+                yo b = bullet_of(lines[i])
+                items.yeet_in(inline_html(yapper.slice(lines[i], b.how_thicc(), lines[i].how_thicc())))
+                i += 1
+            }
+            out.yeet_in("<ul>\n<li>" + items.join("</li>\n<li>") + "</li>\n</ul>")
+            nvm
+        }
+
+        sus (ordered_rest(line) != ghost) {
+            yo items = []
+            bruh (i < n && ordered_rest(lines[i]) != ghost) {
+                items.yeet_in(inline_html(ordered_rest(lines[i])))
+                i += 1
+            }
+            out.yeet_in("<ol>\n<li>" + items.join("</li>\n<li>") + "</li>\n</ol>")
+            nvm
+        }
+
+        // A paragraph runs until a blank line or something that starts a
+        // block of its own.
+        yo para = []
+        bruh (i < n && !is_blank(lines[i]) && heading_level(lines[i]) == 0 && !is_rule(lines[i]) &&
+              !yapper.starts_with(lines[i], ">") && bullet_of(lines[i]) == ghost &&
+              ordered_rest(lines[i]) == ghost && !yapper.starts_with(yapper.trim(lines[i]), "```")) {
+            para.yeet_in(yapper.trim(lines[i]))
+            i += 1
+        }
+        sus (para.how_thicc() > 0) {
+            out.yeet_in("<p>" + inline_html(para.join(" ")) + "</p>")
+        }
+    }
+    bounce out.join("\n")
+}

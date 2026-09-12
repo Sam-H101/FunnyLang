@@ -14,7 +14,7 @@
  *
  * WHAT CAN CROSS, and why the rest cannot:
  *
- *   ghost, boolski, numba (fixnum, float and bignum), yapstring   yes
+ *   ghost, boolski, numba (fixnum, float and bignum), yapstring, blob   yes
  *   stash and groupchat of the above, recursively                 yes
  *
  *   bet / lowkey   a closure captures upvalues and a module's globals, which
@@ -51,6 +51,7 @@ typedef enum {
     PV_FLOAT,
     PV_BIGNUM,
     PV_STRING,
+    PV_BLOB,
     PV_STASH,
     PV_GROUPCHAT,
 } PortableKind;
@@ -66,6 +67,10 @@ typedef struct PortableValue {
            ordinary malloc'd memory -- builtins.c already relies on exactly
            that when it decides late whether a result fits a fixnum. */
         ObjBignum *bignum;
+        struct {
+            uint8_t *bytes; /* owned; a blob is bytes, so there is no encoding here */
+            uint32_t len;
+        } blob;
         struct {
             char *bytes; /* owned; NOT NUL-reliant -- a yapstring may hold NUL */
             uint32_t len;

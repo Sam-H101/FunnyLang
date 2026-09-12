@@ -1,7 +1,7 @@
-TypeVibeMismatch: a bet can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, and stash/groupchat of those can cross.
-TypeVibeMismatch: a Dog can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, and stash/groupchat of those can cross.
-TypeVibeMismatch: a squad can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, and stash/groupchat of those can cross.
-TypeVibeMismatch: a pointa can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, and stash/groupchat of those can cross.
+TypeVibeMismatch: a bet can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, blob, and stash/groupchat of those can cross.
+TypeVibeMismatch: a Dog can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, blob, and stash/groupchat of those can cross.
+TypeVibeMismatch: a squad can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, blob, and stash/groupchat of those can cross.
+TypeVibeMismatch: a pointa can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, blob, and stash/groupchat of those can cross.
 TypeVibeMismatch: that stash contains itself, so it can't be handed to an intern.
 TypeVibeMismatch: that groupchat contains itself, so it can't be handed to an intern.
 delivered back: TypeVibeMismatch

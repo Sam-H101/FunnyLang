@@ -43,9 +43,7 @@ threads, and a site that remembers things.
 | `static.funny` | The path guard between a URL and a file |
 | `store.funny` | The data files, and what "protected at rest" means here |
 | `security.funny` | Constant-time compare, tokens, the session cookie, rate windows, validation |
-| `crypto.funny` | SHA-256 and base64 |
-| `json.funny` | A JSON reader and writer |
-| `web/` | The front end: four pages, one stylesheet, a script per page, no framework |
+| `web/` | The front end: four pages, one stylesheet, a script per page, a one-pixel `logo.png` served as bytes, no framework |
 | `data/config.default.json` | The committed defaults |
 | `certs/` | `make_cert.sh`, the test CA and the PKCS#12 identity — **test material, not secrets** |
 | `test_server.funny` | The golden: the pieces, then the real server over real TLS, then the files it wrote |
@@ -75,19 +73,29 @@ password `funnylang`. The settings page nags until it is changed.
 | `data/config.default.json` | never — it is committed | |
 | `data/config.custom.json` | by the keeper | the first time anybody changes a password, profile or default, and on every change after |
 | `data/activity.json` | by the keeper | at most every quarter second while there is something new, and at shutdown; newest 5,000 kept |
+| `vault.key` (beside the data directory) | by the server, on first run | never inside `data/` — it is the key that data is sealed with |
 
 On start the customization file is read if it exists, the default otherwise. A customization file
 that exists and will not parse **stops the server** instead of falling back — falling back would
 quietly undo a password change. `--data DIR` puts the two written files somewhere else.
 
-**Protected at rest, honestly.** Passwords are stored as `sha256:<hex>`: one-way, but unsalted, which
-was a deliberate choice for a demo and is not what a real deployment should do (it wants scrypt or
-Argon2, with a salt). Email addresses, display names, client addresses and user agents are stored as
-`b64:<base64>`. **Base64 is an encoding, not encryption**: it keeps a value from being read over a
-shoulder or matched by a grep, and anyone with the file can reverse it. That too was a deliberate
-choice for a proof of concept. Both live behind `seal`/`unseal` and `hash_password` in `store.funny`,
-and every value carries its prefix, so replacing either with the real thing is a change in one place.
+**Protected at rest, for real.** Passwords go through `vault.hash_password`: PBKDF2-HMAC-SHA256 with
+a fresh 16-byte salt and 600,000 iterations, stored as `pbkdf2-sha256$<iters>$<salt>$<hash>` and
+checked in constant time. One-way — there is no function here that turns one back. Email addresses,
+display names, client addresses and user agents go through `vault.seal`: AES-256-GCM with a fresh
+nonce every time, stored as `v1$<nonce>$<ciphertext+tag>`.
 
+**The key is not in `data/`.** It lives at `--key-file PATH`, which defaults to `vault.key` *beside*
+the data directory rather than inside it, is generated on first run, and is made owner-only where
+the operating system has a mode bit for that. A key kept next to the data it seals is not
+encryption; it is a rearrangement. Back it up separately: lose it and the sealed fields are gone,
+which is what "encrypted at rest" is supposed to mean.
+
+**Both older formats are still read**, so upgrading this example neither locks anybody out nor
+loses anything. A `sha256:<hex>` password — unsalted, which was always the wrong thing and is why
+this changed — still verifies, and is replaced with a real hash the next time that password is
+changed. A `b64:` value still decodes, and is written back sealed the next time anything about it
+changes. Neither format is ever written again.
 ## Secure by default
 
 None of these has a flag to turn it off.
@@ -126,12 +134,36 @@ server**: the main thread opens the secure listener, and every worker is handed 
 accepts from it. The kernel gives each connection to one of them. Each worker is also an event loop,
 so it serves many connections at once — 24 threads each doing what `web_server/` does on one.
 
-Twenty-four heaps cannot share a session table. The **keeper** is one more intern that owns
-everything shared, and the only thread that ever writes to `data/`. Workers ask it over loopback, one
-JSON object per line, after a random secret as the first line of every connection. Every request it
-handles runs start to finish without awaiting anything, so its state needs no lock either. The
-request log travels the same way: a worker's own output is held until it finishes, so each worker
-tells the keeper, and the keeper streams the lines to the main thread, which prints them.
+Twenty-four heaps cannot share a session table. The **keeper** owns everything shared — the config,
+the sessions, the activity log, the rate limits, the stop flag — and is the only thing that writes
+to `data/`. It used to be one more intern with a loopback listener, reached by one JSON object per
+line after a shared secret. It is now a *module on the main thread*, and a worker reaches it with
+`interns.dm`: no port, no secret, no encoder, no connection pool, and nothing on the machine that
+could dial it.
+
+What a connection gave for free was correlation — an answer came back on the connection that asked.
+A VM has one inbox and a worker runs many requests at once, so each request carries a number, one
+task per worker owns the inbox and files each reply under its number, and the asking task yields
+until its own appears. Every message the keeper answers runs start to finish without awaiting
+anything, so its state still needs no lock.
+
+The request log used to travel the same way: workers told the keeper, the keeper streamed the lines
+to the main thread. Workers are hired `{"live": fax}` now, so each one writes its own lines straight
+to this process's stderr as it serves, and the `subscribe` op is gone.
+
+**What the keeper change cost.** The same fixed workload — `test_server.funny`, which drives about
+ninety requests over real TLS including forty page views from four clients at once — three runs
+each, same machine, same runtime binary, only the example's sources differing:
+
+| | loopback keeper | keeper over DMs |
+|---|---|---|
+| `test_server.funny`, end to end | 4.36 / 4.21 / 4.04 s | 4.29 / 4.28 / 4.27 s |
+
+Which is to say: no measurable difference, and that is the honest answer. The work a request does
+is dominated by the TLS handshake; what changed underneath it is that the round trip to the keeper
+no longer involves a socket, an encoder, a parser and a connection pool. What the rework bought is
+not speed — it is that there is no loopback port to dial, no shared secret to leak, and about a
+hundred and fifty fewer lines to be wrong.
 
 Measured on an 8-core machine under WSL2, `--threads 1` against the default 24, TLS 1.3 throughout,
 with the per-address rate limit raised so it did not interfere:
@@ -188,7 +220,7 @@ loses the race gets `ghost` instead of freezing in `accept()`), SIGPIPE ignored 
 cannot kill the process, and a side table in `platform.c` mapping socket handles to TLS sessions so
 `recv`/`send`/`close`/`poll` do the right thing without `internet.c` knowing. `the_script()` needed
 the command line to pass the program's path down, which touched `selfhost/` and regenerated
-`native/toolchain_blob.c`. `PLAN.md` in this directory has the design and every deviation from it.
+`native/toolchain_blob.c`. The design and every deviation from it were logged in a `PLAN.md` beside this file, retired once the example was built (`git show 0e5b238:extensive_examples/web_server_https/PLAN.md`).
 
 ## What it is not
 

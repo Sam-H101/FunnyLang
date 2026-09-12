@@ -1,0 +1,6 @@
+// And for the name a caught error is bound to.
+sketchy {
+    yap "hi"
+} my_bad (in) {
+    yap "caught"
+}

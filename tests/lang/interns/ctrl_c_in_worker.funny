@@ -1,0 +1,9 @@
+// tests/lang/interns/ctrl_c_in_worker.funny -- an intern cannot wait on
+// Ctrl-C. It shares the process but not the terminal, and two VMs both
+// claiming the interrupt would mean neither could shut down tidily. Its boss
+// waits and dms it.
+gimme interns
+gimme filez
+
+yo w = interns.hire(filez.join_path(filez.dir_of(the_script()), "ctrl_c_worker.funny"), ghost)
+yap interns.wait_up(w)

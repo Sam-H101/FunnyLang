@@ -74,6 +74,12 @@ error): `vibin`, `yield_lol`, `match_this`, `when`.
 Identifiers start with a letter, `_`, or emoji, and continue with letters, digits, `_`, or emoji.
 Case sensitive.
 
+
+Using a keyword where a name belongs says so in as many words: `yo me = 1` answers *"'me' is a
+keyword (it's `this` inside a squad) — pick another name."* rather than "expected a variable name",
+which is true and tells you nothing about a word that looks perfectly ordinary. Every keyword in
+the table above has its own one-line explanation.
+
 ## Operators and precedence
 
 Lowest to highest. Every binary operator is left-associative except assignment, `? :`, and `**`.
@@ -90,9 +96,9 @@ Lowest to highest. Every binary operator is left-associative except assignment, 
 | 8 | `^` | bitwise xor |
 | 9 | `&` | bitwise and |
 | 10 | `==` `!=` `same_energy` `diff_energy` | |
-| 11 | `<` `<=` `>` `>=` `in` | `in` works on `stash`, `groupchat`, `yapstring` |
+| 11 | `<` `<=` `>` `>=` `in` | `in` works on `stash`, `groupchat`, `yapstring`, `blob` |
 | 12 | `<<` `>>` | bit shifts |
-| 13 | `+` `-` | `+` also concatenates `yapstring`s and `stash`es |
+| 13 | `+` `-` | `+` also concatenates `yapstring`s, `stash`es and `blob`s |
 | 14 | `*` `/` `\` `%` | `*` also repeats a `yapstring`/`stash`: `"ha" * 3` |
 | 15 | `**` | right-assoc, and binds *looser* than unary — `-2 ** 2` is `(-2) ** 2` |
 | 16 | unary `-` `!` `aint` `~` | |
@@ -140,7 +146,7 @@ grind i from 10 to 0 step -2 {
     yap i
 }
 
-// for-each over a stash, yapstring, or groupchat (groupchat yields its keys)
+// for-each over a stash, yapstring, blob, or groupchat (groupchat yields its keys)
 grind item in ["a", "b", "c"] {
     sus (item same_energy "b") { nvm }
     yap item
@@ -170,6 +176,22 @@ sketchy {
 A statement ends at a newline or `;`. Blank lines and repeated terminators are skipped. Inside
 `(...)`/`[...]`/`{...}` of an argument list or array/map literal, newlines are suppressed so
 multi-line expressions read naturally; the `{}` braces of a statement block do not suppress them.
+
+
+### Continuing a line with `.`
+
+A line that starts with a `.` continues the expression above it, so a long chain reads one step per
+line instead of running off the side of the screen:
+
+```funny
+yo names = people
+    .vibe_check(lowkey (p) => p["age"] > 17)
+    .glow_up(lowkey (p) => p["name"])
+```
+
+Nothing else can start a line with a dot — `.5` is not a number, since a float needs its digits
+before the point — so there is nothing for this to be ambiguous with. Blank lines between the steps
+are fine, and `funny fmt` keeps the layout rather than folding the chain back onto one line.
 
 ## Functions & closures
 
@@ -300,6 +322,12 @@ reference: [STDLIB.md](STDLIB.md).
 `reverse()`, `to_numba()`, `chars()`, `at(i)`, `code_at(i)`, `repeat(n)`, `pad_left(n, c)`,
 `pad_right(n, c)`.
 
+**`blob`** (immutable, bytes rather than codepoints) — `to_yap()`, `to_hex()`, `to_base64()`,
+`to_stash()`, `how_thicc()`, `starts_with(b)`, `ends_with(b)`, `index_of(b)`, `contains(b)`,
+`split(sep)`, `join(stash)`. Built with `blob.of(stash)`, `blob.from_yap(s)`, `blob.from_hex(s)`
+or `blob.from_base64(s)`. `b[i]` is a numba `0`–`255`, `b[a:c]` slices bytes, and assigning to
+`b[i]` raises `ImmutableVibes`. A `yapstring` is text; a `blob` is a PNG, a request body or a key.
+
 **`stash`** (mutable, reference semantics) — `how_thicc()`, `yeet_in(x)` (push), `yoink()` (pop),
 `yoink_at(i)`, `insert(i, x)`, `contains(x)`, `index_of(x)`, `slice(a, b)`, `reverse()`,
 `sort(cmp?)`, `join(sep)`, `glow_up(fn)` (map), `vibe_check(fn)` (filter), `squish(fn, init)`
@@ -307,7 +335,7 @@ reference: [STDLIB.md](STDLIB.md).
 
 **`groupchat`** (mutable, reference semantics, insertion-ordered) — `how_thicc()`, `keys()`,
 `values()`, `pairs()`, `has(k)`, `get(k, default?)`, `set(k, v)`, `remove(k)`, `merge(other)`,
-`clone()`, `clear()`. Keys may be a `yapstring`, `numba`, or `boolski`.
+`clone()`, `clear()`. Keys may be a `yapstring`, `numba`, `boolski`, or `blob`.
 
 **`numba`** — `to_yap()`, `abs()`, `floor()`, `ceil()`, `round(digits?)`, `is_whole()`.
 
@@ -416,7 +444,7 @@ yap interns.everybody([a, b])        // [42, 200]
 
 Each hire is an OS thread running a whole program in its own VM, with its own collector. **Nothing
 is shared**, which is why nothing needs a lock: arguments are deep-copied in and results
-deep-copied out. `ghost`, `boolski`, `numba`, `yapstring` and `stash`/`groupchat` of those can
+deep-copied out. `ghost`, `boolski`, `numba`, `yapstring`, `blob` and `stash`/`groupchat` of those can
 cross; a `bet`, a squad instance, a `pointa` or an `otw` cannot, because each references a heap and
 there is no second copy of that heap on the other side. A structure containing itself is refused
 too. Every refusal names the type.
@@ -424,6 +452,31 @@ too. Every refusal names the type.
 `interns.wait_up(x)` blocks — it is the non-async way to wait, for an intern or a `clock.chill`. For
 an `otw` an `async_ngl bet` will settle, use `await_fr`: the task needs the interpreter that
 `wait_up` would be holding. Full reference: [STDLIB.md](STDLIB.md#interns--workers-on-real-os-threads).
+
+### Messages between interns
+
+A worker does not have to be a function call. `interns.dm(who, value)` posts a message and returns
+at once; `interns.check_dms(ms?)` is an `otw` that settles with `{"from", "msg"}` when one arrives,
+or `ghost` if the deadline passes first. Messages are FIFO per inbox and deep-copied exactly like
+an assignment, so the two threads still share nothing.
+
+```funny
+gimme interns
+
+yo w = interns.hire("worker.funny", ghost)
+interns.dm(w, "start")
+yo reply = interns.wait_up(interns.check_dms())
+yap reply["from"]        // which intern it came from
+yap reply["msg"]
+```
+
+Inside a worker, `"boss"` addresses whoever hired it, and the `from` of a message is an address you
+can post straight back to. The shape is a star rather than a mesh: you can talk to an intern you
+hired and to whoever hired you, and a worker that needs to reach a sibling forwards through the one
+they have in common. That is what keeps a handle from ever naming another VM's thread.
+
+A `check_dms` with no deadline, in a program with no interns running and nobody above it, is
+`LeftOnRead`: nothing can arrive, so the runtime says so instead of hanging.
 
 ### Timers
 

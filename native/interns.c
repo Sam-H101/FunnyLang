@@ -16,6 +16,7 @@
 #include "object.h"
 #include "otw.h"
 #include "platform.h"
+#include "status.h"
 #include "portable.h"
 #include "runner.h"
 #include "stash.h"
@@ -38,6 +39,105 @@ static char *dup_cstr(const char *s) {
  * makes it safe for the struct to be written on one thread and read on
  * another, and safe for a worker to outlive the run that hired it.
  */
+/* -- mailboxes -------------------------------------------------------------
+ *
+ * RUNTIME_PLAN.md R2. One per VM: a worker's belongs to its `Intern` rather
+ * than to its VM, so a parent can post to it before the thread has started
+ * and after the worker's VM is gone; a top-level VM makes its own on first
+ * use. Plain malloc'd memory with its own mutex, holding PortableValues --
+ * nothing in here belongs to any collector, which is what makes it safe for
+ * one thread to fill and another to drain.
+ *
+ * Lock order, everywhere: g_lock first, then a mailbox's own lock. A sender
+ * holds g_lock across the whole post, which is what keeps the target's
+ * mailbox from being freed underneath it; a receiver drains its own inbox
+ * with only the mailbox lock, so the two never meet head-on.
+ */
+
+/* A producer a million messages ahead of its consumer is a bug, and the
+   alternative to saying so is the process quietly running out of memory. */
+#define MAILBOX_CAP 1000000
+
+typedef struct {
+    PortableValue *value;
+    /* The sender's id within the *receiving* VM, or 0 for "boss" -- so the
+       "from" a receiver sees is something it can `dm` straight back. */
+    int fromId;
+} Dm;
+
+typedef struct Mailbox {
+    PlatformMutex lock;
+    Dm *items;
+    int count;
+    int capacity;
+    int head; /* ring start */
+} Mailbox;
+
+static Mailbox *mailbox_new(void) {
+    Mailbox *m = (Mailbox *)calloc(1, sizeof(Mailbox));
+    platform_mutex_init(&m->lock);
+    return m;
+}
+
+static bool mailbox_push(Mailbox *m, PortableValue *pv, int fromId) {
+    platform_mutex_lock(&m->lock);
+    if (m->count >= MAILBOX_CAP) {
+        platform_mutex_unlock(&m->lock);
+        return false;
+    }
+    if (m->count == m->capacity) {
+        int wanted = m->capacity == 0 ? 8 : m->capacity * 2;
+        Dm *grown = (Dm *)malloc((size_t)wanted * sizeof(Dm));
+        /* Copied out in order rather than memcpy'd: the ring wraps, and the
+           new array starts at 0 again. */
+        for (int i = 0; i < m->count; i++) grown[i] = m->items[(m->head + i) % m->capacity];
+        free(m->items);
+        m->items = grown;
+        m->capacity = wanted;
+        m->head = 0;
+    }
+    m->items[(m->head + m->count) % m->capacity].value = pv;
+    m->items[(m->head + m->count) % m->capacity].fromId = fromId;
+    m->count++;
+    platform_mutex_unlock(&m->lock);
+    return true;
+}
+
+static bool mailbox_pop(Mailbox *m, Dm *out) {
+    platform_mutex_lock(&m->lock);
+    if (m->count == 0) {
+        platform_mutex_unlock(&m->lock);
+        return false;
+    }
+    *out = m->items[m->head];
+    m->head = (m->head + 1) % m->capacity;
+    m->count--;
+    platform_mutex_unlock(&m->lock);
+    return true;
+}
+
+static int mailbox_count(Mailbox *m) {
+    if (m == NULL) return 0;
+    platform_mutex_lock(&m->lock);
+    int n = m->count;
+    platform_mutex_unlock(&m->lock);
+    return n;
+}
+
+static void mailbox_free(Mailbox *m) {
+    if (m == NULL) return;
+    platform_mutex_lock(&m->lock);
+    for (int i = 0; i < m->count; i++) portable_free(m->items[(m->head + i) % m->capacity].value);
+    free(m->items);
+    m->items = NULL;
+    m->count = 0;
+    m->capacity = 0;
+    m->head = 0;
+    platform_mutex_unlock(&m->lock);
+    platform_mutex_destroy(&m->lock);
+    free(m);
+}
+
 typedef struct Intern {
     /* Unique among this owner's interns, not among the process's -- see
        intern_at. */
@@ -49,6 +149,11 @@ typedef struct Intern {
     bool joined;
     bool retired; /* collected; the slot survives only to say so */
 
+    /* {"live": fax} on hire (RUNTIME_PLAN.md R4): this worker writes straight
+       to the process's stdout and stderr instead of having its output held
+       and replayed when it is joined. */
+    bool live;
+
     /* Set by the worker as the very last thing it does, under g_lock, with a
        broadcast on g_wake. It is what lets the owning thread ask "is this one
        finished?" without committing to a join that might never return --
@@ -58,6 +163,10 @@ typedef struct Intern {
     bool done;
 
     char *label; /* the path it was hired from, for messages */
+
+    /* This worker's inbox. On the Intern rather than on its VM because the
+       parent may post before the thread starts and after the VM is gone. */
+    Mailbox *mailbox;
 
     /* Owned by the parent until the thread starts, then by the worker. The
        thread start is the handoff, and platform_thread_join is the handback;
@@ -124,6 +233,8 @@ static void intern_release(Intern *in) {
     free(in->message);
     free(in->outText);
     free(in->errText);
+    mailbox_free(in->mailbox);
+    in->mailbox = NULL;
     in->label = NULL;
     in->code = NULL;
     in->assignment = NULL;
@@ -166,6 +277,9 @@ static void intern_body(void *userdata) {
     /* How `interns.assignment()` and `interns.deliver()` find their way back
        here from inside the worker's own code. */
     child.workerContext = in;
+    /* Messages posted to this worker land on its Intern, so its VM points at
+       that mailbox rather than owning one of its own. */
+    child.inbox = in->mailbox;
     /* the_script() inside a worker is where it was hired from, made absolute
        so the worker can find its own neighbours whatever the working
        directory is. A path that will not resolve stays as it was given. */
@@ -182,9 +296,15 @@ static void intern_body(void *userdata) {
        shared stream would interleave by luck, and §5 rules out a golden that
        depends on luck; replaying at the join point makes the output appear in
        the order the program waited, which is a fixed order. */
-    FILE *outCap = tmpfile();
-    FILE *errCap = tmpfile();
+    /* Held and replayed at the join by default, so that two workers' lines
+       cannot interleave by luck and a golden's output is a fixed order. A
+       `live` worker opts out: its streams are the real ones, every line is a
+       single flushed write, and the order between threads is whatever it is
+       -- which is what "live" means (RUNTIME_PLAN.md R4). */
+    FILE *outCap = in->live ? NULL : tmpfile();
+    FILE *errCap = in->live ? NULL : tmpfile();
     if (errCap != NULL) child.err = errCap;
+    child.liveStreams = in->live;
 
     char *loadErr = NULL;
     CompiledUnit *unit = NULL;
@@ -428,6 +548,20 @@ static Value m_hire(VM *vm, Value *a, int argc) {
     }
     char *path = dup_cstr(AS_STRING(a[0])->chars);
 
+    bool live = false;
+    if (argc > 2 && !IS_GHOST(a[2])) {
+        if (!(IS_OBJ(a[2]) && AS_OBJ(a[2])->type == OBJ_GROUPCHAT)) {
+            vm_throw_native(vm, "TypeVibeMismatch", "'hire' options need to be a groupchat, not a %s.",
+                            vm_type_name(a[2]));
+            return GHOST_VAL;
+        }
+        ObjGroupChat *opts = (ObjGroupChat *)AS_OBJ(a[2]);
+        Value key = OBJ_VAL(string_new(&vm->gc, "live", 4));
+        GroupChatEntry *e = groupchat_find(opts, key);
+        live = e != NULL && value_is_truthy(e->value);
+    }
+
+
     char reason[512];
     reason[0] = '\0';
     PortableValue *assignment = portable_from_value(argc > 1 ? a[1] : GHOST_VAL, reason, sizeof reason);
@@ -455,6 +589,8 @@ static Value m_hire(VM *vm, Value *a, int argc) {
     in->code = code;
     in->codeLen = codeLen;
     in->assignment = assignment;
+    in->mailbox = mailbox_new();
+    in->live = live;
 
     /* Registered and started under one hold of the lock, so `spawned` is
        never observed out of step with the thread that it describes -- a
@@ -592,6 +728,7 @@ void interns_collect(VM *vm, ObjOtw *p) {
     }
 
     if (in->spawned && !in->joined) {
+        status_set(vm, "joining intern #%d (%s)", in->id, in->label != NULL ? in->label : "?");
         platform_thread_join(&in->thread);
         in->joined = true;
     }
@@ -609,8 +746,10 @@ void interns_collect(VM *vm, ObjOtw *p) {
     }
     gc_pop_temp(&vm->gc);
 
+    platform_mutex_lock(&g_lock);
     in->retired = true;
     intern_release(in);
+    platform_mutex_unlock(&g_lock);
 }
 
 /* `wait_up(x)` -- block until `x` has an answer, and be that answer.
@@ -726,18 +865,210 @@ typedef struct {
     int maxArity;
 } InternEntry;
 
+/* -- DMs (RUNTIME_PLAN.md R2) ---------------------------------------------
+ *
+ * A star, not a mesh: a VM can post to an intern it hired, and a worker can
+ * post to "boss". Worker-to-worker would mean one VM naming another VM's
+ * thread, which is exactly the handle-forging problem per-VM numbering was
+ * built to retire -- and a forwarding worker (which is three lines) is a
+ * clearer way to say it anyway.
+ */
+
+
+static Value m_dm(VM *vm, Value *a, int argc) {
+    (void)argc;
+
+    bool toBoss = IS_STRING(a[0]) && strcmp(AS_STRING(a[0])->chars, "boss") == 0;
+    int id = 0;
+    bool finished = false;
+    if (!toBoss) {
+        if (IS_OBJ(a[0]) && AS_OBJ(a[0])->type == OBJ_OTW) {
+            ObjOtw *p = (ObjOtw *)AS_OBJ(a[0]);
+            id = p->internId;
+            /* A settled handle has already given its id up -- the intern
+               behind it is finished, which is a different thing from the
+               handle being wrong. */
+            if (id == 0 && p->state != OTW_PENDING) finished = true;
+        } else if (IS_INT(a[0])) {
+            /* The `from` of a message that arrived here. Safe to accept as an
+               address precisely because ids are numbered per VM: a stolen one
+               can only ever name one of the thief's own interns. */
+            id = (int)AS_INT(a[0]);
+        }
+        if (finished) {
+            vm_throw_native(vm, "LeftOnRead", "that intern has finished -- it is never going to read that.");
+            return GHOST_VAL;
+        }
+        if (id <= 0) {
+            vm_throw_native(vm, "OutOfPocket", "'dm' needs one of your own interns or \"boss\", not a %s.",
+                            vm_type_name(a[0]));
+            return GHOST_VAL;
+        }
+    }
+
+    char reason[512];
+    reason[0] = '\0';
+    PortableValue *pv = portable_from_value(a[1], reason, sizeof reason);
+    if (pv == NULL) {
+        vm_throw_native(vm, "TypeVibeMismatch", "%s", reason);
+        return GHOST_VAL;
+    }
+
+    /* Everything below happens under g_lock, including the push itself: it is
+       what stops the target's mailbox being freed by a collect on another
+       thread between finding it and writing to it. */
+    const char *flavor = NULL;
+    const char *problem = NULL;
+    platform_mutex_lock(&g_lock);
+    if (toBoss) {
+        Intern *me = (Intern *)vm->workerContext;
+        if (me == NULL) {
+            flavor = "OutOfPocket";
+            problem = "\"boss\" only means something inside an intern's own script.";
+        } else if (me->owner->inbox == NULL) {
+            /* Unreachable: a VM with a worker has done `gimme interns`, which
+               is what makes its inbox. Named rather than silent anyway. */
+            flavor = "LeftOnRead";
+            problem = "whoever hired you isn't listening for messages.";
+        } else if (!mailbox_push((Mailbox *)me->owner->inbox, pv, me->id)) {
+            flavor = "OutOfPocket";
+            problem = "that inbox is a million messages deep. whoever is reading it has given up.";
+        }
+    } else {
+        Intern *in = intern_at(vm, id);
+        if (in == NULL) {
+            flavor = "OutOfPocket";
+            problem = "that isn't one of your interns.";
+        } else if (in->done || in->retired) {
+            flavor = "LeftOnRead";
+            problem = "that intern has finished -- it is never going to read that.";
+        } else if (!mailbox_push(in->mailbox, pv, 0)) {
+            flavor = "OutOfPocket";
+            problem = "that inbox is a million messages deep. whoever is reading it has given up.";
+        }
+    }
+    if (flavor == NULL) platform_cond_broadcast(&g_wake);
+    platform_mutex_unlock(&g_lock);
+
+    if (flavor != NULL) {
+        portable_free(pv);
+        vm_throw_native(vm, flavor, "%s", problem);
+        return GHOST_VAL;
+    }
+    return GHOST_VAL;
+}
+
+bool interns_settle_mailbox(VM *vm, ObjOtw *p) {
+    Dm msg;
+    if (vm->inbox == NULL || !mailbox_pop((Mailbox *)vm->inbox, &msg)) return false;
+
+    gc_push_temp(&vm->gc, OBJ_VAL(p));
+    ObjGroupChat *g = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(g));
+    Value from = msg.fromId == 0 ? OBJ_VAL(string_new(&vm->gc, "boss", 4)) : INT_VAL(msg.fromId);
+    gc_push_temp(&vm->gc, from);
+    groupchat_set(&vm->gc, g, OBJ_VAL(string_new(&vm->gc, "from", 4)), from);
+    gc_pop_temp(&vm->gc);
+    Value body = portable_to_value(vm, msg.value);
+    gc_push_temp(&vm->gc, body);
+    groupchat_set(&vm->gc, g, OBJ_VAL(string_new(&vm->gc, "msg", 3)), body);
+    gc_pop_temp(&vm->gc);
+    otw_fulfill(p, OBJ_VAL(g));
+    gc_pop_temp(&vm->gc);
+    gc_pop_temp(&vm->gc);
+
+    portable_free(msg.value);
+    return true;
+}
+
+static Value m_check_dms(VM *vm, Value *a, int argc) {
+    double deadline = 0.0;
+    if (argc > 0 && !IS_GHOST(a[0])) {
+        double ms;
+        if (IS_INT(a[0])) ms = (double)AS_INT(a[0]);
+        else if (IS_FLOAT(a[0])) ms = AS_FLOAT(a[0]);
+        else {
+            vm_throw_native(vm, "TypeVibeMismatch", "'check_dms' needs a numba of milliseconds, not a %s.",
+                            vm_type_name(a[0]));
+            return GHOST_VAL;
+        }
+        if (ms < 0.0) ms = 0.0;
+        deadline = platform_monotonic_seconds() + ms / 1000.0;
+    }
+    ObjOtw *p = otw_for_mailbox(&vm->gc, deadline);
+    /* Already something waiting? Then it is already settled, and nothing
+       needs to go round the loop for it. */
+    interns_settle_mailbox(vm, p);
+    return OBJ_VAL(p);
+}
+
+static Value m_dms_waiting(VM *vm, Value *a, int argc) {
+    (void)a;
+    (void)argc;
+    return INT_VAL(mailbox_count((Mailbox *)vm->inbox));
+}
+
+bool interns_mail_possible(VM *vm) {
+    /* A worker's parent is alive for as long as the worker is -- a VM joins
+       its interns before it dies -- so a message can always still come. */
+    if (vm->workerContext != NULL) return true;
+    if (!g_ready) return false;
+    platform_mutex_lock(&g_lock);
+    bool any = false;
+    for (int i = 0; i < g_internCount; i++) {
+        Intern *in = g_interns[i];
+        if (in != NULL && in->owner == vm && !in->retired && !in->done) {
+            any = true;
+            break;
+        }
+    }
+    platform_mutex_unlock(&g_lock);
+    return any;
+}
+
+void interns_wait_for_mail(VM *vm, int timeoutMs) {
+    if (!g_ready) return;
+    /* The count is checked under g_lock, and a sender posts under g_lock and
+       broadcasts before releasing it -- so a message that arrives between the
+       check and the wait cannot be missed. */
+    platform_mutex_lock(&g_lock);
+    if (mailbox_count((Mailbox *)vm->inbox) == 0) {
+        platform_cond_wait_ms(&g_wake, &g_lock, timeoutMs < 0 ? 60000 : timeoutMs);
+    }
+    platform_mutex_unlock(&g_lock);
+}
+
+void interns_vm_teardown(VM *vm) {
+    if (vm->inbox == NULL) return;
+    /* A worker's inbox belongs to its Intern, which outlives its VM. */
+    if (vm->workerContext == NULL) mailbox_free((Mailbox *)vm->inbox);
+    vm->inbox = NULL;
+}
+
 static const InternEntry INTERN_FUNCTIONS[] = {
-    {"hire", m_hire, 1, 2},
+    {"hire", m_hire, 1, 3},
     {"wait_up", m_wait_up, 1, 1},
     {"everybody", m_everybody, 1, 1},
     {"headcount", m_headcount, 0, 0},
     {"assignment", m_assignment, 0, 0},
     {"deliver", m_deliver, 1, 1},
+    {"dm", m_dm, 2, 2},
+    {"check_dms", m_check_dms, 0, 1},
+    {"dms_waiting", m_dms_waiting, 0, 0},
 };
 #define INTERN_FUNCTIONS_COUNT (int)(sizeof(INTERN_FUNCTIONS) / sizeof(INTERN_FUNCTIONS[0]))
 
 Value interns_build(VM *vm) {
     registry_init();
+/* A VM's inbox is made here, on its own thread, before it can possibly have
+   hired anybody -- rather than on first use, which is where ThreadSanitizer
+   caught it: a worker posting to "boss" would create its parent's mailbox,
+   writing a field of the parent's VM while the parent was reading it. The
+   registry lock did not help, because the parent reads its own inbox pointer
+   without taking it. Written once, before any thread of this VM's exists,
+   and only read afterwards. (A worker's VM gets its Intern's mailbox in
+   intern_body, which likewise happens before the thread starts.) */
+    if (vm->inbox == NULL) vm->inbox = mailbox_new();
     ObjGroupChat *members = groupchat_new(&vm->gc, NULL, 0);
     gc_push_temp(&vm->gc, OBJ_VAL(members));
     for (int i = 0; i < INTERN_FUNCTIONS_COUNT; i++) {
@@ -773,6 +1104,8 @@ void interns_join_owned_by(VM *vm) {
         platform_mutex_unlock(&g_lock);
         if (pending == NULL) break;
 
+        status_set(vm, "joining intern #%d (%s) at teardown", pending->id,
+                   pending->label != NULL ? pending->label : "?");
         platform_thread_join(&pending->thread);
         pending->joined = true;
     }

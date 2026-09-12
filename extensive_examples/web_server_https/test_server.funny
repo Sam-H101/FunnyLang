@@ -14,30 +14,47 @@
 gimme filez
 gimme yapper
 gimme interns
-gimme { sha256_hex, base64_encode, base64_decode } from "crypto.funny"
-gimme { parse_json, to_json, try_parse_json } from "json.funny"
+gimme vault
+gimme json
+
+// json.parse raises on anything that isn't JSON. A body that is not JSON is
+// just a bad request, so this is the "no" answer rather than an unwind.
+bet try_parse(text) {
+    sketchy {
+        bounce json.parse(text)
+    } my_bad (e) {
+        bounce ghost
+    }
+}
 gimme { read_request, build_response } from "http.funny"
 gimme { ct_equal, cookies_of, session_id_of, valid_email, password_problem, window_hit } from "security.funny"
-gimme { load_config, seal, unseal, hash_password, default_config_path, custom_config_path,
+gimme { load_config, seal, unseal, hash_password, check_password, use_key, default_config_path, custom_config_path,
         activity_path } from "store.funny"
 gimme { static_target } from "static.funny"
 gimme { run_server, stop_server } from "server.funny"
 
 yo HERE = filez.dir_of(the_script())
 
+// Everything at rest is sealed under one key, and this test uses the same one
+// the server will: made here, handed to run_server as --key-file, and never
+// inside the data directory it protects.
+yo KEYFILE = filez.temp_file("vaultkey")
+filez.yeet_out_atomic(KEYFILE, vault.base64_encode(vault.new_key()) + "\n")
+use_key(vault.base64_decode(yapper.trim(filez.slurp(KEYFILE))))
+
 // -- part one: the pieces ------------------------------------------------------------
 
-yap "-- sha-256 and base64 --"
-yap sha256_hex("")
-yap sha256_hex("abc")
-yap sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
-yap base64_encode("funnylang"), base64_decode("ZnVubnlsYW5n"), base64_encode("é💀")
-yap "not base64:", base64_decode("Zm9"), base64_decode("Zm=v"), base64_decode("Zm9*")
+yap "-- hashing and base64 --"
+yap vault.sha256("")
+yap vault.sha256("abc")
+yap vault.sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+yap vault.base64_encode("funnylang"), vault.base64_decode("ZnVubnlsYW5n").to_yap(), vault.base64_encode("é💀")
+yap "not base64:", vault.base64_decode("Zm9"), vault.base64_decode("Zm=v"), vault.base64_decode("Zm9*")
 
 yap "-- json --"
-yap to_json(parse_json("{\"a\": [1, 2.5, -3e2, true, false, null], \"b\": \"x\\n\\u00e9\\ud83d\\ude00\"}"))
-yap "refused:", try_parse_json("[1, 2"), try_parse_json("{} x"), try_parse_json("\"\\q\""),
-    try_parse_json("[" * 40 + "]" * 40)
+yap json.spill(json.parse("{\"a\": [1, 2.5, -3e2, true, false, null], \"b\": \"x\\n\\u00e9\\ud83d\\ude00\"}"))
+yap "refused:", try_parse("[1, 2"), try_parse("{} x"), try_parse("\"\\q\""),
+    try_parse("[" * 600 + "]" * 600)
 
 yap "-- http --"
 bet parse(text) {
@@ -71,7 +88,7 @@ yap "a header that tries to add another:",
     yapper.contains(build_response(200, "", {"X-Evil": "a\r\nSet-Cookie: x=1"}, cap), "Set-Cookie")
 
 yap "-- the path guard --"
-grind p in ["/", "/settings", "/css/site.css", "/js/api.js", "/favicon.svg", "/../etc/passwd", "/css/../../x.css",
+grind p in ["/", "/settings", "/css/site.css", "/js/api.js", "/favicon.svg", "/logo.png", "/../etc/passwd", "/css/../../x.css",
             "/.env", "/.git/config", "/css/", "/a\\b.css", "/c:/x.css", "/x.exe", "/%2e%2e/x.css"] {
     yo t = static_target("/web", p)
     yap p, t == ghost ? "refused" : "-> " + yapper.replace(t["file"], "\\", "/")
@@ -94,9 +111,13 @@ yap "-- data at rest, as committed --"
 yo committed = load_config(default_config_path(HERE), "")
 yo admin0 = committed["config"]["users"]["admin"]
 yap "users:", committed["source"], committed["config"]["users"].keys()
-yap "password:", yapper.slice(admin0["password"], 0, 7), admin0["password"] == hash_password("funnylang")
+yap "password:", yapper.slice(admin0["password"], 0, 7), check_password("funnylang", admin0["password"])
 yap "email:", admin0["profile"]["email"], "->", unseal(admin0["profile"]["email"])
-yap "seal round trip:", unseal(seal("über ✓")), seal("tester@example.com")
+// A sealed value is different every time -- a fresh nonce is the whole
+// point -- so what is checked is the shape and the round trip, never the
+// ciphertext itself.
+yap "seal round trip:", unseal(seal("über ✓")), yapper.starts_with(seal("tester@example.com"), "v1$")
+yap "the same value sealed twice differs:", seal("x") != seal("x")
 
 // -- part two: the server, over TLS -------------------------------------------------------
 
@@ -137,8 +158,9 @@ bet ready(info) {
     DRIVING = drive(info)
 }
 
-yo summary = await_fr run_server(HERE, {"port": 0, "http_port": 0, "threads": 4, "data_dir": DATA, "seconds": 120},
-                                 ready, lowkey (line) => ghost)
+yo summary = await_fr run_server(HERE, {"port": 0, "http_port": 0, "threads": 4, "data_dir": DATA, "seconds": 120,
+                                  "key_file": KEYFILE},
+                                 ready, ghost)
 await_fr DRIVING
 
 yap "threads:", RESULTS["threads"], "config at start:", RESULTS["config"]
@@ -154,20 +176,22 @@ yap "-- data at rest, afterwards --"
 yo after = load_config(default_config_path(HERE), custom_config_path(DATA))
 yo admin1 = after["config"]["users"]["admin"]
 yap "loaded first on the next start:", after["source"]
-yap "password:", yapper.slice(admin1["password"], 0, 7), admin1["password"] == hash_password("correct horse battery")
-yap "display name:", admin1["profile"]["display_name"], "->", unseal(admin1["profile"]["display_name"])
-yap "email:", admin1["profile"]["email"]
+yap "password:", yapper.slice(admin1["password"], 0, 14), check_password("correct horse battery", admin1["password"])
+yap "display name sealed:", yapper.starts_with(admin1["profile"]["display_name"], "v1$"),
+    "->", unseal(admin1["profile"]["display_name"])
+yap "email sealed:", yapper.starts_with(admin1["profile"]["email"], "v1$"),
+    "->", unseal(admin1["profile"]["email"])
 yap "defaults:", admin1["defaults"]
-yap "demo untouched:", after["config"]["users"]["demo"]["password"] == hash_password("funnylang")
+yap "demo untouched:", check_password("funnylang", after["config"]["users"]["demo"]["password"])
 yap "the committed default untouched:",
-    load_config(default_config_path(HERE), "")["config"]["users"]["admin"]["password"] == hash_password("funnylang")
+    check_password("funnylang", load_config(default_config_path(HERE), "")["config"]["users"]["admin"]["password"])
 
-yo log = parse_json(filez.slurp(activity_path(DATA)))
+yo log = json.parse(filez.slurp(activity_path(DATA)))
 yo counts = {}
 yo sealed = fax
 grind e in log {
     counts[e["action"]] = counts.get(e["action"], 0) + 1
-    sealed = sealed && yapper.starts_with(e["ip"], "b64:") && yapper.starts_with(e["agent"], "b64:")
+    sealed = sealed && yapper.starts_with(e["ip"], "v1$") && yapper.starts_with(e["agent"], "v1$")
 }
 yap "activity.json:"
 grind action in counts.keys().sort() {
@@ -178,3 +202,4 @@ yap "addresses and browsers sealed in every entry:", sealed
 filez.obliterate(custom_config_path(DATA))
 filez.obliterate(activity_path(DATA))
 filez.obliterate(DATA)
+filez.obliterate(KEYFILE)

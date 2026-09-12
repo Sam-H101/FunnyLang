@@ -9,6 +9,10 @@
  * therefore deliberately not tested for exact output in the differential
  * suite -- only for producing a value of the right shape/range, the same
  * established exception as examples/chaos.funny's own randomness.
+ *
+ * The generator's state lives in the VM (RUNTIME_PLAN.md R0): each
+ * `interns` worker has its own, so threads never share one, and a seed
+ * gives the same stream on any VM.
  */
 #ifndef FUNNY_RIZZ_H
 #define FUNNY_RIZZ_H
@@ -20,14 +24,14 @@
 
 struct VM;
 
-/* Reseeds the shared generator deterministically from `seed`. Called by
-   rizz.seed(n); also self-seeds from the current time on first use if
-   nothing ever calls this explicitly. */
-void rizz_seed(uint64_t seed);
-/* The next raw 64 bits from the shared xoshiro256** state. */
-uint64_t rizz_next_u64(void);
+/* Reseeds `vm`'s generator deterministically from `seed`. Called by
+   rizz.seed(n); a VM that never calls it is seeded from the OS on first
+   use. */
+void rizz_seed(struct VM *vm, uint64_t seed);
+/* The next raw 64 bits from `vm`'s xoshiro256** state. */
+uint64_t rizz_next_u64(struct VM *vm);
 /* A uniform double in [0, 1), via the top 53 bits of one rizz_next_u64(). */
-double rizz_next_double(void);
+double rizz_next_double(struct VM *vm);
 
 Value rizz_build(struct VM *vm);
 

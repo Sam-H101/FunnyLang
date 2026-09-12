@@ -1,0 +1,3 @@
+// `to` is part of `grind i from 0 to 10`, which is not obvious from looking
+// at a line that just wanted a variable called `to`.
+yo to = 1

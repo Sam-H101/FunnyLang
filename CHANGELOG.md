@@ -2,6 +2,254 @@
 
 All notable changes to FunnyLang are documented here.
 
+## [Unreleased] — the runtime pass
+
+`gimme interns` gave FunnyLang real OS threads; this is the pass over `native/` that makes every
+stdlib module safe on them, and the corpus that proves it. Plan and build log:
+[RUNTIME_PLAN.md](RUNTIME_PLAN.md).
+
+### Added: the threaded-stdlib corpus
+- **`tests/lang/threads/`** — one golden per stdlib module. Each runs the same work on this thread
+  and then on eight interns at once, and passes only if all eight answers match the single-threaded
+  one. CI also runs the whole directory under ThreadSanitizer, along with `extensive_examples`.
+
+### Added: `json`
+
+`gimme json`. `json.parse(text)` and `json.spill(value, {"pretty": fax})`, in C, with the semantics
+`extensive_examples/web_server_https/json.funny` had — that file is now deleted, and the example
+uses the module.
+
+```funny
+gimme json
+
+yo doc = json.parse("{\"name\": \"sam\", \"tags\": [1, 2]}")
+yap doc["name"]                        // sam
+yap json.spill(doc, {"pretty": fax})   // indented, one key per line
+```
+
+- **An integer stays an integer.** A `numba` is arbitrary-precision, so a document full of large
+  ids round-trips exactly rather than losing its low digits to a double, which is what most JSON
+  parsers do to it.
+- `null` is `ghost`, an object is an insertion-ordered `groupchat`, an array is a `stash`.
+- **The parser assumes hostile input**: nesting deeper than 512 is refused rather than being a way
+  to walk the C stack off the end of a thread, a half-parsed value is never handed back, and every
+  failure is one `SkillIssue` naming the character it gave up at.
+- Going out, NaN and infinity become `null`, `U+2028`/`U+2029` are escaped for the browser on the
+  other end, a `blob` becomes base64 text, and a value containing itself is `OutOfPocket`.
+
+### Added: `filez.private(path)`
+
+Makes a file owner-only — `chmod 0600` on POSIX, where that is the difference between a key file
+and a published one. A no-op on Windows, whose equivalent is an ACL rewrite rather than a mode bit;
+saying so is better than a silent half-measure. Added for the HTTPS example's `--key-file`, and
+general enough for anything else that keeps a secret in a file.
+
+### Added: a dump of what every thread is waiting on
+
+A hung program is the failure mode threads add, and it is the one a stack trace cannot help with:
+nothing crashed, so there is nothing to print. Every thread now keeps one line of plain text,
+updated wherever it is about to wait for something, and there are three ways to read them:
+
+```
+-- what every thread is waiting on --
+  #1 loop: 3 tasks; waiting on 2 sockets (up to 25ms) (0.0s ago)
+  #2 [intern] joining intern #4 (worker.funny) (12.4s ago)
+--
+```
+
+- **`SIGQUIT`** (Ctrl-`\`) on POSIX, **Ctrl-Break** on Windows. The next thread to reach a wait
+  point prints the whole table. If every thread is stuck in a join with nowhere to notice, the
+  signal handler writes the table itself, unlocked and marked "may be torn" — a torn diagnostic
+  beats none.
+- **`funny --dump-on-stall 30 run x.funny`** starts a watchdog that prints the table when no thread
+  has touched its line for thirty seconds.
+- **`sus.threads()`** returns the same rows as data, so a server can answer "what is everybody
+  doing" over its own health endpoint instead of somebody having to be at the terminal when it
+  hangs.
+
+The rows are plain C — a fixed buffer each, no allocation, no `Value` — because a diagnostic that
+needs the collector, or the lock the program is already stuck on, is one you cannot get when you
+need it.
+
+### Changed: kinder parser errors, and a line can start with `.`
+
+**A keyword used as a name says which keyword it is, and what it is for.** `yo me = 1` used to
+answer "expected a variable name after 'yo'", which is true and tells you nothing about a word that
+looks perfectly ordinary. It now answers *"'me' is a keyword (it's `this` inside a squad) — pick
+another name."*, and every keyword in the language has its own one-line explanation. The same goes
+for a parameter, a loop variable, a caught error's name, an import and an alias.
+
+**A line that starts with `.` continues the expression above it.**
+
+```funny
+yo names = people
+    .vibe_check(lowkey (p) => p["age"] > 17)
+    .glow_up(lowkey (p) => p["name"])
+```
+
+Nothing else can start a line with a dot — a float needs its digits before the point, so `.5` was
+never a number — which is what makes this unambiguous rather than a guess. Blank lines between the
+steps are fine, and `funny fmt` keeps the layout instead of folding the chain back onto one line.
+
+Both changes are in `selfhost/parser.funny`, so this is the release that regenerates the embedded
+toolchain, and `funny bootstrap --verify` is a fixed point across it.
+
+### Added: atomic file writes
+
+`filez.yeet_out_atomic(path, text)`, `filez.write_blob_atomic(path, b)` and `filez.replace(from, to)`.
+Writing a file in place has a window in which it holds neither the old contents nor the new ones: a
+reader that arrives during it gets half a file, and a crash during it leaves half a file for good.
+These write beside the target, flush the bytes to the disk, and move the new file over the old one
+in a single step.
+
+The temporary file is made in the **target's own directory**, not the OS temp directory, because a
+rename only works within one filesystem. On POSIX the directory entry is flushed after the rename
+as well, so the new contents survive a power cut rather than only a concurrent reader; on Windows
+the move is `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`. A failed move takes its own
+half-written file with it rather than leaving litter next to somebody's data.
+
+### Added: `computer.until_ctrl_c()`
+
+An `otw` that settles the first time somebody presses Ctrl-C. A server can then stop accepting,
+finish what it is holding and write its files out, instead of being killed in the middle of one.
+
+```funny
+gimme computer
+
+yo stop = computer.until_ctrl_c()
+await_fr stop
+yap "shutting down"
+```
+
+- **The second Ctrl-C still ends the process**, so a shutdown that itself hangs is not a trap.
+- The signal handler sets a flag and does nothing else, because almost nothing is safe to call
+  inside one. The event loop reads the flag on its next turn, and caps its wait at 25 ms whenever
+  something is waiting on an interrupt, so it is noticed within that.
+- **Only the program that owns the terminal may ask.** Inside an `interns` worker it is
+  `OutOfPocket` — the worker shares the process but not the session, and two VMs both claiming the
+  interrupt would mean neither shuts down tidily. The boss waits and dms it.
+- A golden cannot press Ctrl-C, so `tests/lang/stdlib/until_ctrl_c` checks everything up to that
+  point and the rest is checked by hand: a program awaiting it, sent a real `SIGINT` from the
+  shell, prints its own shutdown lines and exits 0 rather than dying on the signal, and a second
+  signal during a hung shutdown still kills it.
+
+### Added: live output from an intern
+
+`interns.hire(path, arg, {"live": fax})`. A worker's `yap` and `yell` are held and replayed when it
+is joined — which stays the default, because it is what keeps two workers' lines from interleaving
+by luck and a golden's output in a fixed order. A long-running worker wants the opposite, and now
+asks for it: a live worker writes to this process's own stdout and stderr as it goes.
+
+Every printed line is now assembled and written with a **single** `fwrite`, rather than one write
+per argument. The C library's stream lock is per call, so that is the difference between two
+threads interleaving between lines and interleaving mid-word. The order between threads is still
+whatever it is, which is what "live" means; goldens do not use it.
+
+### Added: `vault`, for passwords and secrets
+
+`gimme vault`. Password hashing and authenticated encryption, taken from the operating system's own
+crypto library — the `dlopen`'d OpenSSL `https` already uses on Linux/BSD, CNG on Windows,
+CommonCrypto on macOS. Nothing here implements a cipher or a hash: a hand-written AES is a
+liability, and every platform ships a reviewed one.
+
+```funny
+gimme vault
+
+yo stored = vault.hash_password("hunter2")      // pbkdf2-sha256$600000$...$...
+yap vault.check_password("hunter2", stored)     // fax
+
+yo key = vault.new_key()
+yo sealed = vault.seal("balance: 100", key, "account-7")
+yap vault.unseal(sealed, key, "account-7")      // balance: 100
+```
+
+- **`hash_password` / `check_password`** — PBKDF2-HMAC-SHA256, fresh 16-byte salt, 600,000
+  iterations by default, constant-time compare. The parameters travel with the hash, so raising the
+  default later does not invalidate anybody's password. A malformed stored string is `cap`, never an
+  error: a login must not leak which part was wrong.
+- **`seal` / `unseal`** — AES-256-GCM with a fresh nonce every time and optional additional
+  authenticated data, so a sealed value can be bound to the record it belongs to. A `yapstring`
+  comes back a `yapstring` and a `blob` comes back a `blob`. Wrong key, wrong `aad` and one changed
+  byte all give the same `SkillIssue`, because telling them apart turns decryption into an oracle.
+- **`new_key`, `derive_key`, `sha256`, `hmac_sha256`, `same_secret`, `base64_encode/decode`.**
+- **The key is the caller's to keep, somewhere the sealed data is not**, and the docs say so in
+  bold. A key in the same file as what it seals is a rearrangement, not encryption.
+- Goldens check the published PBKDF2, SHA-256 and RFC 4231 HMAC vectors, which are the same on
+  every platform and so catch a backend wired up wrongly.
+
+### Added: DMs between interns
+
+`interns.dm(who, value)`, `interns.check_dms(timeout_ms?)`, `interns.dms_waiting()`. A worker used
+to be a function call: hand it one argument, get one answer, and it dies. Now it can be told things
+while it runs and can say things back.
+
+```funny
+gimme interns
+
+yo w = interns.hire("worker.funny", ghost)
+interns.dm(w, "start")
+yo reply = interns.wait_up(interns.check_dms())
+yap reply["msg"]
+```
+
+- **FIFO per inbox, deep-copied like an assignment** — anything `hire` accepts, `blob` included, so
+  the two threads still share nothing at all. A message is delivered whether or not the receiver is
+  asking yet.
+- **A star, not a mesh.** You can post to an intern you hired and to `"boss"`, whoever hired you. A
+  worker reaching a sibling forwards through the one they have in common, which is what keeps a
+  handle from ever naming another VM's thread.
+- **`check_dms` is an `otw`**, so `await_fr` it and only the asking task waits, or `wait_up` it and
+  block. A deadline settles `ghost`; no deadline in a program where nothing can arrive is
+  `LeftOnRead` rather than a hang.
+- An inbox a million messages deep raises `OutOfPocket` at the sender: a producer that far ahead of
+  its consumer is a bug, and the alternative is running out of memory quietly.
+- `tests/lang/interns/dm_*` covers the round trip, a four-worker pool fed twenty jobs, every
+  portable type, both timeouts, three-deep forwarding and each way a `dm` can fail. Under
+  ThreadSanitizer.
+
+### Added: `blob`, a byte sequence
+
+`gimme blob`. A `yapstring` is codepoints, so a PNG read into one has a `how_thicc` that means
+nothing and cannot be built from FunnyLang at all — `chr_of(200)` is two bytes, not the byte 200.
+A `blob` is exactly bytes.
+
+```funny
+gimme blob
+
+yo png = blob.of([137, 80, 78, 71])
+yap png.to_hex()          // 89504e47
+yap png[0]                // 137   -- a numba, not a one-byte blob
+yap png                   // <blob 4 bytes>
+```
+
+- **Constructors** `blob.of(stash)`, `blob.from_yap`, `blob.from_hex`, `blob.from_base64`, and
+  back out with `to_yap` (lossy, U+FFFD), `to_hex`, `to_base64`, `to_stash`.
+- **Operators**: indexing (a numba 0–255), slicing, `+`, `==`, `how_thicc`, `grind byte in b`,
+  and `in` for both a byte value and a run of bytes. **Immutable** — assigning to `b[i]` raises
+  `ImmutableVibes`, and building up means `stash` of blobs then `join`.
+- **Methods** `starts_with`, `ends_with`, `index_of`, `contains`, `split`, `join`, each also a
+  free function taking the blob first.
+- **It crosses to an intern.** A blob is a portable value, alongside ghost/boolski/numba/
+  yapstring/stash/groupchat.
+- **`filez.read_blob` / `write_blob` / `append_blob`**; `internet.holler_back` takes one;
+  `internet.hear_them_out(conn, n, ms, {"raw": fax})` returns one; `go_brrrr`'s response gains a
+  `blob` key beside `body`; `yapper.to_blob` / `yapper.from_blob` bridge the two types.
+- `yap b` prints `<blob 4127 bytes>` rather than spraying bytes across a terminal; `sheesh b`
+  adds the first 16 in hex, which is enough to recognise a file format.
+
+### Fixed
+- **`rizz` kept one generator for the whole process**, unlocked. Two interns rolling dice at the
+  same moment was a data race, and a seeded stream came out different depending on what the other
+  threads happened to be doing. The state now lives in the `VM`, so `rizz.seed(n)` means the same
+  stream wherever it runs. `stash.shuffle_it`, which draws from the same generator, is fixed with
+  it.
+- **First use of randomness now seeds from the operating system** rather than the wall clock. Two
+  interns hired in the same second no longer roll the same dice.
+- **Winsock start-up and the Windows performance-counter frequency** are done under `INIT_ONCE`. A
+  plain `static bool` let one thread see the flag set before the thing it guarded was.
+- **Error text is built with `strerror_r`/`strerror_s`**. Plain `strerror` may hand back a buffer
+  shared by every thread, so two threads failing at once could read each other's message.
+
 ## [Unreleased] — HTTPS
 
 A FunnyLang program can now be an HTTPS server, and `extensive_examples/web_server_https/` is one: a

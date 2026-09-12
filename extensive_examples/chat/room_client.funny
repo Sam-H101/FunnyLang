@@ -1,0 +1,104 @@
+// room_client.funny — a worker's side of the room, over DMs.
+//
+// Grown from `web_server_https/keeper_client.funny`, and the difference is the
+// whole point of this example. That one only ever *asks*: every message it
+// sends gets exactly one reply, and a reply is matched to its question by a
+// number. This one also has to *listen*. When somebody in another worker says
+// something, the boss pushes it here unasked, and nothing was waiting for it.
+//
+// So this VM's single inbox carries two kinds of message, told apart by shape:
+//
+//   {"rid": n, "reply": ...}   an answer to question n
+//   {"push": "said", ...}      something that happened, addressed to nobody
+//
+// One task owns the inbox and sorts them. Replies are filed under their
+// number, for the asking task to collect. Pushes go straight to a handler the
+// worker installs, which writes them to whichever of its own connections care.
+//
+// The asking task waits by yielding -- `clock.chill(0)` settles on the next
+// turn of this thread's event loop -- so a worker serving fifty connections
+// keeps serving them while one of them waits for an answer.
+
+gimme interns
+gimme clock
+
+// Generous, because the boss may be fanning a message out to two dozen
+// workers when this one asks.
+deadass ANSWER_SECONDS = 10.0
+
+// `on_push(msg)` is called for every unsolicited message from the boss.
+flex bet room_link(on_push) {
+    yo link = {"next": 0, "replies": {}, "closed": cap, "on_push": on_push, "mailman": ghost,
+               "pushes": 0, "replies_seen": 0}
+    link["mailman"] = collect(link)
+    bounce link
+}
+
+// The only task that reads this worker's inbox.
+async_ngl bet collect(link) {
+    bruh (!link["closed"]) {
+        yo m = await_fr interns.check_dms(250)
+        sus (m == ghost) {
+            nvm
+        }
+        yo body = m["msg"]
+        sus (what_is_it(body) != "groupchat") {
+            nvm
+        }
+        sus (body.has("rid")) {
+            link["replies"][to_yap(body["rid"])] = body["reply"]
+            link["replies_seen"] += 1
+            nvm
+        }
+        sus (body.has("push")) {
+            link["pushes"] += 1
+            // A handler that falls over must not take the mailman with it:
+            // the connection it was writing to has probably just gone away,
+            // and every other connection on this worker still needs its
+            // messages.
+            sketchy {
+                link["on_push"](body)
+            } my_bad (e) {
+                vibe
+            }
+        }
+    }
+}
+
+// Ask, and wait for the answer to this question rather than the next one that
+// arrives.
+flex async_ngl bet ask_room(link, msg) {
+    link["next"] += 1
+    yo rid = link["next"]
+    yo out = msg.clone()
+    out["rid"] = rid
+    interns.dm("boss", out)
+
+    yo key = to_yap(rid)
+    yo deadline = clock.now() + ANSWER_SECONDS
+    bruh (!link["replies"].has(key)) {
+        sus (clock.now() > deadline) {
+            chuck oops("SkillIssue", "the room isn't answering")
+        }
+        await_fr clock.chill(0)
+    }
+    yo reply = link["replies"][key]
+    link["replies"].remove(key)
+    bounce reply
+}
+
+// Say something with no answer wanted -- a leaving connection, a typing
+// flag. No request id, so the boss knows not to reply and nothing waits.
+flex bet tell_room(msg) {
+    sketchy {
+        interns.dm("boss", msg)
+    } my_bad (e) {
+        // The boss has finished: the server is stopping. There is nothing
+        // useful to do about it here.
+        vibe
+    }
+}
+
+flex bet close_link(link) {
+    link["closed"] = fax
+}

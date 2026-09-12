@@ -1,5 +1,6 @@
 #include "sus.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,7 @@
 #include "modules.h"
 #include "squad.h"
 #include "stash.h"
+#include "status.h"
 #include "da_string.h"
 #include "value.h"
 #include "vm.h"
@@ -120,10 +122,20 @@ static Value m_render_diag(VM *vm, Value *a, int argc) {
  * Same bytes `main.c` runs, so a golden written against it tests the shipped
  * dispatch rather than a re-linked copy of it.
  */
+/* (see above)
+ *
+ * Process-global, and safe because of when it is written (RUNTIME_PLAN.md
+ * R0): main.c installs the pointer once at start-up, before any VM and so
+ * before any `interns` thread exists, and it points at a const array in the
+ * binary. Everything afterwards only reads it.
+ */
 static const uint8_t *g_toolchain = NULL;
 static size_t g_toolchainLen = 0;
 
 void sus_set_toolchain(const uint8_t *bytes, size_t len) {
+    /* Start-up only, and exactly once (RUNTIME_PLAN.md R0): every later reader
+       is on some other thread. */
+    assert(g_toolchain == NULL && "the toolchain is installed once, at start-up");
     g_toolchain = bytes;
     g_toolchainLen = len;
 }
@@ -622,6 +634,31 @@ typedef struct {
     int maxArity;
 } SusEntry;
 
+/* sus.threads() -- the thread table as data, for a program's own health
+   endpoint. The same rows the signal dump prints, so a server can answer
+   "what is everybody doing" over HTTP without anybody having to be at the
+   terminal with a keyboard (RUNTIME_PLAN.md R9). */
+static Value m_threads(VM *vm, Value *a, int argc) {
+    (void)a;
+    (void)argc;
+    StatusRow rows[256];
+    int count = status_snapshot(rows, 256);
+    ObjStash *out = stash_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(out));
+    for (int i = 0; i < count; i++) {
+        ObjGroupChat *g = groupchat_new(&vm->gc, NULL, 0);
+        gc_push_temp(&vm->gc, OBJ_VAL(g));
+        groupchat_set(&vm->gc, g, OBJ_VAL(string_new(&vm->gc, "id", 2)), INT_VAL(rows[i].id));
+        groupchat_set(&vm->gc, g, OBJ_VAL(string_new(&vm->gc, "doing", 5)),
+                      OBJ_VAL(string_new(&vm->gc, rows[i].text, (uint32_t)strlen(rows[i].text))));
+        groupchat_set(&vm->gc, g, OBJ_VAL(string_new(&vm->gc, "intern", 6)), BOOL_VAL(rows[i].isWorker));
+        stash_push(&vm->gc, out, OBJ_VAL(g));
+        gc_pop_temp(&vm->gc);
+    }
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(out);
+}
+
 static const SusEntry SUS_FUNCTIONS[] = {
     {"type_of", m_type_of, 1, 1},
     {"fields_of", m_fields_of, 1, 1},
@@ -635,6 +672,7 @@ static const SusEntry SUS_FUNCTIONS[] = {
     {"new_session", m_new_session, 0, 0},
     {"run_in", m_run_in, 2, 3},
     {"close_session", m_close_session, 1, 1},
+    {"threads", m_threads, 0, 0},
 };
 #define SUS_FUNCTIONS_COUNT (int)(sizeof(SUS_FUNCTIONS) / sizeof(SUS_FUNCTIONS[0]))
 

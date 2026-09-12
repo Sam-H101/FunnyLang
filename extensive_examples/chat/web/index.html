@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chat</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>chat</h1>
+  <p id="status" class="status">connecting…</p>
+</header>
+
+<form id="join" class="join">
+  <label for="user">your name</label>
+  <input id="user" name="user" autocomplete="off" maxlength="24" required>
+  <label for="room">room</label>
+  <input id="room" name="room" autocomplete="off" maxlength="24" value="lobby" required>
+  <button type="submit">join</button>
+</form>
+
+<main id="chat" class="chat" hidden>
+  <section class="messages" aria-label="messages">
+    <ul id="log"></ul>
+    <p id="typing" class="typing"></p>
+  </section>
+  <aside class="who" aria-label="who is here">
+    <h2>here now</h2>
+    <ul id="who"></ul>
+  </aside>
+</main>
+
+<form id="say" class="say" hidden>
+  <label class="visually-hidden" for="text">message</label>
+  <input id="text" name="text" autocomplete="off" maxlength="500" placeholder="say something">
+  <button type="submit">send</button>
+</form>
+
+<script src="/js/chat.js"></script>
+</body>
+</html>

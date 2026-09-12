@@ -1,0 +1,241 @@
+// server.funny — the socket loop, and what each command does.
+//
+//     funny run extensive_examples/kv/server.funny -- --data ./kvdata
+//     funny run extensive_examples/kv/server.funny -- --data ./kvdata --port 6380
+//
+// ONE THREAD, ON PURPOSE, AND FOR THE OPPOSITE REASON TO THE WEB SERVER.
+//
+// `web_server/` is one thread because its handlers share a guestbook and
+// threads would need locks around it. This is one thread because *every
+// command touches the same map*. A store spread over real threads needs a lock
+// on the map, or a keeper owning it that every thread messages -- and then the
+// throughput is the keeper's, so the threads bought nothing. A store is the
+// case where one thread is not a compromise: it is the design.
+//
+// The shape is `web_server/serve.funny`'s exactly. A task per connection, and
+// every read waits on the event loop rather than on the socket, so a client
+// that opens a connection and says nothing costs one parked task instead of
+// the whole server.
+
+gimme internet
+gimme clock
+gimme yapper
+gimme blob
+gimme filez
+gimme computer
+
+gimme { open_store, kv_info, snapshot, sweep } from "store.funny"
+gimme { new_reader, read_request, error_reply } from "protocol.funny"
+gimme { dispatch } from "commands.funny"
+
+flex deadass DEFAULT_PORT = 6380
+flex deadass IDLE_TIMEOUT_MS = 300000
+flex deadass SWEEP_EVERY_MS = 1000
+
+yo STOPPING = cap
+yo CONNECTIONS = 0
+yo COMMANDS_SERVED = 0
+
+// -- one connection ---------------------------------------------------------------------
+
+// A connection is a stream of commands, not one request: a client holds it
+// open and keeps asking. It ends when the client closes, when it goes quiet
+// for long enough, or when the server is stopping.
+flex async_ngl bet serve(customer, store, quiet) {
+    CONNECTIONS += 1
+    yo conn = customer["conn"]
+    sketchy {
+        yo reader = new_reader(lowkey () => read_more(conn))
+        bruh (!STOPPING) {
+            yo req = read_request(reader)
+            sus (req == ghost) {
+                bail
+            }
+            sus (req.has("bad")) {
+                internet.holler_back(conn, error_reply("SkillIssue", req["bad"]))
+                nvm
+            }
+            yo reply = ghost
+            sketchy {
+                yo outcome = dispatch(store, req)
+                reply = outcome["reply"]
+                sus (outcome["stop"]) {
+                    STOPPING = fax
+                }
+            } my_bad (e) {
+                // A command that falls over is one bad reply, not a dead
+                // server. The flavor travels so the client can tell what kind
+                // of wrong it was.
+                reply = error_reply(e.flavor, e.message)
+            }
+            internet.holler_back(conn, reply)
+            COMMANDS_SERVED += 1
+            sus (!quiet) {
+                yell(clock.date_yap("%H:%M:%S") + "  " + customer["peer"] + "  " +
+                     req["verb"] + " " + (req["args"].how_thicc() > 0 ? req["args"][0] : ""))
+            }
+        }
+    } my_bad (e) {
+        sus (!quiet) {
+            yell("dropped a connection: " + e.flavor + ": " + e.message)
+        }
+    }
+    internet.kick_out(conn)
+    CONNECTIONS -= 1
+}
+
+// `hold_up` first, so waiting costs this task and nobody else; the read then
+// cannot block, because the loop has already said there is something there.
+// Raw bytes, because a value is bytes and decoding it as text would corrupt
+// anything that is not.
+flex bet read_more(conn) {
+    sus (!await_fr internet.hold_up(conn, IDLE_TIMEOUT_MS)) {
+        bounce ""
+    }
+    bounce internet.hear_them_out(conn, 65536, 0, {"raw": fax})
+}
+
+// -- the sweep ---------------------------------------------------------------------------
+
+// Expiry is checked whenever a key is touched, so this is not what makes TTL
+// correct. It is what stops a key nobody ever asks for again from sitting in
+// memory until the process ends.
+flex async_ngl bet sweeper(store, quiet) {
+    bruh (!STOPPING) {
+        await_fr clock.chill(SWEEP_EVERY_MS)
+        yo gone = sweep(store)
+        sus (gone > 0 && !quiet) {
+            yell("swept " + to_yap(gone) + " expired key" + (gone == 1 ? "" : "s"))
+        }
+    }
+}
+
+// -- the command line ------------------------------------------------------------------
+
+bet usage() {
+    yell("usage: server.funny [--data DIR] [--port N] [--host H] [--snapshot-every N]")
+    yell("                    [--seconds N] [--quiet]")
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo data_dir = "./kvdata"
+    yo port = DEFAULT_PORT
+    yo host = "127.0.0.1"
+    yo snapshot_every = 128
+    yo seconds = ghost
+    yo quiet = cap
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--data" && i + 1 < args.how_thicc()) {
+            data_dir = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--port" && i + 1 < args.how_thicc()) {
+            port = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--host" && i + 1 < args.how_thicc()) {
+            host = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--snapshot-every" && i + 1 < args.how_thicc()) {
+            snapshot_every = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--seconds" && i + 1 < args.how_thicc()) {
+            seconds = to_numba(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--quiet") {
+            quiet = fax
+            i += 1
+        } nah {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        }
+    }
+
+    yo store = ghost
+    sketchy {
+        store = open_store(data_dir, snapshot_every)
+    } my_bad (e) {
+        yell("couldn't open " + data_dir + ": " + e.message)
+        bounce 1
+    }
+
+    yo listener = ghost
+    sketchy {
+        listener = internet.open_shop(port, host)
+    } my_bad (e) {
+        yell("couldn't listen: " + e.message)
+        bounce 1
+    }
+    yo bound = internet.shop_port(listener)
+
+    yell("kv listening on " + host + ":" + to_yap(bound) + " — ctrl-c to stop")
+    sus (store["replayed"] > 0) {
+        yell("replayed " + to_yap(store["replayed"]) + " logged operations")
+    }
+    yell("holding " + to_yap(kv_info(store)["keys"]) + " keys from " + data_dir)
+
+    sweeper(store, quiet)
+
+    // Ctrl-C is watched rather than awaited: awaiting it here would park this
+    // task on a thing that only settles when a person presses a key, and the
+    // accept loop would never run.
+    watch_for_ctrl_c()
+
+    yo deadline = seconds == ghost ? ghost : clock.now() + seconds
+    bruh (!STOPPING) {
+        sus (deadline != ghost && clock.now() >= deadline) {
+            bail
+        }
+        sus (!await_fr internet.hold_up(listener, 250)) {
+            nvm
+        }
+        yo customer = internet.next_customer(listener, 0)
+        sus (customer == ghost) {
+            nvm
+        }
+        // Not awaited: calling an `async_ngl bet` starts a task and comes
+        // straight back, so the loop is accepting again before this one has
+        // read a byte.
+        serve(customer, store, quiet)
+    }
+
+    // Let whatever is mid-command finish before the door shuts.
+    yo waited = 0
+    bruh (CONNECTIONS > 0 && waited < 2000) {
+        await_fr clock.chill(20)
+        waited += 20
+    }
+    internet.close_shop(listener)
+
+    // The snapshot on the way out is what makes a clean stop cheap to start
+    // from: the log is emptied, so the next start reads one file.
+    yo rows = snapshot(store)
+    yell("served " + to_yap(COMMANDS_SERVED) + " commands. snapshotted " + to_yap(rows) +
+         " keys. closing up.")
+    bounce 0
+}
+
+flex async_ngl bet watch_for_ctrl_c() {
+    sketchy {
+        await_fr computer.until_ctrl_c()
+        yell("")
+        yell("ctrl-c — finishing up and writing a snapshot.")
+        STOPPING = fax
+    } my_bad (e) {
+        // Inside a worker, or wherever the terminal is not ours to watch.
+        // Not being able to catch Ctrl-C is not a reason to refuse to serve.
+    }
+}
+
+dip(main(the_args()))

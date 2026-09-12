@@ -1,0 +1,330 @@
+// worker.funny — one acceptor thread, and the connections it holds.
+//
+// Hired by server.funny, handed the same listener as every other worker. Each
+// one runs the accept loop from `web_server/serve.funny`: wait on the
+// listener, take a caller, start a task, go round. So every thread serves many
+// connections at once, and the kernel spreads new connections across threads.
+//
+// A connection starts as HTTP. If it asks to become a WebSocket it never goes
+// back, and this worker keeps it in CONNS until it closes. Everything else is
+// a file out of web/.
+//
+// THE TWO DIRECTIONS. A frame arriving from a browser is read by that
+// connection's own task and sent to the boss. A message from the boss arrives
+// on this VM's single inbox, is picked up by room_client's mailman, and is
+// written to whichever of CONNS care about it. Those are different tasks on
+// one thread, which is why neither needs a lock: they interleave only where
+// they yield.
+
+gimme internet
+gimme interns
+gimme clock
+gimme yapper
+gimme blob
+gimme json
+
+// Local, not `../web_server_https/`, and not by preference: a worker cannot
+// use a module reached through a parent directory, because a bundle keys every
+// module relative to the entry file's directory. RUNTIME_PLAN.md §9 has the
+// reproduction, and this example's README says what was lost.
+gimme { read_request, build_response, STATUS_TEXT, SECURITY_HEADERS } from "http.funny"
+gimme { static_target, read_static } from "static.funny"
+gimme { handshake, new_reader, read_message, text_frame, pong_frame, close_frame } from "ws.funny"
+gimme { room_link, ask_room, tell_room, close_link } from "room_client.funny"
+
+yo JOB = interns.assignment()
+yo THREAD = JOB["thread"]
+yo LISTENER = JOB["listener"]
+yo WEB_DIR = JOB["web_dir"]
+
+deadass MAX_IN_FLIGHT = 256
+deadass READ_TIMEOUT_MS = 5000
+// How long a socket may say nothing before it is dropped. Long, because a
+// quiet chat room is the normal case, and the page pings well inside it.
+deadass IDLE_TIMEOUT_MS = 120000
+
+yo CONNS = {}
+yo IN_FLIGHT = 0
+yo SERVED = 0
+yo FRAMES_IN = 0
+yo FRAMES_OUT = 0
+yo STOPPING = cap
+yo NEXT_CID = 0
+
+// A connection id unique across the whole server: a worker's own number and a
+// counter. The boss files members by it, and two workers must never collide.
+bet next_cid() {
+    NEXT_CID += 1
+    bounce "t" + to_yap(THREAD) + "c" + to_yap(NEXT_CID)
+}
+
+// -- the boss pushing to us ----------------------------------------------------------
+
+// Called by room_client's mailman for every unsolicited message. Written to
+// each connection in the room it names -- and to nobody else, which is what
+// keeps two rooms on one server from hearing each other.
+bet deliver(push) {
+    yo room = push.get("room", ghost)
+    yo frame = text_frame(json.spill(push), ghost)
+    grind cid in CONNS.keys() {
+        yo held = CONNS[cid]
+        sus (!held["open"] || (room != ghost && held["room"] != room)) {
+            nvm
+        }
+        sketchy {
+            internet.holler_back(held["conn"], frame)
+            FRAMES_OUT += 1
+        } my_bad (e) {
+            // That browser has gone. Its own task will notice and tell the
+            // boss; there is nothing to do here but not die.
+            held["open"] = cap
+        }
+    }
+}
+
+yo LINK = room_link(deliver)
+
+// -- one WebSocket connection ---------------------------------------------------------
+
+// Everything a client may send. One JSON object per text frame, because a
+// chat message is structured and inventing a second framing inside frames
+// would be silly.
+async_ngl bet on_client_message(cid, text) {
+    yo msg = ghost
+    sketchy {
+        msg = json.parse(text)
+    } my_bad (e) {
+        bounce {"ok": cap, "error": "that wasn't JSON"}
+    }
+    sus (what_is_it(msg) != "groupchat") {
+        bounce {"ok": cap, "error": "a message is an object"}
+    }
+
+    yo op = msg.get("op", "")
+    yo held = CONNS[cid]
+
+    sus (op == "join") {
+        yo who = trimmed(msg.get("user", ""))
+        yo wanted = trimmed(msg.get("room", "lobby"))
+
+        // Recorded *before* asking, not after. The boss starts fanning
+        // messages to this room the instant it records the join, and it
+        // answers this task afterwards -- so a message broadcast in between
+        // would arrive here while `held["room"]` was still ghost, be filtered
+        // out as "not in that room", and be silently lost.
+        //
+        // That window is tiny and the bug it caused was not: one client in
+        // six missing one message from the middle of a run, only under
+        // ThreadSanitizer, which stretches the window about tenfold. Setting
+        // it first closes it, and a refused join puts it back.
+        yo before = held["room"]
+        held["room"] = wanted
+        held["user"] = who
+
+        yo reply = await_fr ask_room(LINK, {"op": "join", "cid": cid, "user": who, "room": wanted})
+        sus (reply["ok"]) {
+            held["room"] = reply["room"]
+        } nah {
+            held["room"] = before
+        }
+        bounce reply
+    }
+    sus (op == "say") {
+        bounce await_fr ask_room(LINK, {"op": "say", "cid": cid, "text": trimmed(msg.get("text", ""))})
+    }
+    sus (op == "who") {
+        bounce await_fr ask_room(LINK, {"op": "who", "room": held["room"]})
+    }
+    sus (op == "typing") {
+        // No answer wanted: a typing flag that arrives late is worthless, and
+        // waiting for a reply on every keystroke would be absurd.
+        tell_room({"op": "typing", "cid": cid, "on": msg.get("on", cap)})
+        bounce ghost
+    }
+    bounce {"ok": cap, "error": "unknown op " + to_yap(op)}
+}
+
+bet trimmed(v) {
+    bounce what_is_it(v) == "yapstring" ? yapper.trim(v) : ""
+}
+
+// The frame loop. It ends when the client closes, when the server is
+// stopping, or when the socket breaks.
+async_ngl bet talk(cid, conn) {
+    yo reader = new_reader(lowkey () {
+        sus (!await_fr internet.hold_up(conn, IDLE_TIMEOUT_MS)) {
+            bounce ""
+        }
+        bounce internet.hear_them_out(conn, 65536, 0, {"raw": fax})
+    })
+
+    bruh (!STOPPING && CONNS[cid]["open"]) {
+        yo m = read_message(reader)
+        sus (m == ghost) {
+            bail
+        }
+        FRAMES_IN += 1
+
+        sus (m["kind"] == "ping") {
+            internet.holler_back(conn, pong_frame(m["data"], ghost))
+            FRAMES_OUT += 1
+            nvm
+        }
+        sus (m["kind"] == "pong") {
+            nvm
+        }
+        sus (m["kind"] == "close") {
+            // The closing handshake: answer with a close of our own, then
+            // stop. Echoing their code is what the RFC asks for.
+            sketchy {
+                internet.holler_back(conn, close_frame(m["code"] ?? 1000, "", ghost))
+            } my_bad (e) {
+                vibe
+            }
+            bail
+        }
+        sus (m["kind"] == "binary") {
+            // This chat is text. Saying so beats ignoring it.
+            internet.holler_back(conn, text_frame(json.spill({"ok": cap, "error": "this room speaks text"}), ghost))
+            FRAMES_OUT += 1
+            nvm
+        }
+
+        yo reply = await_fr on_client_message(cid, m["text"])
+        sus (reply != ghost) {
+            internet.holler_back(conn, text_frame(json.spill(reply), ghost))
+            FRAMES_OUT += 1
+        }
+    }
+}
+
+// -- one connection, from the first byte ------------------------------------------------
+
+async_ngl bet serve(customer) {
+    yo conn = customer["conn"]
+    yo req = await_fr read_request(lowkey (ms) => read_more(conn, ms))
+    sus (!req["ok"]) {
+        sus (req["status"] != ghost) {
+            internet.holler_back(conn, build_response(req["status"],
+                                                      STATUS_TEXT.get(req["status"], "no") + "\n",
+                                                      {"Content-Type": "text/plain; charset=utf-8"}))
+        }
+        bounce ghost
+    }
+    SERVED += 1
+
+    // The upgrade. Everything else on this connection is HTTP and ends when
+    // the response is written; this one never comes back.
+    sus (req["path"] == "/ws") {
+        yo shake = handshake(req["headers"])
+        sus (shake["status"] != 101) {
+            yell("#" + to_yap(THREAD) + "  refused an upgrade: " + shake["why"])
+            internet.holler_back(conn, build_response(shake["status"], shake["why"] + "\n",
+                                                      {"Content-Type": "text/plain; charset=utf-8"}))
+            bounce ghost
+        }
+        internet.holler_back(conn, shake["response"])
+
+        yo cid = next_cid()
+        CONNS[cid] = {"conn": conn, "room": ghost, "user": ghost, "open": fax}
+        sketchy {
+            await_fr talk(cid, conn)
+        } my_bad (e) {
+            vibe
+        }
+        CONNS[cid]["open"] = cap
+        CONNS.remove(cid)
+        // Told, not asked: nobody is waiting, and the boss needs to know the
+        // moment this connection is gone so the room's membership is right.
+        tell_room({"op": "leave", "cid": cid})
+        bounce ghost
+    }
+
+    // An ordinary page.
+    yo target = static_target(WEB_DIR, req["path"])
+    sus (target == ghost) {
+        internet.holler_back(conn, build_response(404, "no such page\n",
+                                                  {"Content-Type": "text/plain; charset=utf-8"}))
+        bounce ghost
+    }
+    yo body = read_static(target)
+    sus (body == ghost) {
+        internet.holler_back(conn, build_response(404, "no such page\n",
+                                                  {"Content-Type": "text/plain; charset=utf-8"}))
+        bounce ghost
+    }
+    yo headers = {"Content-Type": target["type"]}
+    // The page talks to its own origin over a WebSocket and nothing else, so
+    // the policy says exactly that.
+    headers.merge(SECURITY_HEADERS)
+    headers["Content-Security-Policy"] = "default-src 'self'; connect-src 'self'; frame-ancestors 'none'; " +
+                                         "base-uri 'none'; object-src 'none'"
+    internet.holler_back(conn, build_response(200, body, headers, fax, req["method"] == "HEAD"))
+}
+
+async_ngl bet read_more(conn, ms) {
+    sus (!await_fr internet.hold_up(conn, ms)) {
+        bounce ghost
+    }
+    bounce internet.hear_them_out(conn, 65536, 0)
+}
+
+async_ngl bet handle(customer) {
+    IN_FLIGHT += 1
+    sketchy {
+        await_fr serve(customer)
+    } my_bad (e) {
+        yell("#" + to_yap(THREAD) + "  dropped a connection: " + e.flavor + ": " + e.message)
+    }
+    internet.kick_out(customer["conn"])
+    IN_FLIGHT -= 1
+}
+
+// -- the loop -----------------------------------------------------------------------
+
+bet main() {
+    yo last_ping = clock.now()
+    bruh (!STOPPING) {
+        sus (await_fr internet.hold_up(LISTENER, 250)) {
+            yo c = internet.next_customer(LISTENER, 0)
+            sus (c != ghost) {
+                sus (IN_FLIGHT >= MAX_IN_FLIGHT) {
+                    internet.kick_out(c["conn"])
+                } nah {
+                    handle(c)
+                }
+            }
+        }
+        // Twice a second, ask the boss whether it is time to stop. The same
+        // shape web_server_https uses, and for the same reason: a worker
+        // cannot see the boss's variables.
+        sus (clock.now() - last_ping >= 0.5) {
+            last_ping = clock.now()
+            sketchy {
+                STOPPING = (await_fr ask_room(LINK, {"op": "ping", "thread": THREAD}))["stop"]
+            } my_bad (e) {
+                STOPPING = fax
+            }
+        }
+    }
+
+    // Tell every connection why it is ending, rather than dropping the socket
+    // and leaving a browser to guess.
+    grind cid in CONNS.keys() {
+        sketchy {
+            internet.holler_back(CONNS[cid]["conn"], close_frame(1001, "server going away", ghost))
+        } my_bad (e) {
+            vibe
+        }
+        CONNS[cid]["open"] = cap
+    }
+    yo waited = 0
+    bruh (IN_FLIGHT > 0 && waited < 3000) {
+        await_fr clock.chill(20)
+        waited += 20
+    }
+    close_link(LINK)
+    interns.deliver({"thread": THREAD, "served": SERVED, "frames_in": FRAMES_IN, "frames_out": FRAMES_OUT})
+}
+
+main()

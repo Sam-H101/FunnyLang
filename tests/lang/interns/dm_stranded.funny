@@ -1,0 +1,10 @@
+// tests/lang/interns/dm_stranded.funny -- waiting for a message that cannot
+// come. With no interns running and nobody above to hear from, the runtime
+// says so instead of hanging.
+gimme interns
+
+sketchy {
+    yap interns.wait_up(interns.check_dms())
+} my_bad (e) {
+    yap e.flavor
+}

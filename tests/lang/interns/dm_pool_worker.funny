@@ -1,0 +1,11 @@
+// The worker half of dm_pool.funny: five jobs each, doubled and posted back,
+// with the sum of its own jobs delivered at the end.
+gimme interns
+
+yo mine = 0
+grind i from 0 to 5 {
+    yo job = interns.wait_up(interns.check_dms())
+    mine += job["msg"]
+    interns.dm("boss", job["msg"] * 2)
+}
+interns.deliver(mine)

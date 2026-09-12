@@ -145,6 +145,14 @@ bool platform_temp_file(const char *prefix, char *out, size_t out_len);
    unconditionally rather than branching at the call site. */
 bool platform_make_executable(const char *path);
 
+
+/* Makes `path` readable and writable by its owner and nobody else -- `chmod
+   0600` on POSIX, where that is the difference between a key file and a
+   published one. A no-op on Windows, whose equivalent is an ACL rewrite that
+   needs far more than a path; the caller is told so by the docs rather than
+   by a silent lie. False only if the file is not there. */
+bool platform_make_private(const char *path);
+
 /* -- console (NATIVE_PLAN.md N6, diagnostics) ------------------------ */
 
 /* True when *stdout* is a terminal. Deliberately stdout and not stderr,
@@ -344,6 +352,118 @@ int64_t platform_tls_connect(const char *host, int port, int timeoutMs, const ch
 /* `n` bytes from the operating system's CSPRNG (BCryptGenRandom,
    arc4random_buf, /dev/urandom). False only if the OS refused. */
 bool platform_random_bytes(unsigned char *out, size_t n);
+
+
+/* -- cryptography (RUNTIME_PLAN.md R3, `gimme vault`) ----------------------
+ *
+ * Password hashing and authenticated encryption, from whatever the OS
+ * already has: the dlopen'd OpenSSL that `https` uses on Linux/BSD, CNG on
+ * Windows, CommonCrypto on macOS. Nothing here is implemented in this
+ * repository, and that is the point -- a hand-written AES is a liability, and
+ * every platform ships a reviewed one.
+ *
+ * Each returns false with a sentence in `errbuf` rather than a bare failure.
+ * On a machine with no crypto library at all (only possible on Linux/BSD,
+ * where OpenSSL is loaded at run time), that sentence is the same "needs
+ * OpenSSL" one `https` gives, and `vault` turns it into a SkillIssue.
+ */
+
+/* PBKDF2-HMAC-SHA256 into `out`. `iterations` is the caller's: `vault`
+   defaults to 600,000 and records what it used alongside the hash. */
+bool platform_pbkdf2_sha256(const unsigned char *password, size_t passwordLen, const unsigned char *salt,
+                            size_t saltLen, int iterations, unsigned char *out, size_t outLen, char *errbuf,
+                            size_t errbuf_len);
+
+/* SHA-256 of `data`, 32 bytes into `out`. */
+bool platform_sha256(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len);
+
+/* SHA-1, into 20 bytes. Here for RFC 6455's WebSocket handshake, which
+   computes Sec-WebSocket-Accept as base64(sha1(key + GUID)) and is not
+   negotiable -- see RUNTIME_PLAN.md §9. Not for anything that needs a hash to
+   be hard to collide with: SHA-1 is broken for that, and `platform_sha256` is
+   right there. */
+bool platform_sha1(const unsigned char *data, size_t len, unsigned char *out, char *errbuf, size_t errbuf_len);
+
+/* HMAC-SHA256, 32 bytes into `out`. */
+bool platform_hmac_sha256(const unsigned char *key, size_t keyLen, const unsigned char *data, size_t len,
+                          unsigned char *out, char *errbuf, size_t errbuf_len);
+
+/* AES-256-GCM. `key` is 32 bytes, `nonce` 12, `tag` 16, and `cipherOut` holds
+   `plainLen` bytes. `aad` is authenticated but not encrypted, so a sealed
+   value can be bound to the record it belongs to and not be movable to
+   another. */
+bool platform_aes_gcm_seal(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *plain, size_t plainLen, unsigned char *cipherOut,
+                           unsigned char *tagOut, char *errbuf, size_t errbuf_len);
+
+/* The other direction. False -- with nothing written to `plainOut` that a
+   caller should look at -- when the key, the nonce, the aad or a single bit
+   of the ciphertext is wrong: GCM cannot tell those apart, and neither
+   should the caller. */
+bool platform_aes_gcm_open(const unsigned char *key, const unsigned char *nonce, const unsigned char *aad,
+                           size_t aadLen, const unsigned char *cipher, size_t cipherLen, const unsigned char *tag,
+                           unsigned char *plainOut, char *errbuf, size_t errbuf_len);
+
+
+/* -- atomic replacement (RUNTIME_PLAN.md R6) -------------------------------
+ *
+ * Writing a file in place has a window in which it is neither the old thing
+ * nor the new one, and a reader that arrives during it gets half a file. A
+ * crash during it leaves half a file for good. The fix is as old as Unix:
+ * write a new file beside it, make sure it is really on the disk, and move it
+ * over the old one in a single step that cannot be observed halfway.
+ */
+
+/* Moves `from` over `to`, replacing it, atomically as far as any reader is
+   concerned. Both must be on the same filesystem, which is why the caller
+   writes its temporary file in the destination's own directory. */
+bool platform_replace_file(const char *from, const char *to, char *errbuf, size_t errbuf_len);
+
+/* Like platform_write_file, but does not return until the bytes are on the
+   disk rather than merely in the operating system's cache -- the half of
+   "atomic" that survives losing power, as opposed to the half that survives
+   another process reading at the wrong moment. */
+bool platform_write_file_durable(const char *path, const unsigned char *data, size_t len, char *errbuf,
+                                 size_t errbuf_len);
+
+/* -- interrupts (RUNTIME_PLAN.md R5) --------------------------------------
+ *
+ * `computer.until_ctrl_c()` is an `otw` that settles the first time somebody
+ * presses Ctrl-C, so a server can shut down tidily instead of being killed
+ * mid-write. The handler itself does one thing -- set a flag -- because
+ * almost nothing else is safe to do inside a signal handler; the event loop
+ * notices the flag on its next turn, which is never more than one wait cap
+ * away.
+ */
+
+/* Starts watching for SIGINT / CTRL_C_EVENT. Idempotent. The *second*
+   interrupt is left to the default action, so a program that hangs during its
+   own shutdown can still be stopped with another Ctrl-C. */
+void platform_on_interrupt(void);
+
+/* Has an interrupt arrived since watching began? Never blocks, and stays true
+   once set -- it is a latch, not a queue. */
+bool platform_interrupt_seen(void);
+
+
+/* -- the thread dump's own plumbing (RUNTIME_PLAN.md R9) ------------------- */
+
+/* Starts watching for a dump request: SIGQUIT (Ctrl-\) on POSIX,
+   CTRL_BREAK_EVENT on Windows. `rawDump` is called from inside the handler
+   itself when one arrives, so a program in which no thread ever reaches a
+   wait point still gets its dump. Idempotent, and installed by the runtime at
+   start-up -- a hang is not something you get to prepare for in advance. */
+void platform_on_dump_request(void (*rawDump)(void));
+
+/* Has one arrived since the last time this was asked? Reading it clears it,
+   so each request produces one dump. */
+bool platform_take_dump_request(void);
+
+/* One write of a NUL-terminated string to standard error, with no buffering
+   and no locking -- `write(2)` / `WriteFile`. The only output call that is
+   safe from inside a signal handler, which is where the last-resort thread
+   dump has to happen. */
+void platform_write_stderr_raw(const char *text);
 
 /* -- threads, mutexes, condition variables (ASYNC_PLAN.md A0) -------------
  *

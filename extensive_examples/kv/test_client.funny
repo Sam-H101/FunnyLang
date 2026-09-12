@@ -1,0 +1,107 @@
+// test_client.funny — the client half of the golden, in a worker.
+//
+// It has to be a separate thread: a server parked in `accept` and a client
+// parked in `connect` cannot be the same one. It lives here rather than in a
+// string inside `test_kv.funny` so that it can `gimme` the client library --
+// which means the golden exercises `kvclient.funny` rather than a second
+// implementation of the protocol written to agree with it.
+//
+// `interns.assignment()` carries the port and which script to run. Everything
+// it observes goes back through `interns.deliver` as plain strings, because
+// what crosses between VMs is a deep copy of portable values.
+
+gimme interns
+gimme blob
+gimme clock
+
+gimme { connect, close, send, ping, set, get, del, exists, keys, expire, ttl, incr,
+        mget, mset, flush, info, stop } from "kvclient.funny"
+
+yo job = interns.assignment()
+yo out = []
+
+bet say(label, value) {
+    out.yeet_in(label + ": " + to_yap(value))
+}
+
+// Raw, so the golden can see what an unknown command actually answers without
+// the client library turning it into an exception first. Declared before it is
+// used: a top-level `bet` is a statement that runs in order, so calling one
+// above its declaration is an unbound name.
+bet send_raw(client, line) {
+    yo reply = send(client, line, [])
+    bounce reply["kind"] + " " + to_yap(reply["value"])
+}
+
+yo c = connect("127.0.0.1", job["port"], 5000)
+
+sus (job["script"] == "everything") {
+    say("ping", ping(c))
+
+    set(c, "greeting", blob.from_yap("yo"))
+    say("get", get(c, "greeting").to_yap())
+    say("missing", get(c, "nope") == ghost)
+    say("exists", to_yap(exists(c, "greeting")) + " " + to_yap(exists(c, "nope")))
+
+    // Bytes, not text: a value with a NUL, a high byte and a CRLF in it comes
+    // back exactly, which is the whole reason the protocol counts bytes.
+    yo raw = blob.of([0, 13, 10, 255, 65])
+    set(c, "binary", raw)
+    say("binary round trip", get(c, "binary") == raw)
+    say("binary length", how_thicc(get(c, "binary")))
+
+    set(c, "count", blob.from_yap("41"))
+    say("incr", incr(c, "count"))
+    say("incr fresh", incr(c, "fresh"))
+
+    // INCR on something that is not a number is an error reply, and the
+    // client turns it into a raised error with the server's own flavor.
+    set(c, "word", blob.from_yap("nope"))
+    sketchy {
+        incr(c, "word")
+        say("incr on a word", "no error, which is wrong")
+    } my_bad (e) {
+        say("incr on a word", e.flavor)
+    }
+
+    mset(c, [["a", blob.from_yap("1")], ["b", blob.from_yap("2")]])
+    yo got = mget(c, ["a", "b", "nope"])
+    yo shown = []
+    grind item in got {
+        shown.yeet_in(item == ghost ? "nil" : item.to_yap())
+    }
+    say("mget", shown)
+
+    say("keys *", keys(c, "*"))
+    say("keys b*", keys(c, "b*"))
+    say("keys ?ord", keys(c, "?ord"))
+
+    say("del", to_yap(del(c, "word")) + " " + to_yap(del(c, "word")))
+
+    // A short TTL, waited out. `clock.chill` rather than `touch_grass`,
+    // because this worker has an event loop of its own.
+    set(c, "brief", blob.from_yap("here"))
+    say("ttl before", ttl(c, "brief"))
+    expire(c, "brief", 1)
+    say("ttl after", ttl(c, "brief") >= 1)
+    await_fr clock.chill(1200)
+    say("gone once expired", get(c, "brief") == ghost)
+    say("ttl of an expired key", ttl(c, "brief"))
+
+    say("unknown command", send_raw(c, "WAT\r\n"))
+}
+
+// The second run reconnects to a restarted server and checks what survived.
+sus (job["script"] == "after restart") {
+    say("greeting survived", get(c, "greeting").to_yap())
+    say("count survived", get(c, "count").to_yap())
+    say("binary survived", get(c, "binary") == blob.of([0, 13, 10, 255, 65]))
+    say("expired key did not come back", get(c, "brief") == ghost)
+    say("keys after restart", keys(c, "*"))
+    say("flushed", flush(c))
+    say("keys after flush", keys(c, "*"))
+}
+
+stop(c)
+close(c)
+interns.deliver(out)

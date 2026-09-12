@@ -5,6 +5,7 @@
 
 #include "bignum.h"
 #include "error.h"
+#include "blob.h"
 #include "gc.h"
 #include "groupchat.h"
 #include "squad.h"
@@ -59,6 +60,8 @@ static Value m_how_thicc(VM *vm, Value *a, int argc) {
     if (IS_OBJ(x) && AS_OBJ(x)->type == OBJ_STASH) return INT_VAL(((ObjStash *)AS_OBJ(x))->count);
     if (IS_OBJ(x) && AS_OBJ(x)->type == OBJ_GROUPCHAT) return INT_VAL(((ObjGroupChat *)AS_OBJ(x))->count);
     if (IS_STRING(x)) return INT_VAL(AS_STRING(x)->codepointCount);
+    /* Bytes, not codepoints: that is the whole point of a blob. */
+    if (IS_BLOB(x)) return INT_VAL(AS_BLOB(x)->byteLen);
     if (IS_OBJ(x) && AS_OBJ(x)->type == OBJ_INSTANCE) {
         ObjInstance *inst = (ObjInstance *)AS_OBJ(x);
         ObjClosure *method = squad_find_method(inst->squad, "how_thicc");
@@ -328,14 +331,27 @@ static Value m_oops(VM *vm, Value *a, int argc) {
    error reporting into the test runner's own stderr. For a top-level
    program `vm->err` *is* stderr, so nothing changes there. */
 static Value m_yell(VM *vm, Value *a, int argc) {
+    /* One write for the whole line, for the same reason OP_YAP builds one:
+       a `live` intern (RUNTIME_PLAN.md R4) shares the real stderr with every
+       other thread, and the stream lock is per call. */
+    char *parts[256];
+    size_t lens[256];
+    size_t total = 1;
     for (int i = 0; i < argc; i++) {
-        if (i > 0) fputc(' ', vm->err);
-        size_t len;
-        char *disp = vm_value_to_display_len(vm, a[i], &len);
-        fwrite(disp, 1, len, vm->err);
-        free(disp);
+        parts[i] = vm_value_to_display_len(vm, a[i], &lens[i]);
+        total += lens[i] + (i > 0 ? 1 : 0);
     }
-    fputc('\n', vm->err);
+    char *line = (char *)malloc(total);
+    size_t o = 0;
+    for (int i = 0; i < argc; i++) {
+        if (i > 0) line[o++] = ' ';
+        memcpy(line + o, parts[i], lens[i]);
+        o += lens[i];
+        free(parts[i]);
+    }
+    line[o++] = '\n';
+    fwrite(line, 1, o, vm->err);
+    free(line);
     fflush(vm->err);
     return GHOST_VAL;
 }

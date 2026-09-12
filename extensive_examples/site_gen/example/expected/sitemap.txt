@@ -1,0 +1,7 @@
+https://example.com/about.html
+https://example.com/index.html
+https://example.com/posts.html
+https://example.com/posts/hello.html
+https://example.com/posts/second.html
+https://example.com/tags/funnylang.html
+https://example.com/tags/intro.html

@@ -1,0 +1,26 @@
+// tests/lang/stdlib/blob_operators.funny -- indexing, slicing, +, ==, in and
+// iteration on a blob. Indexing gives a numba rather than a one-byte blob:
+// the unit a blob is made of is a number, where the unit a string is made of
+// is a character.
+gimme blob
+
+yo a = blob.from_yap("hello")
+yo b = blob.from_yap(" world")
+yo both = a + b
+yap both.to_yap()
+yap how_thicc(both)
+yap both[0]
+yap both[-1]
+yap both[0:5].to_yap()
+yap both[::-1].to_yap()
+yap 104 in a
+yap 200 in a
+yap blob.from_yap("ell") in a
+yap a == blob.from_yap("hello")
+yap a == b
+
+yo total = 0
+grind byte in a {
+    total += byte
+}
+yap total

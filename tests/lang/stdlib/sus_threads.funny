@@ -1,0 +1,21 @@
+// tests/lang/stdlib/sus_threads.funny -- RUNTIME_PLAN.md R9. The same table
+// the Ctrl-\ dump prints, as data, so a server can answer "what is everybody
+// doing" over HTTP instead of somebody having to be at the terminal when it
+// hangs.
+//
+// A row is a VM, and one thread can be running more than one: a program run
+// by `funny run` is a VM inside the toolchain's own VM, and both are on this
+// thread. So the count is not something to assert -- the shape is.
+gimme sus
+gimme stash
+
+yo rows = sus.threads()
+yap what_is_it(rows)
+yap how_thicc(rows) >= 1
+
+yo row = rows[how_thicc(rows) - 1]
+yap what_is_it(row)
+yap stash.sort(row.keys())
+yap what_is_it(row["id"])
+yap what_is_it(row["doing"])
+yap row["intern"]

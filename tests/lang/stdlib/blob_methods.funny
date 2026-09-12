@@ -1,0 +1,21 @@
+// tests/lang/stdlib/blob_methods.funny -- searching, splitting and joining
+// bytes. Parsing a request line is the reason these exist: it arrives as
+// bytes and only some of it is text.
+gimme blob
+
+yo line = blob.from_yap("GET /index.html HTTP/1.1")
+yo space = blob.from_yap(" ")
+yap line.starts_with(blob.from_yap("GET"))
+yap line.ends_with(blob.from_yap("1.1"))
+yap line.index_of(blob.from_yap("/index"))
+yap line.index_of(blob.from_yap("nope"))
+yap line.contains(blob.from_yap("HTTP"))
+
+yo parts = line.split(space)
+yap how_thicc(parts)
+yap parts[0].to_yap()
+yap parts[1].to_yap()
+yap space.join(parts).to_yap()
+
+// The same methods again as free functions, the way stash and yapper do it.
+yap blob.to_hex(blob.of([0, 255]))

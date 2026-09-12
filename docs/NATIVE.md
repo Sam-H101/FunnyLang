@@ -142,7 +142,32 @@ corpus takes hours where every-fiftieth takes a minute and still catches a delib
 `gc_push_temp`. CI runs the corpus at 50.
 
 A data race is invisible to ASan and to `FUNNY_GC_STRESS` alike, so the goldens that use threads —
-`tests/lang/async` and `tests/lang/interns` — are also run under **ThreadSanitizer**.
+`tests/lang/threads`, `tests/lang/interns` and `tests/lang/async` — are also run under
+**ThreadSanitizer**, along with `extensive_examples`.
+
+### What is process-global, and why that is safe
+
+The rule above — one thread, one heap, no shared value — covers everything on a heap. Plain C
+state in `native/` is a separate question, because a `static` is shared by every thread whether or
+not a `Value` is involved. There are exactly four kinds here, and each is safe for its own reason:
+
+- **Written once at start-up, read forever after.** `diag.c`'s rendering override and `sus.c`'s
+  pointer to the embedded toolchain are installed by `main.c` before the first VM exists, and so
+  before any thread does. Nothing else may write them.
+- **Guarded by a mutex.** The `interns` registry (`interns.c`'s `g_lock`/`g_wake`) and the TLS
+  side table in `platform.c` are genuinely shared and genuinely mutable, and every access goes
+  through the lock.
+- **Initialized once, by the OS.** Winsock start-up and the performance counter's frequency on
+  Windows use `INIT_ONCE`; `SIGPIPE`-ignoring on POSIX uses `pthread_once`. A plain
+  `static bool done` is not enough: another thread can see the flag set before the thing it
+  guards is.
+- **Not global at all, deliberately.** `rizz`'s generator state lives in the `VM`, so eight
+  interns rolling dice at once neither race nor interleave their streams. Anything that looks
+  like per-run state belongs there rather than in a `static`.
+
+Library calls count too. `strerror` may return a buffer shared by every thread, so `platform.c`
+uses `strerror_r`/`strerror_s` through one `set_errbuf` helper; the same caution applies to
+`localtime`, `gmtime` and `strtok`, none of which appear in `native/` in their non-reentrant form.
 
 ## Testing
 

@@ -1,0 +1,37 @@
+// tests/lang/stdlib/vault_seal.funny -- authenticated encryption. Sealing is
+// two-way and needs a key, which is the caller's to keep somewhere the sealed
+// data is not. Every way of getting it wrong -- wrong key, wrong aad, one
+// changed byte -- gives the same answer, because telling them apart is what
+// turns a decryption function into an oracle.
+gimme vault
+gimme yapper
+gimme blob
+
+yo key = vault.new_key()
+yap what_is_it(key)
+yap how_thicc(key)
+
+yo sealed = vault.seal("the secret", key)
+yap yapper.starts_with(sealed, "v1$")
+yap vault.unseal(sealed, key)
+yap what_is_it(vault.unseal(sealed, key))
+
+// A blob goes in and a blob comes out: the version tag records which it was.
+yo sealedBytes = vault.seal(blob.of([0, 1, 2, 255]), key)
+yap yapper.starts_with(sealedBytes, "v1b$")
+yap what_is_it(vault.unseal(sealedBytes, key))
+yap vault.unseal(sealedBytes, key).to_hex()
+
+// The same value sealed twice is two different strings: the nonce is fresh.
+yap vault.seal("the secret", key) == sealed
+
+// aad is authenticated but not encrypted -- it binds a value to the record it
+// belongs to, so it cannot be moved to another one.
+yo bound = vault.seal("balance: 100", key, "account-7")
+yap vault.unseal(bound, key, "account-7")
+sketchy { yap vault.unseal(bound, key, "account-8") } my_bad (e) { yap e.flavor + ": " + e.message }
+sketchy { yap vault.unseal(bound, key) } my_bad (e) { yap e.flavor }
+sketchy { yap vault.unseal(sealed, vault.new_key()) } my_bad (e) { yap e.flavor }
+sketchy { yap vault.unseal("v1$AAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAA", key) } my_bad (e) { yap e.flavor }
+sketchy { yap vault.unseal("nonsense", key) } my_bad (e) { yap e.flavor }
+sketchy { yap vault.seal("x", "a key that is not 32 bytes") } my_bad (e) { yap e.flavor }

@@ -1,0 +1,364 @@
+// ws.funny — WebSockets, RFC 6455, the server's half.
+//
+// Two things live here and nothing else: the handshake that turns an HTTP
+// request into a WebSocket, and the framing that carries messages once it has.
+// No sockets, no rooms, no chat -- `read_frame` is driven by a "give me more
+// bytes" function exactly as the HTTP parser is, which is what lets the golden
+// exercise every frame shape with no server running.
+//
+// THE HANDSHAKE is a formality with one interesting step. A client sends
+// `Sec-WebSocket-Key`, sixteen random bytes in base64, and the server must
+// answer with base64(sha1(key + GUID)) where the GUID is a constant written
+// into the RFC. It proves nothing about anybody -- the value is computable by
+// everyone -- and exists so that a cache or a proxy which does not understand
+// the Upgrade cannot accidentally produce a response that looks like a
+// successful one. That is the whole reason `vault.sha1` exists.
+//
+// THE FRAMING is a header of two to fourteen bytes, then the payload:
+//
+//     bit  0     FIN, set on the last frame of a message
+//     bits 1-3   reserved, and this refuses them if set: they mean an
+//                extension was negotiated, and none was
+//     bits 4-7   opcode -- 0 continuation, 1 text, 2 binary,
+//                8 close, 9 ping, 10 pong
+//     bit  8     MASK
+//     bits 9-15  payload length, or 126 (two more bytes) or 127 (eight more)
+//     then       a four-byte masking key, if MASK
+//     then       the payload, XOR'd with that key, byte by byte, cycling
+//
+// A client must mask every frame and a server must mask none. That asymmetry
+// is not security -- the key travels in the frame -- it exists so that a
+// malicious page cannot make a browser emit bytes it chooses verbatim, which
+// could otherwise be smuggled past an intermediary as a forged request.
+
+gimme blob
+gimme yapper
+gimme vault
+
+flex deadass GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+flex deadass OP_CONTINUATION = 0
+flex deadass OP_TEXT = 1
+flex deadass OP_BINARY = 2
+flex deadass OP_CLOSE = 8
+flex deadass OP_PING = 9
+flex deadass OP_PONG = 10
+
+// A control frame's payload may not exceed 125 bytes and may not be
+// fragmented. Both are the RFC's rules, and both are checked.
+flex deadass MAX_CONTROL_PAYLOAD = 125
+
+// Nothing here will assemble a message larger than this. A length field is
+// eight bytes wide, so without a cap a single frame header could ask this
+// process to allocate more memory than the machine has.
+flex deadass MAX_MESSAGE = 16 * 1024 * 1024
+
+// -- the handshake -----------------------------------------------------------------
+
+// The value a server must send back for a given Sec-WebSocket-Key.
+flex bet accept_key(key) {
+    bounce vault.base64_encode(blob.from_hex(vault.sha1(key + GUID)))
+}
+
+// Whether a parsed HTTP request is asking to become a WebSocket. Header names
+// arrive folded to lower case by the HTTP parser; the *values* are compared
+// case-insensitively too, because `Upgrade: WebSocket` is as legal as
+// `websocket` and browsers differ.
+flex bet is_upgrade(headers) {
+    yo upgrade = yapper.whisper(headers.get("upgrade", ""))
+    yo connection = yapper.whisper(headers.get("connection", ""))
+    bounce upgrade == "websocket" && yapper.contains(connection, "upgrade")
+}
+
+// The 101 response, or a `{"status", "why"}` refusal. Refusing with a reason
+// matters: a browser reports only "connection failed", so the server log is
+// the only place anybody can find out which header was wrong.
+flex bet handshake(headers) {
+    sus (!is_upgrade(headers)) {
+        bounce {"status": 400, "why": "not an upgrade request"}
+    }
+    yo version = yapper.trim(headers.get("sec-websocket-version", ""))
+    sus (version != "13") {
+        // The RFC's own answer: say which version this speaks rather than a
+        // bare refusal, so a client that speaks several can pick.
+        bounce {"status": 426, "why": "websocket version " + (version == "" ? "(absent)" : version) +
+                                      ", and this speaks 13"}
+    }
+    yo key = yapper.trim(headers.get("sec-websocket-key", ""))
+    sus (key == "") {
+        bounce {"status": 400, "why": "no Sec-WebSocket-Key"}
+    }
+    bounce {"status": 101, "response": "HTTP/1.1 101 Switching Protocols\r\n" +
+                                       "Upgrade: websocket\r\n" +
+                                       "Connection: Upgrade\r\n" +
+                                       "Sec-WebSocket-Accept: " + accept_key(key) + "\r\n\r\n"}
+}
+
+// -- writing a frame ---------------------------------------------------------------
+
+// `mask_key` is ghost for a server (which must not mask) and a four-byte blob
+// for a client (which must).
+flex bet encode_frame(opcode, payload, fin, mask_key) {
+    yo body = payload ?? blob.of([])
+    yo n = how_thicc(body)
+    sus (opcode >= OP_CLOSE && (n > MAX_CONTROL_PAYLOAD || !fin)) {
+        chuck oops("OutOfPocket", "a control frame must be one frame of at most " +
+                   to_yap(MAX_CONTROL_PAYLOAD) + " bytes.")
+    }
+
+    yo header = [(fin ? 128 : 0) + opcode]
+    yo masked = mask_key != ghost
+    yo flag = masked ? 128 : 0
+    sus (n < 126) {
+        header.yeet_in(flag + n)
+    } kinda_sus (n < 65536) {
+        header.yeet_in(flag + 126)
+        header.yeet_in((n >> 8) & 255)
+        header.yeet_in(n & 255)
+    } nah {
+        header.yeet_in(flag + 127)
+        // Eight bytes, most significant first. A numba is arbitrary
+        // precision, so the shift is exact rather than wrapping at 32 bits.
+        grind shift from 0 to 8 {
+            header.yeet_in((n >> (8 * (7 - shift))) & 255)
+        }
+    }
+    sus (masked) {
+        grind i from 0 to 4 {
+            header.yeet_in(mask_key[i])
+        }
+        bounce blob.of(header) + apply_mask(body, mask_key)
+    }
+    bounce blob.of(header) + body
+}
+
+// The masking transform, which is its own inverse: every byte XOR'd with the
+// key, which repeats every four bytes. Applied on the way out by a client and
+// on the way in by a server.
+//
+// `blob.xor` rather than a loop here, and the difference is not small: a byte
+// at a time in FunnyLang costs about 360 ms per megabyte, which a 2 MB message
+// pays twice. RUNTIME_PLAN.md §9 records why that primitive exists.
+flex bet apply_mask(payload, key) {
+    bounce blob.xor(payload, key)
+}
+
+flex bet text_frame(text, mask_key) {
+    bounce encode_frame(OP_TEXT, blob.from_yap(text), fax, mask_key)
+}
+
+flex bet binary_frame(bytes, mask_key) {
+    bounce encode_frame(OP_BINARY, bytes, fax, mask_key)
+}
+
+flex bet ping_frame(payload, mask_key) {
+    bounce encode_frame(OP_PING, payload, fax, mask_key)
+}
+
+flex bet pong_frame(payload, mask_key) {
+    bounce encode_frame(OP_PONG, payload, fax, mask_key)
+}
+
+// A close frame carries an optional two-byte code and a reason. 1000 is a
+// normal close; the code is big-endian, like every other number here.
+flex bet close_frame(code, reason, mask_key) {
+    sus (code == ghost) {
+        bounce encode_frame(OP_CLOSE, blob.of([]), fax, mask_key)
+    }
+    yo bytes = [(code >> 8) & 255, code & 255]
+    grind byte in blob.from_yap(reason ?? "") {
+        bytes.yeet_in(byte)
+    }
+    bounce encode_frame(OP_CLOSE, blob.of(bytes), fax, mask_key)
+}
+
+// -- reading a frame ---------------------------------------------------------------
+
+// `read_more` returns a blob of whatever arrived, or "" / ghost when nothing
+// more will.
+flex bet new_reader(read_more) {
+    bounce {"buf": blob.of([]), "at": 0, "more": read_more, "closed": cap}
+}
+
+bet fill_to(r, n) {
+    bruh (how_thicc(r["buf"]) - r["at"] < n) {
+        sus (r["closed"]) {
+            bounce cap
+        }
+        yo chunk = r["more"]()
+        // `ghost` and `""` are not the same thing, and treating them alike was
+        // a bug worth naming. `internet.hear_them_out` gives `""` when the
+        // other end has closed, and `ghost` when it simply said nothing in
+        // time -- and on a TLS connection it can say `ghost` immediately after
+        // the loop reported the socket readable, because what arrived was part
+        // of a record rather than a whole one.
+        //
+        // Marking the reader closed on `ghost` therefore killed a perfectly
+        // healthy connection after one quiet moment, and every read after that
+        // returned nothing for ever. A timeout means "not yet": the caller
+        // decides whether to wait again.
+        sus (chunk == ghost) {
+            bounce cap
+        }
+        sus (chunk == "" || how_thicc(chunk) == 0) {
+            r["closed"] = fax
+            bounce cap
+        }
+        r["buf"] = r["buf"] + chunk
+    }
+    bounce fax
+}
+
+bet take(r, n) {
+    yo bytes = r["buf"][r["at"]:r["at"] + n]
+    r["at"] += n
+    // Drop what has been consumed, so a long-lived connection does not keep
+    // every byte it ever received.
+    sus (r["at"] > 65536) {
+        r["buf"] = r["buf"][r["at"]:how_thicc(r["buf"])]
+        r["at"] = 0
+    }
+    bounce bytes
+}
+
+// One frame: {"fin", "opcode", "payload"}. ghost when the connection ended
+// cleanly between frames. A frame that breaks the rules raises, because there
+// is no way to resynchronise a stream whose framing is wrong -- the only
+// correct response is to close.
+flex bet read_frame(r) {
+    sus (!fill_to(r, 2)) {
+        bounce ghost
+    }
+    yo first = take(r, 2)
+    yo b0 = first[0]
+    yo b1 = first[1]
+
+    yo fin = (b0 & 128) != 0
+    sus ((b0 & 112) != 0) {
+        chuck oops("SkillIssue", "a frame set a reserved bit, and no extension was negotiated.")
+    }
+    yo opcode = b0 & 15
+    sus (opcode != OP_CONTINUATION && opcode != OP_TEXT && opcode != OP_BINARY &&
+         opcode != OP_CLOSE && opcode != OP_PING && opcode != OP_PONG) {
+        chuck oops("SkillIssue", "opcode " + to_yap(opcode) + " is not one this speaks.")
+    }
+
+    yo masked = (b1 & 128) != 0
+    yo length = b1 & 127
+    sus (length == 126) {
+        sus (!fill_to(r, 2)) {
+            bounce ghost
+        }
+        yo two = take(r, 2)
+        length = (two[0] << 8) + two[1]
+    } kinda_sus (length == 127) {
+        sus (!fill_to(r, 8)) {
+            bounce ghost
+        }
+        yo eight = take(r, 8)
+        // The RFC requires the top bit of a 64-bit length to be zero.
+        sus ((eight[0] & 128) != 0) {
+            chuck oops("SkillIssue", "that frame claims a negative length.")
+        }
+        length = 0
+        grind i from 0 to 8 {
+            length = (length << 8) + eight[i]
+        }
+    }
+
+    sus (opcode >= OP_CLOSE) {
+        sus (length > MAX_CONTROL_PAYLOAD) {
+            chuck oops("SkillIssue", "a control frame carried " + to_yap(length) + " bytes, and 125 is the most.")
+        }
+        sus (!fin) {
+            chuck oops("SkillIssue", "a control frame arrived fragmented, which is not allowed.")
+        }
+    }
+    sus (length > MAX_MESSAGE) {
+        chuck oops("OutOfPocket", "a frame of " + to_yap(length) + " bytes is larger than this accepts.")
+    }
+
+    yo key = ghost
+    sus (masked) {
+        sus (!fill_to(r, 4)) {
+            bounce ghost
+        }
+        key = take(r, 4)
+    }
+    sus (!fill_to(r, length)) {
+        bounce ghost
+    }
+    yo payload = take(r, length)
+    sus (masked) {
+        payload = apply_mask(payload, key)
+    }
+    bounce {"fin": fin, "opcode": opcode, "payload": payload, "was_masked": masked}
+}
+
+// -- reading a message ---------------------------------------------------------------
+
+// A message may arrive in pieces, and control frames may be interleaved
+// between those pieces. This returns whichever comes first: a complete
+// message, or a control frame the caller has to answer.
+//
+//   {"kind": "text",   "text": ...,  "data": blob}
+//   {"kind": "binary", "data": blob}
+//   {"kind": "ping" | "pong", "data": blob}
+//   {"kind": "close",  "code": numba or ghost, "reason": yapstring}
+//
+// ghost when the other end stopped talking without closing.
+flex bet read_message(r) {
+    yo parts = []
+    yo total = 0
+    yo kind = ghost
+
+    bruh (fax) {
+        yo frame = read_frame(r)
+        sus (frame == ghost) {
+            bounce ghost
+        }
+
+        sus (frame["opcode"] >= OP_CLOSE) {
+            // A control frame is answered now, even in the middle of a
+            // fragmented message -- that is what it is for.
+            sus (frame["opcode"] == OP_CLOSE) {
+                bounce close_of(frame["payload"])
+            }
+            bounce {"kind": frame["opcode"] == OP_PING ? "ping" : "pong", "data": frame["payload"]}
+        }
+
+        sus (frame["opcode"] == OP_CONTINUATION) {
+            sus (kind == ghost) {
+                chuck oops("SkillIssue", "a continuation frame arrived with nothing to continue.")
+            }
+        } nah {
+            sus (kind != ghost) {
+                chuck oops("SkillIssue", "a new message began before the last one finished.")
+            }
+            kind = frame["opcode"] == OP_TEXT ? "text" : "binary"
+        }
+
+        total += how_thicc(frame["payload"])
+        sus (total > MAX_MESSAGE) {
+            chuck oops("OutOfPocket", "a message of over " + to_yap(MAX_MESSAGE) + " bytes is more than this takes.")
+        }
+        parts.yeet_in(frame["payload"])
+
+        sus (frame["fin"]) {
+            yo data = blob.of([]).join(parts)
+            sus (kind == "text") {
+                bounce {"kind": "text", "text": data.to_yap(), "data": data}
+            }
+            bounce {"kind": "binary", "data": data}
+        }
+    }
+}
+
+bet close_of(payload) {
+    sus (how_thicc(payload) < 2) {
+        bounce {"kind": "close", "code": ghost, "reason": ""}
+    }
+    yo code = (payload[0] << 8) + payload[1]
+    yo reason = payload[2:how_thicc(payload)].to_yap()
+    bounce {"kind": "close", "code": code, "reason": reason}
+}

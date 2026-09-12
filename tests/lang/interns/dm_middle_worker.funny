@@ -1,0 +1,13 @@
+// Hires its own worker and forwards. "boss" means whoever hired *you*, so the
+// same word means a different VM at each level.
+gimme interns
+gimme filez
+
+yo dir = interns.assignment()
+yo inner = interns.hire(filez.join_path(dir, "dm_inner_worker.funny"), ghost)
+
+yo fromBoss = interns.wait_up(interns.check_dms())
+interns.dm(inner, fromBoss["msg"])
+yo fromInner = interns.wait_up(interns.check_dms())
+interns.dm("boss", "via middle: " + fromInner["msg"])
+interns.deliver(interns.wait_up(inner))

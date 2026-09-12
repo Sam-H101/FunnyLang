@@ -1,0 +1,223 @@
+// server.funny — the boss: the room, the workers, and the fan-out.
+//
+//   main thread   this file: opens the listener, hires the workers, is the
+//                 room, and pushes every message out
+//   workers       N interns, all accepting from the one listener
+//                 (worker.funny)
+//
+// THE FAN-OUT IS THE POINT. A worker holds some connections and can see only
+// its own heap, so a message typed into one worker's connection has to reach
+// connections held by all the others. The boss is the only party that can dm
+// every worker, so it is the room: it takes `say` from one worker and pushes
+// it to all of them, and each writes it to the connections that are in that
+// room.
+//
+// That is a thing the earlier examples' keeper could not express. A keeper
+// answers questions -- a worker asks, the keeper replies, one for one. This
+// has to *push*, to workers that asked nothing, which is why `room_client.funny`
+// exists alongside `keeper_client.funny` rather than instead of it.
+
+gimme internet
+gimme interns
+gimme clock
+gimme filez
+
+gimme { new_rooms, handle, stats, connections_of } from "rooms.funny"
+
+flex deadass DEFAULTS = {
+    "port": 8443,
+    "host": "127.0.0.1",
+    "threads": 8,
+    "seconds": ghost,
+    "pfx": ghost,
+    "password": ghost,
+    "web_dir": ghost,
+}
+
+yo STATE = ghost
+yo WORKERS = []
+yo STOPPING = cap
+yo PUSHED = 0
+
+flex bet stop_chat() {
+    STOPPING = fax
+}
+
+// The room's own turn. One task, on the main thread, reading this VM's inbox:
+// every worker's question comes here, is answered, and whatever it produced is
+// pushed to everybody.
+//
+// Nothing here needs a lock, for the same reason the keeper never did: it is
+// all one task on one thread, and it yields only at `check_dms`.
+async_ngl bet room_pump(state) {
+    bruh (!STOPPING) {
+        yo m = await_fr interns.check_dms(50)
+        sus (m == ghost) {
+            nvm
+        }
+        yo msg = m["msg"]
+        sus (what_is_it(msg) != "groupchat") {
+            nvm
+        }
+
+        // A worker's twice-a-second "may I keep going".
+        sus (msg.get("op", "") == "ping") {
+            reply_to(m, msg, {"stop": STOPPING})
+            nvm
+        }
+
+        yo outcome = handle(state, msg, m["from"])
+        reply_to(m, msg, outcome["reply"])
+
+        grind push in outcome["broadcast"] {
+            fan_out(push)
+        }
+    }
+}
+
+// A reply goes back only if the worker asked with a request id. `leave` and
+// `typing` carry none, and nothing is waiting for them.
+bet reply_to(envelope, msg, reply) {
+    yo rid = msg.get("rid", ghost)
+    sus (rid == ghost || reply == ghost) {
+        bounce ghost
+    }
+    sketchy {
+        interns.dm(envelope["from"], {"rid": rid, "reply": reply})
+    } my_bad (e) {
+        // That worker finished between asking and being answered. LeftOnRead
+        // is the runtime saying exactly that, and nobody is waiting.
+        vibe
+    }
+}
+
+// To every worker, including the one the message came from: that worker holds
+// the connection that said it, and the person who typed it expects to see it
+// appear like everybody else does.
+bet fan_out(push) {
+    grind w in WORKERS {
+        sketchy {
+            interns.dm(w, push)
+            PUSHED += 1
+        } my_bad (e) {
+            vibe
+        }
+    }
+}
+
+async_ngl bet deadline_watch(seconds) {
+    yo stop_at = clock.now() + seconds
+    bruh (!STOPPING && clock.now() < stop_at) {
+        await_fr clock.chill(100)
+    }
+    STOPPING = fax
+}
+
+async_ngl bet stop_watch(stop_when) {
+    sketchy {
+        await_fr stop_when
+    } my_bad (e) {
+        vibe
+    }
+    STOPPING = fax
+}
+
+// Waits for a worker without letting its failure cut the wait short.
+async_ngl bet collect(otw, failures) {
+    sketchy {
+        bounce await_fr otw
+    } my_bad (e) {
+        failures.yeet_in(e)
+        bounce ghost
+    }
+}
+
+// Runs the whole thing until something stops it. `on_ready(info)` is called
+// once it is listening; `stop_when` is an otw that ends it -- the CLI passes
+// Ctrl-C, a test passes ghost and calls stop_chat.
+flex async_ngl bet run_chat(example_dir, options, on_ready, stop_when) {
+    yo opts = DEFAULTS.clone()
+    opts.merge(options)
+    yo threads = to_int(opts["threads"])
+    sus (threads < 1) { threads = 1 }
+    sus (threads > 64) { threads = 64 }
+
+    yo web_dir = opts["web_dir"] ?? filez.join_path(example_dir, "web")
+
+    // TLS when a PKCS#12 identity is given, plain otherwise. A chat on a
+    // public network wants the first; a golden on loopback wants the second,
+    // and pretending otherwise would make the example untestable.
+    yo listener = ghost
+    sus (opts["pfx"] != ghost) {
+        listener = internet.open_secure_shop(opts["port"], opts["host"],
+                                             {"pfx": opts["pfx"], "password": opts["password"] ?? ""})
+    } nah {
+        listener = internet.open_shop(opts["port"], opts["host"])
+    }
+    yo port = internet.shop_port(listener)
+
+    STATE = new_rooms()
+    STOPPING = cap
+    WORKERS = []
+    PUSHED = 0
+
+    yo failures = []
+    sketchy {
+        yo worker_src = filez.join_path(example_dir, "worker.funny")
+        grind k from 1 to threads + 1 {
+            WORKERS.yeet_in(interns.hire(worker_src, {
+                "listener": listener,
+                "thread": k,
+                "threads": threads,
+                "web_dir": web_dir,
+            }, {"live": fax}))
+        }
+    } my_bad (e) {
+        failures.yeet_in(e)
+        STOPPING = fax
+    }
+
+    yo pump = room_pump(STATE)
+    yo watch = opts["seconds"] == ghost ? ghost : deadline_watch(opts["seconds"])
+    yo stopper = stop_when == ghost ? ghost : stop_watch(stop_when)
+
+    sus (failures.how_thicc() == 0) {
+        sketchy {
+            on_ready({"port": port, "threads": threads, "secure": opts["pfx"] != ghost,
+                      "host": opts["host"], "web_dir": web_dir})
+        } my_bad (e) {
+            failures.yeet_in(e)
+            STOPPING = fax
+        }
+    }
+
+    // Wind down: every worker stops on its next ping, and each is waited for.
+    yo per_thread = []
+    grind w in WORKERS {
+        yo result = await_fr collect(w, failures)
+        sus (result == ghost) {
+            STOPPING = fax
+            per_thread.yeet_in({"served": 0, "frames_in": 0, "frames_out": 0})
+        } nah {
+            per_thread.yeet_in(result)
+        }
+    }
+    STOPPING = fax
+    await_fr pump
+    sus (watch != ghost) {
+        await_fr watch
+    }
+    // The stop watcher is deliberately not awaited: it is parked on an otw
+    // that only a Ctrl-C settles, and the program is finishing. Awaiting it is
+    // what made `--seconds` hang in web_server_https.
+    internet.close_shop(listener)
+
+    sus (failures.how_thicc() > 0) {
+        chuck failures[0]
+    }
+    yo summary = stats(STATE)
+    summary["per_thread"] = per_thread
+    summary["pushed"] = PUSHED
+    summary["port"] = port
+    bounce summary
+}

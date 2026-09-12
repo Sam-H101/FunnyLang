@@ -1,0 +1,26 @@
+gimme yapper
+
+flex bet work_yapper(i) {
+    yo base = "Yo Sup Chief " + to_yap(i) + " héllo wörld 💀 "
+    yo out = []
+    grind n from 0 to 150 {
+        yo s = base * ((n % 3) + 1)
+        out.yeet_in(yapper.SCREAM(s))
+        out.yeet_in(yapper.whisper(s))
+        out.yeet_in(yapper.split(s, " ").join("_"))
+        out.yeet_in(yapper.replace(s, "o", "0"))
+        out.yeet_in(yapper.reverse(yapper.trim(s)))
+        out.yeet_in(yapper.pad_left(to_yap(n), 8, "."))
+        out.yeet_in(yapper.title_case(s))
+        out.yeet_in(to_yap(yapper.index_of(s, "wörld")))
+        out.yeet_in(to_yap(yapper.byte_len(s)))
+        out.yeet_in(yapper.format("{}-{}", n, i))
+        out.yeet_in(yapper.chr_of(0x41 + (n % 26)))
+    }
+    yo all = out.join("|")
+    yo sum = 0
+    grind k from 0 to all.how_thicc() step 7 {
+        sum = (sum * 31 + all.code_at(k)) % 1000000007
+    }
+    bounce sum
+}

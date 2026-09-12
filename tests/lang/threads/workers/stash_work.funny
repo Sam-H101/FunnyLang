@@ -1,0 +1,22 @@
+gimme stash
+
+flex bet work_stash(i) {
+    yo total = 0
+    grind round from 0 to 60 {
+        yo xs = []
+        grind n from 0 to 200 {
+            xs.yeet_in((n * 7919 + i * 31 + round) % 1009)
+        }
+        yo sorted = xs.sort()
+        yo by = stash.sort_by(xs, lowkey (x) => -x)
+        yo doubled = xs.glow_up(lowkey (x) => x * 2)
+        yo evens = xs.vibe_check(lowkey (x) => x % 2 == 0)
+        yo sum = xs.squish(lowkey (acc, x) => acc + x, 0)
+        yo uniq = stash.unique(xs)
+        yo chunks = stash.chunk(xs, 9)
+        yo flat = stash.flatten([[1, [2, 3]], [xs.slice(0, 5)]])
+        total = (total + sorted[0] + by[0] + doubled[3] + evens.how_thicc() + sum + uniq.how_thicc() +
+                 chunks.how_thicc() + flat.how_thicc() + stash.sum_up(xs.slice(10, 20))) % 1000000007
+    }
+    bounce total
+}

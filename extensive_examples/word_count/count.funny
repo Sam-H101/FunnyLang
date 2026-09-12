@@ -1,0 +1,99 @@
+// count.funny — the command line.
+//
+//     funny run extensive_examples/word_count/count.funny -- ./corpus --workers 8 --top 20
+//
+//   DIR              the directory to count, recursively
+//   --workers N      how many interns (default: interns.headcount(), which is
+//                    this machine's logical CPUs)
+//   --top N          how many words to print (default 20)
+//   --split WAY      pool (default), static or file -- counter.funny says
+//                    what each one does and why the pool wins
+//
+// Everything interesting is in counter.funny and words.funny. This reads
+// flags, times the run and prints.
+
+gimme interns
+gimme filez
+gimme clock
+gimme yapper
+gimme { top_words } from "words.funny"
+gimme { count_corpus, SPLITS } from "counter.funny"
+
+bet usage() {
+    yell("usage: count.funny DIR [--workers N] [--top N] [--split pool|static|file]")
+}
+
+// Two decimal places, without pulling in a module for one line.
+bet seconds_shown(seconds) {
+    bounce to_int(seconds * 100 + 0.5) / 100.0
+}
+
+bet main(raw_args) {
+    // `funny run x.funny -- a b` passes the `--` through; either spelling works.
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo dir = ghost
+    yo workers = interns.headcount()
+    yo top = 20
+    yo split = "pool"
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--workers" && i + 1 < args.how_thicc()) {
+            workers = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--top" && i + 1 < args.how_thicc()) {
+            top = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--split" && i + 1 < args.how_thicc()) {
+            split = args[i + 1]
+            i += 2
+        } kinda_sus (yapper.starts_with(a, "-")) {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        } nah {
+            dir = a
+            i += 1
+        }
+    }
+
+    sus (dir == ghost) {
+        yell("which directory?")
+        usage()
+        bounce 2
+    }
+    sus (!filez.is_dir(dir)) {
+        yell(dir + " isn't a directory.")
+        bounce 2
+    }
+    sus (!SPLITS.contains(split)) {
+        yell("--split is one of " + SPLITS.join(", ") + ".")
+        bounce 2
+    }
+    sus (workers < 1) {
+        workers = 1
+    }
+
+    yo here = filez.dir_of(the_script())
+    yo started = clock.now()
+    yo result = await_fr count_corpus(here, dir, workers, split)
+    yo took = clock.now() - started
+
+    yell("counted " + to_yap(result["words"]) + " words in " + to_yap(result["files"]) + " files with " +
+         to_yap(workers) + " workers (" + split + ") in " + to_yap(seconds_shown(took)) + " s")
+    grind pair in top_words(result["counts"], top) {
+        yap pair[0] + "  " + to_yap(pair[1])
+    }
+    bounce 0
+}
+
+dip(main(the_args()))

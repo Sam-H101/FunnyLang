@@ -132,6 +132,13 @@ struct VM {
        from its hire path, a yeeted binary from its own executable. */
     char *scriptPath;
 
+    /* rizz's xoshiro256** state. Per VM rather than per process, so that
+       `interns` workers never share one (RUNTIME_PLAN.md R0) and a seed
+       gives the same stream wherever it runs. Seeded from the OS on first
+       use unless rizz.seed(n) came first. */
+    uint64_t rngState[4];
+    bool rngSeeded;
+
     /* The module currently executing, borrowed -- swapped by vm_run_module
        for the duration of an import and restored afterwards, so error
        positions and stack traces name the file the code actually came
@@ -157,6 +164,12 @@ struct VM {
     const char *currentModuleName;
 
     FILE *out; /* where YAP writes */
+    /* This VM writes straight to the process's own stdout/stderr while other
+       threads may be doing the same (a `live` intern, RUNTIME_PLAN.md R4).
+       Every line is written with one fwrite and flushed, so two workers
+       never interleave mid-line and output appears when it happens rather
+       than when a block buffer fills. */
+    bool liveStreams;
     /* Where `yell` writes, and where an uncaught error's diagnostic is
        rendered. stderr for a top-level program, and a capture for a
        child VM: `sus.run_bytecode` is meant to isolate the program it
@@ -190,6 +203,19 @@ struct VM {
        something to depend on. `interns.assignment()` and `interns.deliver()`
        read it to find which worker they belong to. */
     void *workerContext;
+
+    /* This VM's inbox (RUNTIME_PLAN.md R2), a `Mailbox *` that interns.c
+       owns the shape of. A top-level VM makes its own on first use; a
+       worker VM points at the one on its `Intern`, so a parent can post to
+       it before the thread has started and after the worker's VM is gone.
+       `void *` for the same reason `workerContext` is: the type belongs to
+       interns.c and nothing here needs to see inside it. */
+    void *inbox;
+
+    /* This VM's row in the thread-status table (status.h), or -1. One VM is
+       one thread, so a row per VM is a row per thread -- which is what makes
+       a dump of "what is everybody waiting on" possible at all. */
+    int statusSlot;
 
     /* Where the dispatch loop currently is, refreshed at the top of every
        iteration -- vm_throw() (callable from deep inside an arithmetic

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "bignum.h"
+#include "blob.h"
 #include "gc.h"
 #include "groupchat.h"
 #include "modules.h"
@@ -27,7 +28,10 @@ static void io_fail(VM *vm, const char *fn_name, const char *path, const char *e
        its own roast, so funny mode blames the filesystem by name instead
        of falling back to the flavor's generic "skill issue." */
     char roast[512];
-    snprintf(roast, sizeof(roast), "couldn't %s `%s`. the filesystem said no.", fn_name, path);
+    /* The path is bounded here: a caller may hand this a buffer far longer
+       than the roast, and a roast that says most of a very long path is
+       more useful than one that will not compile. */
+    snprintf(roast, sizeof(roast), "couldn't %s `%.400s`. the filesystem said no.", fn_name, path);
     vm_throw_native_roast(vm, "SkillIssue", roast, "'%s' on '%s' failed: %s.", fn_name, path, errbuf);
 }
 
@@ -483,6 +487,168 @@ static Value m_write_bytes(VM *vm, Value *a, int argc) {
     return INT_VAL(s->count);
 }
 
+/* -- blobs (RUNTIME_PLAN.md R1) ------------------------------------------
+   The byte-exact counterparts to slurp/yeet_out/append_to. `read_bytes` and
+   `write_bytes` (a stash of numbas) stay, because programs use them, but a
+   blob is the form that costs one allocation instead of one per byte. */
+static Value m_read_blob(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "read_blob");
+    if (!path) return GHOST_VAL;
+    unsigned char *data;
+    size_t len;
+    char errbuf[256];
+    if (!platform_read_file(path, &data, &len, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "read_blob", path, errbuf);
+        return GHOST_VAL;
+    }
+    Value out = OBJ_VAL(blob_new(&vm->gc, data, (uint32_t)len));
+    free(data);
+    return out;
+}
+
+static Value m_write_blob(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "write_blob");
+    if (!path) return GHOST_VAL;
+    if (!IS_BLOB(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'write_blob' needs a blob, not a %s.", vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjBlob *b = AS_BLOB(a[1]);
+    char errbuf[256];
+    if (!platform_write_file(path, b->bytes, b->byteLen, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "write_blob", path, errbuf);
+        return GHOST_VAL;
+    }
+    return INT_VAL(b->byteLen);
+}
+
+static Value m_append_blob(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "append_blob");
+    if (!path) return GHOST_VAL;
+    if (!IS_BLOB(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'append_blob' needs a blob, not a %s.", vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjBlob *b = AS_BLOB(a[1]);
+    char errbuf[256];
+    if (!platform_append_file(path, b->bytes, b->byteLen, errbuf, sizeof(errbuf))) {
+        io_fail(vm, "append_blob", path, errbuf);
+        return GHOST_VAL;
+    }
+    return INT_VAL(b->byteLen);
+}
+
+/* -- atomic writes (RUNTIME_PLAN.md R6) -----------------------------------
+ *
+ * Writing a file in place has a window in which it holds neither the old
+ * contents nor the new ones. A reader that arrives during it gets half a
+ * file; a crash during it leaves half a file for good. These write beside the
+ * target, make sure the bytes are really on the disk, and move the new file
+ * over the old one in one step.
+ */
+
+/* A name nothing else is using, in the *target's own directory*. Not the OS
+   temp directory: a rename only works within one filesystem, and /tmp is very
+   often a different one. */
+static bool temp_sibling(const char *path, char *out, size_t outLen) {
+    unsigned char rnd[8];
+    if (!platform_random_bytes(rnd, sizeof rnd)) return false;
+    static const char HEX[] = "0123456789abcdef";
+    char hex[17];
+    for (int i = 0; i < 8; i++) {
+        hex[2 * i] = HEX[rnd[i] >> 4];
+        hex[2 * i + 1] = HEX[rnd[i] & 0x0F];
+    }
+    hex[16] = '\0';
+    int n = snprintf(out, outLen, "%s.tmp-%s", path, hex);
+    return n > 0 && (size_t)n < outLen;
+}
+
+static bool write_atomic(VM *vm, const char *fnName, const char *path, const unsigned char *data, size_t len) {
+    char tmp[4352];
+    if (!temp_sibling(path, tmp, sizeof tmp)) {
+        io_fail(vm, fnName, path, "couldn't make a temporary name next to that file.");
+        return false;
+    }
+    char errbuf[256];
+    if (!platform_write_file_durable(tmp, data, len, errbuf, sizeof errbuf)) {
+        io_fail(vm, fnName, path, errbuf);
+        return false;
+    }
+    if (!platform_replace_file(tmp, path, errbuf, sizeof errbuf)) {
+        /* The half-written file is ours and nobody has seen it: take it with
+           us rather than leaving litter next to somebody's data. */
+        char rmbuf[256];
+        platform_remove_path(tmp, rmbuf, sizeof rmbuf);
+        io_fail(vm, fnName, path, errbuf);
+        return false;
+    }
+    return true;
+}
+
+static Value m_replace(VM *vm, Value *a, int argc) {
+    (void)argc;
+    /* Both paths point straight into their own yapstrings, which the caller
+       is holding: no copy needed, and no second call to overwrite the first. */
+    const char *from = path_str(vm, a[0], "replace");
+    if (!from) return GHOST_VAL;
+    const char *to = path_str(vm, a[1], "replace");
+    if (!to) return GHOST_VAL;
+    char errbuf[256];
+    if (!platform_replace_file(from, to, errbuf, sizeof errbuf)) {
+        io_fail(vm, "replace", from, errbuf);
+        return GHOST_VAL;
+    }
+    return BOOL_VAL(true);
+}
+
+static Value m_yeet_out_atomic(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "yeet_out_atomic");
+    if (!path) return GHOST_VAL;
+    if (!IS_STRING(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'yeet_out_atomic' needs a yapstring, not a %s.",
+                        vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjString *text = AS_STRING(a[1]);
+    if (!write_atomic(vm, "yeet_out_atomic", path, (const unsigned char *)text->chars, text->byteLen)) {
+        return GHOST_VAL;
+    }
+    return INT_VAL(text->codepointCount);
+}
+
+static Value m_write_blob_atomic(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "write_blob_atomic");
+    if (!path) return GHOST_VAL;
+    if (!IS_BLOB(a[1])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'write_blob_atomic' needs a blob, not a %s.", vm_type_name(a[1]));
+        return GHOST_VAL;
+    }
+    ObjBlob *b = AS_BLOB(a[1]);
+    if (!write_atomic(vm, "write_blob_atomic", path, b->bytes, b->byteLen)) return GHOST_VAL;
+    return INT_VAL(b->byteLen);
+}
+
+/* filez.private(path) -- owner-only, for a file that holds a key. On POSIX
+   that is chmod 0600; on Windows it is a no-op, because the equivalent is an
+   ACL rewrite rather than a mode bit, and a silent half-measure would be
+   worse than a documented absence. */
+static Value m_private(VM *vm, Value *a, int argc) {
+    (void)argc;
+    const char *path = path_str(vm, a[0], "private");
+    if (!path) return GHOST_VAL;
+    if (!platform_make_private(path)) {
+        io_fail(vm, "private", path, "no such file");
+        return GHOST_VAL;
+    }
+    return BOOL_VAL(true);
+}
+
 static Value m_abs_path(VM *vm, Value *a, int argc) {
     (void)argc;
     const char *path = path_str(vm, a[0], "abs_path");
@@ -516,7 +682,14 @@ static const FilezEntry FILEZ_FUNCTIONS[] = {
     {"read_bytes", m_read_bytes, 1, 1},
     {"write_bytes", m_write_bytes, 2, 2},
     {"append_bytes", m_append_bytes, 2, 2},
+    {"read_blob", m_read_blob, 1, 1},
+    {"write_blob", m_write_blob, 2, 2},
+    {"append_blob", m_append_blob, 2, 2},
+    {"replace", m_replace, 2, 2},
+    {"yeet_out_atomic", m_yeet_out_atomic, 2, 2},
+    {"write_blob_atomic", m_write_blob_atomic, 2, 2},
     {"make_executable", m_make_executable, 1, 1},
+    {"private", m_private, 1, 1},
     {"temp_file", m_temp_file, 0, 1},
     {"abs_path", m_abs_path, 1, 1},
     {"join_path", m_join_path, 1, 255},

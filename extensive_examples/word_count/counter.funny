@@ -1,0 +1,126 @@
+// counter.funny — counting the words in a pile of files, on several threads.
+//
+// The library half. `count.funny` is the command line that drives it, and
+// `test_count.funny` imports this directly -- the same split as the HTTPS
+// example's server.funny and serve.funny, and for the same reason: a file
+// that ends in `dip(...)` cannot also be imported.
+//
+// THREE WAYS TO SPLIT THE WORK, which is what this example is really about.
+//
+//   pool     hire N workers, send each one file, and send the next file to
+//            whichever worker answers first. Nobody sits idle while somebody
+//            else is still on a big file.
+//   static   hire N workers and deal every file up front, round-robin. The
+//            run takes as long as the unluckiest worker's share takes.
+//   file     hire one intern per file. Every file gets its own thread and its
+//            own heap, and the machine spends its time making threads.
+//
+// The counting is identical in all three -- the same worker, the same
+// tokenizer -- so the timings compare the scheduling and nothing else.
+
+gimme interns
+gimme filez
+gimme { files_under, merge_counts } from "words.funny"
+
+flex deadass SPLITS = ["pool", "static", "file"]
+
+// A file at a time, to whoever is free. Returns {"words", "files", "counts"}.
+flex async_ngl bet count_pool(worker_src, paths, workers) {
+    yo counts = {}
+    yo words = 0
+    yo crew = []
+    grind i from 0 to workers {
+        crew.yeet_in(interns.hire(worker_src, ghost))
+    }
+
+    // Each worker starts with one file; after that a worker gets the next one
+    // when it hands the last one back.
+    yo next = 0
+    grind w in crew {
+        sus (next < paths.how_thicc()) {
+            interns.dm(w, paths[next])
+            next += 1
+        }
+    }
+
+    yo done = 0
+    yo sent = next
+    bruh (done < sent) {
+        yo m = await_fr interns.check_dms(60000)
+        sus (m == ghost) {
+            chuck oops("SkillIssue", "a worker stopped answering")
+        }
+        yo answer = m["msg"]
+        words += answer["words"]
+        merge_counts(counts, answer["counts"])
+        done += 1
+        sus (next < paths.how_thicc()) {
+            interns.dm(m["from"], paths[next])
+            next += 1
+            sent += 1
+        }
+    }
+    grind w in crew {
+        interns.dm(w, "stop")
+    }
+    interns.everybody(crew)
+    bounce {"words": words, "files": paths.how_thicc(), "counts": counts}
+}
+
+// The same workers, but every file is dealt before any of them starts.
+flex async_ngl bet count_static(worker_src, paths, workers) {
+    yo counts = {}
+    yo words = 0
+    yo crew = []
+    grind i from 0 to workers {
+        crew.yeet_in(interns.hire(worker_src, ghost))
+    }
+    grind i from 0 to paths.how_thicc() {
+        interns.dm(crew[i % workers], paths[i])
+    }
+    yo done = 0
+    bruh (done < paths.how_thicc()) {
+        yo m = await_fr interns.check_dms(60000)
+        sus (m == ghost) {
+            chuck oops("SkillIssue", "a worker stopped answering")
+        }
+        words += m["msg"]["words"]
+        merge_counts(counts, m["msg"]["counts"])
+        done += 1
+    }
+    grind w in crew {
+        interns.dm(w, "stop")
+    }
+    interns.everybody(crew)
+    bounce {"words": words, "files": paths.how_thicc(), "counts": counts}
+}
+
+// One intern per file. No messages at all: the file is the assignment and the
+// counts are the delivery.
+flex async_ngl bet count_per_file(worker_src, paths) {
+    yo counts = {}
+    yo words = 0
+    yo hired = []
+    grind p in paths {
+        hired.yeet_in(interns.hire(worker_src, p))
+    }
+    grind answer in interns.everybody(hired) {
+        words += answer["words"]
+        merge_counts(counts, answer["counts"])
+    }
+    bounce {"words": words, "files": paths.how_thicc(), "counts": counts}
+}
+
+// The whole job, whichever way. `dir` is walked in a fixed order, so two runs
+// over one corpus count the same files in the same sequence.
+flex async_ngl bet count_corpus(here, dir, workers, split) {
+    yo paths = files_under(dir)
+    yo worker_src = filez.join_path(here, "worker.funny")
+    sus (split == "file") {
+        bounce await_fr count_per_file(worker_src, paths)
+    }
+    sus (split == "static") {
+        bounce await_fr count_static(worker_src, paths, workers)
+    }
+    bounce await_fr count_pool(worker_src, paths, workers)
+}

@@ -1,0 +1,195 @@
+// http.funny — just enough HTTP to hand over a page and an upgrade.
+//
+// The plan for this example said to import `web_server_https/http.funny`
+// rather than write another one. That turns out to be impossible: this
+// server's acceptor threads are `interns`, and a worker cannot use a module
+// reached through a parent directory -- the bundle keys every module relative
+// to the entry file's directory, so `../web_server_https/http.funny` climbs
+// out of the bundle and is unreachable when the worker starts.
+// RUNTIME_PLAN.md §9 records that, with the two-file reproduction.
+//
+// So: a smaller parser, which is a chat server's actual share of HTTP. It
+// serves files and performs one upgrade. There are no request bodies at all --
+// everything a client says after the handshake is a WebSocket frame, not a
+// POST -- so the whole of Content-Length, chunked encoding and form parsing is
+// absent rather than half-built.
+//
+// Nothing here touches a socket: `read_request` is driven by a `read_more(ms)`
+// function, which is what lets the golden exercise it from a string.
+
+gimme yapper
+gimme clock
+
+flex deadass LIMITS = {
+    "request_line": 8192,
+    "header_bytes": 16384,
+    "header_count": 64,
+    "head_seconds": 5,
+}
+
+flex deadass METHODS = ["GET", "HEAD", "OPTIONS"]
+
+flex deadass STATUS_TEXT = {
+    200: "OK",
+    400: "Bad Request",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    408: "Request Timeout",
+    414: "URI Too Long",
+    426: "Upgrade Required",
+    431: "Request Header Fields Too Large",
+    500: "Internal Server Error",
+    501: "Not Implemented",
+}
+
+// The page loads a stylesheet and a script from this origin and opens a
+// WebSocket back to it, and does nothing else -- so the policy says exactly
+// that, and the page contains no inline script or style for it to forbid.
+flex deadass SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; frame-ancestors 'none'; " +
+                               "base-uri 'none'; object-src 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+}
+
+// -- reading ---------------------------------------------------------------------------
+
+bet ms_until(deadline) {
+    bounce to_int((deadline - clock.now()) * 1000)
+}
+
+bet refusal(status) {
+    bounce {"ok": cap, "status": status}
+}
+
+// One request. `read_more(ms)` is awaited for more text: it gives back what
+// arrived, `""` when the client hung up, or `ghost` when nothing came in time.
+//
+// The answer is a groupchat. `ok` says whether it is a request; when it is
+// not, `status` is what to send back, or `ghost` when the client left and
+// there is nobody to answer.
+flex async_ngl bet read_request(read_more) {
+    yo deadline = clock.now() + LIMITS["head_seconds"]
+    yo buffer = ""
+    yo split_at = -1
+    yo sep_len = 4
+
+    bruh (fax) {
+        split_at = yapper.index_of(buffer, "\r\n\r\n")
+        sep_len = 4
+        sus (split_at < 0) {
+            split_at = yapper.index_of(buffer, "\n\n")
+            sep_len = 2
+        }
+        sus (split_at >= 0) {
+            bail
+        }
+        // Checked against what has been buffered so far, so a client that
+        // streams headers forever is cut off at the limit rather than at
+        // memory.
+        yo first_nl = yapper.index_of(buffer, "\n")
+        sus (first_nl < 0 && yapper.byte_len(buffer) > LIMITS["request_line"]) {
+            bounce refusal(414)
+        }
+        sus (yapper.byte_len(buffer) > LIMITS["request_line"] + LIMITS["header_bytes"]) {
+            bounce refusal(431)
+        }
+        yo left = ms_until(deadline)
+        sus (left <= 0) {
+            // A connection that said nothing at all gets no answer: it is a
+            // health check or a port scan, and 408 to silence is noise.
+            bounce refusal(buffer == "" ? ghost : 408)
+        }
+        yo more = await_fr read_more(left)
+        sus (more == "") {
+            bounce refusal(ghost)
+        }
+        sus (more != ghost) {
+            buffer = buffer + more
+        }
+    }
+
+    yo head = yapper.slice(buffer, 0, split_at)
+    yo lines = []
+    grind raw in yapper.split(head, "\n") {
+        lines.yeet_in(yapper.rtrim(raw))
+    }
+    sus (lines.how_thicc() == 0 || lines[0] == "") {
+        bounce refusal(400)
+    }
+
+    yo parts = yapper.words(lines[0])
+    sus (parts.how_thicc() < 2) {
+        bounce refusal(400)
+    }
+    yo method = parts[0]
+    yo target = parts[1]
+    // Anything with two words on its first line would otherwise parse, so
+    // "hello there" from a port scanner would come back as a 404 -- which
+    // claims "no such page" about something that was never a request.
+    sus (!yapper.starts_with(target, "/")) {
+        bounce refusal(400)
+    }
+    sus (!METHODS.contains(method)) {
+        bounce refusal(405)
+    }
+
+    sus (lines.how_thicc() - 1 > LIMITS["header_count"]) {
+        bounce refusal(431)
+    }
+    yo headers = {}
+    grind i from 1 to lines.how_thicc() {
+        yo line = lines[i]
+        yo colon = yapper.index_of(line, ":")
+        sus (colon > 0) {
+            // Folded to lower case at the door, so no caller has to remember
+            // that header names are case-insensitive.
+            headers[yapper.whisper(yapper.trim(yapper.slice(line, 0, colon)))] =
+                yapper.trim(yapper.slice(line, colon + 1, line.how_thicc()))
+        }
+    }
+
+    yo path = target
+    yo qmark = yapper.index_of(target, "?")
+    sus (qmark >= 0) {
+        path = yapper.slice(target, 0, qmark)
+    }
+
+    bounce {"ok": fax, "method": method, "target": target, "path": path,
+            "headers": headers, "status": ghost}
+}
+
+// -- writing ----------------------------------------------------------------------------
+
+// `body` may be a yapstring or a blob: the page is text and its icon would not
+// be. Content-Length counts **bytes**, which for a blob is its length and for
+// a string is not its character count.
+flex bet build_response(status, body, headers, secure = cap, head_only = cap) {
+    yo is_bytes = what_is_it(body) == "blob"
+    yo length = is_bytes ? how_thicc(body) : yapper.byte_len(body)
+
+    yo lines = ["HTTP/1.1 " + to_yap(status) + " " + STATUS_TEXT.get(status, "Whatever")]
+    lines.yeet_in("Content-Length: " + to_yap(length))
+    lines.yeet_in("Connection: close")
+    lines.yeet_in("Server: funnylang-chat")
+    grind name in (headers ?? {}).keys() {
+        lines.yeet_in(name + ": " + (headers ?? {}).get(name))
+    }
+    sus (secure == fax) {
+        lines.yeet_in("Strict-Transport-Security: max-age=31536000")
+    }
+
+    yo head = lines.join("\r\n") + "\r\n\r\n"
+    // A HEAD gets every header and no body, which is the whole of what HEAD
+    // means -- including the Content-Length the body would have had.
+    sus (head_only == fax) {
+        bounce head
+    }
+    sus (is_bytes) {
+        bounce yapper.to_blob(head) + body
+    }
+    bounce head + body
+}

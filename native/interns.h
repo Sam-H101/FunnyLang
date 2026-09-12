@@ -77,4 +77,35 @@ void interns_join_owned_by(struct VM *vm);
    §3.4 -- killing one mid-allocation leaves a heap nothing can safely free. */
 void interns_shutdown(void);
 
+/* -- mailboxes (RUNTIME_PLAN.md R2) ---------------------------------------
+ *
+ * `interns.dm(who, value)` posts a message; `interns.check_dms(ms?)` takes
+ * the next one. A message is a PortableValue, deep-copied out of the
+ * sender's heap exactly like an assignment or a result, so the two threads
+ * still share nothing at all. The mailbox itself is plain malloc'd memory
+ * with its own mutex, which is why a worker may post to it while its owner
+ * is running. */
+
+/* Pops one message off `vm`'s inbox and settles `p` with
+   {"from": handle-or-"boss", "msg": value}. False if the inbox is empty, in
+   which case `p` is untouched. Runs on `vm`'s own thread: building the
+   groupchat means allocating on `vm`'s heap. */
+bool interns_settle_mailbox(struct VM *vm, struct ObjOtw *p);
+
+/* Could a message still arrive? True inside a worker (its parent is alive
+   for as long as it is, and may post at any moment) and true for any VM with
+   an intern that has not been collected. False means a task waiting on
+   `check_dms` with no deadline is stranded, and the loop says so rather than
+   hanging. */
+bool interns_mail_possible(struct VM *vm);
+
+/* Blocks until something arrives in `vm`'s inbox or `timeoutMs` elapses
+   (negative: no timeout, capped internally). The non-async `wait_up` path. */
+void interns_wait_for_mail(struct VM *vm, int timeoutMs);
+
+/* Frees `vm`'s inbox and every message left in it. A worker's inbox belongs
+   to its `Intern` rather than to its VM, so this leaves that one alone. */
+void interns_vm_teardown(struct VM *vm);
+
+
 #endif /* FUNNY_INTERNS_H */

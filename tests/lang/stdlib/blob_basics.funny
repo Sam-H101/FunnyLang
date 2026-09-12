@@ -1,0 +1,17 @@
+// tests/lang/stdlib/blob_basics.funny -- RUNTIME_PLAN.md R1. A blob is a
+// sequence of bytes, which is what a yapstring is not: `how_thicc` counts
+// bytes, and every byte from 0 to 255 can be in one.
+gimme blob
+
+yo png = blob.of([137, 80, 78, 71])
+yap what_is_it(png)
+yap how_thicc(png)
+yap png.to_hex()
+yap png.to_base64()
+yap blob.from_hex("89504e47") == png
+yap blob.from_base64("iVBORw==") == png
+
+yo hi = blob.from_yap("hi there")
+yap hi.to_yap()
+yap hi.to_stash()
+yap how_thicc(blob.of([]))

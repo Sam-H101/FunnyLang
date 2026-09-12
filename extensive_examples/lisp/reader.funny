@@ -1,0 +1,280 @@
+// reader.funny — text to s-expressions.
+//
+// Two passes, because they answer different questions. The tokenizer decides
+// where one thing ends and the next begins, which is entirely about
+// characters; the parser decides how those things nest, which is entirely
+// about parentheses. Keeping them apart means a bad string literal is
+// reported by the half that knows about strings.
+//
+// Every token carries its line, and every parse error quotes it, so a missing
+// paren in a long file says which line opened the list rather than only that
+// the file ended too early.
+
+gimme yapper
+gimme { sym, list_of } from "values.funny"
+
+deadass DELIMITERS = [" ", "\t", "\r", "\n", "(", ")", "\"", ";", "'", "`", ","]
+
+// -- tokens ------------------------------------------------------------------------
+
+// Each token is {"k": kind, "v": value, "line": n}. Kinds are "(", ")", "dot",
+// "quote", "quasiquote", "unquote", "unquote-splicing", and "atom" -- an atom
+// carries its already-converted value, because deciding that -3 is a number
+// and - is a symbol is a question about characters.
+flex bet tokenize(src) {
+    yo out = []
+    yo i = 0
+    yo n = src.how_thicc()
+    yo line = 1
+
+    bruh (i < n) {
+        yo c = src[i]
+
+        sus (c == "\n") {
+            line += 1
+            i += 1
+            nvm
+        }
+        sus (c == " " || c == "\t" || c == "\r") {
+            i += 1
+            nvm
+        }
+        // A comment runs to the end of the line. Block comments are not
+        // supported, and the README says so rather than leaving you to find
+        // out.
+        sus (c == ";") {
+            bruh (i < n && src[i] != "\n") {
+                i += 1
+            }
+            nvm
+        }
+        sus (c == "(" || c == ")") {
+            out.yeet_in({"k": c, "v": ghost, "line": line})
+            i += 1
+            nvm
+        }
+        sus (c == QUOTE_CHAR) {
+            out.yeet_in({"k": "quote", "v": ghost, "line": line})
+            i += 1
+            nvm
+        }
+        sus (c == "`") {
+            out.yeet_in({"k": "quasiquote", "v": ghost, "line": line})
+            i += 1
+            nvm
+        }
+        sus (c == ",") {
+            sus (i + 1 < n && src[i + 1] == "@") {
+                out.yeet_in({"k": "unquote-splicing", "v": ghost, "line": line})
+                i += 2
+            } nah {
+                out.yeet_in({"k": "unquote", "v": ghost, "line": line})
+                i += 1
+            }
+            nvm
+        }
+        sus (c == "\"") {
+            yo read = read_string(src, i, line)
+            out.yeet_in({"k": "atom", "v": read["value"], "line": line})
+            line = read["line"]
+            i = read["end"]
+            nvm
+        }
+
+        // Everything else runs to the next delimiter and is then classified.
+        yo start = i
+        bruh (i < n && !DELIMITERS.contains(src[i])) {
+            i += 1
+        }
+        yo text = yapper.slice(src, start, i)
+        sus (text == ".") {
+            out.yeet_in({"k": "dot", "v": ghost, "line": line})
+            nvm
+        }
+        out.yeet_in({"k": "atom", "v": atom_value(text), "line": line})
+    }
+    bounce out
+}
+
+deadass QUOTE_CHAR = yapper.chr_of(39)
+
+bet read_string(src, open, line) {
+    yo out = []
+    yo i = open + 1
+    yo n = src.how_thicc()
+    yo at_line = line
+    yo closed = cap
+    bruh (i < n) {
+        yo c = src[i]
+        sus (c == "\"") {
+            closed = fax
+            i += 1
+            bail
+        }
+        sus (c == "\\") {
+            sus (i + 1 >= n) {
+                bail
+            }
+            yo esc = src[i + 1]
+            sus (esc == "n") {
+                out.yeet_in("\n")
+            } kinda_sus (esc == "t") {
+                out.yeet_in("\t")
+            } kinda_sus (esc == "\\") {
+                out.yeet_in("\\")
+            } kinda_sus (esc == "\"") {
+                out.yeet_in("\"")
+            } nah {
+                // An unknown escape keeps both characters. Guessing what it
+                // meant would be worse than handing it back.
+                out.yeet_in("\\")
+                out.yeet_in(esc)
+            }
+            i += 2
+            nvm
+        }
+        sus (c == "\n") {
+            at_line += 1
+        }
+        out.yeet_in(c)
+        i += 1
+    }
+    sus (!closed) {
+        chuck oops("LexerSaidNah", "line " + to_yap(line) + ": this string never closes.")
+    }
+    bounce {"value": out.join(""), "end": i, "line": at_line}
+}
+
+// #t, #f, a number, or a symbol. The number test is written out rather than
+// asked of the host, because Lisp's idea of a number is its own: 1+ is a
+// perfectly good symbol here, and +1 is a number.
+bet atom_value(text) {
+    sus (text == "#t" || text == "#true") { bounce fax }
+    sus (text == "#f" || text == "#false") { bounce cap }
+    sus (looks_numeric(text)) {
+        bounce to_numba(text)
+    }
+    bounce sym(text)
+}
+
+bet looks_numeric(text) {
+    yo i = 0
+    yo n = text.how_thicc()
+    sus (n == 0) { bounce cap }
+    sus (text[0] == "+" || text[0] == "-") {
+        i = 1
+    }
+    yo digits = 0
+    yo dots = 0
+    yo exponents = 0
+    bruh (i < n) {
+        yo c = text[i]
+        sus (c >= "0" && c <= "9") {
+            digits += 1
+        } kinda_sus (c == ".") {
+            dots += 1
+            sus (dots > 1) { bounce cap }
+        } kinda_sus (c == "e" || c == "E") {
+            // An exponent needs digits before it and a number after it.
+            sus (digits == 0 || exponents > 0 || i + 1 >= n) { bounce cap }
+            exponents += 1
+            sus (text[i + 1] == "+" || text[i + 1] == "-") {
+                i += 1
+                sus (i + 1 >= n) { bounce cap }
+            }
+        } nah {
+            bounce cap
+        }
+        i += 1
+    }
+    bounce digits > 0
+}
+
+// -- parsing ---------------------------------------------------------------------
+
+// Every form in `src`, in order. A file is a sequence of forms; the REPL reads
+// what you typed the same way and usually gets one.
+flex bet read_all(src) {
+    yo tokens = tokenize(src)
+    yo state = {"at": 0}
+    yo forms = []
+    bruh (state["at"] < tokens.how_thicc()) {
+        forms.yeet_in(read_form(tokens, state))
+    }
+    bounce forms
+}
+
+// Whether `src` stops in the middle of something, so the REPL can keep reading
+// instead of reporting an error the moment you press enter on an unfinished
+// define.
+flex bet is_incomplete(src) {
+    sketchy {
+        read_all(src)
+    } my_bad (e) {
+        bounce yapper.contains(e.message, "ran out") || yapper.contains(e.message, "never closes")
+    }
+    bounce cap
+}
+
+bet read_form(tokens, state) {
+    sus (state["at"] >= tokens.how_thicc()) {
+        chuck oops("ParserHadAStroke", "the input ran out in the middle of a form.")
+    }
+    yo tok = tokens[state["at"]]
+    state["at"] += 1
+
+    sus (tok["k"] == "atom") {
+        bounce tok["v"]
+    }
+    sus (tok["k"] == "(") {
+        bounce read_rest_of_list(tokens, state, tok["line"])
+    }
+    sus (tok["k"] == ")") {
+        chuck oops("ParserHadAStroke", "line " + to_yap(tok["line"]) +
+                   ": a closing paren with nothing open.")
+    }
+    sus (tok["k"] == "dot") {
+        chuck oops("ParserHadAStroke", "line " + to_yap(tok["line"]) +
+                   ": a dot outside a list.")
+    }
+    // The quote family is sugar and nothing more: a quote token and the form
+    // after it become a two-element list, and the printer turns that back into
+    // the sugar, so a round trip through the reader changes nothing.
+    bounce list_of([sym(tok["k"]), read_form(tokens, state)], ghost)
+}
+
+bet read_rest_of_list(tokens, state, open_line) {
+    yo items = []
+    yo tail = ghost
+    bruh (fax) {
+        sus (state["at"] >= tokens.how_thicc()) {
+            chuck oops("ParserHadAStroke", "the input ran out before the list opened on line " +
+                       to_yap(open_line) + " was closed.")
+        }
+        yo tok = tokens[state["at"]]
+        sus (tok["k"] == ")") {
+            state["at"] += 1
+            bail
+        }
+        sus (tok["k"] == "dot") {
+            state["at"] += 1
+            sus (items.how_thicc() == 0) {
+                chuck oops("ParserHadAStroke", "line " + to_yap(tok["line"]) +
+                           ": a dotted pair needs something before the dot.")
+            }
+            sus (state["at"] < tokens.how_thicc() && tokens[state["at"]]["k"] == ")") {
+                chuck oops("ParserHadAStroke", "line " + to_yap(tok["line"]) +
+                           ": a dotted pair needs something after the dot.")
+            }
+            tail = read_form(tokens, state)
+            sus (state["at"] >= tokens.how_thicc() || tokens[state["at"]]["k"] != ")") {
+                chuck oops("ParserHadAStroke", "line " + to_yap(tok["line"]) +
+                           ": a dotted pair takes exactly one thing after the dot.")
+            }
+            state["at"] += 1
+            bail
+        }
+        items.yeet_in(read_form(tokens, state))
+    }
+    bounce list_of(items, tail)
+}

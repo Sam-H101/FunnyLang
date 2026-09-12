@@ -1,0 +1,116 @@
+// test_build.funny — site_gen end to end, against a committed answer.
+//
+// `funny test extensive_examples` runs this. The example site under
+// `example/site/` is built into a temporary directory and compared, file by
+// file, with `example/expected/` -- which is committed, so a change to the
+// generator shows up as a diff in the review rather than as a surprise later.
+//
+// Every comparison is by bytes, including the PNG: a generator that quietly
+// re-encodes a file it was asked to copy is a generator with a bug, and
+// comparing text would hide exactly that.
+//
+// Nothing here depends on the clock, on the order the filesystem lists a
+// directory, or on which platform it runs: the build sorts everything it
+// writes, and the feed's timestamp comes from the newest post rather than
+// from now.
+
+gimme filez
+gimme yapper
+gimme { build_site, sorted_strings, pretty_date, split_front_matter } from "site.funny"
+gimme { to_html, inline_html } from "markdown.funny"
+
+yo HERE = filez.dir_of(the_script())
+yo SITE = filez.join_path(filez.join_path(HERE, "example"), "site")
+yo EXPECTED = filez.join_path(filez.join_path(HERE, "example"), "expected")
+
+// -- part one: the pieces ----------------------------------------------------------
+
+yap "-- front matter --"
+yo fm = split_front_matter("---\ntitle: A post\ntags: one, two\n---\n\nThe body.\n")
+yap fm["meta"]["title"], "|", fm["meta"]["tags"], "|", yapper.trim(fm["body"])
+yo none = split_front_matter("No front matter here.\n")
+yap "without:", none["meta"].how_thicc(), yapper.trim(none["body"])
+
+yap "-- dates --"
+yap pretty_date("2024-03-01"), "|", pretty_date("2024-12-25"), "|", pretty_date("not a date")
+
+yap "-- markdown --"
+yap inline_html("*em*, **strong**, `code`, [link](/x), ![img](/y.png)")
+yap to_html("# Title\n\nA paragraph.\n\n- a\n- b")
+yap to_html("```funny\nyap \"*not emphasis*\"\n```")
+
+// -- part two: the whole site -------------------------------------------------------
+
+yo OUT = filez.temp_file("sitegen") + "_out"
+filez.mkdir(OUT)
+yo built = build_site(SITE, OUT, "A small site", "https://example.com")
+
+yap "-- what it built --"
+yap "pages:", built["pages"], "posts:", built["posts"], "tags:", built["tags"]
+grind rel in built["files"] {
+    yap "  " + rel
+}
+
+// -- part three: byte for byte against the committed answer ---------------------------
+
+bet files_under(dir, prefix) {
+    yo out = []
+    grind name in filez.list_dir(dir) {
+        yo path = filez.join_path(dir, name)
+        yo rel = prefix == "" ? name : prefix + "/" + name
+        sus (filez.is_dir(path)) {
+            grind deeper in files_under(path, rel) {
+                out.yeet_in(deeper)
+            }
+        } nah {
+            out.yeet_in(rel)
+        }
+    }
+    bounce out
+}
+
+yap "-- against example/expected --"
+yo want = sorted_strings(files_under(EXPECTED, ""))
+yo got = sorted_strings(files_under(OUT, ""))
+yap "same file list:", to_yap(want) == to_yap(got)
+
+yo differences = 0
+grind rel in want {
+    yo a = filez.read_blob(filez.join_path(EXPECTED, rel))
+    yo b_path = filez.join_path(OUT, rel)
+    sus (!filez.exists(b_path)) {
+        yap "  missing:", rel
+        differences += 1
+        nvm
+    }
+    yo b = filez.read_blob(b_path)
+    sus (a != b) {
+        yap "  differs:", rel, to_yap(how_thicc(a)) + " vs " + to_yap(how_thicc(b)) + " bytes"
+        differences += 1
+    }
+}
+yap "files that differ:", differences
+
+// Building twice gives the same bytes: the property that makes a generated
+// site reviewable at all.
+yo AGAIN = filez.temp_file("sitegen") + "_again"
+filez.mkdir(AGAIN)
+build_site(SITE, AGAIN, "A small site", "https://example.com")
+yo twice_same = fax
+grind rel in got {
+    sus (filez.read_blob(filez.join_path(OUT, rel)) != filez.read_blob(filez.join_path(AGAIN, rel))) {
+        twice_same = cap
+    }
+}
+yap "two builds identical:", twice_same
+
+grind rel in got {
+    filez.obliterate(filez.join_path(OUT, rel))
+    filez.obliterate(filez.join_path(AGAIN, rel))
+}
+grind dir in ["tags", "posts", "static"] {
+    filez.obliterate(filez.join_path(OUT, dir))
+    filez.obliterate(filez.join_path(AGAIN, dir))
+}
+filez.obliterate(OUT)
+filez.obliterate(AGAIN)

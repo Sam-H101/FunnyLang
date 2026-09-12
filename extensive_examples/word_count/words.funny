@@ -1,0 +1,115 @@
+// words.funny — what counts as a word, and counting them.
+//
+// One definition, used by the counter and by its test, so that "the answer"
+// and "what the program computes" cannot drift apart.
+//
+// A word is a run of letters, lowercased, with apostrophes kept *inside* it:
+// `don't` is one word, `'tis` starts at the t, and `ends'` ends at the s.
+// Letters are Unicode letters, through `yapper.is_letter` -- so `naïve` is one
+// word and `café` is not `caf`, which is what an ASCII-only counter would make
+// of them.
+
+gimme yapper
+gimme filez
+
+flex bet words_of(text) {
+    yo out = []
+    yo word = []
+    yo pending = cap
+    grind ch in text {
+        sus (yapper.is_letter(ch)) {
+            sus (pending && word.how_thicc() > 0) {
+                word.yeet_in("'")
+            }
+            pending = cap
+            word.yeet_in(yapper.whisper(ch))
+            nvm
+        }
+        sus (ch == "'" && word.how_thicc() > 0) {
+            // Only kept if a letter follows it, which is why it waits here
+            // rather than going straight into the word.
+            pending = fax
+            nvm
+        }
+        pending = cap
+        sus (word.how_thicc() > 0) {
+            out.yeet_in(word.join(""))
+            word = []
+        }
+    }
+    sus (word.how_thicc() > 0) {
+        out.yeet_in(word.join(""))
+    }
+    bounce out
+}
+
+// Adds every word of `text` to `counts`, and returns how many there were.
+flex bet count_into(counts, text) {
+    yo words = words_of(text)
+    grind w in words {
+        counts[w] = counts.get(w, 0) + 1
+    }
+    bounce words.how_thicc()
+}
+
+// One file: {"words": how many, "counts": groupchat of word -> count}.
+flex bet count_file(path) {
+    yo counts = {}
+    yo total = count_into(counts, filez.slurp(path))
+    bounce {"words": total, "counts": counts}
+}
+
+// Adds `extra`'s counts into `into`, in place. Not `from`: that is a keyword
+// (`grind i from 0 to 10`), which the parser says in as many words.
+flex bet merge_counts(into, extra) {
+    grind w in extra.keys() {
+        into[w] = into.get(w, 0) + extra[w]
+    }
+}
+
+// The `n` most common words, as a stash of [word, count], most first and ties
+// broken by the word itself -- so the answer does not depend on which worker
+// happened to finish first, which is the whole point of a parallel counter
+// having a golden at all.
+flex bet top_words(counts, n) {
+    yo words = counts.keys()
+    yo out = []
+    yo taken = {}
+    grind k from 0 to n {
+        yo best = ghost
+        yo best_count = -1
+        grind w in words {
+            sus (taken.has(w)) {
+                nvm
+            }
+            yo c = counts[w]
+            sus (c > best_count || (c == best_count && w < best)) {
+                best = w
+                best_count = c
+            }
+        }
+        sus (best == ghost) {
+            bail
+        }
+        taken[best] = fax
+        out.yeet_in([best, best_count])
+    }
+    bounce out
+}
+
+// Every file under `dir`, depth first, in a fixed order: the same corpus has
+// to give the same file list on every machine, or nothing below is repeatable.
+flex bet files_under(dir) {
+    yo out = []
+    grind name in filez.list_dir(dir) {
+        yo path = filez.join_path(dir, name)
+        sus (filez.is_dir(path)) {
+            grind deeper in files_under(path) {
+                out.yeet_in(deeper)
+            }
+        } nah {
+            out.yeet_in(path)
+        }
+    }
+    bounce out
+}

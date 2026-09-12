@@ -1,0 +1,155 @@
+/* style.css — the board, and only the board.
+ *
+ * Bootstrap draws the shell: the grid, the cards, the form controls, the dark
+ * theme, the type. It has no opinion about an eight-by-eight draughts board
+ * with pieces that slide between squares, which is what is left here.
+ *
+ * GEOMETRY NOTE, because it was a real bug: a piece's size never depends on
+ * what is written on it. The discs are absolutely placed and sized as a
+ * fraction of the board, and a king's mark is centred inside that fixed box.
+ * When the mark was text inside a flex item, crowning a piece changed the
+ * square's intrinsic width and the whole grid shifted sideways.
+ */
+
+.board {
+  --square-light: #e6ddcc;
+  --square-dark: #7c664f;
+  --red-top: #e46b64;
+  --red-bottom: #ad3b37;
+  --black-top: #3c424d;
+  --black-bottom: #171a20;
+  --pick: #f0b95f;
+  --go: #4dd4ac;
+
+  /* One place to change how fast a piece travels between two squares. */
+  --hop: 220ms;
+
+  position: relative;
+  aspect-ratio: 1;
+  width: 100%;
+  border-radius: 0.5rem;
+  overflow: hidden;
+
+  /* Everything inside is sized in `cqi` -- one percent of the board's own
+     width -- so pieces, king marks and square numbers scale together and none
+     of them can push the layout around. */
+  container-type: inline-size;
+}
+
+.squares {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+}
+
+.sq {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--square-light);
+}
+.sq.dark {
+  background: linear-gradient(145deg,
+    color-mix(in oklab, var(--square-dark) 90%, white 10%), var(--square-dark));
+}
+.sq.playable { cursor: pointer; }
+.sq.playable:disabled { cursor: default; }
+.sq:focus-visible { outline: 0.5cqi solid var(--go); outline-offset: -0.5cqi; z-index: 3; }
+
+.sq .n {
+  position: absolute;
+  top: 4cqi;
+  left: 5cqi;
+  font-size: 2.3cqi;
+  line-height: 1;
+  color: rgb(255 255 255 / 0.28);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* Where a picked piece may go. A small dot for a quiet move and a ring for a
+   capture, so a compulsory jump reads differently from a stroll. */
+.sq.target::after,
+.sq.capture::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.sq.target::after {
+  width: 4cqi;
+  height: 4cqi;
+  background: var(--go);
+  box-shadow: 0 0 0 1.6cqi color-mix(in oklab, var(--go) 22%, transparent);
+}
+.sq.capture::after {
+  width: 9cqi;
+  height: 9cqi;
+  border: 1.5cqi solid color-mix(in oklab, var(--red-top) 85%, white 15%);
+}
+.sq.picked { box-shadow: inset 0 0 0 1.1cqi var(--pick); }
+.sq.trail { box-shadow: inset 0 0 0 0.8cqi color-mix(in oklab, var(--pick) 40%, transparent); }
+
+/* -- the pieces ----------------------------------------------------------- */
+
+/* A layer above the squares, so a disc can travel across them. Clicks fall
+   through to the squares underneath. */
+.pieces {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.piece {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12.5%;
+  height: 12.5%;
+  display: grid;
+  place-items: center;
+  will-change: transform;
+}
+
+/* The disc is a fixed fraction of its square. Its size comes from `inset`,
+   never from its content, which is what stops a king's mark resizing anything. */
+.piece::before {
+  content: "";
+  position: absolute;
+  inset: 15%;
+  border-radius: 50%;
+  box-shadow:
+    inset 0 -0.6cqi 1.1cqi rgb(0 0 0 / 0.35),
+    inset 0 0.5cqi 0.8cqi rgb(255 255 255 / 0.16),
+    0 0.8cqi 1.4cqi rgb(0 0 0 / 0.32);
+}
+.piece.red::before {
+  background: radial-gradient(circle at 35% 28%, var(--red-top), var(--red-bottom));
+}
+.piece.black::before {
+  background: radial-gradient(circle at 35% 28%, var(--black-top), var(--black-bottom));
+}
+
+.piece .king {
+  position: relative;
+  font-size: 4.4cqi;
+  line-height: 1;
+  font-weight: 700;
+  color: rgb(255 255 255 / 0.92);
+  text-shadow: 0 0.3cqi 0.5cqi rgb(0 0 0 / 0.45);
+}
+
+/* A piece being taken shrinks away where it stood, rather than blinking out. */
+.piece.taken { animation: taken 200ms ease-in forwards; }
+@keyframes taken {
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .piece.taken { animation-duration: 1ms; }
+}

@@ -1,0 +1,38 @@
+// worker.funny — one intern, counting whatever it is sent.
+//
+// Two ways to be used, because the example compares three strategies and two
+// of them want the same worker:
+//
+//   hired with ghost   it loops: each message is a file path to count, and
+//                      the counts go back with dm("boss", …). "stop" ends it.
+//                      That is the pool, and the static split, which differ
+//                      only in *when* the main thread sends the paths.
+//   hired with a path  it counts that one file, delivers, and exits. That is
+//                      one intern per file.
+//
+// The counts cross as an ordinary groupchat: a message is deep-copied like
+// any other value, so nothing here is shared with the thread that reads it.
+
+gimme interns
+gimme { count_file } from "words.funny"
+
+yo JOB = interns.assignment()
+
+// One intern per file: nothing to wait for, nothing to say.
+sus (JOB != ghost) {
+    yo one = count_file(JOB)
+    interns.deliver({"path": JOB, "words": one["words"], "counts": one["counts"]})
+} nah {
+    yo handled = 0
+    bruh (fax) {
+        yo m = interns.wait_up(interns.check_dms())
+        yo path = m["msg"]
+        sus (path == "stop") {
+            bail
+        }
+        yo result = count_file(path)
+        interns.dm("boss", {"path": path, "words": result["words"], "counts": result["counts"]})
+        handled += 1
+    }
+    interns.deliver(handled)
+}

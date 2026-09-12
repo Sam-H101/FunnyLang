@@ -1,0 +1,415 @@
+// rules.funny — the board, and what may legally be done to it.
+//
+// English draughts, the game most people mean by "checkers": eight by eight,
+// twelve pieces a side, men moving and capturing only forwards, kings both
+// ways, and **captures compulsory**. That last rule is the one casual
+// implementations leave out, and leaving it out makes a different game.
+//
+// SQUARES ARE NUMBERED 1 TO 32, which is how the game has been written down
+// for two centuries: only the dark squares are playable, so numbering them is
+// the natural notation and `11-15` or `22x15x8` is a move a player can read.
+// Row and column are worked out where they are needed and nowhere else.
+//
+//        1   2   3   4        row 0      black's back rank
+//      5   6   7   8          row 1
+//        9  10  11  12        row 2
+//     13  14  15  16          row 3
+//       17  18  19  20        row 4
+//     21  22  23  24          row 5
+//       25  26  27  28        row 6
+//     29  30  31  32          row 7      red's back rank
+//
+// Black starts on 1-12 and moves down the board; red starts on 21-32 and moves
+// up it. Red goes first, as in the rules of the game.
+//
+// Nothing here knows about players, engines, sockets or pages. It answers two
+// questions -- what are the legal moves, and what does this move lead to --
+// and everything else in this example is built on those.
+
+gimme yapper
+
+flex deadass EMPTY = ""
+flex deadass RED_MAN = "r"
+flex deadass RED_KING = "R"
+flex deadass BLACK_MAN = "b"
+flex deadass BLACK_KING = "B"
+
+flex deadass RED = "red"
+flex deadass BLACK = "black"
+
+// A game with no captures and no promotions for this many moves is a draw.
+// Forty is the usual tournament number, counted in single moves here.
+flex deadass DRAW_AFTER_QUIET = 80
+
+// -- squares -----------------------------------------------------------------------
+
+// Square n (1-32) as a row and column on the eight-by-eight board. Only dark
+// squares are playable, and on even rows those are the odd columns.
+flex bet row_of(n) {
+    bounce (n - 1) \ 4
+}
+
+flex bet col_of(n) {
+    yo row = row_of(n)
+    yo offset = (n - 1) % 4
+    bounce row % 2 == 0 ? offset * 2 + 1 : offset * 2
+}
+
+// The square at a row and column, or 0 if that is off the board or a light
+// square. Zero rather than ghost because every caller is doing arithmetic.
+flex bet square_at(row, col) {
+    sus (row < 0 || row > 7 || col < 0 || col > 7) {
+        bounce 0
+    }
+    sus ((row + col) % 2 == 0) {
+        bounce 0
+    }
+    bounce row * 4 + col \ 2 + 1
+}
+
+// -- the board ---------------------------------------------------------------------
+
+// Squares are held in a 33-long stash so that index n is square n and nobody
+// has to remember to subtract one. Index 0 is never read.
+flex bet new_board() {
+    yo squares = []
+    grind i from 0 to 33 {
+        squares.yeet_in(EMPTY)
+    }
+    grind n from 1 to 13 {
+        squares[n] = BLACK_MAN
+    }
+    grind n from 21 to 33 {
+        squares[n] = RED_MAN
+    }
+    bounce {"squares": squares, "turn": RED, "moves": 0, "quiet": 0}
+}
+
+flex bet clone_board(board) {
+    yo squares = []
+    grind piece in board["squares"] {
+        squares.yeet_in(piece)
+    }
+    bounce {"squares": squares, "turn": board["turn"], "moves": board["moves"], "quiet": board["quiet"]}
+}
+
+flex bet is_red(piece) {
+    bounce piece == RED_MAN || piece == RED_KING
+}
+
+flex bet is_black(piece) {
+    bounce piece == BLACK_MAN || piece == BLACK_KING
+}
+
+flex bet is_king(piece) {
+    bounce piece == RED_KING || piece == BLACK_KING
+}
+
+flex bet owner_of(piece) {
+    sus (is_red(piece)) { bounce RED }
+    sus (is_black(piece)) { bounce BLACK }
+    bounce ghost
+}
+
+flex bet other_side(side) {
+    bounce side == RED ? BLACK : RED
+}
+
+// Which way a piece may travel: red men up the board (row decreasing), black
+// men down it, kings both.
+bet directions_for(piece) {
+    sus (piece == RED_MAN) { bounce [[-1, -1], [-1, 1]] }
+    sus (piece == BLACK_MAN) { bounce [[1, -1], [1, 1]] }
+    bounce [[-1, -1], [-1, 1], [1, -1], [1, 1]]
+}
+
+// A man reaching the far rank becomes a king. It happens at the end of the
+// move, and in this game it **ends the turn**: a man that promotes by jumping
+// does not carry on jumping as a king.
+bet promotes(piece, to_square) {
+    sus (piece == RED_MAN && row_of(to_square) == 0) { bounce fax }
+    sus (piece == BLACK_MAN && row_of(to_square) == 7) { bounce fax }
+    bounce cap
+}
+
+bet crowned(piece) {
+    sus (piece == RED_MAN) { bounce RED_KING }
+    sus (piece == BLACK_MAN) { bounce BLACK_KING }
+    bounce piece
+}
+
+// -- legal moves -------------------------------------------------------------------
+
+// Every legal move for the side to play. **If any capture exists, only
+// captures are returned** -- that is the rule of the game, not a preference,
+// and putting it here means no caller can forget it.
+//
+// A capture move carries its whole chain: `11x18x25` is one move, not two, and
+// a piece that can go on jumping must.
+flex bet legal_moves(board) {
+    yo side = board["turn"]
+    yo jumps = []
+    yo quiet = []
+
+    grind n from 1 to 33 {
+        yo piece = board["squares"][n]
+        sus (owner_of(piece) != side) {
+            nvm
+        }
+        grind jump in jumps_from(board["squares"], n, piece, [], []) {
+            jumps.yeet_in(jump)
+        }
+        grind move in steps_from(board["squares"], n, piece) {
+            quiet.yeet_in(move)
+        }
+    }
+
+    // Sorted, so two runs of the same position produce the same list in the
+    // same order. An engine that searches a differently-ordered list plays a
+    // different game, and a golden could not hold it still.
+    bounce sorted_moves(jumps.how_thicc() > 0 ? jumps : quiet)
+}
+
+// The ordinary one-square moves for the piece on `n`.
+bet steps_from(squares, n, piece) {
+    yo out = []
+    yo row = row_of(n)
+    yo col = col_of(n)
+    // `dest`, not `to`: `to` is a keyword here, being part of
+    // `grind i from 0 to 10`. The groupchat key "to" is a string and is fine.
+    grind way in directions_for(piece) {
+        yo dest = square_at(row + way[0], col + way[1])
+        sus (dest == 0 || squares[dest] != EMPTY) {
+            nvm
+        }
+        out.yeet_in({
+            "from": n,
+            "to": dest,
+            "captures": [],
+            "path": [n, dest],
+            "promotes": promotes(piece, dest),
+            "notation": to_yap(n) + "-" + to_yap(dest),
+        })
+    }
+    bounce out
+}
+
+// Every complete jump chain starting at `n`. Depth-first: make the jump on a
+// copy, and if the same piece can jump again from where it landed, carry on.
+// A chain ends where no further jump is available -- or where the piece
+// promotes, because promotion ends the turn.
+bet jumps_from(squares, n, piece, taken, path) {
+    yo here = path.how_thicc() == 0 ? [n] : path
+    yo out = []
+    yo row = row_of(n)
+    yo col = col_of(n)
+
+    grind way in directions_for(piece) {
+        yo over = square_at(row + way[0], col + way[1])
+        yo land = square_at(row + way[0] * 2, col + way[1] * 2)
+        sus (over == 0 || land == 0) {
+            nvm
+        }
+        yo victim = squares[over]
+        sus (owner_of(victim) != other_side(owner_of(piece))) {
+            nvm
+        }
+        // A piece already jumped in this chain is still on the board until the
+        // move is finished, and may not be jumped twice.
+        sus (taken.contains(over)) {
+            nvm
+        }
+        sus (squares[land] != EMPTY) {
+            nvm
+        }
+
+        yo captures = []
+        grind c in taken {
+            captures.yeet_in(c)
+        }
+        captures.yeet_in(over)
+
+        yo longer = []
+        grind p in here {
+            longer.yeet_in(p)
+        }
+        longer.yeet_in(land)
+
+        sus (promotes(piece, land)) {
+            // Crowned, and that is the end of the turn.
+            out.yeet_in(jump_move(here[0], land, captures, longer, fax))
+            nvm
+        }
+
+        // Can this piece jump again from where it landed?
+        yo after = []
+        grind deeper in jumps_from(squares, land, piece, captures, longer) {
+            after.yeet_in(deeper)
+        }
+        sus (after.how_thicc() > 0) {
+            grind deeper in after {
+                out.yeet_in(deeper)
+            }
+        } nah {
+            out.yeet_in(jump_move(here[0], land, captures, longer, cap))
+        }
+    }
+    bounce out
+}
+
+bet jump_move(start, land, captures, path, became_king) {
+    yo text = to_yap(path[0])
+    grind i from 1 to path.how_thicc() {
+        text = text + "x" + to_yap(path[i])
+    }
+    bounce {
+        "from": start,
+        "to": land,
+        "captures": captures,
+        "path": path,
+        "promotes": became_king,
+        "notation": text,
+    }
+}
+
+// By notation, which is a stable total order and reads sensibly: 9-13 before
+// 9-14, and every move of square 9 before every move of square 10.
+flex bet sorted_moves(moves) {
+    yo out = []
+    yo used = {}
+    grind n from 0 to moves.how_thicc() {
+        yo best = ghost
+        yo best_at = -1
+        grind i from 0 to moves.how_thicc() {
+            sus (used.has(to_yap(i))) {
+                nvm
+            }
+            sus (best == ghost || move_before(moves[i], best)) {
+                best = moves[i]
+                best_at = i
+            }
+        }
+        sus (best_at < 0) {
+            bail
+        }
+        used[to_yap(best_at)] = fax
+        out.yeet_in(best)
+    }
+    bounce out
+}
+
+// Compared as numbers rather than as text, so 9 sorts before 10 instead of
+// after it.
+bet move_before(a, b) {
+    sus (a["from"] != b["from"]) {
+        bounce a["from"] < b["from"]
+    }
+    sus (a["to"] != b["to"]) {
+        bounce a["to"] < b["to"]
+    }
+    bounce a["notation"] < b["notation"]
+}
+
+// -- making a move ---------------------------------------------------------------
+
+// The board that results. The one given is never changed: an engine searches
+// by making moves on copies and throwing them away, and a rule that mutated
+// would make that a source of bugs rather than a convenience.
+flex bet apply_move(board, move) {
+    yo next = clone_board(board)
+    yo piece = next["squares"][move["from"]]
+    next["squares"][move["from"]] = EMPTY
+    grind gone in move["captures"] {
+        next["squares"][gone] = EMPTY
+    }
+    next["squares"][move["to"]] = move["promotes"] ? crowned(piece) : piece
+    next["turn"] = other_side(board["turn"])
+    next["moves"] = board["moves"] + 1
+    // A move that captures nothing and crowns nobody is a quiet move. Enough
+    // of them in a row and the game is going nowhere.
+    next["quiet"] = move["captures"].how_thicc() == 0 && !move["promotes"] ? board["quiet"] + 1 : 0
+    bounce next
+}
+
+// The move in `moves` written as `notation`, or ghost. How a click on a page
+// or a word typed at a prompt becomes a move nobody had to trust.
+flex bet find_move(moves, notation) {
+    grind m in moves {
+        sus (m["notation"] == notation) {
+            bounce m
+        }
+    }
+    bounce ghost
+}
+
+// A move from one square to another, when the caller knows only where the
+// piece started and finished -- which is all a board on a page can tell.
+// Ambiguous only if two different chains start and end alike, and then the
+// first in sorted order is as good an answer as any.
+flex bet find_move_between(moves, start, finish) {
+    grind m in moves {
+        sus (m["from"] == start && m["to"] == finish) {
+            bounce m
+        }
+    }
+    bounce ghost
+}
+
+// -- how it ends -------------------------------------------------------------------
+
+// "red", "black", "draw", or ghost while it is still going. A side with no
+// pieces has lost, and so has a side with no legal move -- being unable to
+// move is a loss in draughts, not a stalemate.
+flex bet outcome(board) {
+    yo moves = legal_moves(board)
+    sus (moves.how_thicc() == 0) {
+        bounce other_side(board["turn"])
+    }
+    sus (board["quiet"] >= DRAW_AFTER_QUIET) {
+        bounce "draw"
+    }
+    bounce ghost
+}
+
+flex bet count_pieces(board, side) {
+    yo men = 0
+    yo kings = 0
+    grind n from 1 to 33 {
+        yo piece = board["squares"][n]
+        sus (owner_of(piece) != side) {
+            nvm
+        }
+        sus (is_king(piece)) {
+            kings += 1
+        } nah {
+            men += 1
+        }
+    }
+    bounce {"men": men, "kings": kings, "total": men + kings}
+}
+
+// -- showing it --------------------------------------------------------------------
+
+// The board as text, for the terminal and for the golden. Square numbers on
+// the empty dark squares, so a player can see what to type.
+flex bet render(board) {
+    yo lines = []
+    grind row from 0 to 8 {
+        yo cells = []
+        grind col from 0 to 8 {
+            yo n = square_at(row, col)
+            sus (n == 0) {
+                cells.yeet_in("  ")
+            } nah {
+                yo piece = board["squares"][n]
+                sus (piece == EMPTY) {
+                    cells.yeet_in(yapper.pad_left(to_yap(n), 2))
+                } nah {
+                    cells.yeet_in(" " + piece)
+                }
+            }
+        }
+        lines.yeet_in(cells.join(""))
+    }
+    bounce lines.join("\n")
+}

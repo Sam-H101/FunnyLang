@@ -1,0 +1,149 @@
+// play.funny — checkers in a terminal.
+//
+//     funny run extensive_examples/checkers/play.funny
+//     funny run extensive_examples/checkers/play.funny -- --depth 5
+//     funny run extensive_examples/checkers/play.funny -- --self --moves 40
+//
+//   --depth N     how far the engine looks ahead (default 3)
+//   --side red|black   which side you play (default red, who moves first)
+//   --self        nobody plays: the engine takes both sides and prints the game
+//   --moves N     stop after N moves, whoever is winning
+//
+// The same rules and the same engine the browser uses, against a board made of
+// text. It exists because a game that can only be played through a socket can
+// only be tested through a socket, and because watching the engine play itself
+// is the quickest way to see whether it is any good.
+
+gimme yapper
+
+gimme { RED, BLACK, new_board, legal_moves, apply_move, outcome, render,
+        find_move, count_pieces, other_side } from "rules.funny"
+gimme { best_move, evaluate, verdict } from "engine.funny"
+
+bet usage() {
+    yell("usage: play.funny [--depth N] [--side red|black] [--self] [--moves N]")
+}
+
+// The legal moves, written out, so a player can see what may be typed -- and
+// so that a forced capture is obvious rather than a mystery.
+bet show_moves(moves) {
+    yo shown = []
+    grind m in moves {
+        shown.yeet_in(m["notation"])
+    }
+    bounce shown.join("  ")
+}
+
+bet forced(moves) {
+    bounce moves.how_thicc() > 0 && moves[0]["captures"].how_thicc() > 0
+}
+
+bet describe(board) {
+    yo red = count_pieces(board, RED)
+    yo black = count_pieces(board, BLACK)
+    bounce "red " + to_yap(red["men"]) + "+" + to_yap(red["kings"]) + "K   " +
+           "black " + to_yap(black["men"]) + "+" + to_yap(black["kings"]) + "K"
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo depth = 3
+    yo human = RED
+    yo self_play = cap
+    yo move_limit = ghost
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--depth" && i + 1 < args.how_thicc()) {
+            depth = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--side" && i + 1 < args.how_thicc()) {
+            human = args[i + 1] == "black" ? BLACK : RED
+            i += 2
+        } kinda_sus (a == "--self") {
+            self_play = fax
+            i += 1
+        } kinda_sus (a == "--moves" && i + 1 < args.how_thicc()) {
+            move_limit = to_int(args[i + 1])
+            i += 2
+        } nah {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        }
+    }
+    sus (depth < 1) { depth = 1 }
+    sus (depth > 9) { depth = 9 }
+
+    yo board = new_board()
+    sus (self_play) {
+        yap "the engine, both sides, looking " + to_yap(depth) + " moves ahead"
+    } nah {
+        yap "you are " + human + ". the engine is " + other_side(human) +
+            ", looking " + to_yap(depth) + " moves ahead."
+        yap "type a move like 11-15, or 22x15 to capture. 'moves' lists them, 'quit' leaves."
+    }
+    yap ""
+    yap render(board)
+    yap ""
+
+    bruh (fax) {
+        sus (move_limit != ghost && board["moves"] >= move_limit) {
+            yap "stopping after " + to_yap(board["moves"]) + " moves. " + describe(board)
+            bail
+        }
+        yo over = outcome(board)
+        sus (over != ghost) {
+            yap over == "draw" ? "a draw." : over + " wins."
+            bail
+        }
+
+        yo moves = legal_moves(board)
+
+        sus (self_play || board["turn"] != human) {
+            yo thought = best_move(board, depth)
+            yo move = thought["move"]
+            board = apply_move(board, move)
+            yap board["turn"] == RED ? "black plays " + move["notation"] : "red plays " + move["notation"]
+            yap "  (" + to_yap(thought["nodes"]) + " positions looked at, " +
+                verdict(board, -thought["score"]) + ")"
+            yap ""
+            yap render(board)
+            yap ""
+            nvm
+        }
+
+        yap board["turn"] + " to play" + (forced(moves) ? ", and must capture" : "") + ": " +
+            show_moves(moves)
+        yo typed = yapper.trim(ask("> "))
+        sus (typed == "quit" || typed == "") {
+            yap "bye."
+            bail
+        }
+        sus (typed == "moves") {
+            yap show_moves(moves)
+            nvm
+        }
+        yo chosen = find_move(moves, typed)
+        sus (chosen == ghost) {
+            yap "not a legal move. " + (forced(moves) ? "a capture is compulsory." : "try one of those.")
+            nvm
+        }
+        board = apply_move(board, chosen)
+        yap ""
+        yap render(board)
+        yap ""
+    }
+    bounce 0
+}
+
+dip(main(the_args()))

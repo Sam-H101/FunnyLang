@@ -1,0 +1,15 @@
+// tests/lang/interns/dm_await.funny -- check_dms is an `otw`, so a task can
+// await it and everything else in the program keeps running meanwhile. Only
+// the asking task waits.
+gimme interns
+gimme filez
+
+async_ngl bet listen() {
+    yo m = await_fr interns.check_dms(5000)
+    bounce m["msg"]
+}
+
+yo w = interns.hire(filez.join_path(filez.dir_of(the_script()), "dm_greet_worker.funny"), ghost)
+yo heard = listen()
+yap await_fr heard
+yap interns.wait_up(w)

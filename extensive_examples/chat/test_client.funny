@@ -1,0 +1,234 @@
+// test_client.funny — a chat client, in a worker, for the golden.
+//
+// Three of these run at once against one server. They have to be separate
+// threads: a server parked in `accept` and a client parked in `connect` cannot
+// be the same one, and three clients that took turns would never show that a
+// message reaches everybody.
+//
+// It talks through `ws_client.funny`, so the golden exercises that library
+// rather than a second implementation of the protocol written to agree with
+// it.
+//
+// Everything observed goes back through `interns.deliver` as plain strings:
+// what crosses between VMs is a deep copy of portable values.
+
+gimme interns
+gimme json
+gimme blob
+gimme clock
+gimme yapper
+
+gimme { connect, close, send_text, send_fragmented, send_ping, receive, receive_message } from "ws_client.funny"
+
+yo job = interns.assignment()
+yo out = []
+
+bet say(line) {
+    out.yeet_in(line)
+}
+
+// Declared before it is used: a top-level `bet` is a statement that runs in
+// order, so calling one above its declaration is an unbound name.
+//
+// Sorted, because three clients speaking at once have no order anybody can
+// predict, and asserting on one would be asserting on the scheduler.
+bet sorted_strings(items) {
+    yo sorted = []
+    yo used = {}
+    grind n from 0 to items.how_thicc() {
+        yo best = ghost
+        yo best_at = -1
+        grind i from 0 to items.how_thicc() {
+            sus (!used.has(to_yap(i)) && (best == ghost || items[i] < best)) {
+                best = items[i]
+                best_at = i
+            }
+        }
+        sus (best_at < 0) {
+            bail
+        }
+        used[to_yap(best_at)] = fax
+        sorted.yeet_in(best)
+    }
+    bounce sorted
+}
+
+// Asks to join. Every script does this first, and the asking is the half that
+// is easy to leave out: waiting for the room's answer without having sent the
+// question sits there until the deadline and reports a failure that looks like
+// the server's.
+bet join_room(client, user, room) {
+    send_text(client, json.spill({"op": "join", "user": user, "room": room}))
+}
+
+// Every message anybody said, recorded the moment it is seen -- wherever it is
+// seen.
+//
+// This is a shared list rather than something the collecting loop builds,
+// because of a bug worth remembering. `until` reads messages while it waits
+// for a particular one, and used to discard everything that did not match. A
+// `said` push that arrived while a client was waiting for its join reply, or
+// for a `who` answer, was therefore thrown away and never counted -- so a
+// client could be sent six messages and report five. Whether it happened
+// depended entirely on when the other clients happened to speak, which made it
+// a failure that appears on one machine and not another.
+yo HEARD = []
+
+bet record(parsed) {
+    sus (parsed != ghost && parsed.get("push", "") == "said") {
+        HEARD.yeet_in(parsed["user"] + ": " + parsed["text"])
+    }
+}
+
+// Reads until `want(msg)` is happy or the deadline passes, recording anything
+// said on the way past. Every wait has a deadline: a golden that can hang is a
+// golden that will, on the slowest machine in CI.
+bet until(client, seconds, want) {
+    yo deadline = clock.now() + seconds
+    bruh (clock.now() < deadline) {
+        yo m = receive_message(client)
+        sus (m == ghost) {
+            bounce ghost
+        }
+        sus (m["kind"] != "text") {
+            nvm
+        }
+        yo parsed = ghost
+        sketchy {
+            parsed = json.parse(m["text"])
+        } my_bad (e) {
+            nvm
+        }
+        record(parsed)
+        sus (want(parsed)) {
+            bounce parsed
+        }
+    }
+    bounce ghost
+}
+
+yo c = connect("127.0.0.1", job["port"], "/ws", {"timeout_ms": 30000})
+
+// -- three clients in one room ------------------------------------------------------
+
+sus (job["script"] == "chat") {
+    join_room(c, job["name"], job["room"])
+    yo joined = until(c, 30, lowkey (m) => m != ghost && m.get("ok", cap) == fax && m.has("history"))
+    say(job["name"] + " joined: " + to_yap(joined != ghost))
+
+    // Everybody waits until all three are in the room before anybody speaks.
+    // Without that, the first speaker's message can arrive before the third
+    // client has joined, and "everybody heard everything" would depend on
+    // scheduling rather than on the server being right.
+    //
+    // The membership is *asked for*, not waited for. The obvious version waits
+    // to catch the announcement that the room has filled up -- and a client
+    // that joins at the wrong moment never sees one, because the announcement
+    // it needed was the one its own join caused, or arrived before it was
+    // reading. That version passed three times in a row and then failed, which
+    // is worse than failing every time.
+    //
+    // Polling cannot miss it: every `who` reply carries the membership as it
+    // stands, so asking again always eventually gets the true answer. The join
+    // reply carries it too, which is why it is checked first -- for whoever
+    // joins last, that reply is already the whole room.
+    yo everybody = joined != ghost && joined.get("who", []).how_thicc() >= job["expect_members"]
+    yo gate = clock.now() + 60
+    bruh (!everybody && clock.now() < gate) {
+        send_text(c, json.spill({"op": "who"}))
+        yo answer = until(c, 5, lowkey (m) {
+            sus (m == ghost) { bounce cap }
+            bounce m.get("who", ghost) != ghost
+        })
+        sus (answer != ghost && answer["who"].how_thicc() >= job["expect_members"]) {
+            everybody = fax
+        }
+    }
+    say(job["name"] + " saw everybody: " + to_yap(everybody))
+
+    grind text in job["says"] {
+        send_text(c, json.spill({"op": "say", "text": text}))
+    }
+
+    // Keep reading until everybody's messages have arrived. `HEARD` already
+    // holds anything that turned up while this client was joining or asking
+    // who was here, so this loop is only finishing the job rather than
+    // starting it.
+    //
+    // Every message from everybody counts, this client's own included: the
+    // boss fans out to the worker that sent it too, because the person who
+    // typed it expects to see it appear like everybody else does.
+    yo deadline = clock.now() + 90
+    bruh (HEARD.how_thicc() < job["expect_total"] && clock.now() < deadline) {
+        yo m = receive_message(c)
+        // Nothing arrived just now. That is not a reason to stop: the messages
+        // being waited for are sent by other clients on other threads, and one
+        // quiet moment says nothing about whether more are coming. Abandoning
+        // here is how this reported five of six and blamed the server.
+        sus (m == ghost) {
+            await_fr clock.chill(20)
+            nvm
+        }
+        sus (m["kind"] != "text") {
+            nvm
+        }
+        yo parsed = ghost
+        sketchy {
+            parsed = json.parse(m["text"])
+        } my_bad (e) {
+            nvm
+        }
+        record(parsed)
+    }
+    // Sorted, because three clients speaking at once have no order anybody
+    // can predict, and asserting on one would be asserting on the scheduler.
+    say(job["name"] + " heard " + to_yap(HEARD.how_thicc()) + ": " + to_yap(sorted_strings(HEARD)))
+}
+
+// -- the control frames, on a real socket -----------------------------------------------
+
+sus (job["script"] == "ping") {
+    join_room(c, job["name"], job["room"])
+    until(c, 30, lowkey (m) => m != ghost && m.get("ok", cap) == fax && m.has("history"))
+
+    // `receive` rather than `receive_message`: the latter answers pings and
+    // swallows pongs, which is right for a chat client and useless for
+    // checking that a pong came back.
+    send_ping(c, blob.from_yap("are you there"))
+    yo pong = ghost
+    yo deadline = clock.now() + 30
+    bruh (clock.now() < deadline) {
+        yo m = receive(c)
+        sus (m == ghost) { bail }
+        sus (m["kind"] == "pong") { pong = m; bail }
+    }
+    say("pong came back: " + to_yap(pong != ghost))
+    say("pong carried the same bytes: " + to_yap(pong != ghost && pong["data"].to_yap() == "are you there"))
+
+    // The closing handshake: `close` sends one and waits for the server's.
+    // Falling through to the close at the end of this file is harmless --
+    // `close` returns at once for a client that is already closed.
+    close(c, 1000, "done")
+    say("closed tidily: fax")
+}
+
+// -- a large message, in fragments ---------------------------------------------------
+
+sus (job["script"] == "big") {
+    join_room(c, job["name"], job["room"])
+    until(c, 30, lowkey (m) => m != ghost && m.get("ok", cap) == fax && m.has("history"))
+
+    yo size = job["size"]
+    yo text = yapper.repeat("x", size)
+    yo payload = json.spill({"op": "say", "text": text})
+    // Deliberately fragmented: 8 KB at a time, so the server reassembles a
+    // message from hundreds of frames rather than reading one big one.
+    send_fragmented(c, payload, 8192)
+
+    yo echoed = until(c, 90, lowkey (m) => m != ghost && m.get("push", "") == "said")
+    say("the big one came back: " + to_yap(echoed != ghost))
+    say("same length: " + to_yap(echoed != ghost && echoed["text"].how_thicc() == size))
+}
+
+close(c, 1000, "bye")
+interns.deliver(out)

@@ -1,0 +1,18 @@
+// tests/lang/interns/dm_round_trip.funny -- RUNTIME_PLAN.md R2: messages in
+// both directions. A worker no longer has to be a function call: it can be
+// asked something after it has started, and answer while it keeps running.
+// Messages are FIFO per inbox, so the order here is fixed.
+gimme interns
+gimme filez
+
+yo w = interns.hire(filez.join_path(filez.dir_of(the_script()), "dm_echo_worker.funny"), ghost)
+interns.dm(w, "hello")
+interns.dm(w, "again")
+
+yo first = interns.wait_up(interns.check_dms())
+yap first["from"]
+yap first["msg"]
+yo second = interns.wait_up(interns.check_dms())
+yap second["msg"]
+yap interns.dms_waiting()
+yap interns.wait_up(w)

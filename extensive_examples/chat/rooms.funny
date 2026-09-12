@@ -1,0 +1,266 @@
+// rooms.funny — who is in which room, and what was said.
+//
+// This is the "room" the plan describes, and it is deliberately not a thread,
+// a socket or a connection. It is a pile of state and one function that takes
+// a message and says what to answer and what to broadcast. `server.funny`
+// owns the worker handles and does the actual sending; this file knows nothing
+// about how a message travels.
+//
+// Keeping it that way is what lets the golden drive every rule here -- joining,
+// leaving, history, presence, the message cap, a name already taken -- with no
+// threads at all and no port bound.
+//
+// WHY THE ROOM IS THE MAIN THREAD. Each worker holds some connections, and a
+// message has to reach connections held by all of them. A worker cannot see
+// another worker's heap, so somebody has to fan out, and the boss is the only
+// one that can dm every worker. That is the design the earlier examples'
+// keeper could not express: a keeper answers questions, and this has to push.
+
+gimme clock
+
+// The last N messages per room, replayed to somebody who has just joined.
+// Small on purpose: this is a demonstration, and history that grows without
+// bound is a memory leak with a nice name.
+flex deadass HISTORY_PER_ROOM = 100
+
+// A room nobody is in and nobody has spoken in is forgotten, so a chat that
+// has run for a week is not carrying a thousand empty rooms.
+flex deadass DEFAULT_ROOM = "lobby"
+
+flex bet new_rooms() {
+    bounce {
+        "rooms": {},        // name -> {"history": [...], "members": {cid -> member}}
+        "members": {},      // cid  -> {"user", "room", "worker", "since", "typing"}
+        "said": 0,
+        "joined": 0,
+        "started": clock.now(),
+    }
+}
+
+bet room_of(state, name) {
+    sus (!state["rooms"].has(name)) {
+        state["rooms"][name] = {"history": [], "members": {}}
+    }
+    bounce state["rooms"][name]
+}
+
+// -- what a caller gets back ------------------------------------------------------
+//
+// {"reply": value or ghost, "broadcast": [...], "rooms": [names]}
+//
+// `reply` goes to whoever asked, if they asked with a request id. Each
+// `broadcast` is a message for every worker; `rooms` names the rooms it
+// concerns so a worker can skip connections that do not care.
+
+bet nothing() {
+    bounce {"reply": ghost, "broadcast": []}
+}
+
+bet just(reply) {
+    bounce {"reply": reply, "broadcast": []}
+}
+
+// -- the messages --------------------------------------------------------------------
+
+// `sender` is the worker handle the message came from, kept so a broadcast can
+// say which connections it is for. `cid` is a connection id the worker made
+// up; it is unique per worker, so the pair is what identifies a connection.
+// (Not `from`: that is a keyword here, being part of `grind i from 0 to 10`.)
+flex bet handle(state, msg, sender) {
+    yo op = msg.get("op", "")
+
+    sus (op == "join") {
+        bounce do_join(state, msg, sender)
+    }
+    sus (op == "say") {
+        bounce do_say(state, msg)
+    }
+    sus (op == "leave") {
+        bounce do_leave(state, msg)
+    }
+    sus (op == "typing") {
+        bounce do_typing(state, msg)
+    }
+    sus (op == "history") {
+        yo room = room_of(state, msg.get("room", DEFAULT_ROOM))
+        bounce just({"ok": fax, "history": room["history"], "who": who_in(state, msg.get("room", DEFAULT_ROOM))})
+    }
+    sus (op == "who") {
+        bounce just({"ok": fax, "who": who_in(state, msg.get("room", DEFAULT_ROOM))})
+    }
+    sus (op == "stats") {
+        bounce just(stats(state))
+    }
+    bounce just({"ok": cap, "error": "unknown op " + to_yap(op)})
+}
+
+// Joining answers with the history and the current membership, so a client
+// that has just connected needs one round trip rather than three.
+bet do_join(state, msg, sender) {
+    yo cid = msg["cid"]
+    yo user = msg.get("user", "")
+    yo name = msg.get("room", DEFAULT_ROOM)
+
+    sus (user == "") {
+        bounce just({"ok": cap, "error": "a name is needed to join"})
+    }
+
+    // The same person in two tabs is two connections, which is fine; the same
+    // *connection* joining twice is a client bug, and moving it is the sane
+    // reading.
+    sus (state["members"].has(cid)) {
+        do_leave(state, {"cid": cid})
+    }
+
+    yo room = room_of(state, name)
+    yo member = {"user": user, "room": name, "worker": sender, "since": clock.now(), "typing": cap}
+    state["members"][cid] = member
+    room["members"][cid] = member
+    state["joined"] += 1
+
+    bounce {
+        "reply": {"ok": fax, "room": name, "history": room["history"], "who": who_in(state, name)},
+        "broadcast": [{"push": "joined", "room": name, "user": user, "who": who_in(state, name),
+                       "at": clock.now()}],
+    }
+}
+
+bet do_say(state, msg) {
+    yo cid = msg.get("cid", ghost)
+    sus (!state["members"].has(cid)) {
+        bounce just({"ok": cap, "error": "say something after joining, not before"})
+    }
+    yo member = state["members"][cid]
+    yo text = msg.get("text", "")
+    sus (text == "") {
+        bounce just({"ok": cap, "error": "an empty message is not a message"})
+    }
+
+    yo entry = {"user": member["user"], "text": text, "room": member["room"], "at": clock.now()}
+    yo room = room_of(state, member["room"])
+    room["history"].yeet_in(entry)
+    // Oldest first out, so the cap is a window rather than a wall.
+    bruh (room["history"].how_thicc() > HISTORY_PER_ROOM) {
+        room["history"].yoink_at(0)
+    }
+    state["said"] += 1
+
+    // Typing stops when you say the thing you were typing.
+    member["typing"] = cap
+
+    bounce {"reply": {"ok": fax}, "broadcast": [{"push": "said", "room": member["room"],
+                                                 "user": member["user"], "text": text,
+                                                 "at": entry["at"]}]}
+}
+
+bet do_leave(state, msg) {
+    yo cid = msg.get("cid", ghost)
+    sus (!state["members"].has(cid)) {
+        bounce nothing()
+    }
+    yo member = state["members"][cid]
+    yo name = member["room"]
+    state["members"].remove(cid)
+    yo room = room_of(state, name)
+    sus (room["members"].has(cid)) {
+        room["members"].remove(cid)
+    }
+    // An empty room with nothing said in it is forgotten; one with history is
+    // kept, so walking back into it still shows what was said.
+    sus (room["members"].how_thicc() == 0 && room["history"].how_thicc() == 0) {
+        state["rooms"].remove(name)
+    }
+    bounce {
+        "reply": {"ok": fax},
+        "broadcast": [{"push": "left", "room": name, "user": member["user"],
+                       "who": who_in(state, name), "at": clock.now()}],
+    }
+}
+
+// Typing is broadcast but never stored: it is true only for as long as it
+// takes to arrive, and a history full of "was typing" helps nobody.
+bet do_typing(state, msg) {
+    yo cid = msg.get("cid", ghost)
+    sus (!state["members"].has(cid)) {
+        bounce nothing()
+    }
+    yo member = state["members"][cid]
+    yo on = msg.get("on", cap)
+    sus (member["typing"] == on) {
+        // Clients send this on every keystroke. Only the changes travel.
+        bounce nothing()
+    }
+    member["typing"] = on
+    bounce {
+        "reply": ghost,
+        "broadcast": [{"push": "typing", "room": member["room"], "user": member["user"],
+                       "on": on, "at": clock.now()}],
+    }
+}
+
+// Everybody in a room, sorted, so two servers holding the same members list
+// them the same way and a golden can assert on it.
+flex bet who_in(state, name) {
+    sus (!state["rooms"].has(name)) {
+        bounce []
+    }
+    yo names = []
+    grind cid in state["rooms"][name]["members"].keys() {
+        yo user = state["rooms"][name]["members"][cid]["user"]
+        sus (!names.contains(user)) {
+            names.yeet_in(user)
+        }
+    }
+    bounce sorted_strings(names)
+}
+
+flex bet stats(state) {
+    yo names = []
+    grind name in state["rooms"].keys() {
+        names.yeet_in(name)
+    }
+    bounce {
+        "ok": fax,
+        "rooms": sorted_strings(names).how_thicc(),
+        "connections": state["members"].how_thicc(),
+        "said": state["said"],
+        "joined": state["joined"],
+        "uptime": to_int((clock.now() - state["started"]) * 1000) / 1000.0,
+    }
+}
+
+// Everything a worker should be told when a connection it holds goes away
+// without saying goodbye -- the socket closed, the process is stopping.
+flex bet drop_connection(state, cid) {
+    bounce do_leave(state, {"cid": cid})
+}
+
+// Every connection a given worker holds, for when a whole worker goes away.
+flex bet connections_of(state, worker) {
+    yo out = []
+    grind cid in state["members"].keys() {
+        sus (state["members"][cid]["worker"] == worker) {
+            out.yeet_in(cid)
+        }
+    }
+    bounce out
+}
+
+flex bet sorted_strings(items) {
+    yo out = []
+    yo used = {}
+    grind n from 0 to items.how_thicc() {
+        yo best = ghost
+        grind s in items {
+            sus (!used.has(s) && (best == ghost || s < best)) {
+                best = s
+            }
+        }
+        sus (best == ghost) {
+            bail
+        }
+        used[best] = fax
+        out.yeet_in(best)
+    }
+    bounce out
+}

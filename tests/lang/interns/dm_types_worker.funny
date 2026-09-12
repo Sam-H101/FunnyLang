@@ -1,0 +1,7 @@
+// Bounces the whole message straight back, so the test can check that every
+// portable type survived two heap crossings unchanged.
+gimme interns
+
+yo m = interns.wait_up(interns.check_dms())
+interns.dm("boss", m["msg"])
+interns.deliver(how_thicc(m["msg"]))

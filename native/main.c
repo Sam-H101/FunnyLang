@@ -25,6 +25,7 @@
 
 #include "diag.h"
 #include "interns.h"
+#include "status.h"
 #include "platform.h"
 #include "runner.h"
 #include "sus.h"
@@ -62,6 +63,33 @@ static uint8_t *load_cli_override(size_t *outLen) {
     return data;
 }
 
+/* --dump-on-stall N: a thread that does nothing but notice when nothing is
+   happening. Every thread touches its status row at each wait point, so "no
+   row has been touched in N seconds" is as close to "this program is stuck"
+   as anything can get from outside it (RUNTIME_PLAN.md R9).
+ *
+ * It reports at most once per stall, and keeps running afterwards -- a
+ * program that unsticks itself and hangs again deserves a second dump. */
+static double g_stallSeconds = 0.0;
+
+static void stall_watchdog(void *userdata) {
+    (void)userdata;
+    bool reported = false;
+    for (;;) {
+        platform_sleep_seconds(0.5);
+        double quiet = status_quiet_seconds();
+        if (quiet >= g_stallSeconds) {
+            if (!reported) {
+                fprintf(stderr, "\nnothing has moved for %.0fs. here is what everybody is waiting on:\n", quiet);
+                status_dump(stderr);
+                reported = true;
+            }
+        } else {
+            reported = false;
+        }
+    }
+}
+
 int main(int argc, char **argv) {
     platform_console_init(); /* UTF-8 + ANSI on Windows; a no-op elsewhere */
 
@@ -78,11 +106,24 @@ int main(int argc, char **argv) {
             diag.serious = true;
         } else if (strcmp(argv[i], "--no-color") == 0 || strcmp(argv[i], "--no-colour") == 0) {
             diag.color = false;
+        } else if (strcmp(argv[i], "--dump-on-stall") == 0 && i + 1 < argc) {
+            g_stallSeconds = strtod(argv[i + 1], NULL);
+            if (g_stallSeconds < 1.0) g_stallSeconds = 1.0;
         } else if (strcmp(argv[i], "--version") == 0) {
             wantVersion = true;
         }
     }
     diag_set_default_options(diag);
+
+    /* A hang is not something you get to prepare for in advance, so the
+       dump is always available: SIGQUIT (Ctrl-\) on POSIX, Ctrl-Break on
+       Windows. The watchdog only exists if it was asked for. */
+    platform_on_dump_request(status_dump_raw);
+    if (g_stallSeconds > 0.0) {
+        PlatformThread watchdog;
+        char watchdogErr[256];
+        platform_thread_start(&watchdog, stall_watchdog, NULL, watchdogErr, sizeof watchdogErr);
+    }
 
     if (wantVersion) {
         printf("funny %s (bytecode v%d)\n", FUNNY_VERSION, FUNNY_BYTECODE_VERSION);
@@ -108,8 +149,23 @@ int main(int argc, char **argv) {
 
     /* No script path: this run is the toolchain itself, which finds the
        user's program from argv and passes *its* path down to sus.run_program. */
+    /* --dump-on-stall belongs to this binary alone: the toolchain has never
+       heard of it and would take it for a filename. --serious and --no-color
+       stay in, because cli.funny strips those on its own side and a nested
+       run is meant to see them. */
+    char **passArgv = (char **)malloc((size_t)(argc > 0 ? argc : 1) * sizeof(char *));
+    int passArgc = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--dump-on-stall") == 0 && i + 1 < argc) {
+            i++;
+            continue;
+        }
+        passArgv[passArgc++] = argv[i];
+    }
+
     RunnerOptions opts = {diag, NULL, NULL, NULL, NULL};
-    int status = funny_run_bytecode(cliBytes, cliLen, argv + 1, argc - 1, opts, NULL);
+    int status = funny_run_bytecode(cliBytes, cliLen, passArgv, passArgc, opts, NULL);
+    free(passArgv);
     free(owned);
     /* Interns are joined as each VM is destroyed; this is the last sweep --
        the compiled-worker cache, and the registry itself. Nothing is killed:

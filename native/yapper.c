@@ -9,6 +9,7 @@
 #include "groupchat.h"
 #include "modules.h"
 #include "stash.h"
+#include "blob.h"
 #include "da_string.h"
 #include "unicode_tbl.h"
 
@@ -689,6 +690,27 @@ typedef struct {
     int maxArity;
 } YapperModuleEntry;
 
+/* The bridge to `blob` (RUNTIME_PLAN.md R1), in both directions and both
+   named for what they produce. `to_blob` is the string's UTF-8 bytes;
+   `from_blob` decodes, replacing anything that isn't valid UTF-8 with
+   U+FFFD rather than refusing to show someone their own data. */
+static Value m_to_blob(VM *vm, Value *a, int argc) {
+    (void)argc;
+    if (!check_str(vm, a[0], "to_blob")) return GHOST_VAL;
+    ObjString *s = AS_STRING(a[0]);
+    return OBJ_VAL(blob_new(&vm->gc, (const uint8_t *)s->chars, s->byteLen));
+}
+
+static Value m_from_blob(VM *vm, Value *a, int argc) {
+    (void)argc;
+    if (!IS_BLOB(a[0])) {
+        vm_throw_native(vm, "TypeVibeMismatch", "'from_blob' needs a blob, not a %s.", vm_type_name(a[0]));
+        return GHOST_VAL;
+    }
+    ObjBlob *b = AS_BLOB(a[0]);
+    return OBJ_VAL(string_new_utf8_lossy(&vm->gc, (const char *)b->bytes, b->byteLen));
+}
+
 static const YapperModuleEntry MODULE_FUNCTIONS[] = {
     {"split", m_split, 1, 2},
     {"join", m_join, 2, 2},
@@ -719,6 +741,8 @@ static const YapperModuleEntry MODULE_FUNCTIONS[] = {
     {"words", m_words, 1, 1},
     {"title_case", m_title_case, 1, 1},
     {"sarcasm_case", m_sarcasm_case, 1, 1},
+    {"to_blob", m_to_blob, 1, 1},
+    {"from_blob", m_from_blob, 1, 1},
 };
 #define MODULE_FUNCTIONS_COUNT (int)(sizeof(MODULE_FUNCTIONS) / sizeof(MODULE_FUNCTIONS[0]))
 
@@ -748,6 +772,7 @@ static const YapperModuleEntry YAPSTRING_METHOD_TABLE[] = {
     {"repeat", m_repeat, 1, 1},
     {"pad_left", m_pad_left, 1, 2},
     {"pad_right", m_pad_right, 1, 2},
+    {"to_blob", m_to_blob, 0, 0},
 };
 #define YAPSTRING_METHOD_TABLE_COUNT (int)(sizeof(YAPSTRING_METHOD_TABLE) / sizeof(YAPSTRING_METHOD_TABLE[0]))
 

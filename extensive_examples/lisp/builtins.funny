@@ -1,0 +1,445 @@
+// builtins.funny — the procedures that are not written in Lisp.
+//
+// Each one takes a FunnyLang stash of already-evaluated arguments and returns
+// a value. They are ordinary values in the global environment, not special
+// forms, so `(define add +)` works and `(map + xs ys)` does too.
+//
+// Arity and type checking happens here rather than in each procedure, through
+// `prim` and the `want_*` helpers, so every wrong call gets the same shape of
+// message and no built-in has to remember to check.
+
+gimme yapper
+gimme filez
+gimme { NIL, sym, pair, is_nil, is_pair, is_sym, is_proc, is_prim, is_macro, is_callable,
+        list_of, items_of, list_length, display_str, write_str, is_truthy } from "values.funny"
+gimme { eval, apply_proc, new_env, env_define } from "eval.funny"
+gimme { read_all } from "reader.funny"
+
+// -- where output goes -------------------------------------------------------------
+//
+// Normally straight to stdout, through `mumble`, which is `yap` without the
+// newline -- Lisp's `display` must not end the line, so this is the statement
+// it needs. A golden wants the bytes instead of the terminal, so output can be
+// diverted into a buffer and read back; that is the only difference between
+// running an example and testing one.
+
+yo SINK = ghost
+
+flex bet capture_on() {
+    SINK = []
+}
+
+flex bet capture_off() {
+    yo text = SINK == ghost ? "" : SINK.join("")
+    SINK = ghost
+    bounce text
+}
+
+bet emit(text) {
+    sus (SINK == ghost) {
+        mumble text
+    } nah {
+        SINK.yeet_in(text)
+    }
+}
+
+// `max` of ghost means "any number of arguments".
+bet prim(name, min, max, fn) {
+    bounce {"t": "prim", "name": name, "min": min, "max": max, "fn": fn}
+}
+
+bet check_arity(p, args) {
+    yo got = args.how_thicc()
+    sus (got < p["min"] || (p["max"] != ghost && got > p["max"])) {
+        yo wanted = p["max"] == ghost ? "at least " + to_yap(p["min"])
+                    : (p["min"] == p["max"] ? to_yap(p["min"])
+                       : to_yap(p["min"]) + " to " + to_yap(p["max"]))
+        chuck oops("WrongNumberOfHomies", p["name"] + " wants " + wanted +
+                   " argument" + (p["max"] == 1 ? "" : "s") + ", got " + to_yap(got) + ".")
+    }
+}
+
+bet want_number(who, v) {
+    sus (what_is_it(v) != "numba") {
+        chuck oops("TypeVibeMismatch", who + " wants a number, got " + write_str(v))
+    }
+    bounce v
+}
+
+bet want_string(who, v) {
+    sus (what_is_it(v) != "yapstring") {
+        chuck oops("TypeVibeMismatch", who + " wants a string, got " + write_str(v))
+    }
+    bounce v
+}
+
+bet want_pair(who, v) {
+    sus (!is_pair(v)) {
+        chuck oops("TypeVibeMismatch", who + " wants a pair, got " + write_str(v))
+    }
+    bounce v
+}
+
+bet want_callable(who, v) {
+    sus (!is_callable(v)) {
+        chuck oops("NotACallableRizz", who + " wants a procedure, got " + write_str(v))
+    }
+    bounce v
+}
+
+// -- equality ------------------------------------------------------------------------
+//
+// `eq?` is identity for the things that have it and value equality for the
+// things that are their own value (numbers, symbols, booleans, strings);
+// `equal?` walks structure. This Lisp has no mutable pairs, so the difference
+// only shows on lists, where `equal?` is what you want anyway.
+
+bet lisp_eq(a, b) {
+    sus (is_pair(a) || is_pair(b)) {
+        bounce cap
+    }
+    bounce lisp_equal(a, b)
+}
+
+bet lisp_equal(a, b) {
+    sus (is_pair(a) && is_pair(b)) {
+        bounce lisp_equal(a["car"], b["car"]) && lisp_equal(a["cdr"], b["cdr"])
+    }
+    sus (is_pair(a) != is_pair(b)) {
+        bounce cap
+    }
+    sus (is_sym(a) && is_sym(b)) {
+        bounce a["name"] == b["name"]
+    }
+    sus (is_sym(a) != is_sym(b)) {
+        bounce cap
+    }
+    sus (is_nil(a) && is_nil(b)) {
+        bounce fax
+    }
+    sus (is_nil(a) != is_nil(b)) {
+        bounce cap
+    }
+    // Numbers, strings and booleans. `what_is_it` keeps 1 and #t apart, which
+    // `==` alone would not.
+    sus (what_is_it(a) != what_is_it(b)) {
+        bounce cap
+    }
+    bounce a == b
+}
+
+// -- the table ---------------------------------------------------------------------
+
+flex bet install(env, load_relative_to) {
+    bet def(name, min, max, fn) {
+        env_define(env, name, prim(name, min, max, fn))
+    }
+
+    // Arithmetic. `+` and `*` fold from their identity; `-` and `/` with one
+    // argument negate and reciprocate, as Scheme does.
+    def("+", 0, ghost, lowkey (a) {
+        yo total = 0
+        grind x in a { total += want_number("+", x) }
+        bounce total
+    })
+    def("*", 0, ghost, lowkey (a) {
+        yo total = 1
+        grind x in a { total *= want_number("*", x) }
+        bounce total
+    })
+    def("-", 1, ghost, lowkey (a) {
+        sus (a.how_thicc() == 1) { bounce -want_number("-", a[0]) }
+        yo total = want_number("-", a[0])
+        grind i from 1 to a.how_thicc() { total -= want_number("-", a[i]) }
+        bounce total
+    })
+    def("/", 1, ghost, lowkey (a) {
+        sus (a.how_thicc() == 1) { bounce divide("/", 1, want_number("/", a[0])) }
+        yo total = want_number("/", a[0])
+        grind i from 1 to a.how_thicc() { total = divide("/", total, want_number("/", a[i])) }
+        bounce total
+    })
+    def("quotient", 2, 2, lowkey (a) {
+        yo d = want_number("quotient", a[1])
+        sus (d == 0) { chuck oops("MathAintMathin", "quotient by zero.") }
+        bounce trunc_div(want_number("quotient", a[0]), d)
+    })
+    def("remainder", 2, 2, lowkey (a) {
+        yo d = want_number("remainder", a[1])
+        sus (d == 0) { chuck oops("MathAintMathin", "remainder by zero.") }
+        yo n = want_number("remainder", a[0])
+        bounce n - trunc_div(n, d) * d
+    })
+    def("modulo", 2, 2, lowkey (a) {
+        yo d = want_number("modulo", a[1])
+        sus (d == 0) { chuck oops("MathAintMathin", "modulo by zero.") }
+        bounce want_number("modulo", a[0]) % d
+    })
+    def("abs", 1, 1, lowkey (a) => want_number("abs", a[0]).abs())
+    def("min", 1, ghost, lowkey (a) {
+        yo best = want_number("min", a[0])
+        grind x in a { sus (want_number("min", x) < best) { best = x } }
+        bounce best
+    })
+    def("max", 1, ghost, lowkey (a) {
+        yo best = want_number("max", a[0])
+        grind x in a { sus (want_number("max", x) > best) { best = x } }
+        bounce best
+    })
+    def("expt", 2, 2, lowkey (a) => want_number("expt", a[0]) ** want_number("expt", a[1]))
+    def("sqrt", 1, 1, lowkey (a) => mafs_sqrt(want_number("sqrt", a[0])))
+
+    // Comparison chains, so (< 1 2 3) is true.
+    def("=", 1, ghost, lowkey (a) => chain(a, "=", lowkey (x, y) => x == y))
+    def("<", 1, ghost, lowkey (a) => chain(a, "<", lowkey (x, y) => x < y))
+    def(">", 1, ghost, lowkey (a) => chain(a, ">", lowkey (x, y) => x > y))
+    def("<=", 1, ghost, lowkey (a) => chain(a, "<=", lowkey (x, y) => x <= y))
+    def(">=", 1, ghost, lowkey (a) => chain(a, ">=", lowkey (x, y) => x >= y))
+
+    def("eq?", 2, 2, lowkey (a) => lisp_eq(a[0], a[1]))
+    def("equal?", 2, 2, lowkey (a) => lisp_equal(a[0], a[1]))
+    def("not", 1, 1, lowkey (a) => !is_truthy(a[0]))
+
+    // Predicates.
+    def("null?", 1, 1, lowkey (a) => is_nil(a[0]))
+    def("pair?", 1, 1, lowkey (a) => is_pair(a[0]))
+    def("symbol?", 1, 1, lowkey (a) => is_sym(a[0]))
+    def("string?", 1, 1, lowkey (a) => what_is_it(a[0]) == "yapstring")
+    def("number?", 1, 1, lowkey (a) => what_is_it(a[0]) == "numba")
+    def("boolean?", 1, 1, lowkey (a) => what_is_it(a[0]) == "boolski")
+    def("procedure?", 1, 1, lowkey (a) => is_callable(a[0]))
+    def("list?", 1, 1, lowkey (a) {
+        yo cur = a[0]
+        bruh (is_pair(cur)) { cur = cur["cdr"] }
+        bounce is_nil(cur)
+    })
+    def("zero?", 1, 1, lowkey (a) => want_number("zero?", a[0]) == 0)
+    def("even?", 1, 1, lowkey (a) => want_number("even?", a[0]) % 2 == 0)
+    def("odd?", 1, 1, lowkey (a) => want_number("odd?", a[0]) % 2 != 0)
+
+    // Pairs and lists.
+    def("cons", 2, 2, lowkey (a) => pair(a[0], a[1]))
+    def("car", 1, 1, lowkey (a) => want_pair("car", a[0])["car"])
+    def("cdr", 1, 1, lowkey (a) => want_pair("cdr", a[0])["cdr"])
+    def("cadr", 1, 1, lowkey (a) => want_pair("cadr", want_pair("cadr", a[0])["cdr"])["car"])
+    def("cddr", 1, 1, lowkey (a) => want_pair("cddr", want_pair("cddr", a[0])["cdr"])["cdr"])
+    def("list", 0, ghost, lowkey (a) => list_of(a, ghost))
+    def("length", 1, 1, lowkey (a) => items_of(a[0], "length's argument").how_thicc())
+    def("append", 0, ghost, lowkey (a) {
+        sus (a.how_thicc() == 0) { bounce NIL }
+        yo out = []
+        grind i from 0 to a.how_thicc() - 1 {
+            grind x in items_of(a[i], "append's argument") { out.yeet_in(x) }
+        }
+        // The last argument is the tail, and is not required to be a list --
+        // (append '(1) 2) is the dotted pair (1 . 2), as in Scheme.
+        bounce list_of(out, a[a.how_thicc() - 1])
+    })
+    def("reverse", 1, 1, lowkey (a) {
+        yo items = items_of(a[0], "reverse's argument")
+        bounce list_of(items.reverse(), ghost)
+    })
+    def("list-ref", 2, 2, lowkey (a) {
+        yo items = items_of(a[0], "list-ref's argument")
+        yo i = want_number("list-ref", a[1])
+        sus (i < 0 || i >= items.how_thicc()) {
+            chuck oops("OutOfPocket", "list-ref: index " + to_yap(i) + " is outside a list of " +
+                       to_yap(items.how_thicc()) + ".")
+        }
+        bounce items[i]
+    })
+    def("member", 2, 2, lowkey (a) {
+        yo cur = a[1]
+        bruh (is_pair(cur)) {
+            sus (lisp_equal(a[0], cur["car"])) { bounce cur }
+            cur = cur["cdr"]
+        }
+        bounce cap
+    })
+    def("assq", 2, 2, lowkey (a) {
+        yo cur = a[1]
+        bruh (is_pair(cur)) {
+            sus (is_pair(cur["car"]) && lisp_eq(a[0], cur["car"]["car"])) { bounce cur["car"] }
+            cur = cur["cdr"]
+        }
+        bounce cap
+    })
+
+    // Higher order. `map` takes as many lists as the procedure takes
+    // arguments and stops at the shortest, which is what makes (map + xs ys)
+    // work.
+    def("map", 2, ghost, lowkey (a) {
+        yo fn = want_callable("map", a[0])
+        yo lists = []
+        grind i from 1 to a.how_thicc() { lists.yeet_in(items_of(a[i], "map's argument")) }
+        yo shortest = lists[0].how_thicc()
+        grind l in lists { sus (l.how_thicc() < shortest) { shortest = l.how_thicc() } }
+        yo out = []
+        grind i from 0 to shortest {
+            yo args = []
+            grind l in lists { args.yeet_in(l[i]) }
+            out.yeet_in(apply_proc(fn, args))
+        }
+        bounce list_of(out, ghost)
+    })
+    def("filter", 2, 2, lowkey (a) {
+        yo fn = want_callable("filter", a[0])
+        yo out = []
+        grind x in items_of(a[1], "filter's argument") {
+            sus (is_truthy(apply_proc(fn, [x]))) { out.yeet_in(x) }
+        }
+        bounce list_of(out, ghost)
+    })
+    def("reduce", 3, 3, lowkey (a) {
+        yo fn = want_callable("reduce", a[0])
+        yo acc = a[1]
+        grind x in items_of(a[2], "reduce's argument") {
+            acc = apply_proc(fn, [acc, x])
+        }
+        bounce acc
+    })
+    def("apply", 2, 2, lowkey (a) {
+        bounce apply_proc(want_callable("apply", a[0]), items_of(a[1], "apply's argument list"))
+    })
+    def("for-each", 2, 2, lowkey (a) {
+        yo fn = want_callable("for-each", a[0])
+        grind x in items_of(a[1], "for-each's argument") { apply_proc(fn, [x]) }
+        bounce NIL
+    })
+
+    // Strings and symbols.
+    def("string-append", 0, ghost, lowkey (a) {
+        yo out = []
+        grind x in a { out.yeet_in(want_string("string-append", x)) }
+        bounce out.join("")
+    })
+    def("string-length", 1, 1, lowkey (a) => want_string("string-length", a[0]).how_thicc())
+    def("substring", 3, 3, lowkey (a) {
+        yo s = want_string("substring", a[0])
+        yo from_at = want_number("substring", a[1])
+        yo to_at = want_number("substring", a[2])
+        sus (from_at < 0 || to_at > s.how_thicc() || from_at > to_at) {
+            chuck oops("OutOfPocket", "substring: " + to_yap(from_at) + " to " + to_yap(to_at) +
+                       " is outside a string of " + to_yap(s.how_thicc()) + ".")
+        }
+        bounce yapper.slice(s, from_at, to_at)
+    })
+    def("string=?", 2, 2, lowkey (a) =>
+        want_string("string=?", a[0]) == want_string("string=?", a[1]))
+    def("string<?", 2, 2, lowkey (a) =>
+        want_string("string<?", a[0]) < want_string("string<?", a[1]))
+    def("string->symbol", 1, 1, lowkey (a) => sym(want_string("string->symbol", a[0])))
+    def("symbol->string", 1, 1, lowkey (a) {
+        sus (!is_sym(a[0])) {
+            chuck oops("TypeVibeMismatch", "symbol->string wants a symbol, got " + write_str(a[0]))
+        }
+        bounce a[0]["name"]
+    })
+    def("number->string", 1, 1, lowkey (a) => to_yap(want_number("number->string", a[0])))
+    def("string->number", 1, 1, lowkey (a) {
+        // #f rather than an error, because asking whether a string is a number
+        // is exactly what this is for.
+        sketchy {
+            bounce to_numba(want_string("string->number", a[0]))
+        } my_bad (e) {
+            bounce cap
+        }
+    })
+    def("string->list", 1, 1, lowkey (a) {
+        yo out = []
+        grind c in want_string("string->list", a[0]) { out.yeet_in(c) }
+        bounce list_of(out, ghost)
+    })
+
+    // Output. `display` is for people and `write` is readable back in.
+    def("display", 1, 1, lowkey (a) {
+        emit(display_str(a[0]))
+        bounce NIL
+    })
+    def("write", 1, 1, lowkey (a) {
+        emit(write_str(a[0]))
+        bounce NIL
+    })
+    def("newline", 0, 0, lowkey (a) {
+        emit("\n")
+        bounce NIL
+    })
+
+    // Raising an error from Lisp, so a program can refuse its input the way
+    // the evaluator does.
+    def("error", 1, ghost, lowkey (a) {
+        yo parts = []
+        grind x in a { parts.yeet_in(display_str(x)) }
+        chuck oops("SkillIssue", parts.join(" "))
+    })
+
+    // `load` reads a file and evaluates every form in it, in this same global
+    // environment, so a loaded file's definitions are visible afterwards.
+    // Relative paths resolve beside the loading program, not beside whatever
+    // directory it was started from.
+    def("load", 1, 1, lowkey (a) {
+        yo path = want_string("load", a[0])
+        sus (!filez.is_file(path) && load_relative_to != ghost) {
+            path = filez.join_path(load_relative_to, path)
+        }
+        sus (!filez.is_file(path)) {
+            chuck oops("ImportSkillIssue", "load: there is no file at " + write_str(a[0]))
+        }
+        yo last = NIL
+        grind form in read_all(filez.slurp(path)) {
+            last = eval(form, env)
+        }
+        bounce last
+    })
+
+    bounce env
+}
+
+// -- the small numeric corners -----------------------------------------------------
+
+bet divide(who, a, b) {
+    sus (b == 0) {
+        chuck oops("MathAintMathin", who + ": division by zero.")
+    }
+    // Exact when it divides exactly, so (/ 6 3) is 2 and not 2.0 -- which
+    // matters because this Lisp has no rationals and 2.0 would spread.
+    sus (a % b == 0) {
+        bounce a \ b
+    }
+    bounce a / b
+}
+
+// Truncating division, which is what `quotient` means: toward zero, where
+// FunnyLang's `\` floors toward negative infinity.
+bet trunc_div(a, b) {
+    yo q = a \ b
+    sus (q < 0 && q * b != a) {
+        bounce q + 1
+    }
+    bounce q
+}
+
+bet mafs_sqrt(x) {
+    sus (x < 0) {
+        chuck oops("MathAintMathin", "sqrt of a negative number.")
+    }
+    yo r = x ** 0.5
+    // An exact root stays exact: (sqrt 16) is 4, not 4.0.
+    yo whole = to_int(r + 0.5)
+    sus (whole * whole == x) {
+        bounce whole
+    }
+    bounce r
+}
+
+bet chain(args, who, cmp) {
+    grind i from 0 to args.how_thicc() {
+        want_number(who, args[i])
+    }
+    grind i from 0 to args.how_thicc() - 1 {
+        sus (!cmp(args[i], args[i + 1])) {
+            bounce cap
+        }
+    }
+    bounce fax
+}

@@ -1,0 +1,452 @@
+// eval.funny — environments, and the evaluator itself.
+//
+// The evaluator is a trampoline. Rather than calling itself for the last
+// expression of a body, it overwrites `expr` and `env` and goes round the loop
+// again, so a tail call costs no FunnyLang stack frame at all. That is what
+// makes a Lisp loop written as recursion -- which is how you write a loop in
+// this Lisp -- run a million iterations instead of hitting `TooDeepBro` at ten
+// thousand.
+//
+// Non-tail positions still recurse: evaluating the *test* of an `if`, or an
+// argument, calls `eval` in the ordinary way. That is correct, and it is also
+// why `(fib 25)` is limited by the host's stack in its depth of nesting but
+// not in its number of iterations.
+//
+// Every special form is handled by name before anything is evaluated, which is
+// why `(define x 1)` does not evaluate `x`. Everything not named here is an
+// application: evaluate the head, evaluate the arguments, call.
+
+gimme { NIL, sym, pair, is_nil, is_pair, is_sym, is_proc, is_prim, is_macro,
+        is_callable, list_of, items_of, write_str, is_truthy } from "values.funny"
+
+// -- environments -----------------------------------------------------------------
+//
+// A chain of frames. A lambda's frame points at the frame it was created in,
+// which is the whole of what makes a closure a closure.
+
+// A frame is one map, holding its variables directly, with its parent under
+// the key " parent". The leading space is what makes that key safe: the reader
+// splits on whitespace, so no symbol can ever contain one, and no Lisp
+// variable can collide with it. The obvious alternative -- a map of variables
+// inside a map -- allocates twice per procedure call, and a call is the thing
+// this evaluator does most.
+deadass PARENT = " parent"
+
+flex bet new_env(parent) {
+    bounce {PARENT: parent}
+}
+
+flex bet env_lookup(env, name) {
+    yo e = env
+    bruh (e != ghost) {
+        sus (e.has(name)) {
+            bounce e[name]
+        }
+        e = e[PARENT]
+    }
+    chuck oops("WhoDis", "unbound variable: " + name)
+}
+
+flex bet env_define(env, name, value) {
+    env[name] = value
+    bounce value
+}
+
+// `set!` assigns where the name already lives, which is not the same as
+// defining it here: assigning to a captured variable has to be visible to
+// whoever else captured it.
+flex bet env_set(env, name, value) {
+    yo e = env
+    bruh (e != ghost) {
+        sus (e.has(name)) {
+            e[name] = value
+            bounce value
+        }
+        e = e[PARENT]
+    }
+    chuck oops("WhoDis", "set! on a variable that was never defined: " + name)
+}
+
+// -- little helpers over forms -------------------------------------------------------
+
+bet nth(form, i) {
+    yo cur = form
+    grind k from 0 to i {
+        sus (!is_pair(cur)) {
+            bounce ghost
+        }
+        cur = cur["cdr"]
+    }
+    bounce is_pair(cur) ? cur["car"] : ghost
+}
+
+bet rest_from(form, i) {
+    yo cur = form
+    grind k from 0 to i {
+        sus (!is_pair(cur)) {
+            bounce NIL
+        }
+        cur = cur["cdr"]
+    }
+    bounce cur
+}
+
+// Errors quote the form they happened in. A Lisp that says only "bad syntax"
+// makes you find the form yourself, and in a macro expansion you cannot.
+bet bad(form, message) {
+    chuck oops("SkillIssue", message + "  in: " + write_str(form))
+}
+
+// -- procedures ---------------------------------------------------------------------
+
+// Parameters are a proper list of symbols, optionally dotted: `(a b . rest)`
+// binds the leftovers as a list, and a bare symbol binds them all.
+bet parse_params(spec, form) {
+    yo names = []
+    yo rest = ghost
+    yo cur = spec
+    bruh (is_pair(cur)) {
+        sus (!is_sym(cur["car"])) {
+            bad(form, "a parameter has to be a symbol.")
+        }
+        names.yeet_in(cur["car"]["name"])
+        cur = cur["cdr"]
+    }
+    sus (is_sym(cur)) {
+        rest = cur["name"]
+    } kinda_sus (!is_nil(cur)) {
+        bad(form, "that parameter list is not a list of symbols.")
+    }
+    bounce {"names": names, "rest": rest}
+}
+
+bet make_proc(params, body, env, name, form) {
+    yo p = parse_params(params, form)
+    bounce {"t": "proc", "params": p["names"], "rest": p["rest"],
+            "body": body, "env": env, "name": name}
+}
+
+// The frame a call runs in. Arity is checked here, once, so every procedure
+// gets the same message.
+flex bet bind_args(fn, args) {
+    yo frame = new_env(fn["env"])
+    yo names = fn["params"]
+    yo want = names.how_thicc()
+    yo got = args.how_thicc()
+
+    sus (got < want || (fn["rest"] == ghost && got > want)) {
+        yo who = fn["name"] == ghost ? "this procedure" : fn["name"]
+        chuck oops("WrongNumberOfHomies", who + " wants " +
+                   (fn["rest"] == ghost ? "" : "at least ") + to_yap(want) +
+                   " argument" + (want == 1 ? "" : "s") + ", got " + to_yap(got) + ".")
+    }
+    grind i from 0 to want {
+        frame[names[i]] = args[i]
+    }
+    sus (fn["rest"] != ghost) {
+        frame[fn["rest"]] = list_of(args.slice(want, got), ghost)
+    }
+    bounce frame
+}
+
+// -- the evaluator ---------------------------------------------------------------------
+
+// The names that are not applications. Looked up once, rather than compared
+// one after another: an ordinary call like `(fib 20)` would otherwise be
+// measured against every special form before the evaluator concluded it was
+// none of them, and calls are what a program is mostly made of.
+deadass SPECIALS = {
+    "quote": fax, "if": fax, "define": fax, "set!": fax, "lambda": fax,
+    "define-macro": fax, "begin": fax, "let": fax, "cond": fax,
+    "and": fax, "or": fax, "quasiquote": fax, "unquote": fax,
+    "unquote-splicing": fax,
+}
+
+flex bet eval(expr, env) {
+    bruh (fax) {
+        // The tag is read once here and reused, because every value this
+        // evaluator touches goes through this line and asking twice doubles
+        // the cost of the hottest test in the program.
+        yo kind = what_is_it(expr) == "groupchat" ? expr.get("t", "") : ""
+
+        // A symbol is a lookup; a number, string, boolean or () is itself.
+        sus (kind == "sym") {
+            bounce env_lookup(env, expr["name"])
+        }
+        sus (kind != "pair") {
+            bounce expr
+        }
+
+        yo head = expr["car"]
+        sus (is_sym(head) && SPECIALS.has(head["name"])) {
+            yo op = head["name"]
+
+            sus (op == "quote") {
+                bounce nth(expr, 1)
+            }
+
+            sus (op == "if") {
+                sus (nth(expr, 1) == ghost) {
+                    bad(expr, "if needs a test.")
+                }
+                sus (is_truthy(eval(nth(expr, 1), env))) {
+                    expr = nth(expr, 2)
+                    sus (expr == ghost) {
+                        bounce NIL
+                    }
+                    nvm
+                }
+                yo alt = nth(expr, 3)
+                sus (alt == ghost) {
+                    bounce NIL
+                }
+                expr = alt
+                nvm
+            }
+
+            // (define x v) and (define (f a b) body...) -- the second is
+            // sugar for the first with a lambda, and is written out here
+            // rather than rewritten, so the procedure learns its own name.
+            sus (op == "define") {
+                yo target = nth(expr, 1)
+                sus (is_sym(target)) {
+                    yo v = nth(expr, 2) == ghost ? NIL : eval(nth(expr, 2), env)
+                    sus (is_proc(v) && v["name"] == ghost) {
+                        v["name"] = target["name"]
+                    }
+                    env_define(env, target["name"], v)
+                    bounce sym(target["name"])
+                }
+                sus (is_pair(target) && is_sym(target["car"])) {
+                    yo name = target["car"]["name"]
+                    yo fn = make_proc(target["cdr"], rest_from(expr, 2), env, name, expr)
+                    env_define(env, name, fn)
+                    bounce sym(name)
+                }
+                bad(expr, "define needs a name or a (name args...) header.")
+            }
+
+            sus (op == "set!") {
+                yo target = nth(expr, 1)
+                sus (!is_sym(target)) {
+                    bad(expr, "set! needs a name.")
+                }
+                bounce env_set(env, target["name"], eval(nth(expr, 2), env))
+            }
+
+            sus (op == "lambda") {
+                bounce make_proc(nth(expr, 1), rest_from(expr, 2), env, ghost, expr)
+            }
+
+            // A macro is a procedure that runs at expansion time over
+            // unevaluated forms. `define-macro` is the unhygienic, classic
+            // kind: simple to explain, and enough for when/unless/my-or.
+            sus (op == "define-macro") {
+                yo target = nth(expr, 1)
+                sus (!is_pair(target) || !is_sym(target["car"])) {
+                    bad(expr, "define-macro needs a (name args...) header.")
+                }
+                yo name = target["car"]["name"]
+                yo fn = make_proc(target["cdr"], rest_from(expr, 2), env, name, expr)
+                env_define(env, name, {"t": "macro", "proc": fn})
+                bounce sym(name)
+            }
+
+            sus (op == "begin") {
+                yo body = rest_from(expr, 1)
+                sus (is_nil(body)) {
+                    bounce NIL
+                }
+                bruh (is_pair(body["cdr"])) {
+                    eval(body["car"], env)
+                    body = body["cdr"]
+                }
+                expr = body["car"]
+                nvm
+            }
+
+            // (let ((a 1) (b 2)) body...) -- bindings are evaluated in the
+            // enclosing environment, all of them, before any is visible.
+            sus (op == "let") {
+                yo frame = new_env(env)
+                grind binding in items_of(nth(expr, 1) ?? NIL, "let bindings") {
+                    sus (!is_pair(binding) || !is_sym(binding["car"])) {
+                        bad(expr, "every let binding is (name value).")
+                    }
+                    frame[binding["car"]["name"]] =
+                        nth(binding, 1) == ghost ? NIL : eval(nth(binding, 1), env)
+                }
+                env = frame
+                expr = pair(sym("begin"), rest_from(expr, 2))
+                nvm
+            }
+
+            // (cond (test body...) ... (else body...))
+            sus (op == "cond") {
+                yo clauses = rest_from(expr, 1)
+                yo chosen = ghost
+                bruh (is_pair(clauses)) {
+                    yo clause = clauses["car"]
+                    sus (!is_pair(clause)) {
+                        bad(expr, "every cond clause is (test body...).")
+                    }
+                    yo test = clause["car"]
+                    sus (is_sym(test) && test["name"] == "else") {
+                        chosen = clause
+                        bail
+                    }
+                    yo v = eval(test, env)
+                    sus (is_truthy(v)) {
+                        // A clause with no body answers with its test, which
+                        // is what makes (cond ((assq k alist)) ...) useful.
+                        sus (is_nil(clause["cdr"])) {
+                            bounce v
+                        }
+                        chosen = clause
+                        bail
+                    }
+                    clauses = clauses["cdr"]
+                }
+                sus (chosen == ghost) {
+                    bounce NIL
+                }
+                expr = pair(sym("begin"), chosen["cdr"])
+                nvm
+            }
+
+            // and/or answer with a value, not a boolean, and short-circuit in
+            // the tail so (or (big-thing) (loop)) is still a tail call.
+            sus (op == "and") {
+                yo rest = rest_from(expr, 1)
+                sus (is_nil(rest)) {
+                    bounce fax
+                }
+                bruh (is_pair(rest["cdr"])) {
+                    sus (!is_truthy(eval(rest["car"], env))) {
+                        bounce cap
+                    }
+                    rest = rest["cdr"]
+                }
+                expr = rest["car"]
+                nvm
+            }
+
+            sus (op == "or") {
+                yo rest = rest_from(expr, 1)
+                sus (is_nil(rest)) {
+                    bounce cap
+                }
+                bruh (is_pair(rest["cdr"])) {
+                    yo v = eval(rest["car"], env)
+                    sus (is_truthy(v)) {
+                        bounce v
+                    }
+                    rest = rest["cdr"]
+                }
+                expr = rest["car"]
+                nvm
+            }
+
+            sus (op == "quasiquote") {
+                bounce quasi(nth(expr, 1), env, 1)
+            }
+
+            sus (op == "unquote" || op == "unquote-splicing") {
+                bad(expr, op + " outside a quasiquote.")
+            }
+        }
+
+        // An application. The head is evaluated first, because a macro has to
+        // be recognised before its arguments are touched.
+        yo fn = eval(head, env)
+
+        sus (is_macro(fn)) {
+            expr = apply_proc(fn["proc"], items_of(expr["cdr"], "macro arguments"))
+            nvm
+        }
+
+        yo args = []
+        yo cur = expr["cdr"]
+        bruh (is_pair(cur)) {
+            args.yeet_in(eval(cur["car"], env))
+            cur = cur["cdr"]
+        }
+        sus (!is_nil(cur)) {
+            bad(expr, "an argument list has to be a proper list.")
+        }
+
+        sus (is_prim(fn)) {
+            bounce fn["fn"](args)
+        }
+        sus (!is_proc(fn)) {
+            chuck oops("NotACallableRizz", write_str(fn) + " is not a procedure, in: " + write_str(expr))
+        }
+
+        // The tail call: rebind and go round, rather than recursing. The body
+        // is sequenced here rather than by wrapping it in a `begin`, because
+        // that wrapper would be two allocations and an extra turn of this loop
+        // on every single call.
+        env = bind_args(fn, args)
+        yo body = fn["body"]
+        sus (is_nil(body)) {
+            bounce NIL
+        }
+        bruh (is_pair(body["cdr"])) {
+            eval(body["car"], env)
+            body = body["cdr"]
+        }
+        expr = body["car"]
+    }
+}
+
+// Calling a Lisp procedure from FunnyLang -- what `map` and a macro expansion
+// need. It goes through `eval`, so it is trampolined too.
+flex bet apply_proc(fn, args) {
+    sus (is_prim(fn)) {
+        bounce fn["fn"](args)
+    }
+    sus (!is_proc(fn)) {
+        chuck oops("NotACallableRizz", write_str(fn) + " is not a procedure.")
+    }
+    bounce eval(pair(sym("begin"), fn["body"]), bind_args(fn, args))
+}
+
+// -- quasiquote -------------------------------------------------------------------
+//
+// Depth matters: a nested quasiquote raises it, an unquote lowers it, and only
+// an unquote at depth 1 evaluates. Without that, `(a `(b ,c)) would evaluate c
+// at the wrong level.
+
+bet quasi(form, env, depth) {
+    sus (!is_pair(form)) {
+        bounce form
+    }
+
+    yo head = form["car"]
+    sus (is_sym(head) && head["name"] == "unquote") {
+        sus (depth == 1) {
+            bounce eval(nth(form, 1), env)
+        }
+        bounce list_of([sym("unquote"), quasi(nth(form, 1), env, depth - 1)], ghost)
+    }
+    sus (is_sym(head) && head["name"] == "quasiquote") {
+        bounce list_of([sym("quasiquote"), quasi(nth(form, 1), env, depth + 1)], ghost)
+    }
+
+    // Walk the list, splicing where asked.
+    yo out = []
+    yo cur = form
+    bruh (is_pair(cur)) {
+        yo item = cur["car"]
+        sus (is_pair(item) && is_sym(item["car"]) && item["car"]["name"] == "unquote-splicing" && depth == 1) {
+            grind spliced in items_of(eval(nth(item, 1), env), "an unquote-splicing value") {
+                out.yeet_in(spliced)
+            }
+        } nah {
+            out.yeet_in(quasi(item, env, depth))
+        }
+        cur = cur["cdr"]
+    }
+    yo tail = is_nil(cur) ? ghost : quasi(cur, env, depth)
+    bounce list_of(out, tail)
+}

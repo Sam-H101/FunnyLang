@@ -1,0 +1,3 @@
+// RUNTIME_PLAN.md R8: `me` is a keyword, and the error says so rather than
+// "expected a variable name" -- which is true and tells you nothing.
+yo me = 1

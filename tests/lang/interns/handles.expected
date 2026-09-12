@@ -4,5 +4,5 @@ TypeVibeMismatch: 'everybody' needs a stash of interns, not a yapstring.
 TypeVibeMismatch: 'everybody' needs a stash of interns, not a ghost.
 OutOfPocket: 'assignment' only means something inside an intern's own script.
 OutOfPocket: 'deliver' only means something inside an intern's own script.
-TypeVibeMismatch: a module can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, and stash/groupchat of those can cross.
+TypeVibeMismatch: a module can't be handed to an intern -- it belongs to this heap. ghost, boolski, numba, yapstring, blob, and stash/groupchat of those can cross.
 mine

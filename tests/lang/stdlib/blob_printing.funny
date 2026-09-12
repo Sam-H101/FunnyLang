@@ -1,0 +1,11 @@
+// tests/lang/stdlib/blob_printing.funny -- `yap` says how big it is, because
+// spraying a PNG across a terminal helps nobody; `sheesh` adds the first 16
+// bytes in hex, which is enough to recognise a file format.
+gimme blob
+
+yap blob.of([1])
+yap blob.of([])
+sheesh(blob.of([1]))
+yo big = blob.from_yap("abcdefghijklmnopqrstuvwxyz")
+yap big
+sheesh(big)

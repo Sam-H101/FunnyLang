@@ -1,0 +1,66 @@
+-- the rooms --
+join answers with history and who: fax [] ["ada"]
+join broadcasts: joined ada
+who is in lobby: ["ada", "grace"]
+who is in other: ["alan"]
+say broadcasts: said ada hello all lobby
+the broadcast names one room: fax
+say before join: {"ok": cap, "error": "say something after joining, not before"}
+join with no name: {"ok": cap, "error": "a name is needed to join"}
+empty message: {"ok": cap, "error": "an empty message is not a message"}
+unknown op: {"ok": cap, "error": "unknown op dance"}
+typing broadcasts once: 1
+the same flag again says nothing: 0
+history is capped at: 100
+and keeps the newest: line 109
+leave broadcasts: left grace
+who is left: ["ada"]
+stats: 2 2 fax 3
+-- the protocol --
+accept key: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+handshake: 101 fax
+not an upgrade: 400
+wrong version: 426
+-- frames on the wire --
+text: 81026869
+ping: 890170
+close 1000: 880503e8627965
+126 bytes: 827e007e0000
+65536 bytes: 827f00000000000100000000
+-- masking --
+its own inverse: fax
+a client masks: 81850102030469676f686e
+and the server reads it: fax hello
+-- fragmentation --
+fragmented fine
+-- two megabytes, in fragments --
+frames: 32
+reassembled bytes: 2097152
+every byte survived: fax
+-- frames it refuses --
+  a frame set a reserved bit, and no extension was negotiated.
+  opcode 3 is not one this speaks.
+  a control frame carried 255 bytes, and 125 is the most.
+  a control frame arrived fragmented, which is not allowed.
+  a continuation frame arrived with nothing to continue.
+-- three clients in one room --
+bound a port: fax
+  ada joined: fax
+  ada saw everybody: fax
+  ada heard 6: ["ada: ada one", "ada: ada two", "alan: alan one", "alan: alan two", "grace: grace one", "grace: grace two"]
+  alan joined: fax
+  alan saw everybody: fax
+  alan heard 6: ["ada: ada one", "ada: ada two", "alan: alan one", "alan: alan two", "grace: grace one", "grace: grace two"]
+  grace joined: fax
+  grace saw everybody: fax
+  grace heard 6: ["ada: ada one", "ada: ada two", "alan: alan one", "alan: alan two", "grace: grace one", "grace: grace two"]
+  pong came back: fax
+  pong carried the same bytes: fax
+  closed tidily: fax
+  the big one came back: fax
+  same length: fax
+-- what the server saw --
+messages said: 7
+joins: 5
+pushes fanned out: fax
+-- done --

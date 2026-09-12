@@ -7,6 +7,7 @@
 #include "gc.h"
 #include "groupchat.h"
 #include "modules.h"
+#include "otw.h"
 #include "platform.h"
 #include "da_string.h"
 #include "vm.h"
@@ -189,6 +190,29 @@ typedef struct {
     int maxArity;
 } ComputerEntry;
 
+/* computer.until_ctrl_c() -- an `otw` that settles the first time somebody
+   presses Ctrl-C. What it is for is a tidy shutdown: a server awaits it,
+   stops accepting, finishes what it is holding and writes its files out,
+   instead of being killed in the middle of one. Pressing Ctrl-C a second time
+   still ends the process immediately, so a shutdown that itself hangs is not
+   a trap.
+
+   Only the program that owns the terminal can ask. A worker is not that
+   program -- it shares the process but not the session -- so it asks its own
+   boss to tell it, which is what DMs are for. */
+static Value m_until_ctrl_c(VM *vm, Value *a, int argc) {
+    (void)a;
+    (void)argc;
+    if (vm->workerContext != NULL) {
+        vm_throw_native(vm, "OutOfPocket",
+                        "'until_ctrl_c' belongs to the program that owns the terminal. an intern should have "
+                        "its boss dm it instead.");
+        return GHOST_VAL;
+    }
+    platform_on_interrupt();
+    return OBJ_VAL(otw_for_interrupt(&vm->gc));
+}
+
 static const ComputerEntry COMPUTER_FUNCTIONS[] = {
     {"explode", m_explode, 0, 0},
     {"flex", m_flex, 0, 0},
@@ -201,6 +225,7 @@ static const ComputerEntry COMPUTER_FUNCTIONS[] = {
     {"clear", m_clear, 0, 0},
     {"uptime", m_uptime, 0, 0},
     {"blue_screen", m_blue_screen, 0, 0},
+    {"until_ctrl_c", m_until_ctrl_c, 0, 0},
 };
 #define COMPUTER_FUNCTIONS_COUNT (int)(sizeof(COMPUTER_FUNCTIONS) / sizeof(COMPUTER_FUNCTIONS[0]))
 

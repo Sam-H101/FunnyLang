@@ -1,0 +1,15 @@
+// tests/lang/interns/dm_types.funny -- a message carries everything an
+// assignment carries, blob included, and comes back the same types it went
+// out as. Each side has its own copy on its own heap; nothing is shared.
+gimme interns
+gimme blob
+gimme filez
+
+yo w = interns.hire(filez.join_path(filez.dir_of(the_script()), "dm_types_worker.funny"), ghost)
+interns.dm(w, [ghost, fax, 42, 3.5, "text", blob.from_yap("bytes"), [1, 2], {"k": "v"}])
+
+yo back = interns.wait_up(interns.check_dms())
+grind item in back["msg"] {
+    yap what_is_it(item)
+}
+yap interns.wait_up(w)
