@@ -1,0 +1,82 @@
+--- thematic breaks (spec 43) ---
+<hr>
+<hr>
+<hr>
+--- atx headings (spec 62) ---
+<h1>foo</h1>
+<h2>foo</h2>
+<h3>foo</h3>
+<h4>foo</h4>
+<h5>foo</h5>
+<h6>foo</h6>
+--- seven hashes is not a heading (spec 64) ---
+<p>####### foo</p>
+--- a hash needs a space (spec 65) ---
+<p>#5 bolt</p>
+<p>#hashtag</p>
+--- fenced code (spec 89) ---
+<pre><code>&lt;
+ &gt;
+</code></pre>
+--- fenced code with an info string (spec 112) ---
+<pre><code class="language-ruby">def foo(x)
+  return 3
+end
+</code></pre>
+--- paragraphs (spec 219) ---
+<p>aaa</p>
+<p>bbb</p>
+--- atx closing sequence (spec 79) ---
+<h2>foo ##</h2>
+--- block quote (spec 228) ---
+<blockquote>
+<h1>Foo</h1>
+<p>bar baz</p>
+</blockquote>
+--- bullet list, changing marker (spec 281) ---
+<ul>
+<li>foo</li>
+<li>bar</li>
+<li>baz</li>
+</ul>
+--- ordered list, changing delimiter (spec 288) ---
+<ol>
+<li>foo</li>
+<li>bar</li>
+</ol>
+<p>3) baz</p>
+--- code span (spec 328) ---
+<code>foo</code>
+--- code span, doubled backticks (spec 330) ---
+<code></code> foo <code> bar </code>`
+--- emphasis (spec 350) ---
+<em>foo bar</em>
+--- emphasis needs a left flank (spec 352) ---
+a <em> foo bar</em>
+--- underscore emphasis (spec 360) ---
+<em>foo bar</em>
+--- strong (spec 403) ---
+<strong>foo bar</strong>
+--- link (spec 483) ---
+<a href="/uri">link</a>
+--- link with a title (spec 482) ---
+<a href="/uri &quot;title&quot;">link</a>
+--- image (spec 571) ---
+<img src="train.jpg" alt="foo">
+--- image with a title (spec 568) ---
+<img src="/url &quot;title&quot;" alt="foo">
+--- raw html (spec 613) ---
+&lt;a&gt;&lt;bab&gt;&lt;c2c&gt;
+--- a fence keeps its contents literal ---
+<code>**not strong**</code>
+
+== where this renderer departs from CommonMark ==
+79 atx heading: a closing ## is kept as text; the spec strips it.
+228 block quote: a paragraph's lines are joined with a space, not a newline.
+281 bullet list: - * and + are one list, not three; the spec starts a new list per marker.
+288 ordered list: only 'n.' is a list; 'n)' is a paragraph.
+330 code span: one backtick only, so a doubled fence does not span an inner backtick.
+352 emphasis: no left/right flanking rules, so ' * foo bar*' still emphasises.
+482 link: no title argument; the title stays part of the URL.
+568 image: no title argument, as for links.
+613 raw html: escaped, never passed through. A generator is not a sanitizer.

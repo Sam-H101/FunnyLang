@@ -1,0 +1,74 @@
+// test_markdown.funny — markdown.funny against CommonMark's own examples.
+//
+// The plan asks for the spec's examples as the golden, so each case below is
+// an input lifted from the CommonMark specification, named by its example
+// number there. What is committed here is what *this* renderer produces for
+// that input -- which is the same as CommonMark for the everyday constructs,
+// and deliberately different for a handful of others.
+//
+// The differences are the point of the file. `markdown.funny` implements the
+// subset people actually write, and a reader deserves to see exactly where
+// that subset stops rather than discovering it in a rendered post. Every
+// departure below is listed again, with its reason, at the bottom.
+//
+// CommonMark closes void elements as `<hr />` and `<img ... />`; this one
+// writes `<hr>` and `<img ...>`. Both are the same element in HTML5, so that
+// spelling is not listed as a departure.
+
+gimme { to_html, inline_html } from "markdown.funny"
+
+bet show(name, src) {
+    yap "--- " + name + " ---"
+    yap to_html(src)
+}
+
+bet show_inline(name, src) {
+    yap "--- " + name + " ---"
+    yap inline_html(src)
+}
+
+// -- blocks, where this renderer agrees with the spec ---------------------------------
+
+show("thematic breaks (spec 43)", "***\n---\n___")
+show("atx headings (spec 62)", "# foo\n## foo\n### foo\n#### foo\n##### foo\n###### foo")
+show("seven hashes is not a heading (spec 64)", "####### foo")
+show("a hash needs a space (spec 65)", "#5 bolt\n\n#hashtag")
+show("fenced code (spec 89)", "```\n<\n >\n```")
+show("fenced code with an info string (spec 112)", "```ruby\ndef foo(x)\n  return 3\nend\n```")
+show("paragraphs (spec 219)", "aaa\n\nbbb")
+
+// -- blocks, where it departs -----------------------------------------------------------
+
+show("atx closing sequence (spec 79)", "## foo ##")
+show("block quote (spec 228)", "> # Foo\n> bar\n> baz")
+show("bullet list, changing marker (spec 281)", "- foo\n- bar\n+ baz")
+show("ordered list, changing delimiter (spec 288)", "1. foo\n2. bar\n3) baz")
+
+// -- inline ---------------------------------------------------------------------------
+
+show_inline("code span (spec 328)", "`foo`")
+show_inline("code span, doubled backticks (spec 330)", "`` foo ` bar ``")
+show_inline("emphasis (spec 350)", "*foo bar*")
+show_inline("emphasis needs a left flank (spec 352)", "a * foo bar*")
+show_inline("underscore emphasis (spec 360)", "_foo bar_")
+show_inline("strong (spec 403)", "**foo bar**")
+show_inline("link (spec 483)", "[link](/uri)")
+show_inline("link with a title (spec 482)", "[link](/uri \"title\")")
+show_inline("image (spec 571)", "![foo](train.jpg)")
+show_inline("image with a title (spec 568)", "![foo](/url \"title\")")
+show_inline("raw html (spec 613)", "<a><bab><c2c>")
+show_inline("a fence keeps its contents literal", "`**not strong**`")
+
+// -- the departures, spelled out ----------------------------------------------------------
+
+yap ""
+yap "== where this renderer departs from CommonMark =="
+yap "79 atx heading: a closing ## is kept as text; the spec strips it."
+yap "228 block quote: a paragraph's lines are joined with a space, not a newline."
+yap "281 bullet list: - * and + are one list, not three; the spec starts a new list per marker."
+yap "288 ordered list: only 'n.' is a list; 'n)' is a paragraph."
+yap "330 code span: one backtick only, so a doubled fence does not span an inner backtick."
+yap "352 emphasis: no left/right flanking rules, so ' * foo bar*' still emphasises."
+yap "482 link: no title argument; the title stays part of the URL."
+yap "568 image: no title argument, as for links."
+yap "613 raw html: escaped, never passed through. A generator is not a sanitizer."

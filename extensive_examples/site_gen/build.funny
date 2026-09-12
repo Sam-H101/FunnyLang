@@ -1,0 +1,89 @@
+// build.funny — the command line.
+//
+//     funny run extensive_examples/site_gen/build.funny -- ./site ./out
+//
+//   SITE             the directory to read (layout.html, *.md, posts/, static/)
+//   OUT              where to write the site (made if it is not there)
+//   --title T        the site's name, for the layout and the feed
+//   --base-url U     the URL the feed and the sitemap use (default https://example.com)
+//
+// Everything interesting is in site.funny and markdown.funny. This reads
+// flags, times the build and says what it wrote.
+
+gimme filez
+gimme clock
+gimme yapper
+gimme { build_site } from "site.funny"
+
+bet usage() {
+    yell("usage: build.funny SITE OUT [--title T] [--base-url U]")
+}
+
+bet seconds_shown(seconds) {
+    bounce to_int(seconds * 100 + 0.5) / 100.0
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo site_dir = ghost
+    yo out_dir = ghost
+    yo title = "A site"
+    yo base_url = "https://example.com"
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--title" && i + 1 < args.how_thicc()) {
+            title = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--base-url" && i + 1 < args.how_thicc()) {
+            base_url = args[i + 1]
+            i += 2
+        } kinda_sus (yapper.starts_with(a, "-")) {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        } nah {
+            sus (site_dir == ghost) {
+                site_dir = a
+            } nah {
+                out_dir = a
+            }
+            i += 1
+        }
+    }
+
+    sus (site_dir == ghost || out_dir == ghost) {
+        usage()
+        bounce 2
+    }
+    sus (!filez.is_dir(site_dir)) {
+        yell(site_dir + " isn't a directory.")
+        bounce 2
+    }
+    sus (!filez.is_file(filez.join_path(site_dir, "layout.html"))) {
+        yell(site_dir + " has no layout.html, so there is nothing to fill in.")
+        bounce 2
+    }
+
+    yo started = clock.now()
+    yo built = build_site(site_dir, out_dir, title, base_url)
+    yo took = clock.now() - started
+
+    yell("built " + to_yap(built["pages"]) + " pages, " + to_yap(built["posts"]) + " posts, " +
+         to_yap(built["tags"]) + " tags in " + to_yap(seconds_shown(took)) + " s -> " + out_dir)
+    grind rel in built["files"] {
+        yap rel
+    }
+    bounce 0
+}
+
+dip(main(the_args()))

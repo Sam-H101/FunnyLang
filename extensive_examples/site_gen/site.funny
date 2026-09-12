@@ -1,0 +1,319 @@
+// site.funny — reading a site, and writing it out again as HTML.
+//
+// The library half; `build.funny` is the command line. A site is a directory:
+//
+//   layout.html        the page template, with {{ title }}-shaped holes
+//   *.md               a page
+//   posts/*.md         a post: it has a date, and it appears in the index,
+//                      in its tags and in the feed
+//   static/*           copied through, byte for byte
+//
+// Every list is sorted and every date comes from the front matter, so building
+// the same site twice gives the same bytes. Nothing here asks the clock: a
+// generator whose output depends on when it ran cannot be diffed, and a site
+// you cannot diff is one you cannot review.
+
+gimme filez
+gimme yapper
+gimme blob
+gimme { to_html, inline_html, escape_html } from "markdown.funny"
+
+flex deadass MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+                       "September", "October", "November", "December"]
+
+// -- front matter -------------------------------------------------------------------
+//
+// A block of `key: value` lines between two `---` rules at the very top. Not
+// YAML: four keys, one line each, and anything else is left alone rather than
+// half-understood.
+
+flex bet split_front_matter(text) {
+    yo body = yapper.replace(text, "\r\n", "\n")
+    sus (!yapper.starts_with(body, "---\n")) {
+        bounce {"meta": {}, "body": body}
+    }
+    yo lines = yapper.lines(body)
+    yo meta = {}
+    yo i = 1
+    bruh (i < lines.how_thicc() && yapper.trim(lines[i]) != "---") {
+        yo line = lines[i]
+        yo at = yapper.index_of(line, ":")
+        sus (at > 0) {
+            yo key = yapper.trim(yapper.slice(line, 0, at))
+            meta[key] = yapper.trim(yapper.slice(line, at + 1, line.how_thicc()))
+        }
+        i += 1
+    }
+    yo rest = []
+    grind k from i + 1 to lines.how_thicc() {
+        rest.yeet_in(lines[k])
+    }
+    bounce {"meta": meta, "body": rest.join("\n")}
+}
+
+bet tags_of(meta) {
+    yo raw = meta.get("tags", "")
+    yo out = []
+    grind part in yapper.split(raw, ",") {
+        yo t = yapper.trim(part)
+        sus (t != "") {
+            out.yeet_in(t)
+        }
+    }
+    bounce out
+}
+
+// "2024-03-01" -> "1 March 2024". Anything that is not a date is left as it is:
+// a generator should not invent a date it was not given.
+flex bet pretty_date(iso) {
+    yo parts = yapper.split(iso, "-")
+    sus (parts.how_thicc() != 3) {
+        bounce iso
+    }
+    yo month = to_int(parts[1])
+    sus (month < 1 || month > 12) {
+        bounce iso
+    }
+    bounce to_yap(to_int(parts[2])) + " " + MONTHS[month - 1] + " " + parts[0]
+}
+
+// -- reading the site ------------------------------------------------------------------
+
+bet slug_of(path) {
+    yo base = filez.base_of(path)
+    yo dot = yapper.index_of(yapper.reverse(base), ".")
+    bounce dot < 0 ? base : yapper.slice(base, 0, base.how_thicc() - dot - 1)
+}
+
+bet markdown_files(dir) {
+    yo out = []
+    sus (!filez.is_dir(dir)) {
+        bounce out
+    }
+    grind name in filez.list_dir(dir) {
+        sus (yapper.ends_with(name, ".md")) {
+            out.yeet_in(filez.join_path(dir, name))
+        }
+    }
+    bounce out
+}
+
+// Every page and post, drafts left out, posts newest first and pages by slug.
+flex bet read_site(site_dir) {
+    yo pages = []
+    yo posts = []
+    grind path in markdown_files(site_dir) {
+        yo one = read_one(path, cap)
+        sus (one != ghost) {
+            pages.yeet_in(one)
+        }
+    }
+    grind path in markdown_files(filez.join_path(site_dir, "posts")) {
+        yo one = read_one(path, fax)
+        sus (one != ghost) {
+            posts.yeet_in(one)
+        }
+    }
+
+    // Newest first, and by slug when two posts share a date, so the order
+    // never depends on which file the OS listed first.
+    yo sorted_posts = []
+    yo taken = {}
+    grind n from 0 to posts.how_thicc() {
+        yo best = ghost
+        grind p in posts {
+            sus (taken.has(p["slug"])) {
+                nvm
+            }
+            sus (best == ghost || p["date"] > best["date"] ||
+                 (p["date"] == best["date"] && p["slug"] < best["slug"])) {
+                best = p
+            }
+        }
+        taken[best["slug"]] = fax
+        sorted_posts.yeet_in(best)
+    }
+
+    yo tags = {}
+    grind p in sorted_posts {
+        grind t in p["tags"] {
+            sus (!tags.has(t)) {
+                tags[t] = []
+            }
+            tags[t].yeet_in(p)
+        }
+    }
+    bounce {"pages": pages, "posts": sorted_posts, "tags": tags}
+}
+
+bet read_one(path, is_post) {
+    yo split = split_front_matter(filez.slurp(path))
+    yo meta = split["meta"]
+    sus (meta.get("draft", "") == "true") {
+        bounce ghost
+    }
+    yo slug = slug_of(path)
+    bounce {
+        "slug": slug,
+        "title": meta.get("title", slug),
+        "date": meta.get("date", ""),
+        "tags": tags_of(meta),
+        "body": split["body"],
+        "is_post": is_post,
+        "url": is_post ? "/posts/" + slug + ".html" : "/" + slug + ".html",
+    }
+}
+
+// -- writing it out ----------------------------------------------------------------
+
+bet fill(layout, site_title, title, content) {
+    yo out = yapper.replace(layout, "{{ site_title }}", escape_html(site_title))
+    out = yapper.replace(out, "{{ title }}", escape_html(title))
+    out = yapper.replace(out, "{{ content }}", content)
+    bounce out
+}
+
+bet write_page(out_dir, rel, text, written) {
+    yo path = filez.join_path(out_dir, rel)
+    yo dir = filez.dir_of(path)
+    sus (!filez.is_dir(dir)) {
+        filez.mkdir(dir)
+    }
+    filez.yeet_out_atomic(path, text)
+    written.yeet_in(rel)
+}
+
+bet post_list_html(posts) {
+    sus (posts.how_thicc() == 0) {
+        bounce "<p>No posts yet.</p>"
+    }
+    yo items = []
+    grind p in posts {
+        items.yeet_in("<li><a href=\"" + p["url"] + "\">" + escape_html(p["title"]) + "</a> — <time>" +
+                      escape_html(pretty_date(p["date"])) + "</time></li>")
+    }
+    bounce "<ul class=\"posts\">\n" + items.join("\n") + "\n</ul>"
+}
+
+// The Atom feed. `updated` is the newest post's own date, never the clock, so
+// two builds of one site produce the same feed.
+bet feed_xml(site_title, base_url, posts) {
+    yo newest = posts.how_thicc() > 0 ? posts[0]["date"] : "1970-01-01"
+    yo entries = []
+    grind p in posts {
+        entries.yeet_in("  <entry>\n" +
+                        "    <title>" + escape_html(p["title"]) + "</title>\n" +
+                        "    <link href=\"" + escape_html(base_url + p["url"]) + "\"/>\n" +
+                        "    <id>" + escape_html(base_url + p["url"]) + "</id>\n" +
+                        "    <updated>" + escape_html(p["date"]) + "T00:00:00Z</updated>\n" +
+                        "    <summary>" + escape_html(p["title"]) + "</summary>\n" +
+                        "  </entry>")
+    }
+    bounce "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+           "<feed xmlns=\"http://www.w3.org/2005/Atom\">\n" +
+           "  <title>" + escape_html(site_title) + "</title>\n" +
+           "  <link href=\"" + escape_html(base_url) + "/\"/>\n" +
+           "  <id>" + escape_html(base_url) + "/</id>\n" +
+           "  <updated>" + escape_html(newest) + "T00:00:00Z</updated>\n" +
+           entries.join("\n") + "\n</feed>\n"
+}
+
+bet copy_static(site_dir, out_dir, written) {
+    yo src = filez.join_path(site_dir, "static")
+    sus (!filez.is_dir(src)) {
+        bounce ghost
+    }
+    yo dst = filez.join_path(out_dir, "static")
+    sus (!filez.is_dir(dst)) {
+        filez.mkdir(dst)
+    }
+    grind name in filez.list_dir(src) {
+        yo from_path = filez.join_path(src, name)
+        sus (filez.is_file(from_path)) {
+            // As bytes: `static/` holds images as readily as stylesheets, and
+            // reading a PNG as text would quietly break it.
+            filez.write_blob_atomic(filez.join_path(dst, name), filez.read_blob(from_path))
+            written.yeet_in("static/" + name)
+        }
+    }
+}
+
+// Builds `site_dir` into `out_dir`. Returns what it wrote, sorted.
+flex bet build_site(site_dir, out_dir, site_title, base_url) {
+    yo site = read_site(site_dir)
+    yo layout = filez.slurp(filez.join_path(site_dir, "layout.html"))
+    sus (!filez.is_dir(out_dir)) {
+        filez.mkdir(out_dir)
+    }
+    yo written = []
+
+    grind page in site["pages"] {
+        write_page(out_dir, page["slug"] + ".html",
+                   fill(layout, site_title, page["title"], to_html(page["body"])), written)
+    }
+    grind post in site["posts"] {
+        yo dated = "<p class=\"date\"><time>" + escape_html(pretty_date(post["date"])) + "</time></p>\n"
+        write_page(out_dir, "posts/" + post["slug"] + ".html",
+                   fill(layout, site_title, post["title"], dated + to_html(post["body"])), written)
+    }
+
+    write_page(out_dir, "posts.html", fill(layout, site_title, "Posts", post_list_html(site["posts"])), written)
+
+    yo tag_names = sorted_keys(site["tags"])
+    grind t in tag_names {
+        write_page(out_dir, "tags/" + t + ".html",
+                   fill(layout, site_title, "Tagged " + t, post_list_html(site["tags"][t])), written)
+    }
+
+    write_page(out_dir, "feed.xml", feed_xml(site_title, base_url, site["posts"]), written)
+
+    yo urls = []
+    grind page in site["pages"] {
+        urls.yeet_in(base_url + page["url"])
+    }
+    grind post in site["posts"] {
+        urls.yeet_in(base_url + post["url"])
+    }
+    urls.yeet_in(base_url + "/posts.html")
+    grind t in tag_names {
+        urls.yeet_in(base_url + "/tags/" + t + ".html")
+    }
+    write_page(out_dir, "sitemap.txt", sorted_strings(urls).join("\n") + "\n", written)
+
+    copy_static(site_dir, out_dir, written)
+
+    bounce {
+        "pages": site["pages"].how_thicc(),
+        "posts": site["posts"].how_thicc(),
+        "tags": tag_names.how_thicc(),
+        "files": sorted_strings(written),
+    }
+}
+
+// Sorting, spelled out rather than reached for: the lists here are tiny, and
+// the order has to be the same on every platform.
+flex bet sorted_strings(items) {
+    yo out = []
+    yo used = {}
+    grind n from 0 to items.how_thicc() {
+        yo best = ghost
+        grind s in items {
+            sus (used.has(s)) {
+                nvm
+            }
+            sus (best == ghost || s < best) {
+                best = s
+            }
+        }
+        sus (best == ghost) {
+            bail
+        }
+        used[best] = fax
+        out.yeet_in(best)
+    }
+    bounce out
+}
+
+bet sorted_keys(gc) {
+    bounce sorted_strings(gc.keys())
+}

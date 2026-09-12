@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>A small site</title>
+  <link href="https://example.com/"/>
+  <id>https://example.com/</id>
+  <updated>2024-04-15T00:00:00Z</updated>
+  <entry>
+    <title>The second post</title>
+    <link href="https://example.com/posts/second.html"/>
+    <id>https://example.com/posts/second.html</id>
+    <updated>2024-04-15T00:00:00Z</updated>
+    <summary>The second post</summary>
+  </entry>
+  <entry>
+    <title>Hello, world</title>
+    <link href="https://example.com/posts/hello.html"/>
+    <id>https://example.com/posts/hello.html</id>
+    <updated>2024-03-01T00:00:00Z</updated>
+    <summary>Hello, world</summary>
+  </entry>
+</feed>

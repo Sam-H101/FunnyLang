@@ -1,0 +1,32 @@
+-- front matter --
+A post | one, two | The body.
+without: 0 No front matter here.
+-- dates --
+1 March 2024 | 25 December 2024 | not a date
+-- markdown --
+<em>em</em>, <strong>strong</strong>, <code>code</code>, <a href="/x">link</a>, <img src="/y.png" alt="img">
+<h1>Title</h1>
+<p>A paragraph.</p>
+<ul>
+<li>a</li>
+<li>b</li>
+</ul>
+<pre><code class="language-funny">yap &quot;*not emphasis*&quot;
+</code></pre>
+-- what it built --
+pages: 2 posts: 2 tags: 2
+  about.html
+  feed.xml
+  index.html
+  posts.html
+  posts/hello.html
+  posts/second.html
+  sitemap.txt
+  static/dot.png
+  static/style.css
+  tags/funnylang.html
+  tags/intro.html
+-- against example/expected --
+same file list: fax
+files that differ: 0
+two builds identical: fax
