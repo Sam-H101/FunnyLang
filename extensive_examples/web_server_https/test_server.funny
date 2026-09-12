@@ -160,7 +160,7 @@ bet ready(info) {
 
 yo summary = await_fr run_server(HERE, {"port": 0, "http_port": 0, "threads": 4, "data_dir": DATA, "seconds": 120,
                                   "key_file": KEYFILE},
-                                 ready, lowkey (line) => ghost)
+                                 ready, ghost)
 await_fr DRIVING
 
 yap "threads:", RESULTS["threads"], "config at start:", RESULTS["config"]

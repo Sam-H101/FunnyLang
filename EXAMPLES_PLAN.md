@@ -228,10 +228,10 @@ $ funny run extensive_examples/proxy/proxy.funny -- 8443 --to localhost:9001,loc
 ## 3. Milestones
 
 ### E0 — `web_server_https/` on the new runtime
-- [ ] `vault` for passwords and sealing; `--key-file`; old-format migration
-- [ ] Keeper as a main-thread module over DMs; loopback protocol and secret gone
-- [ ] Live worker output; `until_ctrl_c`; `json`; atomic config writes; a PNG served
-- [ ] Golden byte-identical on all platforms; README numbers updated (keeper before/after)
+- [x] `vault` for passwords and sealing; `--key-file`; old-format migration
+- [x] Keeper as a main-thread module over DMs; loopback protocol and secret gone
+- [x] Live worker output; `until_ctrl_c`; `json`; atomic config writes; a PNG served
+- [x] Golden byte-identical on all platforms; README numbers updated (keeper before/after)
 
 ### E1 — word count
 - [ ] Pool over DMs; static and per-file strategies for comparison; generated-corpus golden; README with timings
