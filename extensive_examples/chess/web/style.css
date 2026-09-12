@@ -1,0 +1,190 @@
+/* style.css — the board, and only the board.
+ *
+ * Bootstrap draws the shell: the grid, the cards, the form controls, the dark
+ * theme, the type. It has no opinion about an eight-by-eight chessboard with
+ * pieces that slide between squares, which is what is left here.
+ *
+ * GEOMETRY NOTE, inherited from the draughts board next door, where it was a
+ * real bug: a piece's size never depends on what is drawn on it. Every piece
+ * is absolutely placed in a box that is exactly one eighth of the board, and
+ * the glyph is centred inside that fixed box. Nothing a piece contains -- a
+ * different letter, a promotion mark, a crown -- can change a square's width
+ * or shift the grid sideways.
+ */
+
+.board {
+  --square-light: #e8ddc8;
+  --square-dark: #7d6a55;
+  --white-piece: #fdfbf6;
+  --black-piece: #21242b;
+  --pick: #f0b95f;
+  --go: #4dd4ac;
+  --danger: #e4655d;
+
+  /* One place to change how fast a piece travels between two squares. */
+  --hop: 200ms;
+
+  position: relative;
+  aspect-ratio: 1;
+  width: 100%;
+  border-radius: 0.5rem;
+  overflow: hidden;
+
+  /* Everything inside is sized in `cqi` -- one percent of the board's own
+     width -- so pieces, coordinates and markers scale together and none of
+     them can push the layout around. */
+  container-type: inline-size;
+}
+
+.squares {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+}
+
+.sq {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--square-light);
+}
+.sq.dark {
+  background: linear-gradient(145deg,
+    color-mix(in oklab, var(--square-dark) 90%, white 10%), var(--square-dark));
+}
+.sq.playable { cursor: pointer; }
+.sq.playable:disabled { cursor: default; }
+.sq:focus-visible { outline: 0.5cqi solid var(--go); outline-offset: -0.5cqi; z-index: 3; }
+
+/* The coordinates a player reads a move in: file letters along the bottom,
+   rank numbers up the left. Drawn on the squares themselves rather than in a
+   margin, which is how a real board is labelled and costs no layout. */
+.sq .file,
+.sq .rank {
+  position: absolute;
+  font-size: 2.4cqi;
+  line-height: 1;
+  font-weight: 600;
+  color: rgb(255 255 255 / 0.34);
+  pointer-events: none;
+}
+.sq:not(.dark) .file,
+.sq:not(.dark) .rank { color: rgb(0 0 0 / 0.3); }
+.sq .file { bottom: 0.7cqi; right: 0.9cqi; }
+.sq .rank { top: 0.7cqi; left: 0.9cqi; }
+
+/* Where a picked piece may go. A dot for a quiet move and a ring for a
+   capture, so taking something reads differently from a stroll. */
+.sq.target::after,
+.sq.capture::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.sq.target::after {
+  width: 4cqi;
+  height: 4cqi;
+  background: var(--go);
+  box-shadow: 0 0 0 1.6cqi color-mix(in oklab, var(--go) 22%, transparent);
+}
+.sq.capture::after {
+  width: 10cqi;
+  height: 10cqi;
+  border: 1.5cqi solid color-mix(in oklab, var(--danger) 85%, white 15%);
+}
+.sq.picked { box-shadow: inset 0 0 0 1.1cqi var(--pick); }
+.sq.trail { box-shadow: inset 0 0 0 0.8cqi color-mix(in oklab, var(--pick) 40%, transparent); }
+
+/* The king that is in check, so a player is never mated by surprise. */
+.sq.check {
+  background:
+    radial-gradient(circle at 50% 50%,
+      color-mix(in oklab, var(--danger) 85%, transparent) 0%,
+      color-mix(in oklab, var(--danger) 30%, transparent) 58%,
+      transparent 72%),
+    var(--square-dark);
+}
+.sq.check:not(.dark) {
+  background:
+    radial-gradient(circle at 50% 50%,
+      color-mix(in oklab, var(--danger) 85%, transparent) 0%,
+      color-mix(in oklab, var(--danger) 30%, transparent) 58%,
+      transparent 72%),
+    var(--square-light);
+}
+
+/* -- the pieces ----------------------------------------------------------- */
+
+/* A layer above the squares, so a piece can travel across them. Clicks fall
+   through to the squares underneath. */
+.pieces {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Exactly one eighth of the board, whatever is inside it. */
+.piece {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12.5%;
+  height: 12.5%;
+  display: grid;
+  place-items: center;
+  will-change: transform;
+}
+
+/* The glyph is sized from the board, never from the box it sits in, so a queen
+   and a pawn occupy identical space and a promotion cannot resize anything.
+   Both colours use the solid figures: an outline drawn in the opposite colour
+   is what separates them, which stays legible on both shades of square. */
+.piece .glyph {
+  font-size: 9.6cqi;
+  line-height: 1;
+  font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "DejaVu Sans", system-ui, sans-serif;
+  pointer-events: none;
+  user-select: none;
+}
+.piece.white .glyph {
+  color: var(--white-piece);
+  text-shadow:
+    0 0 0.35cqi var(--black-piece),
+    0.22cqi 0 0 var(--black-piece), -0.22cqi 0 0 var(--black-piece),
+    0 0.22cqi 0 var(--black-piece), 0 -0.22cqi 0 var(--black-piece),
+    0 0.9cqi 1.2cqi rgb(0 0 0 / 0.4);
+}
+.piece.black .glyph {
+  color: var(--black-piece);
+  text-shadow:
+    0 0 0.35cqi rgb(255 255 255 / 0.5),
+    0.2cqi 0 0 rgb(255 255 255 / 0.35), -0.2cqi 0 0 rgb(255 255 255 / 0.35),
+    0 0.9cqi 1.2cqi rgb(0 0 0 / 0.4);
+}
+
+/* A piece being taken fades where it stood, rather than blinking out. */
+.piece.taken { animation: taken 200ms ease-in forwards; }
+@keyframes taken {
+  to { opacity: 0; transform-origin: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .piece.taken { animation-duration: 1ms; }
+}
+
+/* -- promotion ------------------------------------------------------------- */
+
+/* Which piece the pawn becomes. The engine is never asked: it always takes a
+   queen, and says so in the README. A person gets the choice. */
+.promotion .btn {
+  font-size: 1.9rem;
+  line-height: 1;
+  padding: 0.35rem 0.6rem;
+  font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "DejaVu Sans", system-ui, sans-serif;
+}

@@ -1,0 +1,747 @@
+// rules.funny — the board, and what may legally be done to it.
+//
+// Chess, with the rules that are easy to leave out: castling and everything
+// that forbids it, en passant, promotion to any of four pieces, and the one
+// that shapes the whole game -- a move is illegal if it leaves your own king
+// attacked. That last rule is why move generation here happens twice: once to
+// find what a piece could reach, and again to throw away everything that walks
+// into check.
+//
+// SQUARES ARE 0 TO 63, file-major from a1. Index = rank * 8 + file, so a1 is
+// 0, h1 is 7, a8 is 56 and h8 is 63. White's pieces start on ranks 1 and 2 and
+// move up the board; black's start on 7 and 8 and move down.
+//
+//     8   56 57 58 59 60 61 62 63
+//     7   48 ...
+//     ...
+//     1    0  1  2  3  4  5  6  7
+//          a  b  c  d  e  f  g  h
+//
+// MOVES ARE WRITTEN IN COORDINATES -- `e2e4`, `e7e8q` -- and not in the
+// algebraic notation a player would write, because `Nbd2` needs to know which
+// other knight could also have gone there, and that disambiguation is a whole
+// feature of its own. The README says so rather than leaving you to discover
+// it. Coordinates are unambiguous, which is what a golden and a web page both
+// want.
+//
+// Nothing here knows about players, engines, sockets or pages.
+
+gimme yapper
+
+flex deadass EMPTY = ""
+flex deadass WHITE = "white"
+flex deadass BLACK = "black"
+
+// Upper case is white, lower is black, throughout.
+flex deadass FILES = "abcdefgh"
+
+// Fifty moves by each side with no capture and no pawn move is a draw. Counted
+// in half-moves, which is how the rule is actually specified.
+flex deadass DRAW_AFTER_QUIET = 100
+
+// -- squares -----------------------------------------------------------------------
+
+flex bet rank_of(n) { bounce n \ 8 }
+flex bet file_of(n) { bounce n % 8 }
+
+flex bet square_at(rank, file) {
+    sus (rank < 0 || rank > 7 || file < 0 || file > 7) {
+        bounce -1
+    }
+    bounce rank * 8 + file
+}
+
+// 12 -> "e2". What a person reads and a page sends.
+flex bet square_name(n) {
+    sus (n < 0 || n > 63) {
+        bounce "??"
+    }
+    bounce FILES[file_of(n)] + to_yap(rank_of(n) + 1)
+}
+
+// "e2" -> 12, or -1 if that is not a square.
+flex bet square_index(name) {
+    sus (name.how_thicc() != 2) {
+        bounce -1
+    }
+    yo file = yapper.index_of(FILES, yapper.whisper(name[0]))
+    yo rank = to_int(name[1]) - 1
+    sus (file < 0 || rank < 0 || rank > 7) {
+        bounce -1
+    }
+    bounce square_at(rank, file)
+}
+
+// -- pieces ------------------------------------------------------------------------
+
+flex bet is_white(piece) {
+    bounce piece != EMPTY && piece == yapper.SCREAM(piece)
+}
+
+flex bet is_black(piece) {
+    bounce piece != EMPTY && piece == yapper.whisper(piece)
+}
+
+flex bet color_of(piece) {
+    sus (piece == EMPTY) { bounce ghost }
+    bounce is_white(piece) ? WHITE : BLACK
+}
+
+flex bet other_side(side) {
+    bounce side == WHITE ? BLACK : WHITE
+}
+
+// The piece letter without its colour: "N" for both knights.
+flex bet kind_of(piece) {
+    bounce yapper.SCREAM(piece)
+}
+
+// -- the position --------------------------------------------------------------------
+
+// `castling` is the four rights, each still available or not. `ep` is the
+// square a pawn may be captured *on* by en passant, or -1.
+flex bet new_board() {
+    yo squares = []
+    grind i from 0 to 64 {
+        squares.yeet_in(EMPTY)
+    }
+    deadass BACK = ["R", "N", "B", "Q", "K", "B", "N", "R"]
+    grind f from 0 to 8 {
+        squares[square_at(0, f)] = BACK[f]
+        squares[square_at(1, f)] = "P"
+        squares[square_at(6, f)] = "p"
+        squares[square_at(7, f)] = yapper.whisper(BACK[f])
+    }
+    bounce {
+        "squares": squares,
+        "turn": WHITE,
+        "castling": {"K": fax, "Q": fax, "k": fax, "q": fax},
+        "ep": -1,
+        "quiet": 0,
+        "moves": 0,
+    }
+}
+
+flex bet clone_board(pos) {
+    yo squares = []
+    grind p in pos["squares"] {
+        squares.yeet_in(p)
+    }
+    yo rights = {}
+    grind k in pos["castling"].keys() {
+        rights[k] = pos["castling"][k]
+    }
+    bounce {
+        "squares": squares,
+        "turn": pos["turn"],
+        "castling": rights,
+        "ep": pos["ep"],
+        "quiet": pos["quiet"],
+        "moves": pos["moves"],
+    }
+}
+
+// Everything that distinguishes one position from another for repetition:
+// the pieces, whose turn it is, the castling rights and the en-passant square.
+// Two positions with the same key are the same position by the rules of chess.
+flex bet position_key(pos) {
+    yo rights = ""
+    grind k in ["K", "Q", "k", "q"] {
+        sus (pos["castling"][k]) {
+            rights = rights + k
+        }
+    }
+    bounce pos["squares"].join("") + "|" + pos["turn"] + "|" +
+           (rights == "" ? "-" : rights) + "|" + to_yap(pos["ep"])
+}
+
+// -- what attacks what ------------------------------------------------------------
+//
+// Asked from the target square outwards rather than by generating every enemy
+// move: "is this square attacked" is needed for every legality test and for
+// castling, and walking out from one square is far less work than building a
+// whole move list to search it.
+
+deadass KNIGHT_STEPS = [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]]
+deadass DIAGONALS = [[1, 1], [1, -1], [-1, -1], [-1, 1]]
+deadass STRAIGHTS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+
+flex bet attacked_by(squares, target, by_side) {
+    yo r = rank_of(target)
+    yo f = file_of(target)
+
+    // Pawns. A white pawn attacks upwards, so a square is attacked by white
+    // from the two squares diagonally *below* it.
+    yo pawn_rank = by_side == WHITE ? r - 1 : r + 1
+    grind df in [-1, 1] {
+        yo s = square_at(pawn_rank, f + df)
+        sus (s >= 0) {
+            yo p = squares[s]
+            sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "P") {
+                bounce fax
+            }
+        }
+    }
+
+    grind way in KNIGHT_STEPS {
+        yo s = square_at(r + way[0], f + way[1])
+        sus (s >= 0) {
+            yo p = squares[s]
+            sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "N") {
+                bounce fax
+            }
+        }
+    }
+
+    // The king, one square in any direction.
+    grind way in DIAGONALS + STRAIGHTS {
+        yo s = square_at(r + way[0], f + way[1])
+        sus (s >= 0) {
+            yo p = squares[s]
+            sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "K") {
+                bounce fax
+            }
+        }
+    }
+
+    // Sliding pieces: walk outwards until something blocks. A bishop or queen
+    // on a diagonal, a rook or queen on a rank or file.
+    sus (slides_to(squares, r, f, DIAGONALS, by_side, "B")) { bounce fax }
+    sus (slides_to(squares, r, f, STRAIGHTS, by_side, "R")) { bounce fax }
+    bounce cap
+}
+
+// `kind` is the non-queen piece that slides those ways; a queen always does.
+bet slides_to(squares, r, f, ways, by_side, kind) {
+    grind way in ways {
+        yo dist = 1
+        bruh (fax) {
+            yo s = square_at(r + way[0] * dist, f + way[1] * dist)
+            sus (s < 0) {
+                bail
+            }
+            yo p = squares[s]
+            sus (p != EMPTY) {
+                sus (color_of(p) == by_side && (kind_of(p) == kind || kind_of(p) == "Q")) {
+                    bounce fax
+                }
+                bail
+            }
+            dist += 1
+        }
+    }
+    bounce cap
+}
+
+flex bet king_square(squares, side) {
+    yo want = side == WHITE ? "K" : "k"
+    grind n from 0 to 64 {
+        sus (squares[n] == want) {
+            bounce n
+        }
+    }
+    bounce -1
+}
+
+// Whether `side`'s king is currently attacked.
+flex bet in_check(pos, side) {
+    yo k = king_square(pos["squares"], side)
+    sus (k < 0) {
+        bounce cap
+    }
+    bounce attacked_by(pos["squares"], k, other_side(side))
+}
+
+// -- generating moves ----------------------------------------------------------------
+
+bet make_move(src, dst, piece, captured, promotion, special) {
+    bounce {
+        "from": src,
+        "to": dst,
+        "piece": piece,
+        "captured": captured,
+        "promotion": promotion ?? "",
+        "special": special ?? "",
+        "notation": square_name(src) + square_name(dst) +
+                    (promotion == ghost || promotion == "" ? "" : yapper.whisper(promotion)),
+    }
+}
+
+// Everything the side to move could do if the king's safety did not matter.
+// `legal_moves` filters these; nothing else should use them.
+bet pseudo_moves(pos) {
+    yo squares = pos["squares"]
+    yo side = pos["turn"]
+    yo out = []
+
+    grind n from 0 to 64 {
+        yo piece = squares[n]
+        sus (piece == EMPTY || color_of(piece) != side) {
+            nvm
+        }
+        yo kind = kind_of(piece)
+        yo r = rank_of(n)
+        yo f = file_of(n)
+
+        sus (kind == "P") {
+            pawn_moves(pos, n, piece, side, r, f, out)
+            nvm
+        }
+        sus (kind == "N") {
+            grind way in KNIGHT_STEPS {
+                yo s = square_at(r + way[0], f + way[1])
+                sus (s >= 0 && (squares[s] == EMPTY || color_of(squares[s]) != side)) {
+                    out.yeet_in(make_move(n, s, piece, squares[s], ghost, ghost))
+                }
+            }
+            nvm
+        }
+        sus (kind == "K") {
+            grind way in DIAGONALS + STRAIGHTS {
+                yo s = square_at(r + way[0], f + way[1])
+                sus (s >= 0 && (squares[s] == EMPTY || color_of(squares[s]) != side)) {
+                    out.yeet_in(make_move(n, s, piece, squares[s], ghost, ghost))
+                }
+            }
+            castling_moves(pos, n, piece, side, out)
+            nvm
+        }
+
+        yo ways = []
+        sus (kind == "B" || kind == "Q") { ways = ways + DIAGONALS }
+        sus (kind == "R" || kind == "Q") { ways = ways + STRAIGHTS }
+        grind way in ways {
+            yo dist = 1
+            bruh (fax) {
+                yo s = square_at(r + way[0] * dist, f + way[1] * dist)
+                sus (s < 0) {
+                    bail
+                }
+                sus (squares[s] == EMPTY) {
+                    out.yeet_in(make_move(n, s, piece, EMPTY, ghost, ghost))
+                    dist += 1
+                    nvm
+                }
+                sus (color_of(squares[s]) != side) {
+                    out.yeet_in(make_move(n, s, piece, squares[s], ghost, ghost))
+                }
+                bail
+            }
+        }
+    }
+    bounce out
+}
+
+// Pawns are the awkward ones: they move one way and capture another, they may
+// go two squares from home, they promote, and they can capture a piece that is
+// not on the square they land on.
+bet pawn_moves(pos, n, piece, side, r, f, out) {
+    yo squares = pos["squares"]
+    yo ahead = side == WHITE ? 1 : -1
+    yo home = side == WHITE ? 1 : 6
+    yo last = side == WHITE ? 7 : 0
+
+    yo one = square_at(r + ahead, f)
+    sus (one >= 0 && squares[one] == EMPTY) {
+        add_pawn_move(n, one, piece, EMPTY, rank_of(one) == last, out)
+        sus (r == home) {
+            yo two = square_at(r + ahead * 2, f)
+            sus (two >= 0 && squares[two] == EMPTY) {
+                out.yeet_in(make_move(n, two, piece, EMPTY, ghost, "double"))
+            }
+        }
+    }
+
+    grind df in [-1, 1] {
+        yo s = square_at(r + ahead, f + df)
+        sus (s < 0) {
+            nvm
+        }
+        sus (squares[s] != EMPTY && color_of(squares[s]) != side) {
+            add_pawn_move(n, s, piece, squares[s], rank_of(s) == last, out)
+            nvm
+        }
+        // En passant: the square is empty, but a pawn that has just gone two
+        // squares may be taken as though it had gone one.
+        sus (s == pos["ep"]) {
+            yo victim = square_at(r, f + df)
+            out.yeet_in(make_move(n, s, piece, squares[victim], ghost, "ep"))
+        }
+    }
+}
+
+// A pawn reaching the last rank becomes one of four pieces, and which one is
+// part of the move rather than a question asked afterwards.
+bet add_pawn_move(src, dst, piece, captured, promoting, out) {
+    sus (!promoting) {
+        out.yeet_in(make_move(src, dst, piece, captured, ghost, ghost))
+        bounce ghost
+    }
+    grind kind in ["Q", "R", "B", "N"] {
+        yo as_played = is_white(piece) ? kind : yapper.whisper(kind)
+        out.yeet_in(make_move(src, dst, piece, captured, as_played, "promote"))
+    }
+}
+
+// Castling, and the four things that forbid it: the right is gone, something
+// is in the way, the king is in check, or it would cross a square that is
+// attacked. The last is the one most often missed.
+bet castling_moves(pos, n, piece, side, out) {
+    yo squares = pos["squares"]
+    yo enemy = other_side(side)
+    yo back = side == WHITE ? 0 : 7
+    sus (n != square_at(back, 4)) {
+        bounce ghost
+    }
+    sus (attacked_by(squares, n, enemy)) {
+        bounce ghost
+    }
+
+    yo short_right = side == WHITE ? "K" : "k"
+    sus (pos["castling"][short_right]) {
+        yo f5 = square_at(back, 5)
+        yo g6 = square_at(back, 6)
+        sus (squares[f5] == EMPTY && squares[g6] == EMPTY &&
+             !attacked_by(squares, f5, enemy) && !attacked_by(squares, g6, enemy)) {
+            out.yeet_in(make_move(n, g6, piece, EMPTY, ghost, "castle-short"))
+        }
+    }
+
+    yo long_right = side == WHITE ? "Q" : "q"
+    sus (pos["castling"][long_right]) {
+        yo d3 = square_at(back, 3)
+        yo c2 = square_at(back, 2)
+        yo b1 = square_at(back, 1)
+        // b1 must be empty but need not be safe: the king never stands on it.
+        sus (squares[d3] == EMPTY && squares[c2] == EMPTY && squares[b1] == EMPTY &&
+             !attacked_by(squares, d3, enemy) && !attacked_by(squares, c2, enemy)) {
+            out.yeet_in(make_move(n, c2, piece, EMPTY, ghost, "castle-long"))
+        }
+    }
+}
+
+// Every legal move: the pseudo-legal ones, minus any that leaves the mover's
+// own king attacked. Sorted, so the same position always produces the same
+// list in the same order and an engine searching it is reproducible.
+flex bet legal_moves(pos) {
+    yo side = pos["turn"]
+    yo out = []
+    grind m in pseudo_moves(pos) {
+        yo after = apply_move(pos, m)
+        sus (!in_check_for(after, side)) {
+            out.yeet_in(m)
+        }
+    }
+    bounce sorted_moves(out)
+}
+
+// `in_check` after a move has already flipped the turn, so the side asked
+// about is named rather than taken from the position.
+bet in_check_for(pos, side) {
+    yo k = king_square(pos["squares"], side)
+    sus (k < 0) {
+        bounce cap
+    }
+    bounce attacked_by(pos["squares"], k, other_side(side))
+}
+
+flex bet sorted_moves(moves) {
+    yo out = []
+    yo used = {}
+    grind n from 0 to moves.how_thicc() {
+        yo best = ghost
+        yo best_at = -1
+        grind i from 0 to moves.how_thicc() {
+            sus (used.has(to_yap(i))) {
+                nvm
+            }
+            sus (best == ghost || moves[i]["notation"] < best["notation"]) {
+                best = moves[i]
+                best_at = i
+            }
+        }
+        sus (best_at < 0) {
+            bail
+        }
+        used[to_yap(best_at)] = fax
+        out.yeet_in(best)
+    }
+    bounce out
+}
+
+// -- making a move --------------------------------------------------------------------
+
+// The position that results. The one given is never changed: the engine
+// searches by making moves on copies and throwing them away.
+flex bet apply_move(pos, m) {
+    yo next = clone_board(pos)
+    yo sq = next["squares"]
+    yo side = pos["turn"]
+    yo piece = m["piece"]
+
+    sq[m["from"]] = EMPTY
+    sq[m["to"]] = m["promotion"] == "" ? piece : m["promotion"]
+
+    sus (m["special"] == "ep") {
+        // The captured pawn is not on the square the capturer lands on.
+        sq[square_at(rank_of(m["from"]), file_of(m["to"]))] = EMPTY
+    }
+    sus (m["special"] == "castle-short") {
+        yo back = rank_of(m["from"])
+        sq[square_at(back, 5)] = sq[square_at(back, 7)]
+        sq[square_at(back, 7)] = EMPTY
+    }
+    sus (m["special"] == "castle-long") {
+        yo back = rank_of(m["from"])
+        sq[square_at(back, 3)] = sq[square_at(back, 0)]
+        sq[square_at(back, 0)] = EMPTY
+    }
+
+    // A double pawn move leaves a square behind it that can be captured on,
+    // and only for the one move that follows.
+    //
+    // Written out rather than as a ternary across three lines: a statement
+    // ends at a newline unless it is inside brackets, and `m["special"] ==
+    // "double"` is a complete expression, so the `?` below it would begin a
+    // new statement and fail to parse.
+    next["ep"] = -1
+    sus (m["special"] == "double") {
+        next["ep"] = square_at((rank_of(m["from"]) + rank_of(m["to"])) \ 2, file_of(m["from"]))
+    }
+
+    lose_castling_rights(next, m)
+
+    // The fifty-move counter resets on a capture or a pawn move, and on
+    // nothing else.
+    sus ((m["captured"] != EMPTY && m["captured"] != ghost) || kind_of(piece) == "P") {
+        next["quiet"] = 0
+    } nah {
+        next["quiet"] = pos["quiet"] + 1
+    }
+    next["turn"] = other_side(side)
+    next["moves"] = pos["moves"] + 1
+    bounce next
+}
+
+// Moving a king or a rook gives up the right for ever, and so does having your
+// rook captured on its home square.
+bet lose_castling_rights(pos, m) {
+    yo rights = pos["castling"]
+    yo kind = kind_of(m["piece"])
+    sus (kind == "K") {
+        sus (is_white(m["piece"])) { rights["K"] = cap; rights["Q"] = cap }
+        nah { rights["k"] = cap; rights["q"] = cap }
+    }
+    grind pair in [[0, "Q"], [7, "K"], [56, "q"], [63, "k"]] {
+        sus (m["from"] == pair[0] || m["to"] == pair[0]) {
+            rights[pair[1]] = cap
+        }
+    }
+}
+
+flex bet find_move(moves, notation) {
+    grind m in moves {
+        sus (m["notation"] == notation) {
+            bounce m
+        }
+    }
+    bounce ghost
+}
+
+// What a click gives: a square pair, and a promotion choice if one is needed.
+flex bet find_move_between(moves, src, dst, promotion) {
+    grind m in moves {
+        sus (m["from"] == src && m["to"] == dst) {
+            sus (m["promotion"] == "" || promotion == ghost || promotion == "") {
+                bounce m
+            }
+            sus (yapper.whisper(m["promotion"]) == yapper.whisper(promotion)) {
+                bounce m
+            }
+        }
+    }
+    bounce ghost
+}
+
+// -- how it ends ------------------------------------------------------------------------
+
+// ghost while the game is going, otherwise who won or why it was drawn. A side
+// with no legal move has lost if it is in check and drawn if it is not, which
+// is the difference between checkmate and stalemate.
+flex bet outcome(pos, seen) {
+    sus (legal_moves(pos).how_thicc() == 0) {
+        bounce in_check(pos, pos["turn"]) ? other_side(pos["turn"]) + " wins" : "draw: stalemate"
+    }
+    sus (pos["quiet"] >= DRAW_AFTER_QUIET) {
+        bounce "draw: fifty moves"
+    }
+    sus (insufficient_material(pos)) {
+        bounce "draw: not enough material"
+    }
+    // Threefold repetition, when the caller has been keeping the positions.
+    sus (seen != ghost) {
+        yo key = position_key(pos)
+        sus (seen.get(key, 0) >= 3) {
+            bounce "draw: threefold repetition"
+        }
+    }
+    bounce ghost
+}
+
+// King against king, king and one knight, or king and one bishop: neither side
+// can force mate, so the game is drawn however long it goes on.
+bet insufficient_material(pos) {
+    yo minor = 0
+    grind n from 0 to 64 {
+        yo p = pos["squares"][n]
+        sus (p == EMPTY) {
+            nvm
+        }
+        yo kind = kind_of(p)
+        sus (kind == "K") {
+            nvm
+        }
+        sus (kind == "N" || kind == "B") {
+            minor += 1
+            sus (minor > 1) {
+                bounce cap
+            }
+            nvm
+        }
+        bounce cap
+    }
+    bounce fax
+}
+
+flex bet count_material(pos, side) {
+    yo n = 0
+    grind i from 0 to 64 {
+        yo p = pos["squares"][i]
+        sus (p != EMPTY && color_of(p) == side && kind_of(p) != "K") {
+            n += 1
+        }
+    }
+    bounce n
+}
+
+// -- reading a position ------------------------------------------------------------------
+
+// A position from FEN, the notation every chess program writes positions in:
+//
+//     rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+//
+// Ranks from 8 down to 1, separated by slashes, a digit meaning that many
+// empty squares. Then the side to move, the castling rights still available,
+// the en-passant square, and the two move counters.
+//
+// It is here because a rule is far easier to test from the position that
+// exercises it than from thirty moves of play: castling, en passant and
+// promotion hardly occur in the opening, and those are exactly the rules worth
+// testing.
+flex bet from_fen(text) {
+    yo parts = yapper.words(yapper.trim(text))
+    sus (parts.how_thicc() < 2) {
+        chuck oops("SkillIssue", "that is not FEN: " + text)
+    }
+
+    yo squares = []
+    grind i from 0 to 64 {
+        squares.yeet_in(EMPTY)
+    }
+    yo rank = 7
+    yo file = 0
+    grind ch in parts[0] {
+        sus (ch == "/") {
+            rank -= 1
+            file = 0
+            nvm
+        }
+        sus (ch >= "1" && ch <= "8") {
+            file += to_int(ch)
+            nvm
+        }
+        yo s = square_at(rank, file)
+        sus (s >= 0) {
+            squares[s] = ch
+        }
+        file += 1
+    }
+
+    yo rights = {"K": cap, "Q": cap, "k": cap, "q": cap}
+    sus (parts.how_thicc() > 2 && parts[2] != "-") {
+        grind ch in parts[2] {
+            sus (rights.has(ch)) {
+                rights[ch] = fax
+            }
+        }
+    }
+
+    yo ep = -1
+    sus (parts.how_thicc() > 3 && parts[3] != "-") {
+        ep = square_index(parts[3])
+    }
+
+    bounce {
+        "squares": squares,
+        "turn": yapper.whisper(parts[1]) == "b" ? BLACK : WHITE,
+        "castling": rights,
+        "ep": ep,
+        "quiet": parts.how_thicc() > 4 ? to_int(parts[4]) : 0,
+        "moves": 0,
+    }
+}
+
+// The position as FEN, so what `from_fen` reads it can also write.
+flex bet to_fen(pos) {
+    yo rows = []
+    grind back from 0 to 8 {
+        yo r = 7 - back
+        yo row = ""
+        yo gap = 0
+        grind f from 0 to 8 {
+            yo p = pos["squares"][square_at(r, f)]
+            sus (p == EMPTY) {
+                gap += 1
+                nvm
+            }
+            sus (gap > 0) {
+                row = row + to_yap(gap)
+                gap = 0
+            }
+            row = row + p
+        }
+        sus (gap > 0) {
+            row = row + to_yap(gap)
+        }
+        rows.yeet_in(row)
+    }
+    yo rights = ""
+    grind k in ["K", "Q", "k", "q"] {
+        sus (pos["castling"][k]) {
+            rights = rights + k
+        }
+    }
+    bounce rows.join("/") + " " + (pos["turn"] == WHITE ? "w" : "b") + " " +
+           (rights == "" ? "-" : rights) + " " +
+           (pos["ep"] < 0 ? "-" : square_name(pos["ep"])) + " " +
+           to_yap(pos["quiet"]) + " 1"
+}
+
+// -- showing it -------------------------------------------------------------------------
+
+// The board as text, for the terminal and for the golden. Rank 8 at the top,
+// the way every book prints it.
+flex bet render(pos) {
+    yo lines = []
+    grind back from 0 to 8 {
+        yo r = 7 - back
+        yo cells = [to_yap(r + 1) + " "]
+        grind f from 0 to 8 {
+            yo p = pos["squares"][square_at(r, f)]
+            cells.yeet_in(p == EMPTY ? "." : p)
+        }
+        lines.yeet_in(cells.join(" "))
+    }
+    lines.yeet_in("  a b c d e f g h")
+    bounce lines.join("\n")
+}

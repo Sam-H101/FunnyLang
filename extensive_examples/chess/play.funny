@@ -1,0 +1,186 @@
+// play.funny — chess in a terminal.
+//
+//     funny run extensive_examples/chess/play.funny
+//     funny run extensive_examples/chess/play.funny -- --depth 4
+//     funny run extensive_examples/chess/play.funny -- --self --moves 40
+//     funny run extensive_examples/chess/play.funny -- --fen "8/8/8/8/8/5K2/6Q1/7k w - - 0 1"
+//
+//   --depth N     how far the engine looks ahead (default 3)
+//   --side w|b    which colour you play (default white, who moves first)
+//   --self        nobody plays: the engine takes both sides and prints the game
+//   --moves N     stop after N half-moves, whoever is winning
+//   --fen FEN     start from a position rather than the opening
+//
+// The same rules and the same engine the browser uses, against a board made of
+// text. It exists because a game that can only be played through a socket can
+// only be tested through a socket, and because watching the engine play itself
+// is the quickest way to see whether it is any good.
+//
+// Moves are typed in coordinates -- `e2e4`, and `e7e8q` to promote -- not in
+// the algebraic a player would write. `Nbd2` needs to know which other knight
+// could have gone there, and that disambiguation is a feature this does not
+// have.
+
+gimme yapper
+
+gimme { WHITE, BLACK, new_board, from_fen, to_fen, legal_moves, apply_move,
+        outcome, render, find_move, in_check, other_side, position_key,
+        count_material } from "rules.funny"
+gimme { best_move, evaluate, verdict } from "engine.funny"
+
+bet usage() {
+    yell("usage: play.funny [--depth N] [--side w|b] [--self] [--moves N] [--fen FEN]")
+}
+
+// Every legal move, so a player can see what may be typed. Chess has rather
+// more of them than draughts, so they are wrapped rather than run off the
+// screen.
+bet show_moves(moves) {
+    yo shown = []
+    grind m in moves {
+        shown.yeet_in(m["notation"])
+    }
+    yo lines = []
+    yo row = []
+    grind n in shown {
+        row.yeet_in(n)
+        sus (row.how_thicc() == 12) {
+            lines.yeet_in("  " + row.join(" "))
+            row = []
+        }
+    }
+    sus (row.how_thicc() > 0) {
+        lines.yeet_in("  " + row.join(" "))
+    }
+    bounce lines.join("\n")
+}
+
+bet describe(pos) {
+    bounce "white " + to_yap(count_material(pos, WHITE)) +
+           " pieces, black " + to_yap(count_material(pos, BLACK))
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo depth = 3
+    yo human = WHITE
+    yo self_play = cap
+    yo move_limit = ghost
+    yo fen = ghost
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--depth" && i + 1 < args.how_thicc()) {
+            depth = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--side" && i + 1 < args.how_thicc()) {
+            human = yapper.starts_with(yapper.whisper(args[i + 1]), "b") ? BLACK : WHITE
+            i += 2
+        } kinda_sus (a == "--self") {
+            self_play = fax
+            i += 1
+        } kinda_sus (a == "--moves" && i + 1 < args.how_thicc()) {
+            move_limit = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--fen" && i + 1 < args.how_thicc()) {
+            fen = args[i + 1]
+            i += 2
+        } nah {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        }
+    }
+    sus (depth < 1) { depth = 1 }
+    sus (depth > 6) { depth = 6 }
+
+    yo pos = ghost
+    sketchy {
+        pos = fen == ghost ? new_board() : from_fen(fen)
+    } my_bad (e) {
+        yell(e.message)
+        bounce 2
+    }
+
+    // Positions seen, for the threefold repetition rule.
+    yo seen = {}
+    seen[position_key(pos)] = 1
+
+    sus (self_play) {
+        yap "the engine, both sides, looking " + to_yap(depth) + " moves ahead"
+    } nah {
+        yap "you are " + human + ". the engine is " + other_side(human) +
+            ", looking " + to_yap(depth) + " moves ahead."
+        yap "type a move like e2e4, or e7e8q to promote. 'moves' lists them, 'quit' leaves."
+    }
+    yap ""
+    yap render(pos)
+    yap ""
+
+    bruh (fax) {
+        sus (move_limit != ghost && pos["moves"] >= move_limit) {
+            yap "stopping after " + to_yap(pos["moves"]) + " moves. " + describe(pos)
+            bail
+        }
+        yo over = outcome(pos, seen)
+        sus (over != ghost) {
+            yap over
+            bail
+        }
+
+        yo moves = legal_moves(pos)
+        yo checked = in_check(pos, pos["turn"])
+
+        sus (self_play || pos["turn"] != human) {
+            yo thought = best_move(pos, depth)
+            yo m = thought["move"]
+            pos = apply_move(pos, m)
+            seen[position_key(pos)] = seen.get(position_key(pos), 0) + 1
+            yap other_side(pos["turn"]) + " plays " + m["notation"]
+            yap "  (" + to_yap(thought["nodes"]) + " positions looked at, " +
+                verdict(pos, -thought["score"]) + ")"
+            yap ""
+            yap render(pos)
+            yap ""
+            nvm
+        }
+
+        yap pos["turn"] + " to play" + (checked ? ", and is in check" : "") + ":"
+        yap show_moves(moves)
+        yo typed = yapper.trim(ask("> "))
+        sus (typed == "quit" || typed == "") {
+            yap "bye."
+            bail
+        }
+        sus (typed == "moves") {
+            yap show_moves(moves)
+            nvm
+        }
+        sus (typed == "fen") {
+            yap to_fen(pos)
+            nvm
+        }
+        yo chosen = find_move(moves, yapper.whisper(typed))
+        sus (chosen == ghost) {
+            yap "not a legal move." + (checked ? " you are in check." : "")
+            nvm
+        }
+        pos = apply_move(pos, chosen)
+        seen[position_key(pos)] = seen.get(position_key(pos), 0) + 1
+        yap ""
+        yap render(pos)
+        yap ""
+    }
+    bounce 0
+}
+
+dip(main(the_args()))

@@ -1,0 +1,262 @@
+// engine.funny — FunnyLang playing chess.
+//
+// Negamax with alpha-beta pruning, the same shape as the draughts engine next
+// door, with two things chess needs that draughts did not.
+//
+// PIECE-SQUARE TABLES. Material alone plays terrible chess: it has no reason
+// to develop a knight, castle, or push a pawn. Each piece gets a small bonus
+// per square, written from white's point of view and mirrored for black, so a
+// knight prefers the middle to the rim and a king prefers the corner it
+// castled into. They are crude and deliberately so -- they are the smallest
+// thing that turns "legal moves" into "recognisable chess".
+//
+// MOVE ORDERING. Alpha-beta only prunes well when good moves are searched
+// first, and in chess the good move is usually a capture of something big by
+// something small. Sorting captures first, most valuable victim first, cuts
+// the tree enormously. The order stays *deterministic* -- ties break on the
+// move's coordinates -- because a golden that plays a whole game cannot
+// tolerate an engine that shuffles equal moves.
+
+gimme { WHITE, BLACK, EMPTY, legal_moves, apply_move, outcome, in_check,
+        other_side, color_of, kind_of, is_white, rank_of, file_of,
+        square_at } from "rules.funny"
+
+flex deadass VALUES = {"P": 100, "N": 320, "B": 330, "R": 500, "Q": 900, "K": 20000}
+
+// Bigger than any real evaluation, small enough to negate safely.
+flex deadass WIN = 1000000
+
+flex deadass DEPTHS = {"easy": 1, "normal": 3, "hard": 4}
+
+// Written rank 8 first, the way a board is printed, so these can be read as
+// pictures. Index 0 of each is a8; the lookup flips it for the 0-is-a1 board.
+flex deadass TABLES = {
+    "P": [  0,  0,  0,  0,  0,  0,  0,  0,
+           50, 50, 50, 50, 50, 50, 50, 50,
+           10, 10, 20, 30, 30, 20, 10, 10,
+            5,  5, 10, 25, 25, 10,  5,  5,
+            0,  0,  0, 20, 20,  0,  0,  0,
+            5, -5,-10,  0,  0,-10, -5,  5,
+            5, 10, 10,-20,-20, 10, 10,  5,
+            0,  0,  0,  0,  0,  0,  0,  0],
+    "N": [-50,-40,-30,-30,-30,-30,-40,-50,
+          -40,-20,  0,  0,  0,  0,-20,-40,
+          -30,  0, 10, 15, 15, 10,  0,-30,
+          -30,  5, 15, 20, 20, 15,  5,-30,
+          -30,  0, 15, 20, 20, 15,  0,-30,
+          -30,  5, 10, 15, 15, 10,  5,-30,
+          -40,-20,  0,  5,  5,  0,-20,-40,
+          -50,-40,-30,-30,-30,-30,-40,-50],
+    "B": [-20,-10,-10,-10,-10,-10,-10,-20,
+          -10,  0,  0,  0,  0,  0,  0,-10,
+          -10,  0,  5, 10, 10,  5,  0,-10,
+          -10,  5,  5, 10, 10,  5,  5,-10,
+          -10,  0, 10, 10, 10, 10,  0,-10,
+          -10, 10, 10, 10, 10, 10, 10,-10,
+          -10,  5,  0,  0,  0,  0,  5,-10,
+          -20,-10,-10,-10,-10,-10,-10,-20],
+    "R": [  0,  0,  0,  0,  0,  0,  0,  0,
+            5, 10, 10, 10, 10, 10, 10,  5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+            0,  0,  0,  5,  5,  0,  0,  0],
+    "Q": [-20,-10,-10, -5, -5,-10,-10,-20,
+          -10,  0,  0,  0,  0,  0,  0,-10,
+          -10,  0,  5,  5,  5,  5,  0,-10,
+           -5,  0,  5,  5,  5,  5,  0, -5,
+            0,  0,  5,  5,  5,  5,  0, -5,
+          -10,  5,  5,  5,  5,  5,  0,-10,
+          -10,  0,  5,  0,  0,  0,  0,-10,
+          -20,-10,-10, -5, -5,-10,-10,-20],
+    // The king wants a corner while there are pieces about. An endgame table
+    // would want the opposite, and this engine does not have one -- the README
+    // says so.
+    "K": [-30,-40,-40,-50,-50,-40,-40,-30,
+          -30,-40,-40,-50,-50,-40,-40,-30,
+          -30,-40,-40,-50,-50,-40,-40,-30,
+          -30,-40,-40,-50,-50,-40,-40,-30,
+          -20,-30,-30,-40,-40,-30,-30,-20,
+          -10,-20,-20,-20,-20,-20,-20,-10,
+           20, 20,  0,  0,  0,  0, 20, 20,
+           20, 30, 10,  0,  0, 10, 30, 20],
+}
+
+// The board is 0-is-a1 and the tables are written a8 first, so white reads
+// them upside down and black reads them straight.
+bet table_bonus(piece, n) {
+    yo kind = kind_of(piece)
+    sus (!TABLES.has(kind)) {
+        bounce 0
+    }
+    yo r = rank_of(n)
+    yo f = file_of(n)
+    yo row = is_white(piece) ? 7 - r : r
+    bounce TABLES[kind][row * 8 + f]
+}
+
+// -- scoring a position --------------------------------------------------------------
+
+// From `side`'s point of view: positive is good for `side`.
+flex bet evaluate(pos, side) {
+    yo score = 0
+    grind n from 0 to 64 {
+        yo piece = pos["squares"][n]
+        sus (piece == EMPTY) {
+            nvm
+        }
+        yo worth = VALUES.get(kind_of(piece), 0) + table_bonus(piece, n)
+        score += color_of(piece) == side ? worth : -worth
+    }
+    bounce score
+}
+
+// -- ordering ---------------------------------------------------------------------------
+
+// Captures first, most valuable victim taken by the least valuable attacker,
+// then everything else. Ties break on the move's own coordinates, so the order
+// is total and the engine is reproducible.
+bet ordered(moves) {
+    yo scored = []
+    grind m in moves {
+        yo gain = 0
+        sus (m["captured"] != EMPTY && m["captured"] != ghost) {
+            gain = VALUES.get(kind_of(m["captured"]), 0) * 10 - VALUES.get(kind_of(m["piece"]), 0)
+        }
+        sus (m["promotion"] != "") {
+            gain += VALUES.get(kind_of(m["promotion"]), 0)
+        }
+        scored.yeet_in({"move": m, "gain": gain})
+    }
+
+    yo out = []
+    yo used = {}
+    grind n from 0 to scored.how_thicc() {
+        yo best = ghost
+        yo best_at = -1
+        grind i from 0 to scored.how_thicc() {
+            sus (used.has(to_yap(i))) {
+                nvm
+            }
+            sus (best == ghost || scored[i]["gain"] > best["gain"] ||
+                 (scored[i]["gain"] == best["gain"] &&
+                  scored[i]["move"]["notation"] < best["move"]["notation"])) {
+                best = scored[i]
+                best_at = i
+            }
+        }
+        sus (best_at < 0) {
+            bail
+        }
+        used[to_yap(best_at)] = fax
+        out.yeet_in(best["move"])
+    }
+    bounce out
+}
+
+// -- searching ----------------------------------------------------------------------------
+
+// The move the engine would play: {"move", "score", "nodes", "depth"}. A ghost
+// move means there is nothing legal, which is checkmate or stalemate rather
+// than the engine giving up.
+flex bet best_move(pos, depth) {
+    yo counter = {"nodes": 0}
+    yo moves = ordered(legal_moves(pos))
+    sus (moves.how_thicc() == 0) {
+        bounce {"move": ghost, "score": -WIN, "nodes": 0, "depth": depth}
+    }
+
+    yo best = ghost
+    yo best_score = -WIN - 1
+    yo alpha = -WIN - 1
+    grind m in moves {
+        yo score = -search(apply_move(pos, m), depth - 1, -WIN - 1, -alpha, counter)
+        // Strictly better, so the first move in the ordering wins a tie and the
+        // same position always produces the same move.
+        sus (score > best_score) {
+            best_score = score
+            best = m
+        }
+        sus (score > alpha) {
+            alpha = score
+        }
+    }
+    bounce {"move": best, "score": best_score, "nodes": counter["nodes"], "depth": depth}
+}
+
+// The value of `pos` to whoever is to move in it.
+bet search(pos, depth, alpha, beta, counter) {
+    counter["nodes"] += 1
+
+    yo moves = legal_moves(pos)
+
+    // No legal move: checkmate if in check, stalemate if not. The depth is
+    // added to the mate score so that a mate further away is worth less than
+    // one right now -- an engine that is winning should finish rather than
+    // dawdle, and one that is losing should make the opponent work.
+    sus (moves.how_thicc() == 0) {
+        bounce in_check(pos, pos["turn"]) ? -WIN + (100 - depth) : 0
+    }
+    sus (pos["quiet"] >= 100) {
+        bounce 0
+    }
+    sus (depth <= 0) {
+        bounce evaluate(pos, pos["turn"])
+    }
+
+    yo best = -WIN - 1
+    grind m in ordered(moves) {
+        yo score = -search(apply_move(pos, m), depth - 1, -beta, -alpha, counter)
+        sus (score > best) {
+            best = score
+        }
+        sus (best > alpha) {
+            alpha = best
+        }
+        // The opponent would never have allowed this position, so nothing else
+        // here can matter.
+        sus (alpha >= beta) {
+            bail
+        }
+    }
+    bounce best
+}
+
+flex bet depth_for(difficulty) {
+    bounce DEPTHS.get(difficulty, DEPTHS["normal"])
+}
+
+// One move, played. The position that comes back is a new one.
+flex bet play_one(pos, depth) {
+    yo thought = best_move(pos, depth)
+    sus (thought["move"] == ghost) {
+        bounce {"pos": pos, "move": ghost, "score": thought["score"], "nodes": thought["nodes"]}
+    }
+    bounce {
+        "pos": apply_move(pos, thought["move"]),
+        "move": thought["move"],
+        "score": thought["score"],
+        "nodes": thought["nodes"],
+    }
+}
+
+// What the engine makes of the position, in words. Positive is good for
+// whoever is to move.
+flex bet verdict(pos, score) {
+    sus (score > WIN - 1000) {
+        bounce pos["turn"] + " is winning"
+    }
+    sus (score < -(WIN - 1000)) {
+        bounce other_side(pos["turn"]) + " is winning"
+    }
+    yo pawns = to_int(score * 10 / VALUES["P"]) / 10.0
+    sus (score > 80) {
+        bounce pos["turn"] + " is ahead by about " + to_yap(pawns) + " pawns"
+    }
+    sus (score < -80) {
+        bounce other_side(pos["turn"]) + " is ahead"
+    }
+    bounce "about level"
+}

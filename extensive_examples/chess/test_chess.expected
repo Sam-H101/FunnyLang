@@ -1,0 +1,128 @@
+-- the board --
+8  r n b q k b n r
+7  p p p p p p p p
+6  . . . . . . . .
+5  . . . . . . . .
+4  . . . . . . . .
+3  . . . . . . . .
+2  P P P P P P P P
+1  R N B Q K B N R
+  a b c d e f g h
+white to play: ["a2a3", "a2a4", "b1a3", "b1c3", "b2b3", "b2b4", "c2c3", "c2c4", "d2d3", "d2d4", "e2e3", "e2e4", "f2f3", "f2f4", "g1f3", "g1h3", "g2g3", "g2g4", "h2h3", "h2h4"]
+and it is written back as: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+-- squares are numbered the way the board is written --
+  a1 is 0: rank 0 file 0, and back again a1
+  h1 is 7: rank 0 file 7, and back again h1
+  e4 is 28: rank 3 file 4, and back again e4
+  d5 is 35: rank 4 file 3, and back again d5
+  a8 is 56: rank 7 file 0, and back again a8
+  h8 is 63: rank 7 file 7, and back again h8
+  off the board is -1: -1 -1 -1
+-- a position read from FEN is written back unchanged --
+  same: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+  same: r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1
+  same: 8/8/8/3pP3/8/8/8/K6k w - d6 0 1
+  same: 8/P7/8/8/8/8/8/K6k w - - 0 1
+-- castling --
+  both ways: ["e1c1", "e1d1", "e1d2", "e1e2", "e1f1", "e1f2", "e1g1"]
+  blocked on the queen's side: ["e1d1", "e1d2", "e1e2", "e1f1", "e1f2", "e1g1"]
+  not out of check: ["e1d1", "e1d2", "e1f1", "e1f2"]
+  not through an attacked square: ["e1c1", "e1d1", "e1d2", "e1e2"]
+  not without the right: ["e1d1", "e1d2", "e1e2", "e1f1", "e1f2"]
+-- castling moves the rook too --
+  after e1g1: r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1
+  after e1c1: r3k2r/8/8/8/8/8/8/2KR3R b kq - 1 1
+-- moving the king gives up both rights, moving a rook gives up one --
+  king to e2: r3k2r/8/8/8/8/8/4K3/R6R b kq - 1 1
+  rook to h2: r3k2r/8/8/8/8/8/7R/R3K3 b Qkq - 1 1
+-- en passant --
+  the pawn may take it: ["e5d6", "e5e6"]
+  and the taken pawn is not on the square landed on: 8/8/3P4/8/8/8/8/K6k b - - 0 1
+  a move later it is gone: ["e5e6"]
+-- a double pawn move offers the square, and only for one move --
+  after e2e4: rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1
+  and after a reply: r1bqkbnr/pppppppp/2n5/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 1
+-- promotion is four moves, not one --
+  a pawn on a7: ["a7a8b", "a7a8n", "a7a8q", "a7a8r"]
+  a7a8q gives: Q7/8/8/8/8/8/8/K6k b - - 0 1
+  a7a8n gives: N7/8/8/8/8/8/8/K6k b - - 0 1
+  taking onto the last rank: ["a7a8b", "a7a8n", "a7a8q", "a7a8r", "a7b8b", "a7b8n", "a7b8q", "a7b8r"]
+-- a pinned piece may not move --
+  the knight is pinned: []
+  and the king may only leave the file: ["e1d1", "e1d2", "e1f1", "e1f2"]
+-- check, and getting out of it --
+  white is in check: fax
+  and has only these: ["e1d1", "e1f1"]
+-- checkmate --
+8  r n b . k b n r
+7  p p p p . p p p
+6  . . . . . . . .
+5  . . . . p . . .
+4  . . . . . . P q
+3  . . . . . P . .
+2  P P P P P . . P
+1  R N B Q K B N R
+  a b c d e f g h
+  in check: fax
+  moves left: 0
+  result: black wins
+-- stalemate is not checkmate --
+  in check: cap
+  moves left: 0
+  result: draw: stalemate
+-- the drawn endings --
+  bare kings: draw: not enough material
+  king and bishop: draw: not enough material
+  king and knight: draw: not enough material
+  king and rook is not: ghost
+  fifty quiet moves: draw: fifty moves
+-- the same position three times is a draw --
+  seen three times: draw: threefold repetition
+  seen twice: ghost
+-- what attacks what --
+  the queen on d5 attacks d1: fax
+  and h1: fax
+  but not b2: cap
+  h2 is covered by the black king though: fax
+  the white king is at: a1
+-- perft, from the opening --
+  depth 1: 20 ok
+  depth 2: 400 ok
+  depth 3: 8902 ok
+-- perft, from a position full of the awkward moves --
+  depth 1: 48 ok
+  depth 2: 2039 ok
+-- the engine picks the same move every time --
+  depth 1: b1c3 (score 50, 20 positions), and again: b1c3
+  depth 2: b1c3 (score 0, 132 positions), and again: b1c3
+  depth 3: b1c3 (score 50, 1407 positions), and again: b1c3
+-- it finds mate in one --
+  it plays: a1a8
+  and that is mate: white wins
+-- it takes the free queen --
+  it plays: e3d5
+-- it deals with the threat to its own queen --
+  from d4 it plays: d4c5
+-- what it makes of a position --
+  even start: 0
+  a rook ahead: fax
+  and from the other side: fax
+  the difficulties: 1 3 4
+-- the engine against itself --
+moves played: 18
+positions looked at: fax
+    1. b1c3  b8c6  g1f3  g8f6  d2d3  d7d6  c1e3  a7a6
+    9. d1d2  c8e6  a2a3  d8d7  e1c1  e8c8  c1b1  c8b8
+   17. d1e1  d8e8
+result: draw: threefold repetition
+white left: 15 black left: 15
+8  . k . . r b . r
+7  . p p q p p p p
+6  p . n p b n . .
+5  . . . . . . . .
+4  . . . . . . . .
+3  P . N P B N . .
+2  . P P Q P P P P
+1  . K . . R B . R
+  a b c d e f g h
+-- done --

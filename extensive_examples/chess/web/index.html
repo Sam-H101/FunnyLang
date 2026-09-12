@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chess</title>
+<!-- Bootstrap, vendored rather than fetched: this page is served under
+     `default-src 'self'` and is meant to work on a machine with no network. -->
+<link rel="stylesheet" href="/vendor/bootstrap.min.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="bg-body">
+
+<div class="container py-4">
+
+  <header class="d-flex align-items-baseline flex-wrap gap-3 mb-4">
+    <h1 class="h3 mb-0 fw-semibold">chess</h1>
+    <p id="status" class="mb-0 text-body-secondary" role="status" aria-live="polite">starting…</p>
+  </header>
+
+  <div class="row g-4">
+
+    <!-- The board is two layers. Underneath, sixty-four squares in a grid,
+         which take the clicks. On top, one absolutely-placed piece per man,
+         which is what lets a piece slide from square to square rather than
+         vanishing here and reappearing there. -->
+    <div class="col-lg-8">
+      <div class="card shadow-sm border-secondary-subtle">
+        <div class="card-body p-2 p-sm-3">
+          <div class="board" id="board">
+            <div class="squares" id="squares" role="grid" aria-label="chessboard"></div>
+            <div class="pieces" id="pieces" aria-hidden="true"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Only ever shown when a pawn of yours reaches the eighth rank. -->
+      <div class="card shadow-sm border-secondary-subtle mt-3 promotion" id="promotion" hidden>
+        <div class="card-body d-flex align-items-center flex-wrap gap-2">
+          <span class="text-body-secondary me-2">promote to</span>
+          <button class="btn btn-outline-light" data-piece="q" title="queen">&#9819;</button>
+          <button class="btn btn-outline-light" data-piece="r" title="rook">&#9820;</button>
+          <button class="btn btn-outline-light" data-piece="b" title="bishop">&#9821;</button>
+          <button class="btn btn-outline-light" data-piece="n" title="knight">&#9822;</button>
+          <button class="btn btn-link text-body-secondary ms-auto" id="cancelpromo">never mind</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
+      <div class="card shadow-sm border-secondary-subtle mb-4">
+        <div class="card-header text-uppercase small text-body-secondary fw-semibold">the game</div>
+        <ul class="list-group list-group-flush">
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">you</span><span id="you">white</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">engine</span><span id="engine">black</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">your pieces</span><span id="whitecount">—</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">its pieces</span><span id="blackcount">—</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">it replied</span><span id="lastmove">—</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">it looked at</span><span id="nodes">—</span></li>
+          <li class="list-group-item d-flex justify-content-between">
+            <span class="text-body-secondary">it reckons</span><span id="verdict">—</span></li>
+        </ul>
+      </div>
+
+      <div class="card shadow-sm border-secondary-subtle mb-4">
+        <div class="card-header text-uppercase small text-body-secondary fw-semibold">moves</div>
+        <div class="card-body p-0">
+          <ol class="list-group list-group-flush list-group-numbered small" id="movelist"></ol>
+          <p class="text-body-secondary small m-3 mb-3" id="nomoves">nothing yet.</p>
+        </div>
+      </div>
+
+      <div class="card shadow-sm border-secondary-subtle">
+        <div class="card-header text-uppercase small text-body-secondary fw-semibold">new game</div>
+        <div class="card-body">
+          <form id="newgame">
+            <label class="form-label small text-body-secondary" for="depth">how far it looks ahead</label>
+            <select class="form-select mb-3" id="depth" name="depth">
+              <option value="1">1 — careless</option>
+              <option value="3" selected>3 — reasonable</option>
+              <option value="4">4 — slow, and better</option>
+            </select>
+            <label class="form-label small text-body-secondary" for="side">your colour</label>
+            <select class="form-select mb-3" id="side" name="side">
+              <option value="white" selected>white — you move first</option>
+              <option value="black">black — it moves first</option>
+            </select>
+            <button class="btn btn-success w-100" type="submit">start again</button>
+          </form>
+        </div>
+      </div>
+
+      <p class="small text-body-secondary mt-3 mb-0">
+        Click one of your pieces, then a marked square. Castling is the king's
+        move: click the king, then the square two along.
+      </p>
+    </div>
+
+  </div>
+</div>
+
+<script src="/js/chess.js"></script>
+</body>
+</html>
