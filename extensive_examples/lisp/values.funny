@@ -1,0 +1,186 @@
+// values.funny — what a Lisp value is, and how to print one.
+//
+// Everything the reader produces and the evaluator passes around is one of
+// these. Numbers, strings and booleans are FunnyLang's own -- a Lisp integer
+// *is* a `numba`, so arbitrary precision comes for free and `(fact 30)` is
+// exact without anyone writing a bignum. The rest are tagged maps:
+//
+//   {"t": "sym",   "name": s}                  a symbol
+//   {"t": "pair",  "car": v, "cdr": v}         a cons cell
+//   {"t": "nil"}                               the empty list
+//   {"t": "proc",  "params", "rest", "body", "env", "name"}
+//   {"t": "prim",  "name", "fn", "min", "max"}
+//   {"t": "macro", "proc"}
+//
+// Cons cells rather than arrays, because `cons` onto a list has to be cheap
+// and improper lists -- `(a . b)`, and a lambda's rest argument -- have to be
+// expressible. A list is a chain of pairs ending in nil, and nothing in the
+// evaluator assumes a chain is proper unless it says so.
+
+
+// One nil, shared. Identity is not what distinguishes it -- the tag is -- but
+// allocating a fresh empty list per `()` would be wasteful and confusing.
+flex deadass NIL = {"t": "nil"}
+
+flex bet sym(name) {
+    bounce {"t": "sym", "name": name}
+}
+
+flex bet pair(car, cdr) {
+    bounce {"t": "pair", "car": car, "cdr": cdr}
+}
+
+flex bet is_tagged(v, tag) {
+    bounce what_is_it(v) == "groupchat" && v.get("t", "") == tag
+}
+
+flex bet is_nil(v) { bounce is_tagged(v, "nil") }
+flex bet is_pair(v) { bounce is_tagged(v, "pair") }
+flex bet is_sym(v) { bounce is_tagged(v, "sym") }
+flex bet is_proc(v) { bounce is_tagged(v, "proc") }
+flex bet is_prim(v) { bounce is_tagged(v, "prim") }
+flex bet is_macro(v) { bounce is_tagged(v, "macro") }
+
+flex bet is_callable(v) { bounce is_proc(v) || is_prim(v) }
+
+// A FunnyLang stash of values -> a Lisp list, and back. The evaluator works in
+// lists; the built-ins are easier to write over a stash.
+flex bet list_of(items, tail) {
+    yo out = tail ?? NIL
+    grind i from 0 to items.how_thicc() {
+        out = pair(items[items.how_thicc() - 1 - i], out)
+    }
+    bounce out
+}
+
+// The elements of a proper list. Raises on an improper one, because every
+// caller here wants a list and a silently-truncated argument list is a bug
+// that shows up somewhere else entirely.
+flex bet items_of(v, what) {
+    yo out = []
+    yo cur = v
+    bruh (is_pair(cur)) {
+        out.yeet_in(cur["car"])
+        cur = cur["cdr"]
+    }
+    sus (!is_nil(cur)) {
+        chuck oops("SkillIssue", (what ?? "this") + " must be a proper list, not " + write_str(v))
+    }
+    bounce out
+}
+
+flex bet list_length(v) {
+    yo n = 0
+    yo cur = v
+    bruh (is_pair(cur)) {
+        n += 1
+        cur = cur["cdr"]
+    }
+    bounce n
+}
+
+// -- printing ---------------------------------------------------------------------
+//
+// Two of them, as Scheme has: `display` is for people (a string is its
+// characters), `write` is for programs (a string is a readable literal). The
+// REPL and every error message use `write`, so what you see can be typed back.
+
+flex bet display_str(v) { bounce show(v, cap) }
+flex bet write_str(v) { bounce show(v, fax) }
+
+bet show(v, readable) {
+    yo kind = what_is_it(v)
+
+    sus (kind == "boolski") {
+        bounce v ? "#t" : "#f"
+    }
+    sus (kind == "numba") {
+        bounce number_str(v)
+    }
+    sus (kind == "yapstring") {
+        bounce readable ? quote_string(v) : v
+    }
+    sus (is_nil(v)) {
+        bounce "()"
+    }
+    sus (is_sym(v)) {
+        bounce v["name"]
+    }
+    sus (is_prim(v)) {
+        bounce "#<primitive " + v["name"] + ">"
+    }
+    sus (is_proc(v)) {
+        bounce "#<procedure " + (v["name"] == ghost ? "anonymous" : v["name"]) + ">"
+    }
+    sus (is_macro(v)) {
+        bounce "#<macro " + (v["proc"]["name"] ?? "anonymous") + ">"
+    }
+    sus (is_pair(v)) {
+        bounce show_list(v, readable)
+    }
+    bounce to_yap(v)
+}
+
+// `(quote x)` prints as `'x`, as every Lisp does: a quoted list read back in
+// looks like what you typed rather than like its expansion.
+bet show_list(v, readable) {
+    yo head = v["car"]
+    sus (is_sym(head) && is_pair(v["cdr"]) && is_nil(v["cdr"]["cdr"])) {
+        yo short = sugar_for(head["name"])
+        sus (short != ghost) {
+            bounce short + show(v["cdr"]["car"], readable)
+        }
+    }
+    yo parts = []
+    yo cur = v
+    bruh (is_pair(cur)) {
+        parts.yeet_in(show(cur["car"], readable))
+        cur = cur["cdr"]
+    }
+    sus (!is_nil(cur)) {
+        bounce "(" + parts.join(" ") + " . " + show(cur, readable) + ")"
+    }
+    bounce "(" + parts.join(" ") + ")"
+}
+
+bet sugar_for(name) {
+    sus (name == "quote") { bounce "'" }
+    sus (name == "quasiquote") { bounce "`" }
+    sus (name == "unquote") { bounce "," }
+    sus (name == "unquote-splicing") { bounce ",@" }
+    bounce ghost
+}
+
+// An integer prints without a decimal point, a float keeps one. FunnyLang's
+// own `to_yap` already does this; the wrinkle is a float that happens to be
+// whole, which Scheme prints as `4.` and this prints as `4.0` -- readable
+// either way, and `4.0` is what you typed.
+bet number_str(n) {
+    bounce to_yap(n)
+}
+
+bet quote_string(s) {
+    yo out = ["\""]
+    grind c in s {
+        sus (c == "\"") {
+            out.yeet_in("\\\"")
+        } kinda_sus (c == "\\") {
+            out.yeet_in("\\\\")
+        } kinda_sus (c == "\n") {
+            out.yeet_in("\n")
+        } kinda_sus (c == "\t") {
+            out.yeet_in("\t")
+        } nah {
+            out.yeet_in(c)
+        }
+    }
+    out.yeet_in("\"")
+    bounce out.join("")
+}
+
+// Scheme's truth rule, not FunnyLang's: everything except #f is true, so `0`
+// and `()` and `""` are all true. Getting this wrong makes `(if (= n 0) ...)`
+// work and `(if x ...)` quietly wrong, so it lives in one place.
+flex bet is_truthy(v) {
+    bounce !(what_is_it(v) == "boolski" && v == cap)
+}

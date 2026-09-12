@@ -240,7 +240,7 @@ $ funny run extensive_examples/proxy/proxy.funny -- 8443 --to localhost:9001,loc
 - [x] `markdown.funny` with CommonMark examples as goldens; front matter; layouts; index, tags, feed, sitemap; `example/` and `expected/`
 
 ### E3 — Lisp
-- [ ] Reader, evaluator (trampolined), environments, macros, REPL, `load`; `examples/*.lisp` goldens
+- [x] Reader, evaluator (trampolined), environments, macros, REPL, `load`; `examples/*.lisp` goldens
 
 ### E4 — key-value database
 - [ ] Log + snapshot storage with atomic writes; protocol (decision logged); commands; expiry; CLI and client library; restart golden

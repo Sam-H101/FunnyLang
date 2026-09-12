@@ -1,0 +1,139 @@
+// lisp.funny — the command line and the REPL.
+//
+//     funny run extensive_examples/lisp/lisp.funny                  a REPL
+//     funny run extensive_examples/lisp/lisp.funny examples/fib.lisp  run a file
+//     funny run extensive_examples/lisp/lisp.funny -e "(+ 1 2)"      run one form
+//
+// Everything interesting is in reader.funny, eval.funny and builtins.funny.
+// This decides what to read, catches what goes wrong, and prints.
+
+gimme filez
+gimme yapper
+gimme { NIL, is_nil, is_sym, write_str } from "values.funny"
+gimme { read_all, is_incomplete } from "reader.funny"
+gimme { eval, new_env } from "eval.funny"
+gimme { install } from "builtins.funny"
+
+bet usage() {
+    yell("usage: lisp.funny [FILE] [-e FORM] [--no-prelude]")
+}
+
+// The global environment: the built-ins, then the prelude written in Lisp
+// itself. Anything that can be written in the Lisp is, because that is the
+// better demonstration -- and because every line of prelude is a line the
+// evaluator is already being tested by.
+flex bet boot(with_prelude) {
+    yo here = filez.dir_of(the_script())
+    yo env = new_env(ghost)
+    install(env, here)
+    sus (with_prelude) {
+        yo path = filez.join_path(here, "prelude.lisp")
+        sus (filez.is_file(path)) {
+            grind form in read_all(filez.slurp(path)) {
+                eval(form, env)
+            }
+        }
+    }
+    bounce env
+}
+
+// One place where a Lisp error becomes a message. The REPL keeps going after
+// one; a script does not.
+bet run_forms(src, env, show_values) {
+    sketchy {
+        grind form in read_all(src) {
+            yo v = eval(form, env)
+            sus (show_values && !is_nil(v)) {
+                yap write_str(v)
+            }
+        }
+    } my_bad (e) {
+        yell(e.flavor + ": " + e.message)
+        bounce cap
+    }
+    bounce fax
+}
+
+// The REPL. A line that does not close its parens is held and the next line
+// added to it, so a definition can be typed across several lines; the prompt
+// changes to say so.
+bet repl(env) {
+    yap "funnylisp. (exit) or ctrl-d to leave."
+    yo pending = ""
+    bruh (fax) {
+        yo line = ask(pending == "" ? "> " : "  ")
+        sus (line == ghost) {
+            bail
+        }
+        yo src = pending == "" ? line : pending + "\n" + line
+        sus (yapper.trim(src) == "") {
+            nvm
+        }
+        sus (yapper.trim(src) == "(exit)" || yapper.trim(src) == "(quit)") {
+            bail
+        }
+        sus (is_incomplete(src)) {
+            pending = src
+            nvm
+        }
+        pending = ""
+        run_forms(src, env, fax)
+    }
+    yap ""
+    bounce 0
+}
+
+bet main(raw) {
+    yo args = []
+    grind a in raw {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo file = ghost
+    yo form = ghost
+    yo with_prelude = fax
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "-e" && i + 1 < args.how_thicc()) {
+            form = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--no-prelude") {
+            with_prelude = cap
+            i += 1
+        } kinda_sus (yapper.starts_with(a, "-") && a != "-") {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        } nah {
+            file = a
+            i += 1
+        }
+    }
+
+    yo env = boot(with_prelude)
+
+    sus (form != ghost) {
+        bounce run_forms(form, env, fax) ? 0 : 1
+    }
+    sus (file != ghost) {
+        yo path = file
+        sus (!filez.is_file(path)) {
+            path = filez.join_path(filez.dir_of(the_script()), file)
+        }
+        sus (!filez.is_file(path)) {
+            yell("there is no file at " + file + ".")
+            bounce 2
+        }
+        // A script's values are not printed; what it wants said, it displays.
+        bounce run_forms(filez.slurp(path), env, cap) ? 0 : 1
+    }
+    bounce repl(env)
+}
+
+dip(main(the_args()))

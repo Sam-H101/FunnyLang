@@ -1,0 +1,64 @@
+-- reader --
+  (a b c)  ->  (a b c)
+  '(1 2 . 3)  ->  '(1 2 . 3)
+  `(a ,b ,@c)  ->  `(a ,b ,@c)
+  (quote x)  ->  'x
+  ()  ->  ()
+  #t #f 42 -3.5 +1 1+ -  ->  #t #f 42 -3.5 1 1+ -
+  (a (b (c)))  ->  (a (b (c)))
+-- reader errors --
+  (a  ->  ParserHadAStroke
+  )  ->  ParserHadAStroke
+  (a . )  ->  ParserHadAStroke
+  (. a)  ->  ParserHadAStroke
+-- evaluator --
+  (+ 1 2 3)  =>  6
+  (* 2 (+ 3 4))  =>  14
+  (- 10)  =>  -10
+  (< 1 2 3)  =>  #t
+  (< 1 3 2)  =>  #f
+  (if (= 1 1) 'yes 'no)  =>  yes
+  (if #f 'yes)  =>  ()
+  (cond ((= 1 2) 'a) ((= 1 1) 'b) (else 'c))  =>  b
+  (let ((a 1) (b 2)) (+ a b))  =>  3
+  ((lambda (x) (* x x)) 9)  =>  81
+  ((lambda (a . rest) rest) 1 2 3)  =>  (2 3)
+  (begin 1 2 3)  =>  3
+  (and 1 2)  =>  2
+  (and 1 #f 2)  =>  #f
+  (or #f 7)  =>  7
+  (car '(1 2 3))  =>  1
+  (cdr '(1 2 3))  =>  (2 3)
+  (cons 0 '(1 2))  =>  (0 1 2)
+  (append '(1 2) '(3) '(4 5))  =>  (1 2 3 4 5)
+  (reverse '(1 2 3))  =>  (3 2 1)
+  (length '(1 2 3))  =>  3
+  (map (lambda (x) (* x 10)) '(1 2 3))  =>  (10 20 30)
+  (filter even? '(1 2 3 4 5 6))  =>  (2 4 6)
+  (reduce + 0 '(1 2 3 4))  =>  10
+  (equal? '(1 (2 3)) '(1 (2 3)))  =>  #t
+  (eq? 'a 'a)  =>  #t
+  (string-append "a" "b")  =>  "ab"
+  (number->string 42)  =>  "42"
+  (string->number "nope")  =>  #f
+  (define counter 0)  =>  counter
+  (set! counter (+ counter 1))  =>  1
+  counter  =>  1
+  (when #t 'ran)  =>  ran
+  (unless #t 'ran)  =>  ()
+  `(1 ,(+ 1 1) ,@(list 3 4))  =>  (1 2 3 4)
+-- evaluator errors --
+  (car '())  ->  TypeVibeMismatch
+  (nope 1)  ->  WhoDis
+  (set! never 1)  ->  WhoDis
+  (1 2 3)  ->  NotACallableRizz
+  ((lambda (x) x))  ->  WrongNumberOfHomies
+  (/ 1 0)  ->  MathAintMathin
+  (+ 1 'a)  ->  TypeVibeMismatch
+-- examples --
+  fib.lisp: same as its .expected
+  macros.lisp: same as its .expected
+  metacircular.lisp: same as its .expected
+  queens.lisp: same as its .expected
+  tail.lisp: same as its .expected
+examples that differ: 0
