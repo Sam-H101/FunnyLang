@@ -1,0 +1,372 @@
+// store.funny — the data, and how it survives a restart.
+//
+// A map from key to `{"value": blob, "expires": ghost or a unix time}`, plus
+// the two things that make it a database rather than a variable: an
+// append-only log of every change, and a periodic snapshot.
+//
+// WHY BOTH. A snapshot alone loses everything written since the last one. A
+// log alone is replayed from the beginning of time and grows without bound.
+// Together the snapshot is a checkpoint and the log covers only what happened
+// after it, so starting up reads one file and then a short tail, and neither
+// file has to be rewritten on every write.
+//
+// The log is appended with `filez.append_to`, one JSON object per line. The
+// snapshot is written with `filez.yeet_out_atomic`, which writes beside the
+// file and renames over it, so a crash halfway leaves the previous snapshot
+// whole rather than half of a new one. That ordering matters: the snapshot is
+// written *first* and the log truncated *after* it lands, because the reverse
+// loses every operation in between if the power goes at the wrong moment.
+//
+// Values are bytes. A `blob` in the snapshot and the log is base64 with a
+// `b64:` marker, because JSON has no bytes and a value that is not text has to
+// survive the round trip unchanged.
+
+gimme filez
+gimme json
+gimme blob
+gimme clock
+gimme yapper
+
+flex deadass SNAPSHOT_VERSION = 1
+
+// -- opening -------------------------------------------------------------------------
+
+// `dir` holds `snapshot.json` and `log.jsonl`. `snapshot_every` is how many
+// operations may pass before a new snapshot is taken; 0 means only on
+// shutdown.
+flex bet open_store(dir, snapshot_every) {
+    sus (!filez.is_dir(dir)) {
+        filez.mkdir(dir)
+    }
+    yo store = {
+        "dir": dir,
+        "snap_path": filez.join_path(dir, "snapshot.json"),
+        "log_path": filez.join_path(dir, "log.jsonl"),
+        "data": {},
+        "snapshot_every": snapshot_every,
+        "since_snapshot": 0,
+        "writes": 0,
+        "reads": 0,
+        "expired": 0,
+        "started": clock.now(),
+        "replayed": 0,
+    }
+    load(store)
+    bounce store
+}
+
+// The snapshot, then every logged operation after it. A log line that will not
+// parse stops the replay rather than being skipped: a store that silently
+// drops the tail of its own history is worse than one that refuses to start
+// and says which line it choked on.
+bet load(store) {
+    sus (filez.is_file(store["snap_path"])) {
+        yo doc = json.parse(filez.slurp(store["snap_path"]))
+        sus (doc.get("version", 0) != SNAPSHOT_VERSION) {
+            chuck oops("SkillIssue", "the snapshot at " + store["snap_path"] + " is version " +
+                       to_yap(doc.get("version", 0)) + ", and this build reads version " +
+                       to_yap(SNAPSHOT_VERSION) + ".")
+        }
+        yo saved = doc.get("data", {})
+        grind key in saved.keys() {
+            yo row = saved[key]
+            store["data"][key] = {"value": decode_value(row.get("v", "")),
+                                  "expires": row.get("x", ghost)}
+        }
+    }
+
+    sus (filez.is_file(store["log_path"])) {
+        yo lineno = 0
+        grind line in yapper.lines(filez.slurp(store["log_path"])) {
+            lineno += 1
+            sus (yapper.trim(line) == "") {
+                nvm
+            }
+            yo op = ghost
+            sketchy {
+                op = json.parse(line)
+            } my_bad (e) {
+                chuck oops("SkillIssue", store["log_path"] + " line " + to_yap(lineno) +
+                           " is not JSON: " + e.message)
+            }
+            apply_logged(store, op)
+            store["replayed"] += 1
+        }
+    }
+
+    // Anything already past its time at start-up is gone, not resurrected.
+    sweep(store)
+}
+
+bet apply_logged(store, op) {
+    yo what = op.get("op", "")
+    sus (what == "set") {
+        store["data"][op["k"]] = {"value": decode_value(op.get("v", "")),
+                                  "expires": op.get("x", ghost)}
+    } kinda_sus (what == "del") {
+        sus (store["data"].has(op["k"])) {
+            store["data"].remove(op["k"])
+        }
+    } kinda_sus (what == "expire") {
+        sus (store["data"].has(op["k"])) {
+            store["data"][op["k"]]["expires"] = op.get("x", ghost)
+        }
+    } kinda_sus (what == "flush") {
+        store["data"].clear()
+    }
+}
+
+// -- values on disk ------------------------------------------------------------------
+
+bet encode_value(b) {
+    bounce "b64:" + b.to_base64()
+}
+
+bet decode_value(text) {
+    sus (yapper.starts_with(text, "b64:")) {
+        bounce blob.from_base64(yapper.slice(text, 4, text.how_thicc()))
+    }
+    // A value written by a future version that used some other marker is not
+    // guessed at.
+    chuck oops("SkillIssue", "a stored value is not in a form this build reads: " + text)
+}
+
+// -- writing it down -------------------------------------------------------------------
+
+bet log_op(store, op) {
+    filez.append_to(store["log_path"], json.spill(op) + "\n")
+    store["since_snapshot"] += 1
+    store["writes"] += 1
+    sus (store["snapshot_every"] > 0 && store["since_snapshot"] >= store["snapshot_every"]) {
+        snapshot(store)
+    }
+}
+
+// Snapshot first, then truncate the log. A crash between the two replays
+// operations that are already in the snapshot, and every one of them is
+// idempotent -- a `set` sets the same bytes again -- so the worst case is
+// wasted work rather than wrong data. The other order would lose them.
+flex bet snapshot(store) {
+    yo rows = {}
+    grind key in sorted_keys(store["data"]) {
+        yo entry = store["data"][key]
+        rows[key] = {"v": encode_value(entry["value"]), "x": entry["expires"]}
+    }
+    yo doc = {"version": SNAPSHOT_VERSION, "saved": clock.now(), "data": rows}
+    filez.yeet_out_atomic(store["snap_path"], json.spill(doc, {"pretty": fax}))
+    filez.yeet_out(store["log_path"], "")
+    store["since_snapshot"] = 0
+    bounce rows.how_thicc()
+}
+
+// -- expiry ------------------------------------------------------------------------
+//
+// Checked on the way past as well as swept on a timer. Lazily alone would let
+// an untouched key sit in memory forever; a sweep alone would hand back a
+// value that expired a moment ago. Both, and the answer is never wrong.
+
+bet is_expired(entry, at) {
+    bounce entry["expires"] != ghost && entry["expires"] <= at
+}
+
+bet live_entry(store, key) {
+    sus (!store["data"].has(key)) {
+        bounce ghost
+    }
+    yo entry = store["data"][key]
+    sus (is_expired(entry, clock.now())) {
+        store["data"].remove(key)
+        store["expired"] += 1
+        log_op(store, {"op": "del", "k": key})
+        bounce ghost
+    }
+    bounce entry
+}
+
+// Everything past its time, removed in one pass. Returns how many went.
+flex bet sweep(store) {
+    yo at = clock.now()
+    yo doomed = []
+    grind key in store["data"].keys() {
+        sus (is_expired(store["data"][key], at)) {
+            doomed.yeet_in(key)
+        }
+    }
+    grind key in doomed {
+        store["data"].remove(key)
+        store["expired"] += 1
+        log_op(store, {"op": "del", "k": key})
+    }
+    bounce doomed.how_thicc()
+}
+
+// -- the commands ---------------------------------------------------------------------
+
+flex bet kv_set(store, key, value) {
+    store["data"][key] = {"value": value, "expires": ghost}
+    log_op(store, {"op": "set", "k": key, "v": encode_value(value), "x": ghost})
+    bounce fax
+}
+
+flex bet kv_get(store, key) {
+    store["reads"] += 1
+    yo entry = live_entry(store, key)
+    bounce entry == ghost ? ghost : entry["value"]
+}
+
+flex bet kv_del(store, key) {
+    sus (live_entry(store, key) == ghost) {
+        bounce cap
+    }
+    store["data"].remove(key)
+    log_op(store, {"op": "del", "k": key})
+    bounce fax
+}
+
+flex bet kv_exists(store, key) {
+    bounce live_entry(store, key) != ghost
+}
+
+flex bet kv_expire(store, key, seconds) {
+    yo entry = live_entry(store, key)
+    sus (entry == ghost) {
+        bounce cap
+    }
+    yo at = clock.now() + seconds
+    entry["expires"] = at
+    log_op(store, {"op": "expire", "k": key, "x": at})
+    bounce fax
+}
+
+// -2 for no such key, -1 for a key with no expiry, otherwise whole seconds
+// left, rounded up so a key with 900ms to live reports 1 rather than 0.
+flex bet kv_ttl(store, key) {
+    yo entry = live_entry(store, key)
+    sus (entry == ghost) {
+        bounce -2
+    }
+    sus (entry["expires"] == ghost) {
+        bounce -1
+    }
+    yo left = entry["expires"] - clock.now()
+    sus (left <= 0) {
+        bounce 0
+    }
+    bounce to_int(left) + (left > to_int(left) ? 1 : 0)
+}
+
+flex bet kv_incr(store, key) {
+    yo entry = live_entry(store, key)
+    yo current = 0
+    sus (entry != ghost) {
+        yo text = yapper.trim(entry["value"].to_yap())
+        sus (!is_integer_text(text)) {
+            chuck oops("TypeVibeMismatch", "the value at " + key + " is not a whole number.")
+        }
+        current = to_int(text)
+    }
+    yo next = current + 1
+    yo bytes = blob.from_yap(to_yap(next))
+    store["data"][key] = {"value": bytes, "expires": entry == ghost ? ghost : entry["expires"]}
+    log_op(store, {"op": "set", "k": key, "v": encode_value(bytes),
+                   "x": entry == ghost ? ghost : entry["expires"]})
+    bounce next
+}
+
+bet is_integer_text(text) {
+    sus (text == "" || text == "-" || text == "+") {
+        bounce cap
+    }
+    yo i = text[0] == "-" || text[0] == "+" ? 1 : 0
+    bruh (i < text.how_thicc()) {
+        sus (text[i] < "0" || text[i] > "9") {
+            bounce cap
+        }
+        i += 1
+    }
+    bounce fax
+}
+
+// Sorted, so two servers holding the same data list it the same way and a
+// golden can assert on it.
+flex bet kv_keys(store, pattern) {
+    yo out = []
+    grind key in sorted_keys(store["data"]) {
+        sus (live_entry(store, key) != ghost && glob_match(pattern, key)) {
+            out.yeet_in(key)
+        }
+    }
+    bounce out
+}
+
+flex bet kv_flush(store) {
+    yo n = store["data"].how_thicc()
+    store["data"].clear()
+    log_op(store, {"op": "flush"})
+    bounce n
+}
+
+flex bet kv_info(store) {
+    bounce {
+        "keys": store["data"].how_thicc(),
+        "writes": store["writes"],
+        "reads": store["reads"],
+        "expired": store["expired"],
+        "replayed": store["replayed"],
+        "since_snapshot": store["since_snapshot"],
+        "snapshot_every": store["snapshot_every"],
+        "uptime": to_int((clock.now() - store["started"]) * 1000) / 1000.0,
+        "dir": store["dir"],
+    }
+}
+
+// -- the small helpers ----------------------------------------------------------------
+
+// `*` matches any run, `?` any one character. Written out because it is six
+// lines and the alternative is explaining which regex dialect a glob is.
+flex bet glob_match(pattern, text) {
+    bounce match_from(pattern, 0, text, 0)
+}
+
+bet match_from(p, pi, s, si) {
+    bruh (pi < p.how_thicc()) {
+        yo c = p[pi]
+        sus (c == "*") {
+            // The last star matches everything left; otherwise try every
+            // split point. Patterns here are short, so the simple form is the
+            // right one.
+            grind skip from si to s.how_thicc() + 1 {
+                sus (match_from(p, pi + 1, s, skip)) {
+                    bounce fax
+                }
+            }
+            bounce cap
+        }
+        sus (si >= s.how_thicc()) {
+            bounce cap
+        }
+        sus (c != "?" && c != s[si]) {
+            bounce cap
+        }
+        pi += 1
+        si += 1
+    }
+    bounce si == s.how_thicc()
+}
+
+flex bet sorted_keys(gc) {
+    yo keys = gc.keys()
+    yo out = []
+    yo used = {}
+    grind n from 0 to keys.how_thicc() {
+        yo best = ghost
+        grind k in keys {
+            sus (!used.has(k) && (best == ghost || k < best)) {
+                best = k
+            }
+        }
+        used[best] = fax
+        out.yeet_in(best)
+    }
+    bounce out
+}

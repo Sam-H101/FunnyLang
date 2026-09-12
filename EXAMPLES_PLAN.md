@@ -243,7 +243,7 @@ $ funny run extensive_examples/proxy/proxy.funny -- 8443 --to localhost:9001,loc
 - [x] Reader, evaluator (trampolined), environments, macros, REPL, `load`; `examples/*.lisp` goldens
 
 ### E4 — key-value database
-- [ ] Log + snapshot storage with atomic writes; protocol (decision logged); commands; expiry; CLI and client library; restart golden
+- [x] Log + snapshot storage with atomic writes; protocol (decision logged); commands; expiry; CLI and client library; restart golden
 
 ### E5 — chat
 - [ ] `ws.funny`, `ws_client.funny`; rooms over DMs; the page; presence via E4 (optional); golden with three clients

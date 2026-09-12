@@ -1,0 +1,286 @@
+// test_kv.funny — the store, the protocol, the commands, and a real server.
+//
+// `funny test extensive_examples` runs this. Four parts, each able to fail on
+// its own:
+//
+//   1. the store, with no socket in sight
+//   2. the protocol, driven from strings rather than a connection
+//   3. the commands, dispatched directly against a store
+//   4. a server on a real port, driven by a client in a worker -- then
+//      restarted, to prove the data outlived the process
+//
+// Port 0 means "pick one nobody is using", so this never gambles on a fixed
+// number being free on whatever machine runs it. The client is an `interns`
+// worker because a server parked in `accept` and a client parked in `connect`
+// cannot be the same thread.
+
+gimme filez
+gimme blob
+gimme clock
+gimme internet
+gimme interns
+gimme yapper
+
+gimme { open_store, kv_set, kv_get, kv_del, kv_exists, kv_expire, kv_ttl, kv_incr,
+        kv_keys, kv_flush, kv_info, snapshot, sweep, glob_match } from "store.funny"
+gimme { new_reader, read_request, read_reply, ok_reply, nil_reply, value_reply,
+        int_reply, list_reply, error_reply } from "protocol.funny"
+gimme { dispatch } from "commands.funny"
+
+yo HERE = filez.dir_of(the_script())
+yo DIR = filez.temp_file("kvtest") + "_data"
+
+bet wipe(dir) {
+    sus (filez.is_dir(dir)) {
+        grind name in filez.list_dir(dir) {
+            filez.obliterate(filez.join_path(dir, name))
+        }
+        filez.obliterate(dir)
+    }
+}
+
+// -- part one: the store --------------------------------------------------------------
+
+yap "-- the store --"
+wipe(DIR)
+yo s = open_store(DIR, 0)
+
+kv_set(s, "greeting", blob.from_yap("yo"))
+kv_set(s, "count", blob.from_yap("41"))
+yap "get:", kv_get(s, "greeting").to_yap()
+yap "a missing key is ghost:", kv_get(s, "nope") == ghost
+yap "exists:", kv_exists(s, "greeting"), kv_exists(s, "nope")
+yap "incr:", kv_incr(s, "count")
+yap "incr makes a key:", kv_incr(s, "fresh")
+yap "del, then del again:", kv_del(s, "greeting"), kv_del(s, "greeting")
+
+// Bytes are bytes. A NUL, a CRLF and a byte no UTF-8 sequence can start.
+yo RAW = blob.of([0, 13, 10, 255, 65])
+kv_set(s, "binary", RAW)
+yap "bytes survive the store:", kv_get(s, "binary") == RAW
+
+yap "ttl with no expiry:", kv_ttl(s, "count")
+yap "ttl of a missing key:", kv_ttl(s, "nope")
+kv_expire(s, "count", 60)
+yap "ttl once set:", kv_ttl(s, "count") > 0 && kv_ttl(s, "count") <= 60
+
+yap "keys:", to_yap(kv_keys(s, "*"))
+yap "keys by glob:", to_yap(kv_keys(s, "c*")), to_yap(kv_keys(s, "?resh"))
+yap "glob:", glob_match("a*c", "abc"), glob_match("a?c", "abc"), glob_match("a*c", "abd")
+
+yap "-- it outlives the process --"
+snapshot(s)
+yo reopened = open_store(DIR, 0)
+yap "count came back:", kv_get(reopened, "count").to_yap()
+yap "bytes came back:", kv_get(reopened, "binary") == RAW
+yap "keys came back:", to_yap(kv_keys(reopened, "*"))
+
+// A store with no snapshot at all replays its log from the beginning.
+wipe(DIR)
+yo logged = open_store(DIR, 0)
+kv_set(logged, "a", blob.from_yap("1"))
+kv_set(logged, "b", blob.from_yap("2"))
+kv_del(logged, "a")
+yo replayed = open_store(DIR, 0)
+yap "replayed from the log alone:", to_yap(kv_keys(replayed, "*")), replayed["replayed"] > 0
+
+// -- part two: the protocol -----------------------------------------------------------
+
+yap "-- the protocol --"
+
+// Wire bytes are printed with their line endings made visible. A golden's
+// `.expected` file is read back in text mode, where a CR before an LF is
+// folded away -- so a golden that printed a raw CRLF could never match itself,
+// however correct the program was. Two characters is also plainly easier to
+// read than a line break in the middle of a reply.
+bet visible(text) {
+    yo out = yapper.replace(text, "\r", "\\r")
+    bounce yapper.replace(out, "\n", "\\n")
+}
+
+bet reader_over(text) {
+    yo sent = {"done": cap}
+    bounce new_reader(lowkey () {
+        sus (sent["done"]) {
+            bounce ""
+        }
+        sent["done"] = fax
+        bounce blob.from_yap(text)
+    })
+}
+
+grind text in ["PING\r\n", "GET greeting\r\n", "SET a 2\r\nyo\r\n", "KEYS c*\r\n",
+               "MGET a b\r\n", "MSET 2\r\na 1\r\nx\r\nb 1\r\ny\r\n",
+               "get lower-case\r\n", "NOPE\r\n", "\r\n", "SET a notanumber\r\n"] {
+    yo req = read_request(reader_over(text))
+    sus (req == ghost) {
+        yap "  ended early"
+    } kinda_sus (req.has("bad")) {
+        yap "  bad:", req["bad"]
+    } nah {
+        yo shown = []
+        grind v in req["values"] {
+            shown.yeet_in(v.to_yap())
+        }
+        yap "  " + req["verb"], to_yap(req["args"]), to_yap(shown)
+    }
+}
+
+// A bare LF, which is what a command typed by hand over `nc` sends.
+yap "  bare LF:", to_yap(read_request(reader_over("PING\n"))["verb"])
+
+// A value containing the framing characters, which is the case a delimiter
+// would get wrong and a byte length gets right.
+yo tricky = read_request(reader_over("SET k 4\r\na\r\nb\r\n"))
+yap "  a value with a CRLF in it:", how_thicc(tricky["values"][0]),
+    visible(tricky["values"][0].to_yap())
+
+yap "-- replies on the wire --"
+grind made in [ok_reply(), nil_reply(), value_reply(blob.from_yap("yo")), int_reply(42),
+               list_reply([blob.from_yap("a"), ghost]),
+               error_reply("TypeVibeMismatch", "not a\nnumber")] {
+    yap "  " + visible(made.to_yap())
+}
+
+yap "-- and read back --"
+grind wire in ["+OK\r\n", "$-1\r\n", "$2\r\nyo\r\n", ":7\r\n", "*2\r\n$1\r\na\r\n$-1\r\n",
+               "-WhoDis nope\r\n"] {
+    yo rep = read_reply(reader_over(wire))
+    yo shown = rep["value"]
+    sus (what_is_it(shown) == "blob") {
+        shown = shown.to_yap()
+    } kinda_sus (what_is_it(shown) == "stash") {
+        yo bits = []
+        grind item in shown {
+            bits.yeet_in(item == ghost ? "nil" : item.to_yap())
+        }
+        shown = to_yap(bits)
+    }
+    yap "  " + rep["kind"], to_yap(shown)
+}
+
+// -- part three: the commands, with no socket -------------------------------------------
+
+yap "-- the commands --"
+wipe(DIR)
+yo cs = open_store(DIR, 0)
+
+bet run(text) {
+    yo req = read_request(reader_over(text))
+    yo outcome = dispatch(cs, req)
+    bounce {"wire": outcome["reply"].to_yap(), "stop": outcome["stop"]}
+}
+
+grind text in ["PING\r\n", "SET a 2\r\nhi\r\n", "GET a\r\n", "GET nope\r\n", "EXISTS a\r\n",
+               "DEL a\r\n", "DEL a\r\n", "INCR n\r\n", "INCR n\r\n", "SET w 4\r\nword\r\n",
+               "INCR w\r\n", "TTL n\r\n", "EXPIRE n 60\r\n", "GET\r\n", "KEYS *\r\n",
+               "FLUSH\r\n", "KEYS *\r\n"] {
+    yo r = run(text)
+    yap "  " + yapper.replace(yapper.replace(text, "\r", ""), "\n", " ") + "-> " +
+        visible(r["wire"])
+}
+yo stopped = run("STOP\r\n")
+yap "  STOP says stop:", stopped["stop"], visible(stopped["wire"])
+
+// -- part four: over a real socket, and then a restart ------------------------------------
+
+yap "-- over a real socket --"
+wipe(DIR)
+
+// What the serving task needs, at the top level with it. Every `async_ngl bet`
+// in this project is declared at the top level, and one nested inside another
+// function is the only novel thing this file would otherwise be doing.
+yo SERVE = {"store": ghost, "stopping": cap, "served": 0}
+
+// A task per connection, exactly `server.funny`'s shape: every read waits on
+// the event loop rather than on the socket, so a client that goes quiet costs
+// one parked task instead of the whole program.
+async_ngl bet serve_one(customer) {
+    yo conn = customer["conn"]
+    yo reader = new_reader(lowkey () {
+        sus (!await_fr internet.hold_up(conn, 5000)) {
+            bounce ""
+        }
+        bounce internet.hear_them_out(conn, 65536, 0, {"raw": fax})
+    })
+    sketchy {
+        bruh (fax) {
+            yo req = read_request(reader)
+            sus (req == ghost) {
+                bail
+            }
+            sus (req.has("bad")) {
+                internet.holler_back(conn, error_reply("SkillIssue", req["bad"]))
+                nvm
+            }
+            yo outcome = dispatch(SERVE["store"], req)
+            internet.holler_back(conn, outcome["reply"])
+            SERVE["served"] += 1
+            sus (outcome["stop"]) {
+                SERVE["stopping"] = fax
+                bail
+            }
+        }
+    } my_bad (e) {
+        yap "  the server dropped a connection:", e.flavor
+    }
+    internet.kick_out(conn)
+}
+
+// One round: bind a port, hire the client, serve until it says STOP, and hand
+// back everything the client saw.
+bet round(script, store) {
+    SERVE["store"] = store
+    SERVE["stopping"] = cap
+    SERVE["served"] = 0
+
+    yo listener = internet.open_shop(0, "127.0.0.1")
+    yo port = internet.shop_port(listener)
+    yo worker = interns.hire(filez.join_path(HERE, "test_client.funny"),
+                             {"port": port, "script": script})
+
+    // The bound is a safety net, not a schedule: the loop ends when the client
+    // says STOP. Kept short so a client that died on its first line fails the
+    // golden quickly rather than stalling it.
+    yo waited = 0
+    bruh (!SERVE["stopping"] && waited < 10000) {
+        sus (await_fr internet.hold_up(listener, 100)) {
+            yo customer = internet.next_customer(listener, 0)
+            sus (customer != ghost) {
+                // Called, not awaited: it starts a task and comes straight
+                // back, so the loop is accepting again at once.
+                serve_one(customer)
+            }
+        }
+        waited += 100
+    }
+
+    // `await_fr`, not `interns.wait_up`: wait_up blocks the whole thread, so
+    // the serving tasks would never get a turn and both ends would sit there
+    // waiting for each other.
+    yo seen = await_fr worker
+    internet.close_shop(listener)
+    bounce {"seen": seen, "served": SERVE["served"]}
+}
+
+yo live = open_store(DIR, 0)
+yo first = round("everything", live)
+grind line in first["seen"] {
+    yap "  " + line
+}
+
+// The server's shutdown: a snapshot, so the next start reads one file.
+yo rows = snapshot(live)
+yap "  snapshotted keys:", rows
+
+// A brand new store over the same directory is what a restart is.
+yap "-- and after a restart --"
+yo restarted = open_store(DIR, 0)
+yap "  replayed operations:", restarted["replayed"]
+yo second = round("after restart", restarted)
+grind line in second["seen"] {
+    yap "  " + line
+}
+
+wipe(DIR)
+yap "-- done --"

@@ -1,0 +1,96 @@
+-- the store --
+get: yo
+a missing key is ghost: fax
+exists: fax cap
+incr: 42
+incr makes a key: 1
+del, then del again: fax cap
+bytes survive the store: fax
+ttl with no expiry: -1
+ttl of a missing key: -2
+ttl once set: fax
+keys: ["binary", "count", "fresh"]
+keys by glob: ["count"] ["fresh"]
+glob: fax fax cap
+-- it outlives the process --
+count came back: 42
+bytes came back: fax
+keys came back: ["binary", "count", "fresh"]
+replayed from the log alone: ["b"] fax
+-- the protocol --
+  PING [] []
+  GET ["greeting"] []
+  SET ["a"] ["yo"]
+  KEYS ["c*"] []
+  MGET ["a", "b"] []
+  MSET ["a", "b"] ["x", "y"]
+  GET ["lower-case"] []
+  bad: unknown command NOPE
+  bad: an empty line is not a command
+  bad: SET takes a key and a byte length
+  bare LF: PING
+  a value with a CRLF in it: 4 a\r\nb
+-- replies on the wire --
+  +OK\r\n
+  $-1\r\n
+  $2\r\nyo\r\n
+  :42\r\n
+  *2\r\n$1\r\na\r\n$-1\r\n
+  -TypeVibeMismatch not a number\r\n
+-- and read back --
+  ok OK
+  nil ghost
+  value yo
+  int 7
+  list ["a", "nil"]
+  error WhoDis nope
+-- the commands --
+  PING -> +PONG\r\n
+  SET a 2 hi -> +OK\r\n
+  GET a -> $2\r\nhi\r\n
+  GET nope -> $-1\r\n
+  EXISTS a -> :1\r\n
+  DEL a -> :1\r\n
+  DEL a -> :0\r\n
+  INCR n -> :1\r\n
+  INCR n -> :2\r\n
+  SET w 4 word -> +OK\r\n
+  INCR w -> -TypeVibeMismatch the value at w is not a whole number.\r\n
+  TTL n -> :-1\r\n
+  EXPIRE n 60 -> :1\r\n
+  GET -> -WrongNumberOfHomies GET takes one key\r\n
+  KEYS * -> *2\r\n$1\r\nn\r\n$1\r\nw\r\n
+  FLUSH -> :2\r\n
+  KEYS * -> *0\r\n
+  STOP says stop: fax +OK\r\n
+-- over a real socket --
+  ping: PONG
+  get: yo
+  missing: fax
+  exists: fax cap
+  binary round trip: fax
+  binary length: 5
+  incr: 42
+  incr fresh: 1
+  incr on a word: TypeVibeMismatch
+  mget: ["1", "2", "nil"]
+  keys *: ["a", "b", "binary", "count", "fresh", "greeting", "word"]
+  keys b*: ["b", "binary"]
+  keys ?ord: ["word"]
+  del: fax cap
+  ttl before: -1
+  ttl after: fax
+  gone once expired: fax
+  ttl of an expired key: -2
+  unknown command: error SkillIssue unknown command WAT
+  snapshotted keys: 6
+-- and after a restart --
+  replayed operations: 0
+  greeting survived: yo
+  count survived: 42
+  binary survived: fax
+  expired key did not come back: fax
+  keys after restart: ["a", "b", "binary", "count", "fresh", "greeting"]
+  flushed: 6
+  keys after flush: []
+-- done --

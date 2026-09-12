@@ -1,0 +1,142 @@
+// commands.funny — what each command does.
+//
+// Separate from `server.funny` for the same reason `web_server/routes.funny`
+// is separate from its socket loop: this is the part with the answers in it,
+// and the golden drives it directly, with no server running and no port bound.
+// A command that can only be tested through a socket is a command that mostly
+// is not tested.
+//
+// `dispatch` takes a parsed request and returns `{"reply": blob, "stop":
+// boolski}`. The stop flag travels back rather than being set on a global in
+// another file, so this module knows nothing about the loop that called it.
+
+gimme blob
+gimme yapper
+
+gimme { kv_set, kv_get, kv_del, kv_exists, kv_expire, kv_ttl, kv_incr,
+        kv_keys, kv_flush, kv_info } from "store.funny"
+gimme { ok_reply, pong_reply, nil_reply, value_reply, int_reply, list_reply,
+        error_reply } from "protocol.funny"
+
+bet answer(reply) {
+    bounce {"reply": reply, "stop": cap}
+}
+
+flex bet dispatch(store, req) {
+    yo verb = req["verb"]
+    yo args = req["args"]
+    yo values = req["values"]
+
+    sus (verb == "PING") {
+        bounce answer(pong_reply())
+    }
+
+    sus (verb == "GET") {
+        sus (args.how_thicc() != 1) {
+            bounce answer(error_reply("WrongNumberOfHomies", "GET takes one key"))
+        }
+        yo v = kv_get(store, args[0])
+        bounce answer(v == ghost ? nil_reply() : value_reply(v))
+    }
+
+    sus (verb == "SET") {
+        kv_set(store, args[0], values[0])
+        bounce answer(ok_reply())
+    }
+
+    sus (verb == "DEL") {
+        sus (args.how_thicc() != 1) {
+            bounce answer(error_reply("WrongNumberOfHomies", "DEL takes one key"))
+        }
+        bounce answer(int_reply(kv_del(store, args[0]) ? 1 : 0))
+    }
+
+    sus (verb == "EXISTS") {
+        sus (args.how_thicc() != 1) {
+            bounce answer(error_reply("WrongNumberOfHomies", "EXISTS takes one key"))
+        }
+        bounce answer(int_reply(kv_exists(store, args[0]) ? 1 : 0))
+    }
+
+    sus (verb == "KEYS") {
+        yo pattern = args.how_thicc() > 0 ? args[0] : "*"
+        yo out = []
+        grind key in kv_keys(store, pattern) {
+            out.yeet_in(blob.from_yap(key))
+        }
+        bounce answer(list_reply(out))
+    }
+
+    sus (verb == "EXPIRE") {
+        sus (args.how_thicc() != 2) {
+            bounce answer(error_reply("WrongNumberOfHomies",
+                                      "EXPIRE takes a key and a number of seconds"))
+        }
+        yo seconds = ghost
+        sketchy {
+            seconds = to_numba(args[1])
+        } my_bad (e) {
+            bounce answer(error_reply("TypeVibeMismatch", args[1] + " is not a number of seconds"))
+        }
+        bounce answer(int_reply(kv_expire(store, args[0], seconds) ? 1 : 0))
+    }
+
+    sus (verb == "TTL") {
+        sus (args.how_thicc() != 1) {
+            bounce answer(error_reply("WrongNumberOfHomies", "TTL takes one key"))
+        }
+        bounce answer(int_reply(kv_ttl(store, args[0])))
+    }
+
+    sus (verb == "INCR") {
+        sus (args.how_thicc() != 1) {
+            bounce answer(error_reply("WrongNumberOfHomies", "INCR takes one key"))
+        }
+        sketchy {
+            bounce answer(int_reply(kv_incr(store, args[0])))
+        } my_bad (e) {
+            bounce answer(error_reply(e.flavor, e.message))
+        }
+    }
+
+    sus (verb == "MGET") {
+        sus (args.how_thicc() == 0) {
+            bounce answer(error_reply("WrongNumberOfHomies", "MGET takes at least one key"))
+        }
+        yo out = []
+        grind key in args {
+            out.yeet_in(kv_get(store, key))
+        }
+        bounce answer(list_reply(out))
+    }
+
+    sus (verb == "MSET") {
+        grind i from 0 to args.how_thicc() {
+            kv_set(store, args[i], values[i])
+        }
+        bounce answer(ok_reply())
+    }
+
+    sus (verb == "FLUSH") {
+        bounce answer(int_reply(kv_flush(store)))
+    }
+
+    // One line per field, which is what makes it readable over `nc` and
+    // parseable by the client without JSON on the wire for one command.
+    sus (verb == "INFO") {
+        yo info = kv_info(store)
+        yo lines = []
+        grind key in info.keys() {
+            lines.yeet_in(key + ":" + to_yap(info.get(key)))
+        }
+        bounce answer(value_reply(blob.from_yap(lines.join("\n"))))
+    }
+
+    // Answered before the server acts on it, so the client sees the reply
+    // rather than a closed socket it has to interpret.
+    sus (verb == "STOP") {
+        bounce {"reply": ok_reply(), "stop": fax}
+    }
+
+    bounce answer(error_reply("WhoDis", "unknown command " + verb))
+}

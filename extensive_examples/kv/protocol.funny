@@ -1,0 +1,316 @@
+// protocol.funny — what goes over the socket.
+//
+// A request is one text line. When it carries a value, the line ends with that
+// value's length in **bytes** and the bytes follow it:
+//
+//     GET greeting\r\n
+//     SET greeting 2\r\nyo\r\n
+//     MSET 2\r\na 1\r\nx\r\nb 1\r\ny\r\n
+//
+// A reply is tagged by its first character, which is the one thing borrowed
+// from Redis because these five shapes really are the right answers:
+//
+//     +OK\r\n                 it worked, nothing to say
+//     $2\r\nyo\r\n            a value, with its byte length
+//     $-1\r\n                 no such key
+//     :42\r\n                 a number
+//     *2\r\n$1\r\na\r\n$1\r\nb\r\n     a list of values
+//     -TypeVibeMismatch that value is not a whole number\r\n
+//
+// WHY A BYTE LENGTH AND NOT A DELIMITER. A value is bytes: a PNG, a key, a
+// string with a newline in it. Any delimiter would need escaping, and escaping
+// is where binary-safe protocols go wrong. A length needs none, and it lets
+// the reader ask the socket for exactly the rest.
+//
+// Nothing here touches a socket. The reader is driven by a "give me more
+// bytes" function, exactly as `web_server/http.funny` is, which is what lets
+// the golden drive the whole protocol from a string with no server running.
+
+gimme blob
+gimme yapper
+
+flex deadass CRLF = blob.from_yap("\r\n")
+
+// Lines are short by construction; anything longer is a client that is
+// confused or hostile, and either way not worth buffering.
+flex deadass MAX_LINE = 8192
+// One value. Big enough for anything this example is for, small enough that a
+// bad length cannot ask the process to allocate the machine.
+flex deadass MAX_VALUE = 8 * 1024 * 1024
+
+flex deadass COMMANDS = {
+    "GET": 1, "SET": 1, "DEL": 1, "EXISTS": 1, "KEYS": 1, "EXPIRE": 1,
+    "TTL": 1, "INCR": 1, "MGET": 1, "MSET": 1, "FLUSH": 1, "INFO": 1,
+    "PING": 1, "STOP": 1,
+}
+
+// -- reading --------------------------------------------------------------------------
+
+// `read_more` returns a blob of whatever arrived, `""` or ghost when nothing
+// will. The buffer is a blob because a value is bytes; only the header lines
+// are decoded as text.
+flex bet new_reader(read_more) {
+    bounce {"buf": blob.of([]), "at": 0, "more": read_more, "closed": cap}
+}
+
+// Pulls until the buffer holds `n` bytes past the cursor, or the other end
+// stops talking.
+bet fill_to(r, n) {
+    bruh (how_thicc(r["buf"]) - r["at"] < n) {
+        sus (r["closed"]) {
+            bounce cap
+        }
+        yo chunk = r["more"]()
+        sus (chunk == ghost || chunk == "" || how_thicc(chunk) == 0) {
+            r["closed"] = fax
+            bounce cap
+        }
+        r["buf"] = r["buf"] + chunk
+        compact(r)
+    }
+    bounce fax
+}
+
+// Drops what has already been consumed, so a long-lived connection does not
+// keep every byte it ever received.
+bet compact(r) {
+    sus (r["at"] > 65536) {
+        r["buf"] = r["buf"][r["at"]:how_thicc(r["buf"])]
+        r["at"] = 0
+    }
+}
+
+// One CRLF-terminated line as text, or ghost if the connection ended first.
+// A bare LF is accepted too, because a line typed by hand over `nc` has one.
+flex bet read_line(r) {
+    yo scan = r["at"]
+    bruh (fax) {
+        yo end = find_newline(r["buf"], scan)
+        sus (end >= 0) {
+            yo stop = end
+            sus (stop > r["at"] && r["buf"][stop - 1] == 13) {
+                stop -= 1
+            }
+            yo line = r["buf"][r["at"]:stop].to_yap()
+            r["at"] = end + 1
+            compact(r)
+            bounce line
+        }
+        sus (how_thicc(r["buf"]) - r["at"] > MAX_LINE) {
+            chuck oops("OutOfPocket", "a command line longer than " + to_yap(MAX_LINE) +
+                       " bytes arrived with no end in sight.")
+        }
+        scan = how_thicc(r["buf"])
+        sus (!fill_to(r, how_thicc(r["buf"]) - r["at"] + 1)) {
+            bounce ghost
+        }
+    }
+}
+
+bet find_newline(buf, from_at) {
+    grind i from from_at to how_thicc(buf) {
+        sus (buf[i] == 10) {
+            bounce i
+        }
+    }
+    bounce -1
+}
+
+// Exactly `n` bytes, then the CRLF that follows them. ghost if the connection
+// ended first.
+flex bet read_value(r, n) {
+    sus (n < 0 || n > MAX_VALUE) {
+        chuck oops("OutOfPocket", "a value length of " + to_yap(n) + " is not one this accepts.")
+    }
+    sus (!fill_to(r, n)) {
+        bounce ghost
+    }
+    yo bytes = r["buf"][r["at"]:r["at"] + n]
+    r["at"] += n
+    // The trailing CRLF is consumed if it is there. It is framing, not data:
+    // the length already said where the value ends, so a client that omits it
+    // is tolerated rather than hung up on.
+    sus (fill_to(r, 1) && r["buf"][r["at"]] == 13) {
+        r["at"] += 1
+    }
+    sus (fill_to(r, 1) && r["buf"][r["at"]] == 10) {
+        r["at"] += 1
+    }
+    compact(r)
+    bounce bytes
+}
+
+// -- one request -----------------------------------------------------------------------
+
+// Returns {"verb", "args", "values"}, or ghost when the connection ended, or
+// {"bad": message} for something that was not a request. A bad request is a
+// value rather than a raised error because the server answers it and carries
+// on; only a length it refuses to allocate raises.
+flex bet read_request(r) {
+    yo line = read_line(r)
+    sus (line == ghost) {
+        bounce ghost
+    }
+    sus (yapper.trim(line) == "") {
+        bounce {"bad": "an empty line is not a command"}
+    }
+
+    yo parts = yapper.words(line)
+    yo verb = yapper.SCREAM(parts[0])
+    sus (!COMMANDS.has(verb)) {
+        bounce {"bad": "unknown command " + parts[0]}
+    }
+    yo args = parts.slice(1, parts.how_thicc())
+
+    // SET is the one command whose line ends with a length.
+    sus (verb == "SET") {
+        sus (args.how_thicc() != 2 || !is_number_text(args[1])) {
+            bounce {"bad": "SET takes a key and a byte length"}
+        }
+        yo value = read_value(r, to_int(args[1]))
+        sus (value == ghost) {
+            bounce ghost
+        }
+        bounce {"verb": verb, "args": [args[0]], "values": [value]}
+    }
+
+    // MSET says how many pairs follow, then each pair is its own line and
+    // value. Counting first means the server knows when it has them all
+    // without a terminator that a value could contain.
+    sus (verb == "MSET") {
+        sus (args.how_thicc() != 1 || !is_number_text(args[0])) {
+            bounce {"bad": "MSET takes the number of pairs that follow"}
+        }
+        yo count = to_int(args[0])
+        sus (count < 0 || count > 1024) {
+            bounce {"bad": "MSET takes between 0 and 1024 pairs"}
+        }
+        yo keys = []
+        yo values = []
+        grind i from 0 to count {
+            yo pair_line = read_line(r)
+            sus (pair_line == ghost) {
+                bounce ghost
+            }
+            yo bits = yapper.words(pair_line)
+            sus (bits.how_thicc() != 2 || !is_number_text(bits[1])) {
+                bounce {"bad": "every MSET pair is a key and a byte length"}
+            }
+            yo v = read_value(r, to_int(bits[1]))
+            sus (v == ghost) {
+                bounce ghost
+            }
+            keys.yeet_in(bits[0])
+            values.yeet_in(v)
+        }
+        bounce {"verb": verb, "args": keys, "values": values}
+    }
+
+    bounce {"verb": verb, "args": args, "values": []}
+}
+
+bet is_number_text(text) {
+    sus (text == "") {
+        bounce cap
+    }
+    grind i from 0 to text.how_thicc() {
+        sus (text[i] < "0" || text[i] > "9") {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+// -- replies ----------------------------------------------------------------------------
+
+flex bet ok_reply() {
+    bounce blob.from_yap("+OK\r\n")
+}
+
+flex bet pong_reply() {
+    bounce blob.from_yap("+PONG\r\n")
+}
+
+flex bet nil_reply() {
+    bounce blob.from_yap("$-1\r\n")
+}
+
+flex bet value_reply(bytes) {
+    bounce blob.from_yap("$" + to_yap(how_thicc(bytes)) + "\r\n") + bytes + CRLF
+}
+
+flex bet int_reply(n) {
+    bounce blob.from_yap(":" + to_yap(n) + "\r\n")
+}
+
+// Each item is a blob, or ghost for a hole -- which MGET needs, because "no
+// value for that key" is not the same as an empty one.
+flex bet list_reply(items) {
+    yo parts = [blob.from_yap("*" + to_yap(items.how_thicc()) + "\r\n")]
+    grind item in items {
+        parts.yeet_in(item == ghost ? nil_reply() : value_reply(item))
+    }
+    bounce blob.of([]).join(parts)
+}
+
+// The flavor travels so a client can tell a wrong type from a missing key
+// without matching on English.
+flex bet error_reply(flavor, message) {
+    bounce blob.from_yap("-" + flavor + " " + one_line(message) + "\r\n")
+}
+
+// A reply is one line until its length says otherwise, so a message with a
+// newline in it would desynchronise the stream.
+bet one_line(message) {
+    yo out = yapper.replace(message, "\r", " ")
+    bounce yapper.replace(out, "\n", " ")
+}
+
+// -- reading a reply, for the client side ------------------------------------------------
+
+// Returns {"kind", "value"} where kind is one of "ok", "value", "nil", "int",
+// "list", "error". ghost if the connection ended first.
+flex bet read_reply(r) {
+    yo line = read_line(r)
+    sus (line == ghost) {
+        bounce ghost
+    }
+    sus (line == "") {
+        bounce {"kind": "error", "value": "the server sent an empty line"}
+    }
+    yo tag = line[0]
+    yo rest = yapper.slice(line, 1, line.how_thicc())
+
+    sus (tag == "+") {
+        bounce {"kind": "ok", "value": rest}
+    }
+    sus (tag == "-") {
+        bounce {"kind": "error", "value": rest}
+    }
+    sus (tag == ":") {
+        bounce {"kind": "int", "value": to_int(rest)}
+    }
+    sus (tag == "$") {
+        sus (rest == "-1") {
+            bounce {"kind": "nil", "value": ghost}
+        }
+        yo bytes = read_value(r, to_int(rest))
+        sus (bytes == ghost) {
+            bounce ghost
+        }
+        bounce {"kind": "value", "value": bytes}
+    }
+    sus (tag == "*") {
+        yo count = to_int(rest)
+        yo items = []
+        grind i from 0 to count {
+            yo one = read_reply(r)
+            sus (one == ghost) {
+                bounce ghost
+            }
+            items.yeet_in(one["kind"] == "nil" ? ghost : one["value"])
+        }
+        bounce {"kind": "list", "value": items}
+    }
+    bounce {"kind": "error", "value": "a reply this client does not understand: " + line}
+}

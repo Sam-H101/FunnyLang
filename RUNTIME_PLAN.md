@@ -776,6 +776,20 @@ is `chmod 0600` on POSIX and, honestly, a no-op on Windows: the equivalent there
 rather than a mode bit, and a silent half-measure would be worse than a documented absence. It is
 general (any program with a secret in a file wants it), not shaped to this one example.
 
+**E4's protocol, decided here as the plan asked.** `EXAMPLES_PLAN.md` offers two shapes for the
+key-value store's wire protocol: RESP, which real Redis speaks, or a length-prefixed text protocol
+of the example's own. **Decided: the example's own.** Two reasons. A request carries its value's
+length in bytes, so a value that is not text -- the `blob` round trip the golden checks -- travels
+exactly, with no escaping and no encoding to argue about; RESP would do that too, but only after
+the bulk-string framing is built, which is the same work with a more famous name on it. The
+deciding reason is the second: a server that answers RESP invites `redis-cli`, and this one
+implements fourteen commands out of hundreds. Looking like Redis and not being Redis is a worse
+lie than looking like nothing in particular. What it gains from RESP is the reply tagging --
+`+OK`, `$<len>`, `:<n>`, `*<n>`, `-ERR` -- because those five shapes are genuinely the right
+answers and inventing different punctuation for them would be novelty for its own sake. No new
+runtime primitive is needed either way: `internet.hear_them_out(conn, n, ms, {"raw": fax})`
+already reads bytes rather than text, which is the only thing a binary-safe protocol requires.
+
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in
 `CommonCryptorSPI.h`, which the public SDK does not ship. Options, in order of preference: (a)

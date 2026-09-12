@@ -1,0 +1,168 @@
+// cli.funny — one command, from a shell.
+//
+//     funny run extensive_examples/kv/cli.funny -- set greeting "yo"
+//     funny run extensive_examples/kv/cli.funny -- get greeting
+//     funny run extensive_examples/kv/cli.funny -- keys 'g*'
+//     funny run extensive_examples/kv/cli.funny -- --port 6381 info
+//
+// Connects, sends one command, prints the answer, and exits. Exit status is 0
+// for an answer, 1 for an error from the server, 2 for a command this does not
+// know and 3 for a server it could not reach -- so a shell script can tell
+// "the key is missing" from "the database is down", which printing to stdout
+// alone would not.
+
+gimme yapper
+gimme blob
+
+gimme { connect, close, send } from "kvclient.funny"
+
+flex deadass DEFAULT_HOST = "127.0.0.1"
+flex deadass DEFAULT_PORT = 6380
+
+bet usage() {
+    yell("usage: cli.funny [--host H] [--port N] COMMAND [ARGS...]")
+    yell("")
+    yell("  get KEY              set KEY VALUE        del KEY")
+    yell("  exists KEY           keys [GLOB]          expire KEY SECONDS")
+    yell("  ttl KEY              incr KEY             mget KEY...")
+    yell("  flush                info                 ping")
+    yell("  stop")
+}
+
+// What each command sends. Kept as data rather than a chain of ifs, because
+// the CLI's job is only to turn words into a line and a reply into text.
+bet build(verb, rest) {
+    sus (verb == "set") {
+        sus (rest.how_thicc() != 2) {
+            bounce ghost
+        }
+        yo value = blob.from_yap(rest[1])
+        bounce {"line": "SET " + rest[0] + " " + to_yap(how_thicc(value)) + "\r\n",
+                "values": [value]}
+    }
+    sus (verb == "get" || verb == "del" || verb == "exists" || verb == "ttl" || verb == "incr") {
+        sus (rest.how_thicc() != 1) {
+            bounce ghost
+        }
+        bounce {"line": yapper.SCREAM(verb) + " " + rest[0] + "\r\n", "values": []}
+    }
+    sus (verb == "expire") {
+        sus (rest.how_thicc() != 2) {
+            bounce ghost
+        }
+        bounce {"line": "EXPIRE " + rest[0] + " " + rest[1] + "\r\n", "values": []}
+    }
+    sus (verb == "keys") {
+        bounce {"line": "KEYS " + (rest.how_thicc() > 0 ? rest[0] : "*") + "\r\n", "values": []}
+    }
+    sus (verb == "mget") {
+        sus (rest.how_thicc() == 0) {
+            bounce ghost
+        }
+        bounce {"line": "MGET " + rest.join(" ") + "\r\n", "values": []}
+    }
+    sus (verb == "flush" || verb == "info" || verb == "ping" || verb == "stop") {
+        sus (rest.how_thicc() != 0) {
+            bounce ghost
+        }
+        bounce {"line": yapper.SCREAM(verb) + "\r\n", "values": []}
+    }
+    bounce ghost
+}
+
+// A value prints as its bytes. A missing key prints nothing at all and leaves
+// the status 0, because "no such key" is an answer, not a failure -- and a
+// script doing `cli get k` into a variable wants an empty string, not the word
+// "nil".
+bet show(reply) {
+    sus (reply["kind"] == "ok") {
+        yap reply["value"]
+        bounce 0
+    }
+    sus (reply["kind"] == "int") {
+        yap reply["value"]
+        bounce 0
+    }
+    sus (reply["kind"] == "nil") {
+        bounce 0
+    }
+    sus (reply["kind"] == "value") {
+        yap reply["value"].to_yap()
+        bounce 0
+    }
+    sus (reply["kind"] == "list") {
+        grind item in reply["value"] {
+            sus (item != ghost) {
+                yap item.to_yap()
+            } nah {
+                yap ""
+            }
+        }
+        bounce 0
+    }
+    yell(reply["value"])
+    bounce 1
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo host = DEFAULT_HOST
+    yo port = DEFAULT_PORT
+    yo words = []
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--host" && i + 1 < args.how_thicc()) {
+            host = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--port" && i + 1 < args.how_thicc()) {
+            port = to_int(args[i + 1])
+            i += 2
+        } nah {
+            words.yeet_in(a)
+            i += 1
+        }
+    }
+
+    sus (words.how_thicc() == 0) {
+        usage()
+        bounce 2
+    }
+
+    yo verb = yapper.whisper(words[0])
+    yo built = build(verb, words.slice(1, words.how_thicc()))
+    sus (built == ghost) {
+        yell("don't know how to " + words.join(" ") + ".")
+        usage()
+        bounce 2
+    }
+
+    yo client = ghost
+    sketchy {
+        client = connect(host, port, ghost)
+    } my_bad (e) {
+        yell("couldn't reach kv at " + host + ":" + to_yap(port) + " — " + e.message)
+        bounce 3
+    }
+
+    yo status = 0
+    sketchy {
+        status = show(send(client, built["line"], built["values"]))
+    } my_bad (e) {
+        yell(e.flavor + ": " + e.message)
+        status = 1
+    }
+    close(client)
+    bounce status
+}
+
+dip(main(the_args()))
