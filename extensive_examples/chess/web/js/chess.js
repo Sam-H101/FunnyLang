@@ -318,7 +318,17 @@
       if (options.length > 0) { send(options[0]); return; }
     }
     picked = movesFrom(n).length > 0 && picked !== n ? n : null;
+    if (picked !== null) ponder(picked);
     draw();
+  }
+
+  // Tell the server which piece has been picked up, and do not wait for it.
+  // While the player is deciding where to put it, the server works out its
+  // reply to every move that piece could make -- so by the time they let go,
+  // the answer is usually already there. Nothing here uses the response: it
+  // arrives as part of the next move's state.
+  function ponder(square) {
+    post("/api/ponder", { from: square });
   }
 
   async function send(move) {

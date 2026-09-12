@@ -24,7 +24,8 @@ funny run extensive_examples/chess/play.funny -- --self --depth 3
 | `rules.funny` | the rules of chess, and nothing else |
 | `engine.funny` | negamax with alpha-beta, piece-square tables, move ordering |
 | `search_worker.funny` | one slice of a root search, run on its own thread |
-| `serve.funny` | the HTTPS server and the three-route JSON API |
+| `ponder_worker.funny` | one reply, worked out before anybody asks for it |
+| `serve.funny` | the HTTPS server and the JSON API |
 | `play.funny` | the same game in a terminal |
 | `http.funny` | request parsing and response building |
 | `static.funny` | serving files from `web/` without serving anything else |
@@ -320,6 +321,63 @@ An earlier version of this README claimed the table had made the threads
 worthless. That was measured against the broken key described above, whose
 false hits made the sequential search look far better than it was.
 
+## Thinking while you are thinking
+
+The moment you pick a piece up, the server starts working out its reply to
+every move that piece could make.
+
+This is pondering, which real engines do, but with one difference that makes it
+far better here. A real engine has to *guess* which move you will play and is
+usually wrong. This one does not guess: the page says which piece you have
+touched, and a piece has only a handful of legal moves, so all of them are
+started at once. Whichever you play, the answer is already there. Picking up the
+e-pawn at the start reports `{"ok":true,"pondering":2}` — two moves, two
+workers, both covered.
+
+```
+POST /api/ponder   {"from": 12}
+```
+
+**Answers are filed under the position they answer, not the move that leads to
+it.** That is what makes a late answer harmless: one arriving from a line you
+thought better of can never be applied to the wrong board, however the timing
+falls, because it simply will not match. The cache is checked in
+`engine_reply`, and the state carries `pondered` so you can see when a reply
+came from it.
+
+It only works because `best_move` is a function of the position and nothing
+else — a fresh transposition table every call, which is why that was done
+deliberately in the first place. A precomputed answer is therefore *identical*
+to the on-demand one, and that was checked rather than assumed: the same move
+played with and without pondering gives g8f6 and **1,527 positions looked at
+either way**, differing only in the `pondered` flag.
+
+The server stays responsive throughout, because awaiting a worker yields to the
+event loop rather than blocking it. That was measured before any of this was
+built — a worker spinning for two seconds while the loop went on ticking every
+100 ms — and again at the server, which answered 40 requests while the workers
+were still thinking. Had it blocked, pondering would have frozen the very loop
+it exists to keep free, which would be worse than not pondering at all.
+
+What it does **not** do is make anything faster. It moves the waiting into the
+window where you are deciding rather than the one where you are watching. How
+much that is worth depends on how long you take: depth 4 costs about 3.9
+seconds, and picking a piece up and putting it down is often quicker than that,
+so you may get a partial answer rather than a finished one. Widening the window
+by pondering from the moment the engine replies would help, but then there is
+no touched piece to narrow things down and all ~30 legal moves are candidates.
+
+Three smaller caveats, for honesty: the workers cannot share a transposition
+table, so each ponders from nothing; picking up a different piece throws the
+work away, which costs only idle cores; and because pondering uses the
+sequential search, the "positions looked at" figure can differ from a threaded
+reply at depth 5.
+
+It is also the one part of this example the golden does not cover. The tests
+deliberately have no sockets in them, and pondering only exists across one — so
+it was tested by hand, end to end, and that is worth knowing rather than
+glossing over.
+
 That is an honest result rather than a tidy one. Making them worth having again
 would mean handing each worker the parent's table to start from. It is plain
 data, so it can cross; it is also a copy per worker, and it has not been tried.
@@ -382,13 +440,14 @@ It plays legal chess. It does not play good chess, and the gap is mostly these:
 
 ## The API
 
-Three routes, holding one game:
+Four routes, holding one game:
 
 | route | what it does |
 | --- | --- |
 | `GET /api/state` | the board as it stands |
 | `POST /api/new` | start again; `{"depth": n, "side": "white"}` optional |
 | `POST /api/move` | `{"from": n, "to": n, "promotion": "q"}`, then the engine replies |
+| `POST /api/ponder` | `{"from": n}` — a piece has been picked up; start thinking |
 
 Every legal move travels with the state, so the page never has to know a rule:
 it highlights what it was given, and a click that is not in the list cannot be

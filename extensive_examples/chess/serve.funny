@@ -16,17 +16,21 @@
 // nothing. The event loop is here so that a second browser tab, a favicon
 // request or a health check cannot sit in the queue behind a search.
 //
-// The API is three routes and holds one game:
+// The API is four routes and holds one game:
 //
 //   GET  /api/state              the board as it stands
 //   POST /api/new                start again; {"depth": n, "side": "white"} optional
 //   POST /api/move               {"from": n, "to": n, "promotion": "q"}, then it replies
+//   POST /api/ponder             {"from": n} -- a piece has been picked up, so
+//                                start working out the reply to every move it
+//                                could make, while the player is still deciding
 //
 // One game per server, not per browser: this is a program you run to play a
 // game, and pretending to have sessions it does not have would be worse than
 // saying so.
 
 gimme internet
+gimme interns
 gimme clock
 gimme yapper
 gimme json
@@ -52,6 +56,11 @@ yo SERVED = 0
 yo PFX = ghost
 yo PFX_PASSWORD = "funnylang"
 yo NO_TLS = cap
+yo PONDER_WORKER = ghost
+
+// Positions a worker is already thinking about, so picking the same piece up
+// twice does not hire the same search twice.
+yo PONDERING = {}
 
 // -- the game -------------------------------------------------------------------------
 
@@ -72,6 +81,13 @@ bet start_game(depth, human) {
         // everything the page needs to *show* it happening rather than to work
         // out what happened.
         "played": [],
+        // Answers worked out before they were asked for, keyed by *the
+        // position they answer* rather than by the move that leads to it.
+        // That is what makes a stale one harmless: an answer is only ever
+        // used for the exact board it was computed from, so one that arrives
+        // late from a line the player thought better of cannot be misapplied.
+        "ponder": {},
+        "pondered": cap,
     }
     note_position()
     bounce GAME
@@ -168,6 +184,7 @@ bet state_json() {
         "black": count_material(board, BLACK),
         "depth": GAME["depth"],
         "nodes": GAME["nodes"],
+        "pondered": GAME["pondered"],
         "verdict": GAME["verdict"],
         "fen": to_fen(board),
         "history": GAME["history"],
@@ -182,11 +199,26 @@ bet engine_reply() {
         GAME["last_engine"] = ghost
         bounce ghost
     }
-    // `hands_for` decides whether threads are worth it at all: at the depths
-    // the easy and normal settings use they are not, and it says so by asking
-    // for one.
-    yo hands = hands_for(legal_moves(board).how_thicc(), GAME["depth"])
-    yo thought = best_move_parallel(board, GAME["depth"], hands)
+    // Was this position already worked out while the player was deciding? The
+    // answer is keyed by the position itself, so finding one here is proof it
+    // belongs to this board and not to some line that was abandoned.
+    yo thought = ghost
+    yo ready = GAME["ponder"].get(position_key(board), ghost)
+    sus (ready != ghost) {
+        yo m = find_move(legal_moves(board), ready["move"])
+        sus (m != ghost) {
+            thought = {"move": m, "score": ready["score"], "nodes": ready["nodes"]}
+            GAME["pondered"] = fax
+        }
+    }
+    sus (thought == ghost) {
+        GAME["pondered"] = cap
+        // `hands_for` decides whether threads are worth it at all: at the
+        // depths the easy and normal settings use they are not, and it says so
+        // by asking for one.
+        yo hands = hands_for(legal_moves(board).how_thicc(), GAME["depth"])
+        thought = best_move_parallel(board, GAME["depth"], hands)
+    }
     sus (thought["move"] == ghost) {
         bounce ghost
     }
@@ -196,6 +228,53 @@ bet engine_reply() {
     note_position()
     GAME["nodes"] = thought["nodes"]
     GAME["verdict"] = verdict(GAME["board"], -thought["score"])
+}
+
+// -- thinking while the player is thinking -----------------------------------------------
+
+// One speculative search, on its own thread.
+//
+// Awaiting an intern yields to the event loop rather than blocking it -- that
+// was measured, not assumed -- so the server goes on answering requests for the
+// whole time this is running. If it did block, this would freeze the very loop
+// it is meant to keep responsive, which would be worse than not pondering.
+async_ngl bet ponder_one(fen, key, depth) {
+    sketchy {
+        yo answer = await_fr interns.hire(PONDER_WORKER, {"fen": fen, "depth": depth})
+        sus (answer["move"] != "") {
+            GAME["ponder"][key] = answer
+        }
+    } my_bad (e) {
+        // A speculative search that falls over costs nothing: the move will be
+        // searched for real when it is actually played.
+        vibe
+    }
+    PONDERING.remove(key)
+}
+
+// The player has picked a piece up. Every move that piece can make is a
+// position the engine may shortly have to answer, and there are usually only a
+// handful -- so rather than guess which one is coming, all of them are started
+// at once. Whichever they play, the answer is already there.
+// `src` rather than `from`, because `from` is a keyword -- it belongs to
+// `grind i from 0 to 10` -- and cannot be the name of anything.
+bet start_pondering(src) {
+    yo board = GAME["board"]
+    yo started = 0
+    grind m in legal_moves(board) {
+        sus (m["from"] != src) {
+            nvm
+        }
+        yo after = apply_move(board, m)
+        yo key = position_key(after)
+        sus (GAME["ponder"].has(key) || PONDERING.has(key)) {
+            nvm
+        }
+        PONDERING[key] = fax
+        ponder_one(to_fen(after), key, GAME["depth"])
+        started += 1
+    }
+    bounce started
 }
 
 // -- the routes -------------------------------------------------------------------------
@@ -226,6 +305,22 @@ bet route(req) {
             engine_reply()
         }
         bounce json_response(200, state_json())
+    }
+
+    // The page says which piece has just been picked up. Nothing is returned
+    // but a count, because the answers are not for the page -- they are for the
+    // engine, the next time it is asked to move.
+    sus (req["path"] == "/api/ponder" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce json_response(400, json.spill({"ok": cap, "error": "that wasn't JSON"}))
+        }
+        sus (GAME["board"]["turn"] != GAME["human"] ||
+             outcome(GAME["board"], GAME["seen"]) != ghost) {
+            bounce json_response(200, json.spill({"ok": fax, "pondering": 0}))
+        }
+        yo started = start_pondering(to_int(asked.get("from", -1)))
+        bounce json_response(200, json.spill({"ok": fax, "pondering": started}))
     }
 
     sus (req["path"] == "/api/move" && req["method"] == "POST") {
@@ -436,6 +531,7 @@ bet main(raw_args) {
     sus (DEPTH > 5) { DEPTH = 5 }
 
     WEB_DIR = filez.join_path(filez.dir_of(the_script()), "web")
+    PONDER_WORKER = filez.join_path(filez.dir_of(the_script()), "ponder_worker.funny")
     start_game(DEPTH, WHITE)
 
     // TLS unless told otherwise. The identity is this example's own test
