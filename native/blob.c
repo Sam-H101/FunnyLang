@@ -403,6 +403,45 @@ static Value m_join(VM *vm, Value *a, int argc) {
 
 /* -- the tables ---------------------------------------------------------- */
 
+/* xor(b, key) -- every byte of `b` against `key`, which repeats when it is
+   shorter. Always `b`'s length, and its own inverse, so the same call undoes
+   it.
+
+   It is in C because the FunnyLang loop it replaces is the hot path of
+   anything that masks bytes. RFC 6455 masks every frame a client sends, and a
+   byte at a time in the interpreter measured 360 ms per megabyte, which a
+   2 MB message pays twice -- see RUNTIME_PLAN.md §9. */
+static Value m_xor(VM *vm, Value *a, int argc) {
+    (void)argc;
+    ObjBlob *b = check_blob(vm, a[0], "xor");
+    if (!b) return GHOST_VAL;
+    ObjBlob *key = check_blob(vm, a[1], "xor");
+    if (!key) return GHOST_VAL;
+    if (key->byteLen == 0) {
+        /* There is no byte to XOR against, and quietly returning the input
+           would be a masking call that did not mask. */
+        vm_throw_native(vm, "SkillIssue", "xor needs a key with at least one byte in it.");
+        return GHOST_VAL;
+    }
+    /* malloc(0) may hand back NULL, which blob_new reads as "no bytes" -- the
+       right answer for empty input, but only by accident, so it is asked for
+       explicitly. */
+    uint8_t *out = NULL;
+    if (b->byteLen > 0) {
+        out = (uint8_t *)malloc(b->byteLen);
+        if (out == NULL) {
+            vm_throw_native(vm, "SkillIssue", "not enough memory for a blob of %u bytes.", b->byteLen);
+            return GHOST_VAL;
+        }
+        for (uint32_t i = 0; i < b->byteLen; i++) {
+            out[i] = (uint8_t)(b->bytes[i] ^ key->bytes[i % key->byteLen]);
+        }
+    }
+    Value result = OBJ_VAL(blob_new(&vm->gc, out, b->byteLen));
+    free(out);
+    return result;
+}
+
 typedef struct {
     const char *name;
     NativeMethodFn fn;
@@ -424,6 +463,7 @@ static const BlobEntry BLOB_METHOD_TABLE[] = {
     {"contains", m_contains, 1, 1},
     {"split", m_split, 1, 1},
     {"join", m_join, 1, 1},
+    {"xor", m_xor, 1, 1},
 };
 #define BLOB_METHOD_TABLE_COUNT (int)(sizeof(BLOB_METHOD_TABLE) / sizeof(BLOB_METHOD_TABLE[0]))
 

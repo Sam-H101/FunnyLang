@@ -1,0 +1,55 @@
+// blob.xor -- RUNTIME_PLAN.md §9, added for the WebSocket masking in
+// extensive_examples/chat/. Every byte of the first blob against a repeating
+// key, and the result is always the first blob's length.
+
+gimme blob
+
+yo data = blob.of([1, 2, 3, 4, 5, 6, 7, 8])
+yo four = blob.of([255, 0, 255, 0])
+
+// A key that repeats: byte 0 and 2 flip, 1 and 3 do not, and round again.
+yap blob.xor(data, four).to_hex()
+
+// It is its own inverse, which is the property masking relies on.
+yap blob.xor(blob.xor(data, four), four) == data
+
+// A key the same length is used once through.
+yap blob.xor(blob.of([170, 170]), blob.of([255, 15])).to_hex()
+
+// A key longer than the data uses only as much as it needs.
+yap blob.xor(blob.of([1]), blob.of([255, 255, 255, 255])).to_hex()
+
+// A one-byte key is a plain flip of every byte.
+yap blob.xor(blob.of([0, 1, 254, 255]), blob.of([255])).to_hex()
+
+// Empty data gives empty bytes, not an error: masking nothing is nothing.
+yap how_thicc(blob.xor(blob.of([]), four))
+
+// The result is the data's length, never the key's.
+yap how_thicc(blob.xor(blob.of([1, 2, 3]), four))
+
+// Also a method on the blob itself, like every other one here.
+yap data.xor(four).to_hex()
+
+// An empty key has no answer: there is no byte to XOR against.
+sketchy {
+    blob.xor(data, blob.of([]))
+    yap "no error, which is wrong"
+} my_bad (e) {
+    yap e.flavor
+}
+
+// A key that is not bytes is refused rather than coerced.
+sketchy {
+    blob.xor(data, "nope")
+    yap "no error, which is wrong"
+} my_bad (e) {
+    yap e.flavor
+}
+
+// The RFC 6455 example: masking is symmetric, so a client's frame body and the
+// server's unmasking are the same call.
+yo message = blob.from_yap("Hello")
+yo key = blob.of([0x37, 0xfa, 0x21, 0x3d])
+yap blob.xor(message, key).to_hex()
+yap blob.xor(blob.xor(message, key), key).to_yap()

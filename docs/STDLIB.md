@@ -152,6 +152,7 @@ yap png                   // <blob 4 bytes>
 | `b.contains(other)` | Whether `other` appears in `b`. |
 | `b.split(sep)` | Splits on a non-empty separator blob, returns a `stash` of blobs. |
 | `sep.join(stash)` | Joins a `stash` of blobs with `sep` between them — the receiver is the separator, matching `yapper.join`. |
+| `blob.xor(b, key)` | `b` with every byte XOR'd against `key`, which repeats if it is shorter. The result is always `b`'s length. Its own inverse, so the same call undoes it. An empty `key` is a `SkillIssue`. Written in C because the FunnyLang loop it replaces is the hot path of anything that masks bytes — a WebSocket frame, a one-time pad — and a byte at a time is about a thousand times slower. |
 
 Every method above is also a free function with the blob as its first argument
 (`blob.to_hex(b)`), the same arrangement `stash` and `yapper` have.

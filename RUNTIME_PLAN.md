@@ -808,6 +808,21 @@ choosing its own hash should choose `sha256` -- but a protocol that names SHA-1 
 and the alternative to this primitive was an example implementing a hash by hand, which is exactly
 what `vault` exists to avoid.
 
+**E5's second primitive: `blob.xor(b, key)`.** RFC 6455 masks every frame a client sends: each
+byte XOR'd with a four-byte key, cycling. Writing that loop in FunnyLang works and was the first
+thing tried, and it was measured at **360 ms per megabyte** -- so the golden's 2 MB fragmented
+message would spend about a second and a half in that loop alone, once on the way out and once on
+the way in, and several times that under `FUNNY_GC_STRESS` or ThreadSanitizer.
+
+Nothing in the runtime could do it in bulk: `^` on two blobs is a `TypeVibeMismatch` ("bitwise ops
+need whole numbas"), and `blob`'s method table had no xor and no mask. So `blob.xor` joins it --
+`b` XOR'd against a repeating `key`, always `b`'s length, its own inverse.
+
+It is general rather than shaped to this example: masking a WebSocket frame is one use, a one-time
+pad and any stream-combining step are others, and none of them mentions WebSockets. The
+alternative was shrinking the example's largest message until the interpreter could cope, which
+would have made the runtime's limits decide what the example demonstrates.
+
 **Open before R3 starts:** macOS AES-GCM. CommonCrypto's `CCCryptorGCMOneshotEncrypt` /
 `…Decrypt` are exported from `libcommonCrypto.dylib` on macOS 10.13+ but declared only in
 `CommonCryptorSPI.h`, which the public SDK does not ship. Options, in order of preference: (a)
