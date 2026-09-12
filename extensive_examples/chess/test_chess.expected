@@ -93,9 +93,9 @@ and it is written back as: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 
   depth 1: 48 ok
   depth 2: 2039 ok
 -- the engine picks the same move every time --
-  depth 1: b1c3 (score 50, 20 positions), and again: b1c3
-  depth 2: b1c3 (score 0, 132 positions), and again: b1c3
-  depth 3: b1c3 (score 50, 1407 positions), and again: b1c3
+  depth 1: b1c3 (score 50, 20 positions), and again: b1c3, same score and count: fax
+  depth 2: b1c3 (score 0, 132 positions), and again: b1c3, same score and count: fax
+  depth 3: b1c3 (score 50, 1407 positions), and again: b1c3, same score and count: fax
 -- it finds mate in one --
   it plays: a1a8
   and that is mate: white wins

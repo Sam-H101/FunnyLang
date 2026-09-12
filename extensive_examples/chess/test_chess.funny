@@ -225,12 +225,23 @@ grind pair in [[1, 48], [2, 2039]] {
 // -- part three: the engine ----------------------------------------------------------
 
 yap "-- the engine picks the same move every time --"
+// Not merely the same move: the same score, and the same number of positions
+// looked at getting there. That is the stronger claim, and it is the one the
+// pondering in serve.funny rests on -- a reply worked out before it was asked
+// for is only interchangeable with one worked out on demand if `best_move` is
+// a function of the position and of nothing else.
+//
+// The way that would break is somebody keeping the transposition table between
+// calls to find more hits. The move would probably stay the same and the count
+// would not, so the count is what is asserted here.
 grind depth in [1, 2, 3] {
     yo first = best_move(new_board(), depth)
     yo again = best_move(new_board(), depth)
+    yo same = first["score"] == again["score"] && first["nodes"] == again["nodes"]
     yap "  depth " + to_yap(depth) + ": " + first["move"]["notation"] +
         " (score " + to_yap(first["score"]) + ", " + to_yap(first["nodes"]) + " positions)" +
-        ", and again: " + again["move"]["notation"]
+        ", and again: " + again["move"]["notation"] +
+        ", same score and count: " + to_yap(same)
 }
 
 yap "-- it finds mate in one --"
