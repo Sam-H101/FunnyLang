@@ -2,7 +2,7 @@
 
 All notable changes to FunnyLang are documented here.
 
-## [Unreleased] — the runtime pass
+## [2.1.0] — 2026-09-12 — the runtime pass
 
 `gimme interns` gave FunnyLang real OS threads; this is the pass over `native/` that makes every
 stdlib module safe on them, and the corpus that proves it. Plan and build log:
@@ -250,7 +250,7 @@ yap png                   // <blob 4 bytes>
 - **Error text is built with `strerror_r`/`strerror_s`**. Plain `strerror` may hand back a buffer
   shared by every thread, so two threads failing at once could read each other's message.
 
-## [Unreleased] — HTTPS
+## [2.1.0] — HTTPS
 
 A FunnyLang program can now be an HTTPS server, and `extensive_examples/web_server_https/` is one: a
 small site with sign-in, settings and an activity log, served over TLS 1.2+ by 24 acceptor threads,
@@ -289,7 +289,7 @@ with everything above the TLS record layer written in FunnyLang. Design and devi
   other's paths. Rare with a few interns, reliable enough to find with two dozen starting at once.
   `tests/lang/interns/concurrent_imports` is the golden.
 
-## [Unreleased] — concurrency
+## [2.1.0] — concurrency
 
 `async_ngl` and `await_fr` are real, and `gimme interns` runs work on real OS threads. Two of
 `PLAN.md` §3.3's six reserved keywords now mean what they are named. Design, cost sheet and build
