@@ -61,14 +61,17 @@ From the opening position:
 
 | depth | nodes | time |
 | --- | --- | --- |
-| 1 | 20 | 1 ms |
-| 2 | 400 | 28 ms |
-| 3 | 8,902 | 0.6 s |
-| 4 | 197,281 | 14 s |
+| 1 | 20 | 0 ms |
+| 2 | 400 | 18 ms |
+| 3 | 8,902 | 0.32 s |
+| 4 | 197,281 | 9.0 s |
 
-All four agree. The golden asserts depths 1 to 3, because depth 4 is a quarter
-of a minute to confirm something the position below establishes far more
-sharply.
+All four agree. The golden asserts depths 1 to 3, because depth 4 is nine
+seconds to confirm something the position below establishes far more sharply.
+
+The times are as the code stands, after the optimisation work described below;
+the counts are facts about chess and never move, which is exactly why they make
+a good test.
 
 That position is the standard one for this — castling available both ways for
 both sides, a pawn that can take en passant, and pawns a square from promoting,
@@ -169,6 +172,44 @@ first. It is still perfectly deterministic, and the golden still asserts that
 asking twice gives the same answer. Every other assertion in the golden — the
 whole self-play game, every perft count, every rule — is unchanged.
 
+## Precomputed attack tables
+
+Where a knight on e4 can go does not depend on the position. Neither does which
+squares lie outward from e4 along a diagonal, nor which two squares a black
+pawn would have to stand on to attack it. All of that depends only on the
+square — and all of it was being worked out again at every node.
+
+Every generator funnelled through `square_at(rank, file)`, which compares four
+ways and multiplies before it answers, and it was called on every step of every
+ray of every piece, plus eight more times for a knight and eight for a king
+inside `attacked_by`. So it is all worked out once, at load, into six tables:
+
+| table | what it holds |
+| --- | --- |
+| `KNIGHT_TO[n]`, `KING_TO[n]` | the squares reachable in one hop, edge already accounted for |
+| `DIAGONAL_RAYS[n]`, `STRAIGHT_RAYS[n]` | the squares outward in each direction, in order |
+| `WHITE_PAWN_FROM[n]`, `BLACK_PAWN_FROM[n]` | where a pawn would stand to attack this square |
+
+A slider now walks a ready-made list until something blocks it rather than
+computing where the next square would be and whether it is still on the board.
+`attacked_by` gains twice over, because `legal_moves_unsorted` calls it once per
+pseudo-move to check that a move does not leave its own king in check — it is
+the hottest thing in the profile.
+
+| | before | after |
+| --- | --- | --- |
+| 200 × `legal_moves` | 392 ms | **303 ms** |
+| depth 3 | 432 ms | **368 ms** |
+| depth 4 | 2,927 ms | **2,356 ms** |
+| depth 5 | 9,513 ms | **8,007 ms** |
+
+Node counts are identical to the digit, and the golden came out byte-identical.
+That is the point: this changes how the same work is done, not what work is
+done. The tables are built by walking the direction lists in the order they are
+written, so moves are still generated in exactly the sequence they always were
+— which matters, because the golden asserts whole move lists and the engine
+breaks its ties on the order it is handed.
+
 ## Threads
 
 `engine.funny` can split the root across real OS threads. Each worker is a
@@ -206,11 +247,19 @@ measurement, on the same machine, from the same position, after the table:
 | 4 | **2,927 ms** | 3,612 ms | 0.81× |
 | 5 | 9,513 ms | **8,862 ms** | 1.07× |
 
-The threaded runs look at 2.4× the positions one thread does, and eight
-processors now buy seven percent at depth 5 and a nineteen percent loss at
-depth 4. So `PARALLEL_FROM` is 5 rather than 4 — the point where it stops being
-a loss — and in a served game, which caps at depth 5, the threads now almost
-never run.
+The precomputed attack tables then widened the gap again. They make one thread
+and eight faster by the same proportion, while the split goes on paying its own
+overheads regardless:
+
+| depth | one thread | 8 threads | |
+| --- | --- | --- | --- |
+| 4 | **2,356 ms** | 3,700 ms | 0.64× |
+| 5 | 8,007 ms | **7,286 ms** | 1.10× |
+
+The threaded runs look at 2.4× the positions one thread does. Eight processors
+buy ten percent at depth 5, and at depth 4 they cost a third of the speed. So
+`PARALLEL_FROM` is 5 rather than 4 — the point where it stops being a loss —
+and in a served game, which caps at depth 5, the threads now almost never run.
 
 That is an honest result rather than a tidy one. Making them worth having again
 would mean handing each worker the parent's table to start from. It is plain

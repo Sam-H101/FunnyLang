@@ -202,9 +202,9 @@ bet perft(pos, depth) {
 }
 
 yap "-- perft, from the opening --"
-// Depth 3 here rather than 4: depth 4 is 197,281 positions and a quarter of a
-// minute, which is a long time to spend in CI on a number the position below
-// tests far more sharply. The README says how to run it deeper.
+// Depth 3 here rather than 4: depth 4 is 197,281 positions and nine seconds,
+// which is a long time to spend in CI on a number the position below tests far
+// more sharply. The README says how to run it deeper.
 grind pair in [[1, 20], [2, 400], [3, 8902]] {
     yo got = perft(new_board(), pair[0])
     yap "  depth " + to_yap(pair[0]) + ": " + to_yap(got) +

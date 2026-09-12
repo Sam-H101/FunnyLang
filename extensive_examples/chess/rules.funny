@@ -166,68 +166,134 @@ deadass KNIGHT_STEPS = [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-
 deadass DIAGONALS = [[1, 1], [1, -1], [-1, -1], [-1, 1]]
 deadass STRAIGHTS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 
-flex bet attacked_by(squares, target, by_side) {
-    yo r = rank_of(target)
-    yo f = file_of(target)
+// -- worked out once, at load ------------------------------------------------------------
+//
+// Everything below used to ask `square_at(rank + dy, file + dx)` on every step
+// of every ray, for every piece, at every node -- and `square_at` compares four
+// ways and multiplies before it answers. None of that depends on the position.
+// It depends only on the square, so it can be worked out once and read back
+// afterwards, which is what these tables are.
 
-    // Pawns. A white pawn attacks upwards, so a square is attacked by white
-    // from the two squares diagonally *below* it.
-    yo pawn_rank = by_side == WHITE ? r - 1 : r + 1
-    grind df in [-1, 1] {
-        yo s = square_at(pawn_rank, f + df)
-        sus (s >= 0) {
-            yo p = squares[s]
-            sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "P") {
-                bounce fax
+// The squares reachable in one hop, with the edge of the board already
+// accounted for, so the caller iterates a list instead of testing bounds.
+bet build_steps(ways) {
+    yo table = []
+    grind n from 0 to 64 {
+        yo r = rank_of(n)
+        yo f = file_of(n)
+        yo here = []
+        grind way in ways {
+            yo s = square_at(r + way[0], f + way[1])
+            sus (s >= 0) {
+                here.yeet_in(s)
             }
+        }
+        table.yeet_in(here)
+    }
+    bounce table
+}
+
+// The squares outward from each square in each direction, in order, so a
+// sliding piece walks a ready-made list until something blocks it.
+bet build_rays(ways) {
+    yo table = []
+    grind n from 0 to 64 {
+        yo r = rank_of(n)
+        yo f = file_of(n)
+        yo here = []
+        grind way in ways {
+            yo ray = []
+            yo dist = 1
+            bruh (fax) {
+                yo s = square_at(r + way[0] * dist, f + way[1] * dist)
+                sus (s < 0) {
+                    bail
+                }
+                ray.yeet_in(s)
+                dist += 1
+            }
+            here.yeet_in(ray)
+        }
+        table.yeet_in(here)
+    }
+    bounce table
+}
+
+// Seen from the target square rather than from the pawn: a square is attacked
+// by a white pawn from the two squares diagonally *below* it.
+bet build_pawn_from(ahead) {
+    yo table = []
+    grind n from 0 to 64 {
+        yo r = rank_of(n)
+        yo f = file_of(n)
+        yo here = []
+        grind df in [-1, 1] {
+            yo s = square_at(r + ahead, f + df)
+            sus (s >= 0) {
+                here.yeet_in(s)
+            }
+        }
+        table.yeet_in(here)
+    }
+    bounce table
+}
+
+deadass KNIGHT_TO = build_steps(KNIGHT_STEPS)
+deadass KING_TO = build_steps(DIAGONALS + STRAIGHTS)
+deadass DIAGONAL_RAYS = build_rays(DIAGONALS)
+deadass STRAIGHT_RAYS = build_rays(STRAIGHTS)
+deadass WHITE_PAWN_FROM = build_pawn_from(-1)
+deadass BLACK_PAWN_FROM = build_pawn_from(1)
+
+flex bet attacked_by(squares, target, by_side) {
+    // Pawns. A white pawn attacks upwards, so a square is attacked by white
+    // from the two squares diagonally *below* it -- which two those are was
+    // settled at load.
+    yo pawn_from = by_side == WHITE ? WHITE_PAWN_FROM[target] : BLACK_PAWN_FROM[target]
+    grind s in pawn_from {
+        yo p = squares[s]
+        sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "P") {
+            bounce fax
         }
     }
 
-    grind way in KNIGHT_STEPS {
-        yo s = square_at(r + way[0], f + way[1])
-        sus (s >= 0) {
-            yo p = squares[s]
-            sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "N") {
-                bounce fax
-            }
+    grind s in KNIGHT_TO[target] {
+        yo p = squares[s]
+        sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "N") {
+            bounce fax
         }
     }
 
     // The king, one square in any direction.
-    grind way in DIAGONALS + STRAIGHTS {
-        yo s = square_at(r + way[0], f + way[1])
-        sus (s >= 0) {
-            yo p = squares[s]
-            sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "K") {
-                bounce fax
-            }
+    grind s in KING_TO[target] {
+        yo p = squares[s]
+        sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "K") {
+            bounce fax
         }
     }
 
     // Sliding pieces: walk outwards until something blocks. A bishop or queen
     // on a diagonal, a rook or queen on a rank or file.
-    sus (slides_to(squares, r, f, DIAGONALS, by_side, "B")) { bounce fax }
-    sus (slides_to(squares, r, f, STRAIGHTS, by_side, "R")) { bounce fax }
+    sus (slides_to(squares, DIAGONAL_RAYS[target], by_side, "B")) { bounce fax }
+    sus (slides_to(squares, STRAIGHT_RAYS[target], by_side, "R")) { bounce fax }
     bounce cap
 }
 
 // `kind` is the non-queen piece that slides those ways; a queen always does.
-bet slides_to(squares, r, f, ways, by_side, kind) {
-    grind way in ways {
-        yo dist = 1
-        bruh (fax) {
-            yo s = square_at(r + way[0] * dist, f + way[1] * dist)
-            sus (s < 0) {
-                bail
-            }
+// The rays arrive ready-made, so this walks squares rather than working out
+// where the next one would be and whether it is still on the board.
+bet slides_to(squares, rays, by_side, kind) {
+    grind ray in rays {
+        grind s in ray {
             yo p = squares[s]
             sus (p != EMPTY) {
                 sus (color_of(p) == by_side && (kind_of(p) == kind || kind_of(p) == "Q")) {
                     bounce fax
                 }
+                // Something is in the way, so nothing further along this ray
+                // can reach the target. The next ray still can.
                 bail
             }
-            dist += 1
         }
     }
     bounce cap
@@ -287,19 +353,22 @@ bet pseudo_moves(pos) {
             pawn_moves(pos, n, piece, side, r, f, out)
             nvm
         }
+        // The tables are walked in the order they were built, which is the
+        // order the direction lists are written in -- so the moves come out in
+        // exactly the sequence they always did. That matters: the golden
+        // asserts whole move lists, and the engine breaks ties on the order it
+        // is handed.
         sus (kind == "N") {
-            grind way in KNIGHT_STEPS {
-                yo s = square_at(r + way[0], f + way[1])
-                sus (s >= 0 && (squares[s] == EMPTY || color_of(squares[s]) != side)) {
+            grind s in KNIGHT_TO[n] {
+                sus (squares[s] == EMPTY || color_of(squares[s]) != side) {
                     out.yeet_in(make_move(n, s, piece, squares[s], ghost, ghost))
                 }
             }
             nvm
         }
         sus (kind == "K") {
-            grind way in DIAGONALS + STRAIGHTS {
-                yo s = square_at(r + way[0], f + way[1])
-                sus (s >= 0 && (squares[s] == EMPTY || color_of(squares[s]) != side)) {
+            grind s in KING_TO[n] {
+                sus (squares[s] == EMPTY || color_of(squares[s]) != side) {
                     out.yeet_in(make_move(n, s, piece, squares[s], ghost, ghost))
                 }
             }
@@ -307,24 +376,20 @@ bet pseudo_moves(pos) {
             nvm
         }
 
-        yo ways = []
-        sus (kind == "B" || kind == "Q") { ways = ways + DIAGONALS }
-        sus (kind == "R" || kind == "Q") { ways = ways + STRAIGHTS }
-        grind way in ways {
-            yo dist = 1
-            bruh (fax) {
-                yo s = square_at(r + way[0] * dist, f + way[1] * dist)
-                sus (s < 0) {
-                    bail
-                }
+        yo rays = []
+        sus (kind == "B" || kind == "Q") { rays = rays + DIAGONAL_RAYS[n] }
+        sus (kind == "R" || kind == "Q") { rays = rays + STRAIGHT_RAYS[n] }
+        grind ray in rays {
+            grind s in ray {
                 sus (squares[s] == EMPTY) {
                     out.yeet_in(make_move(n, s, piece, EMPTY, ghost, ghost))
-                    dist += 1
                     nvm
                 }
                 sus (color_of(squares[s]) != side) {
                     out.yeet_in(make_move(n, s, piece, squares[s], ghost, ghost))
                 }
+                // Blocked: nothing further along this ray is reachable, though
+                // the next ray still is.
                 bail
             }
         }
