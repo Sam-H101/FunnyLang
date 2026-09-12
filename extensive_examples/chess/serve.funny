@@ -35,8 +35,8 @@ gimme computer
 
 gimme { WHITE, BLACK, EMPTY, new_board, legal_moves, apply_move, outcome,
         find_move_between, find_move, count_material, other_side, in_check,
-        king_square, position_key, square_at, rank_of, file_of,
-        to_fen } from "rules.funny"
+        king_square, position_key, square_at, rank_of, file_of, to_fen,
+        piece_letter } from "rules.funny"
 gimme { best_move_parallel, hands_for, verdict } from "engine.funny"
 gimme { read_request, build_response, json_response, STATUS_TEXT, SECURITY_HEADERS } from "http.funny"
 gimme { static_target, read_static } from "static.funny"
@@ -116,7 +116,7 @@ bet remember(move, side) {
         "to": move["to"],
         "piece": move["piece"],
         "captured_at": cleared,
-        "promotion": move["promotion"],
+        "promotion": move["promotion"] == EMPTY ? "" : piece_letter(move["promotion"]),
         "rook_from": rook_from,
         "rook_to": rook_to,
         "notation": move["notation"],
@@ -141,7 +141,7 @@ bet state_json() {
             "from": m["from"],
             "to": m["to"],
             "notation": m["notation"],
-            "promotion": m["promotion"],
+            "promotion": m["promotion"] == EMPTY ? "" : piece_letter(m["promotion"]),
             "capture": takes,
         })
     }
@@ -152,7 +152,9 @@ bet state_json() {
     }
     bounce json.spill({
         "ok": fax,
-        "squares": board["squares"],
+        // Letters on the wire. A piece is a number inside the rules, and that
+        // is an implementation detail the page has no business knowing.
+        "squares": board["squares"].glow_up(lowkey (p) => piece_letter(p)),
         "turn": board["turn"],
         "human": GAME["human"],
         "moves": board["moves"],

@@ -95,7 +95,7 @@ and it is written back as: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 
 -- the engine picks the same move every time --
   depth 1: b1c3 (score 50, 20 positions), and again: b1c3
   depth 2: b1c3 (score 0, 132 positions), and again: b1c3
-  depth 3: g1f3 (score 50, 1056 positions), and again: g1f3
+  depth 3: b1c3 (score 50, 1407 positions), and again: b1c3
 -- it finds mate in one --
   it plays: a1a8
   and that is mate: white wins
@@ -104,7 +104,7 @@ and it is written back as: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 
 -- it deals with the threat to its own queen --
   from d4 it plays: d4c5
 -- the same answer, split across real threads --
-  e2a6: same move fax, same score fax, same positions cap
+  e2a6: same move fax, same score fax, same positions fax
   a1a8: same move fax, same score fax, same positions cap
   threads start at depth: 5
   below that it asks for 1 worker
@@ -116,20 +116,22 @@ and it is written back as: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 
   and from the other side: fax
   the difficulties: 1 3 4
 -- the engine against itself --
-moves played: 18
+moves played: 36
 positions looked at: fax
     1. b1c3  b8c6  g1f3  g8f6  d2d3  d7d6  c1e3  a7a6
     9. d1d2  c8e6  a2a3  d8d7  e1c1  e8c8  c1b1  c8b8
-   17. d1e1  d8e8
+   17. d1e1  d8e8  e1d1  e6f5  d1e1  e7e6  e1d1  f8e7
+   25. d1e1  e8d8  e1d1  h8e8  d1e1  f5g6  e1d1  g6f5
+   33. d1e1  f5g6  e1d1  g6f5
 result: draw: threefold repetition
 white left: 15 black left: 15
-8  . k . . r b . r
-7  . p p q p p p p
-6  p . n p b n . .
-5  . . . . . . . .
+8  . k . r r . . .
+7  . p p q b p p p
+6  p . n p p n . .
+5  . . . . . b . .
 4  . . . . . . . .
 3  P . N P B N . .
 2  . P P Q P P P P
-1  . K . . R B . R
+1  . K . R . B . R
   a b c d e f g h
 -- done --

@@ -28,7 +28,7 @@
 
 gimme yapper
 
-flex deadass EMPTY = ""
+flex deadass EMPTY = 0
 flex deadass WHITE = "white"
 flex deadass BLACK = "black"
 
@@ -74,26 +74,87 @@ flex bet square_index(name) {
 
 // -- pieces ------------------------------------------------------------------------
 
+// -- pieces are numbers -------------------------------------------------------------
+//
+// 0 is an empty square, 1 to 6 are the white men in the order pawn, knight,
+// bishop, rook, queen, king, and 7 to 12 are the black ones in the same order.
+//
+// They used to be letters, and letters cost far more than they look. `kind_of`
+// was `yapper.SCREAM(piece)` and `is_white` compared a piece against its own
+// uppercase -- so both *allocated a string every time they were asked*, and
+// they are asked constantly. `evaluate` alone wanted four such allocations per
+// occupied square, at every leaf of the search.
+//
+// Letters remain the language everything outside this module speaks: FEN, the
+// board as it prints, and the JSON the page is sent. They are converted at
+// those edges, and nowhere else.
+flex deadass PAWN = 1
+flex deadass KNIGHT = 2
+flex deadass BISHOP = 3
+flex deadass ROOK = 4
+flex deadass QUEEN = 5
+flex deadass KING = 6
+
+// What separates a black piece from the white one of the same kind.
+flex deadass BLACK_OFFSET = 6
+
+deadass PIECE_LETTERS = ["", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]
+
+// One character per square including the empty one, for position keys. An
+// empty square has to contribute *something*: when it contributed nothing, two
+// different positions could produce the same key -- the same two pieces one
+// square further along the board joined to the same text -- and a threefold
+// repetition could be claimed for a position that had never repeated.
+deadass KEY_LETTERS = [".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]
+
+flex bet piece_letter(piece) {
+    bounce PIECE_LETTERS[piece]
+}
+
+// The letter back to the number, worked out once rather than searched for.
+bet build_letter_index() {
+    yo m = {}
+    grind i from 0 to PIECE_LETTERS.how_thicc() {
+        sus (PIECE_LETTERS[i] != "") {
+            m[PIECE_LETTERS[i]] = i
+        }
+    }
+    bounce m
+}
+deadass PIECE_BY_LETTER = build_letter_index()
+
+flex bet piece_from_letter(ch) {
+    bounce PIECE_BY_LETTER.get(ch, EMPTY)
+}
+
 flex bet is_white(piece) {
-    bounce piece != EMPTY && piece == yapper.SCREAM(piece)
+    bounce piece > EMPTY && piece <= KING
 }
 
 flex bet is_black(piece) {
-    bounce piece != EMPTY && piece == yapper.whisper(piece)
+    bounce piece > KING
 }
 
 flex bet color_of(piece) {
     sus (piece == EMPTY) { bounce ghost }
-    bounce is_white(piece) ? WHITE : BLACK
+    bounce piece <= KING ? WHITE : BLACK
 }
 
 flex bet other_side(side) {
     bounce side == WHITE ? BLACK : WHITE
 }
 
-// The piece letter without its colour: "N" for both knights.
+// The piece without its colour: KNIGHT for both knights.
 flex bet kind_of(piece) {
-    bounce yapper.SCREAM(piece)
+    sus (piece == EMPTY) {
+        bounce EMPTY
+    }
+    bounce piece > KING ? piece - BLACK_OFFSET : piece
+}
+
+// That kind, in the colour asked for.
+flex bet piece_for(side, kind) {
+    bounce side == WHITE ? kind : kind + BLACK_OFFSET
 }
 
 // -- the position --------------------------------------------------------------------
@@ -105,12 +166,12 @@ flex bet new_board() {
     grind i from 0 to 64 {
         squares.yeet_in(EMPTY)
     }
-    deadass BACK = ["R", "N", "B", "Q", "K", "B", "N", "R"]
+    deadass BACK = [ROOK, KNIGHT, BISHOP, QUEEN, KING, BISHOP, KNIGHT, ROOK]
     grind f from 0 to 8 {
         squares[square_at(0, f)] = BACK[f]
-        squares[square_at(1, f)] = "P"
-        squares[square_at(6, f)] = "p"
-        squares[square_at(7, f)] = yapper.whisper(BACK[f])
+        squares[square_at(1, f)] = PAWN
+        squares[square_at(6, f)] = PAWN + BLACK_OFFSET
+        squares[square_at(7, f)] = BACK[f] + BLACK_OFFSET
     }
     bounce {
         "squares": squares,
@@ -151,7 +212,10 @@ flex bet position_key(pos) {
             rights = rights + k
         }
     }
-    bounce pos["squares"].join("") + "|" + pos["turn"] + "|" +
+    // One character per square, empty ones included -- see KEY_LETTERS for why
+    // an empty square may not simply contribute nothing.
+    yo board = pos["squares"].glow_up(lowkey (p) => KEY_LETTERS[p]).join("")
+    bounce board + "|" + pos["turn"] + "|" +
            (rights == "" ? "-" : rights) + "|" + to_yap(pos["ep"])
 }
 
@@ -252,14 +316,14 @@ flex bet attacked_by(squares, target, by_side) {
     yo pawn_from = by_side == WHITE ? WHITE_PAWN_FROM[target] : BLACK_PAWN_FROM[target]
     grind s in pawn_from {
         yo p = squares[s]
-        sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "P") {
+        sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == PAWN) {
             bounce fax
         }
     }
 
     grind s in KNIGHT_TO[target] {
         yo p = squares[s]
-        sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "N") {
+        sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == KNIGHT) {
             bounce fax
         }
     }
@@ -267,15 +331,15 @@ flex bet attacked_by(squares, target, by_side) {
     // The king, one square in any direction.
     grind s in KING_TO[target] {
         yo p = squares[s]
-        sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == "K") {
+        sus (p != EMPTY && color_of(p) == by_side && kind_of(p) == KING) {
             bounce fax
         }
     }
 
     // Sliding pieces: walk outwards until something blocks. A bishop or queen
     // on a diagonal, a rook or queen on a rank or file.
-    sus (slides_to(squares, DIAGONAL_RAYS[target], by_side, "B")) { bounce fax }
-    sus (slides_to(squares, STRAIGHT_RAYS[target], by_side, "R")) { bounce fax }
+    sus (slides_to(squares, DIAGONAL_RAYS[target], by_side, BISHOP)) { bounce fax }
+    sus (slides_to(squares, STRAIGHT_RAYS[target], by_side, ROOK)) { bounce fax }
     bounce cap
 }
 
@@ -287,7 +351,7 @@ bet slides_to(squares, rays, by_side, kind) {
         grind s in ray {
             yo p = squares[s]
             sus (p != EMPTY) {
-                sus (color_of(p) == by_side && (kind_of(p) == kind || kind_of(p) == "Q")) {
+                sus (color_of(p) == by_side && (kind_of(p) == kind || kind_of(p) == QUEEN)) {
                     bounce fax
                 }
                 // Something is in the way, so nothing further along this ray
@@ -300,7 +364,7 @@ bet slides_to(squares, rays, by_side, kind) {
 }
 
 flex bet king_square(squares, side) {
-    yo want = side == WHITE ? "K" : "k"
+    yo want = piece_for(side, KING)
     grind n from 0 to 64 {
         sus (squares[n] == want) {
             bounce n
@@ -321,15 +385,25 @@ flex bet in_check(pos, side) {
 // -- generating moves ----------------------------------------------------------------
 
 bet make_move(src, dst, piece, captured, promotion, special) {
+    // The notation always spells the promoted piece in lower case, whatever
+    // colour it is: e7e8q, never e7e8Q.
+    //
+    // Worked out before the record rather than inside it. A ternary whose
+    // condition ends a line will not parse: the condition alone is already a
+    // complete expression, so the newline finishes it and the `?` underneath
+    // begins a statement that makes no sense.
+    yo mark = ""
+    sus (promotion != ghost && promotion != EMPTY) {
+        mark = yapper.whisper(piece_letter(promotion))
+    }
     bounce {
         "from": src,
         "to": dst,
         "piece": piece,
         "captured": captured,
-        "promotion": promotion ?? "",
+        "promotion": promotion ?? EMPTY,
         "special": special ?? "",
-        "notation": square_name(src) + square_name(dst) +
-                    (promotion == ghost || promotion == "" ? "" : yapper.whisper(promotion)),
+        "notation": square_name(src) + square_name(dst) + mark,
     }
 }
 
@@ -349,7 +423,7 @@ bet pseudo_moves(pos) {
         yo r = rank_of(n)
         yo f = file_of(n)
 
-        sus (kind == "P") {
+        sus (kind == PAWN) {
             pawn_moves(pos, n, piece, side, r, f, out)
             nvm
         }
@@ -358,7 +432,7 @@ bet pseudo_moves(pos) {
         // exactly the sequence they always did. That matters: the golden
         // asserts whole move lists, and the engine breaks ties on the order it
         // is handed.
-        sus (kind == "N") {
+        sus (kind == KNIGHT) {
             grind s in KNIGHT_TO[n] {
                 sus (squares[s] == EMPTY || color_of(squares[s]) != side) {
                     out.yeet_in(make_move(n, s, piece, squares[s], ghost, ghost))
@@ -366,7 +440,7 @@ bet pseudo_moves(pos) {
             }
             nvm
         }
-        sus (kind == "K") {
+        sus (kind == KING) {
             grind s in KING_TO[n] {
                 sus (squares[s] == EMPTY || color_of(squares[s]) != side) {
                     out.yeet_in(make_move(n, s, piece, squares[s], ghost, ghost))
@@ -377,8 +451,8 @@ bet pseudo_moves(pos) {
         }
 
         yo rays = []
-        sus (kind == "B" || kind == "Q") { rays = rays + DIAGONAL_RAYS[n] }
-        sus (kind == "R" || kind == "Q") { rays = rays + STRAIGHT_RAYS[n] }
+        sus (kind == BISHOP || kind == QUEEN) { rays = rays + DIAGONAL_RAYS[n] }
+        sus (kind == ROOK || kind == QUEEN) { rays = rays + STRAIGHT_RAYS[n] }
         grind ray in rays {
             grind s in ray {
                 sus (squares[s] == EMPTY) {
@@ -442,8 +516,8 @@ bet add_pawn_move(src, dst, piece, captured, promoting, out) {
         out.yeet_in(make_move(src, dst, piece, captured, ghost, ghost))
         bounce ghost
     }
-    grind kind in ["Q", "R", "B", "N"] {
-        yo as_played = is_white(piece) ? kind : yapper.whisper(kind)
+    grind kind in [QUEEN, ROOK, BISHOP, KNIGHT] {
+        yo as_played = piece_for(color_of(piece), kind)
         out.yeet_in(make_move(src, dst, piece, captured, as_played, "promote"))
     }
 }
@@ -549,7 +623,7 @@ flex bet apply_move(pos, m) {
     yo piece = m["piece"]
 
     sq[m["from"]] = EMPTY
-    sq[m["to"]] = m["promotion"] == "" ? piece : m["promotion"]
+    sq[m["to"]] = m["promotion"] == EMPTY ? piece : m["promotion"]
 
     sus (m["special"] == "ep") {
         // The captured pawn is not on the square the capturer lands on.
@@ -582,7 +656,7 @@ flex bet apply_move(pos, m) {
 
     // The fifty-move counter resets on a capture or a pawn move, and on
     // nothing else.
-    sus ((m["captured"] != EMPTY && m["captured"] != ghost) || kind_of(piece) == "P") {
+    sus ((m["captured"] != EMPTY && m["captured"] != ghost) || kind_of(piece) == PAWN) {
         next["quiet"] = 0
     } nah {
         next["quiet"] = pos["quiet"] + 1
@@ -597,7 +671,7 @@ flex bet apply_move(pos, m) {
 bet lose_castling_rights(pos, m) {
     yo rights = pos["castling"]
     yo kind = kind_of(m["piece"])
-    sus (kind == "K") {
+    sus (kind == KING) {
         sus (is_white(m["piece"])) { rights["K"] = cap; rights["Q"] = cap }
         nah { rights["k"] = cap; rights["q"] = cap }
     }
@@ -621,10 +695,12 @@ flex bet find_move(moves, notation) {
 flex bet find_move_between(moves, src, dst, promotion) {
     grind m in moves {
         sus (m["from"] == src && m["to"] == dst) {
-            sus (m["promotion"] == "" || promotion == ghost || promotion == "") {
+            sus (m["promotion"] == EMPTY || promotion == ghost || promotion == "") {
                 bounce m
             }
-            sus (yapper.whisper(m["promotion"]) == yapper.whisper(promotion)) {
+            // The caller is outside this module -- the page, or somebody
+            // typing -- so what arrives is a letter, not one of our numbers.
+            sus (yapper.whisper(piece_letter(m["promotion"])) == yapper.whisper(promotion)) {
                 bounce m
             }
         }
@@ -667,10 +743,10 @@ bet insufficient_material(pos) {
             nvm
         }
         yo kind = kind_of(p)
-        sus (kind == "K") {
+        sus (kind == KING) {
             nvm
         }
-        sus (kind == "N" || kind == "B") {
+        sus (kind == KNIGHT || kind == BISHOP) {
             minor += 1
             sus (minor > 1) {
                 bounce cap
@@ -686,7 +762,7 @@ flex bet count_material(pos, side) {
     yo n = 0
     grind i from 0 to 64 {
         yo p = pos["squares"][i]
-        sus (p != EMPTY && color_of(p) == side && kind_of(p) != "K") {
+        sus (p != EMPTY && color_of(p) == side && kind_of(p) != KING) {
             n += 1
         }
     }
@@ -731,7 +807,7 @@ flex bet from_fen(text) {
         }
         yo s = square_at(rank, file)
         sus (s >= 0) {
-            squares[s] = ch
+            squares[s] = piece_from_letter(ch)
         }
         file += 1
     }
@@ -777,7 +853,7 @@ flex bet to_fen(pos) {
                 row = row + to_yap(gap)
                 gap = 0
             }
-            row = row + p
+            row = row + piece_letter(p)
         }
         sus (gap > 0) {
             row = row + to_yap(gap)
@@ -807,7 +883,7 @@ flex bet render(pos) {
         yo cells = [to_yap(r + 1) + " "]
         grind f from 0 to 8 {
             yo p = pos["squares"][square_at(r, f)]
-            cells.yeet_in(p == EMPTY ? "." : p)
+            cells.yeet_in(p == EMPTY ? "." : piece_letter(p))
         }
         lines.yeet_in(cells.join(" "))
     }

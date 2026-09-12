@@ -157,20 +157,47 @@ back elsewhere in the tree reads it at the wrong distance. And anything below
 depth 2, because the key is the sixty-four squares joined into a string, which
 is only worth building when the subtree it might save is larger than the key.
 
-| | before | after |
-| --- | --- | --- |
-| depth 3 | 2,500 nodes, 686 ms | **1,530 nodes, 430 ms** |
-| depth 4 | 5,940 nodes, 5,577 ms | **3,384 nodes, 2,927 ms** |
-| depth 5 | 128,630 nodes, 39.8 s | **30,654 nodes, 9.5 s** |
-| depth 4, from the opening | 9,774 nodes, 3,128 ms | **2,741 nodes, 838 ms** |
+### The first version of this was broken, and the numbers were a lie
 
-One thing did change about how it plays. From the opening at depth 3 it now
-answers g1f3 where it used to answer b1c3 — **at the same score of 50**. The two
-are a genuine tie, and because a table hands back bounds as well as exact
-scores, a bound arriving at the root can flip which of two equal moves is met
-first. It is still perfectly deterministic, and the golden still asserts that
-asking twice gives the same answer. Every other assertion in the golden — the
-whole self-play game, every perft count, every rule — is unchanged.
+It is worth writing down what went wrong, because the bug flattered itself.
+
+The key was `pos["squares"].join("")`, back when a square held a letter and an
+empty square held `""`. An empty square therefore contributed **nothing**, so
+the key recorded the *sequence* of the pieces and not where any of them stood.
+The board after 1.a3 and the board after 1.a4 both serialise to
+`RNBQKBNRPPPPPPPPpppppppprnbqkbnr`. Across all twenty legal first moves the old
+scheme produced **three distinct keys instead of twenty**.
+
+The table was therefore answering probes with scores belonging to entirely
+different positions, and the node counts fell dramatically because of it. Every
+figure first published for this section — a halving at depth 3, a four-fold cut
+at depth 5 — measured that, and none of it was real.
+
+It was not only a performance bug. `position_key` is also what `outcome` uses
+for **threefold repetition**, which is a rule of chess rather than an
+optimisation, so a game could be declared drawn that had never repeated. The
+self-play game in the golden ended at 18 moves in exactly such a phantom draw;
+with correct keys it runs to 36 and reaches a real one.
+
+The fix is that every square contributes a character, empty ones included.
+
+### What it is actually worth
+
+| | pre-table | with a correct table |
+| --- | --- | --- |
+| depth 3 | 2,500 nodes | 2,500 nodes |
+| depth 4 | 5,940 nodes | 5,940 nodes |
+| depth 5 | 128,630 nodes | **112,097 nodes** |
+
+Nothing below depth 5, and about 13% there. That is disappointing but it is
+structural: `TT_FROM` is 2, so only nodes with at least two ply remaining are
+probed, and the earliest a genuine transposition can arise is four ply in
+(1.Nf3 d5 2.d4 meeting 1.d4 d5 2.Nf3). Below depth 5 there is almost nothing
+for it to find. It earns its keep as the search goes deeper, and not before.
+
+The real gains since the pre-table baseline came from the two changes that
+follow this one — the attack tables and the integer encoding — which cut the
+cost of every node without changing how many there are.
 
 ## Precomputed attack tables
 
@@ -196,12 +223,16 @@ computing where the next square would be and whether it is still on the board.
 pseudo-move to check that a move does not leave its own king in check — it is
 the hottest thing in the profile.
 
-| | before | after |
-| --- | --- | --- |
-| 200 × `legal_moves` | 392 ms | **303 ms** |
-| depth 3 | 432 ms | **368 ms** |
-| depth 4 | 2,927 ms | **2,356 ms** |
-| depth 5 | 9,513 ms | **8,007 ms** |
+`legal_moves` is the honest measure here, because it never touches the
+transposition table and so was never affected by the key bug. Across the whole
+of this work it went:
+
+| after | 200 × `legal_moves` |
+| --- | --- |
+| the sort fixes | 403 ms |
+| the transposition table | 392 ms (it does nothing for move generation, as expected) |
+| the attack tables | **303 ms** |
+| the integer encoding | **261 ms** |
 
 Node counts are identical to the digit, and the golden came out byte-identical.
 That is the point: this changes how the same work is done, not what work is
@@ -209,6 +240,35 @@ done. The tables are built by walking the direction lists in the order they are
 written, so moves are still generated in exactly the sequence they always were
 — which matters, because the golden asserts whole move lists and the engine
 breaks its ties on the order it is handed.
+
+## Pieces are numbers
+
+A piece used to be a letter — `"P"` for a white pawn, `"n"` for a black knight
+— which reads beautifully and cost a great deal. `kind_of` was
+`yapper.SCREAM(piece)` and `is_white` compared a piece against its own
+uppercase, so **both allocated a string every time they were asked**, and they
+are asked constantly. `evaluate` alone wanted four such allocations for every
+occupied square, at every leaf of the search.
+
+A piece is now a number: 0 empty, 1–6 the white men in the order pawn, knight,
+bishop, rook, queen, king, and 7–12 the black ones. `color_of` is a comparison,
+`kind_of` is a subtraction, and neither allocates anything.
+
+Letters remain the language everything *outside* the rules speaks — FEN, the
+board as it prints, and the JSON the page is sent — and they are converted at
+those edges and nowhere else. The browser was not changed at all: an internal
+encoding is not something the page should ever have to know.
+
+| | before | after |
+| --- | --- | --- |
+| 200 × `legal_moves` | 303 ms | **261 ms** |
+
+Taken together with the attack tables, and measured against the pre-table
+baseline on identical node counts, the two of them are worth about **1.41×**:
+depth 3 went 686 → 485 ms and depth 4 went 5,577 → 3,945 ms.
+
+This is also the change that exposed the key collision, since giving every
+square a character was exactly the fix for it.
 
 ## Threads
 
@@ -236,30 +296,29 @@ sequential figure, and the split is finally worth something:
 | 4 | 5,655 ms | **1,750 ms** | **3.23×** |
 | 5 | 39.8 s | **16.3 s** | **2.44×** |
 
-**And then the transposition table took most of that back.** The two
-optimisations pull against each other: a table pays off by sharing what it has
-learned across the whole tree, and the root split cuts the tree into eight VMs
-that share nothing, so each worker builds its own table from nothing. The same
-measurement, on the same machine, from the same position, after the table:
+As everything else got faster, the split's position moved. Measured as the code
+now stands, on the same machine and from the same position:
 
 | depth | one thread | 8 threads | |
 | --- | --- | --- | --- |
-| 4 | **2,927 ms** | 3,612 ms | 0.81× |
-| 5 | 9,513 ms | **8,862 ms** | 1.07× |
+| 4 | 3,945 ms | 3,844 ms | 1.03× |
+| 5 | 24,136 ms | **11,343 ms** | **2.13×** |
 
-The precomputed attack tables then widened the gap again. They make one thread
-and eight faster by the same proportion, while the split goes on paying its own
-overheads regardless:
+At depth 4 it is a wash — the workers cannot recover what it costs to start
+eight VMs. At depth 5 it is worth having. So `PARALLEL_FROM` is 5: below it
+`hands_for` asks for one worker and the game runs in sequence.
 
-| depth | one thread | 8 threads | |
-| --- | --- | --- | --- |
-| 4 | **2,356 ms** | 3,700 ms | 0.64× |
-| 5 | 8,007 ms | **7,286 ms** | 1.10× |
+The one thing the workers give up is the transposition table, since each is a
+separate VM and none of them can see what the others have learned. That shows
+in the node counts — 128,630 split against 112,097 in sequence at depth 5 —
+and it is why the speedup is 2.1× rather than something closer to the number of
+processors. Handing each worker the parent's table to start from would help; it
+is plain data, so it can cross, but it is a copy per worker and has not been
+tried.
 
-The threaded runs look at 2.4× the positions one thread does. Eight processors
-buy ten percent at depth 5, and at depth 4 they cost a third of the speed. So
-`PARALLEL_FROM` is 5 rather than 4 — the point where it stops being a loss —
-and in a served game, which caps at depth 5, the threads now almost never run.
+An earlier version of this README claimed the table had made the threads
+worthless. That was measured against the broken key described above, whose
+false hits made the sequential search look far better than it was.
 
 That is an honest result rather than a tidy one. Making them worth having again
 would mean handing each worker the parent's table to start from. It is plain

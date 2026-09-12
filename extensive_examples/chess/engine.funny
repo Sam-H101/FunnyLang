@@ -21,9 +21,10 @@ gimme stash
 gimme interns
 gimme filez
 
-gimme { WHITE, BLACK, EMPTY, legal_moves, legal_moves_unsorted, apply_move,
-        outcome, in_check, other_side, color_of, kind_of, is_white, rank_of,
-        file_of, square_at, to_fen, position_key } from "rules.funny"
+gimme { WHITE, BLACK, EMPTY, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING,
+        legal_moves, legal_moves_unsorted, apply_move, outcome, in_check,
+        other_side, color_of, kind_of, is_white, rank_of, file_of, square_at,
+        to_fen, position_key } from "rules.funny"
 
 flex deadass VALUES = {"P": 100, "N": 320, "B": 330, "R": 500, "Q": 900, "K": 20000}
 
@@ -88,17 +89,35 @@ flex deadass TABLES = {
            20, 30, 10,  0,  0, 10, 30, 20],
 }
 
+// -- the same two, indexed by piece rather than by letter --------------------------
+//
+// `VALUES` and `TABLES` above are written with letters because that is how a
+// person reads them, and they are exported that way. The search does not want a
+// letter: a piece is a number now, so these are the same contents arranged to
+// be reached by that number. Index 0 is the empty square and is never asked
+// for. Built once, at load.
+deadass VALUE_BY_KIND = [0, 100, 320, 330, 500, 900, 20000]
+
+bet build_table_by_kind() {
+    yo out = [[]]
+    grind letter in ["P", "N", "B", "R", "Q", "K"] {
+        out.yeet_in(TABLES[letter])
+    }
+    bounce out
+}
+deadass TABLE_BY_KIND = build_table_by_kind()
+
 // The board is 0-is-a1 and the tables are written a8 first, so white reads
 // them upside down and black reads them straight.
 bet table_bonus(piece, n) {
     yo kind = kind_of(piece)
-    sus (!TABLES.has(kind)) {
+    sus (kind < PAWN || kind > KING) {
         bounce 0
     }
     yo r = rank_of(n)
     yo f = file_of(n)
     yo row = is_white(piece) ? 7 - r : r
-    bounce TABLES[kind][row * 8 + f]
+    bounce TABLE_BY_KIND[kind][row * 8 + f]
 }
 
 // -- scoring a position --------------------------------------------------------------
@@ -111,7 +130,7 @@ flex bet evaluate(pos, side) {
         sus (piece == EMPTY) {
             nvm
         }
-        yo worth = VALUES.get(kind_of(piece), 0) + table_bonus(piece, n)
+        yo worth = VALUE_BY_KIND[kind_of(piece)] + table_bonus(piece, n)
         score += color_of(piece) == side ? worth : -worth
     }
     bounce score
@@ -127,10 +146,10 @@ flex bet evaluate(pos, side) {
 bet gain_of(m) {
     yo gain = 0
     sus (m["captured"] != EMPTY && m["captured"] != ghost) {
-        gain = VALUES.get(kind_of(m["captured"]), 0) * 10 - VALUES.get(kind_of(m["piece"]), 0)
+        gain = VALUE_BY_KIND[kind_of(m["captured"])] * 10 - VALUE_BY_KIND[kind_of(m["piece"])]
     }
-    sus (m["promotion"] != "") {
-        gain += VALUES.get(kind_of(m["promotion"]), 0)
+    sus (m["promotion"] != EMPTY) {
+        gain += VALUE_BY_KIND[kind_of(m["promotion"])]
     }
     bounce gain
 }
