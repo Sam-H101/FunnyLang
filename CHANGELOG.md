@@ -2,6 +2,65 @@
 
 All notable changes to FunnyLang are documented here.
 
+## [2.1.1] — 2026-09-12 — chess
+
+One worked example, plus the mechanics of shipping it. `extensive_examples/chess/` is the only
+directory with any behaviour in it: no runtime, no standard library, no new syntax. The rest of
+this release is the version constant in the three files that hold it, and the embedded toolchain
+re-generated because two of those three live in `selfhost/`.
+
+Nothing you can write in FunnyLang behaves differently than it did in 2.1.0, which is why this is
+a patch number and not a minor one.
+
+### Added: `extensive_examples/chess/`
+
+Chess, with FunnyLang playing one side. The rules, an engine, a game you can play in a terminal,
+and an HTTPS server that puts the board in a browser — all on the same modules.
+
+- **The rules, checked by perft.** Counting the leaf nodes reachable in exactly N moves gives a
+  number every correct chess program agrees on, and it is sensitive to precisely the rules that are
+  easy to get wrong: a castling case, an en passant, a promotion counted once instead of four
+  times, a move that leaves your own king in check. 20, 400, 8,902 and 197,281 from the opening,
+  and 48 and 2,039 from the standard position that actually exercises castling, en passant and
+  promotion. All agree.
+- **The engine** is negamax with alpha-beta, piece-square tables and move ordering, and it is
+  *deterministic* — ties break on the move's coordinates — which is what lets the golden assert a
+  whole game move for move rather than merely that one was played.
+- **It thinks while you do.** Pick a piece up and the server starts working out its reply to every
+  move that piece could make. Real engines ponder by guessing which move you will play and are
+  usually wrong; the page says which piece was touched, and a piece has only a handful of moves, so
+  all of them are covered. A pondered reply is identical to one computed on demand — the same move
+  and the same number of positions looked at — because `best_move` depends on the position in front
+  of it and nothing else.
+- **Sockets, threads and TLS from the standard library.** `interns` for the parallel root search and
+  the speculative workers, `internet.open_secure_shop` for HTTPS, `json` for the API. The browser is
+  told nothing about how any of it works — pieces cross the wire as letters, never as the numbers
+  the rules use internally.
+
+### The optimisation pass, and what it cost to learn
+
+The engine started at ten seconds for a depth-4 reply and finishes at 1.3. The route there is
+written up in the example's own README, including the parts that did not work:
+
+- Generating legal moves was copying the whole board once per pseudo-move to ask whether the king
+  was left in check. A move can only expose its own king if the piece that moved was shielding it,
+  which is to say pinned — so pins are found in one pass out from the king and the copy is skipped
+  entirely. 3,945 ms to 1,577.
+- A Zobrist hash **made the engine slower** on its own, by five to nine percent, because the string
+  key it replaced was only ever built at the minority of nodes that probed the table while the
+  incremental hash runs inside `apply_move`, the hottest function there is. It only paid once the
+  cheap key made it affordable to probe a ply shallower — the win was in node counts, never in
+  per-node cost.
+- Splitting the root across eight threads is **worth 0.30× at depth 4** and 2.10× at depth 5, and
+  the gap widened as the single-threaded engine improved: each worker is a separate VM whose
+  transposition table starts empty and is shared with nobody.
+
+Two defects surfaced along the way. U+265F BLACK CHESS PAWN is a standard emoji, so browsers drew
+it from the emoji font where CSS `color` means nothing and every pawn came out black whichever side
+it belonged to. And a position key built by joining the squares let an empty square contribute
+nothing, so all twenty opening positions collapsed onto three keys — which broke the transposition
+table and, far worse, threefold repetition, letting the engine claim draws that had never happened.
+
 ## [2.1.0] — 2026-09-12 — the runtime pass
 
 `gimme interns` gave FunnyLang real OS threads; this is the pass over `native/` that makes every

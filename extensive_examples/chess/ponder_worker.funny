@@ -1,0 +1,39 @@
+// ponder_worker.funny — the engine's answer to one position, worked out before
+// anybody asks for it.
+//
+// The server hires one of these for each move the player might be about to
+// make, the moment they pick a piece up. If they play one of them, the reply
+// is already sitting there.
+//
+// This is only sound because `best_move` is a function of the position and
+// nothing else: it builds a fresh transposition table every call, so an answer
+// computed here ahead of time is identical to the one computed on demand. If
+// the table were kept between moves, a pondered answer would depend on which
+// speculative lines happened to run first, and the engine would start giving
+// different moves depending on what the player nearly did.
+//
+//     in   {"fen": "...", "depth": 4}
+//     out  {"move": "g8f6", "score": -10, "nodes": 5940}
+//
+// A position with nothing legal in it comes back with an empty move rather
+// than an error: it is checkmate or stalemate, which the server works out for
+// itself and does not need a worker to tell it.
+
+gimme interns
+
+gimme { from_fen } from "rules.funny"
+gimme { best_move } from "engine.funny"
+
+yo job = interns.assignment()
+yo pos = from_fen(job["fen"])
+yo thought = best_move(pos, job["depth"])
+
+sus (thought["move"] == ghost) {
+    interns.deliver({"move": "", "score": 0, "nodes": thought["nodes"]})
+} nah {
+    interns.deliver({
+        "move": thought["move"]["notation"],
+        "score": thought["score"],
+        "nodes": thought["nodes"],
+    })
+}

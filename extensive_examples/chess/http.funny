@@ -1,0 +1,232 @@
+// http.funny — enough HTTP to serve a board and take a move.
+//
+// A third small HTTP parser in this repository, and the reason is worth
+// stating rather than hiding. `web_server/` has the readable one and
+// `web_server_https/` the hardened one, but a module reached through a parent
+// directory cannot be used by an `interns` worker (RUNTIME_PLAN.md §9), so
+// examples that hire workers carry their own -- and once one example does, the
+// others reading alike is worth more than the saving.
+//
+// This one is a chat parser's opposite: `chat/http.funny` deliberately has no
+// request bodies, because everything a chat client says arrives as a WebSocket
+// frame. A checkers client says `POST /api/move` with JSON in the body, so
+// bodies are exactly the part that has to be here.
+//
+// What is absent and stays absent: chunked encoding, keep-alive, multipart,
+// and every method but GET, HEAD, POST and OPTIONS. A server that claimed
+// those without having them would be worse than one that says it has not.
+//
+// Nothing here touches a socket: `read_request` is driven by a `read_more(ms)`
+// function, which is what lets the golden run the whole API from a string.
+
+gimme yapper
+gimme clock
+
+flex deadass LIMITS = {
+    "request_line": 8192,
+    "header_bytes": 16384,
+    "header_count": 64,
+    "body_bytes": 65536,
+    "head_seconds": 5,
+    "body_seconds": 10,
+}
+
+flex deadass METHODS = ["GET", "HEAD", "POST", "OPTIONS"]
+
+flex deadass STATUS_TEXT = {
+    200: "OK",
+    204: "No Content",
+    400: "Bad Request",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    408: "Request Timeout",
+    413: "Content Too Large",
+    414: "URI Too Long",
+    415: "Unsupported Media Type",
+    431: "Request Header Fields Too Large",
+    500: "Internal Server Error",
+}
+
+// The page loads a stylesheet and a script from this origin and talks to its
+// own API. It does nothing else, so the policy says nothing else -- and the
+// page carries no inline script or style for it to have to allow.
+flex deadass SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; " +
+                               "object-src 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+}
+
+bet ms_until(deadline) {
+    bounce to_int((deadline - clock.now()) * 1000)
+}
+
+bet refusal(status) {
+    bounce {"ok": cap, "status": status}
+}
+
+// -- reading a request ------------------------------------------------------------------
+
+// One request. `read_more(ms)` is awaited for more text: it gives back what
+// arrived, `""` when the client hung up, or `ghost` when nothing came in time.
+//
+// The answer is a groupchat. `ok` says whether it is a request; when it is
+// not, `status` is what to send back, or `ghost` when the client left and
+// there is nobody left to answer.
+flex async_ngl bet read_request(read_more) {
+    yo deadline = clock.now() + LIMITS["head_seconds"]
+    yo buffer = ""
+    yo split_at = -1
+    yo sep_len = 4
+
+    bruh (fax) {
+        split_at = yapper.index_of(buffer, "\r\n\r\n")
+        sep_len = 4
+        sus (split_at < 0) {
+            split_at = yapper.index_of(buffer, "\n\n")
+            sep_len = 2
+        }
+        sus (split_at >= 0) {
+            bail
+        }
+        // Checked against what is buffered so far, so a client that streams
+        // headers for ever is cut off at the limit rather than at memory.
+        yo first_nl = yapper.index_of(buffer, "\n")
+        sus (first_nl < 0 && yapper.byte_len(buffer) > LIMITS["request_line"]) {
+            bounce refusal(414)
+        }
+        sus (yapper.byte_len(buffer) > LIMITS["request_line"] + LIMITS["header_bytes"]) {
+            bounce refusal(431)
+        }
+        yo left = ms_until(deadline)
+        sus (left <= 0) {
+            // A connection that said nothing at all gets no answer: it is a
+            // health check or a port scan, and 408 to silence is noise.
+            bounce refusal(buffer == "" ? ghost : 408)
+        }
+        yo more = await_fr read_more(left)
+        sus (more == "") {
+            bounce refusal(ghost)
+        }
+        sus (more != ghost) {
+            buffer = buffer + more
+        }
+    }
+
+    yo head = yapper.slice(buffer, 0, split_at)
+    yo body = yapper.slice(buffer, split_at + sep_len, buffer.how_thicc())
+
+    yo lines = []
+    grind raw in yapper.split(head, "\n") {
+        lines.yeet_in(yapper.rtrim(raw))
+    }
+    sus (lines.how_thicc() == 0 || lines[0] == "") {
+        bounce refusal(400)
+    }
+
+    yo parts = yapper.words(lines[0])
+    sus (parts.how_thicc() < 2) {
+        bounce refusal(400)
+    }
+    yo method = parts[0]
+    yo target = parts[1]
+    // Anything with two words on its first line would otherwise parse, so
+    // "hello there" from a port scanner would come back as a 404 -- which
+    // claims "no such page" about something that was never a request.
+    sus (!yapper.starts_with(target, "/")) {
+        bounce refusal(400)
+    }
+    sus (!METHODS.contains(method)) {
+        bounce refusal(405)
+    }
+
+    sus (lines.how_thicc() - 1 > LIMITS["header_count"]) {
+        bounce refusal(431)
+    }
+    yo headers = {}
+    grind i from 1 to lines.how_thicc() {
+        yo line = lines[i]
+        yo colon = yapper.index_of(line, ":")
+        sus (colon > 0) {
+            // Folded to lower case at the door, so no caller has to remember
+            // that header names are case-insensitive.
+            headers[yapper.whisper(yapper.trim(yapper.slice(line, 0, colon)))] =
+                yapper.trim(yapper.slice(line, colon + 1, line.how_thicc()))
+        }
+    }
+
+    // A body exists only if the request said how long it is. Chunked encoding
+    // is not supported, and saying so beats guessing where a body ends.
+    sus (headers.has("transfer-encoding")) {
+        bounce refusal(415)
+    }
+    yo want = to_int(headers.get("content-length", "0"))
+    sus (want < 0 || want > LIMITS["body_bytes"]) {
+        bounce refusal(413)
+    }
+    yo body_deadline = clock.now() + LIMITS["body_seconds"]
+    bruh (yapper.byte_len(body) < want) {
+        yo left = ms_until(body_deadline)
+        sus (left <= 0) {
+            bounce refusal(408)
+        }
+        yo more = await_fr read_more(left)
+        sus (more == "") {
+            // The body stopped early, which is a broken request rather than a
+            // short one.
+            bounce refusal(400)
+        }
+        sus (more != ghost) {
+            body = body + more
+        }
+    }
+
+    yo path = target
+    yo query = target
+    yo qmark = yapper.index_of(target, "?")
+    sus (qmark >= 0) {
+        path = yapper.slice(target, 0, qmark)
+        query = yapper.slice(target, qmark + 1, target.how_thicc())
+    } nah {
+        query = ""
+    }
+
+    bounce {"ok": fax, "method": method, "target": target, "path": path, "query": query,
+            "headers": headers, "body": body, "status": ghost}
+}
+
+// -- writing a response -------------------------------------------------------------
+
+// `body` may be a yapstring or a blob. Content-Length counts **bytes**, which
+// for a string is not the same as its length in characters.
+flex bet build_response(status, body, headers, head_only = cap) {
+    yo is_bytes = what_is_it(body) == "blob"
+    yo length = is_bytes ? how_thicc(body) : yapper.byte_len(body)
+
+    yo lines = ["HTTP/1.1 " + to_yap(status) + " " + STATUS_TEXT.get(status, "Whatever")]
+    lines.yeet_in("Content-Length: " + to_yap(length))
+    lines.yeet_in("Connection: close")
+    lines.yeet_in("Server: funnylang-chess")
+    grind name in (headers ?? {}).keys() {
+        lines.yeet_in(name + ": " + (headers ?? {}).get(name))
+    }
+
+    yo head = lines.join("\r\n") + "\r\n\r\n"
+    // A HEAD gets every header and no body -- including the Content-Length the
+    // body would have had, which is the whole point of asking.
+    sus (head_only == fax) {
+        bounce head
+    }
+    sus (is_bytes) {
+        bounce yapper.to_blob(head) + body
+    }
+    bounce head + body
+}
+
+// A JSON answer, which is most of what this server sends.
+flex bet json_response(status, text) {
+    yo headers = {"Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"}
+    headers.merge(SECURITY_HEADERS)
+    bounce build_response(status, text, headers, cap)
+}

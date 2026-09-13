@@ -1,0 +1,595 @@
+// serve.funny — the board in a browser, and the engine behind it.
+//
+//     funny run extensive_examples/chess/serve.funny
+//     funny run extensive_examples/chess/serve.funny -- 8443 --depth 4
+//
+//   PORT            the port (default 8443; 0 picks a free one)
+//   --host H        where to listen (default 127.0.0.1 -- loopback only)
+//   --depth N       how far the engine looks ahead (default 3)
+//   --seconds N     stop after N seconds
+//   --no-tls        plain http, for a proxy in front or a stubborn client
+//
+// ONE THREAD, AND NOT EVEN APOLOGETICALLY. This is a single-player game on
+// somebody's own machine: there is one board, one player, and the only
+// expensive thing that happens is the engine thinking, which is work for one
+// core on one position. Threads would add a lock around the board and buy
+// nothing. The event loop is here so that a second browser tab, a favicon
+// request or a health check cannot sit in the queue behind a search.
+//
+// The API is four routes and holds one game:
+//
+//   GET  /api/state              the board as it stands
+//   POST /api/new                start again; {"depth": n, "side": "white"} optional
+//   POST /api/move               {"from": n, "to": n, "promotion": "q"}, then it replies
+//   POST /api/ponder             {"from": n} -- a piece has been picked up, so
+//                                start working out the reply to every move it
+//                                could make, while the player is still deciding
+//
+// One game per server, not per browser: this is a program you run to play a
+// game, and pretending to have sessions it does not have would be worse than
+// saying so.
+
+gimme internet
+gimme interns
+gimme clock
+gimme yapper
+gimme json
+gimme filez
+gimme computer
+
+gimme { WHITE, BLACK, EMPTY, new_board, legal_moves, apply_move, outcome,
+        find_move_between, find_move, count_material, other_side, in_check,
+        king_square, position_key, square_at, rank_of, file_of, to_fen,
+        piece_letter } from "rules.funny"
+gimme { best_move_parallel, hands_for, verdict } from "engine.funny"
+gimme { read_request, build_response, json_response, STATUS_TEXT, SECURITY_HEADERS } from "http.funny"
+gimme { static_target, read_static } from "static.funny"
+
+flex deadass DEFAULT_PORT = 8443
+flex deadass READ_TIMEOUT_MS = 10000
+
+yo GAME = ghost
+yo DEPTH = 3
+yo WEB_DIR = ghost
+yo STOPPING = cap
+yo SERVED = 0
+yo PFX = ghost
+yo PFX_PASSWORD = "funnylang"
+yo NO_TLS = cap
+yo PONDER_WORKER = ghost
+
+// Positions a worker is already thinking about, so picking the same piece up
+// twice does not hire the same search twice.
+yo PONDERING = {}
+
+// -- the game -------------------------------------------------------------------------
+
+bet start_game(depth, human) {
+    GAME = {
+        "board": new_board(),
+        "human": human,
+        "depth": depth,
+        "last_human": ghost,
+        "last_engine": ghost,
+        "nodes": 0,
+        "verdict": "",
+        "history": [],
+        // Every position that has occurred, counted, which is the only way to
+        // notice a threefold repetition.
+        "seen": {},
+        // The moves played since the page last looked, in order, each with
+        // everything the page needs to *show* it happening rather than to work
+        // out what happened.
+        "played": [],
+        // Answers worked out before they were asked for, keyed by *the
+        // position they answer* rather than by the move that leads to it.
+        // That is what makes a stale one harmless: an answer is only ever
+        // used for the exact board it was computed from, so one that arrives
+        // late from a line the player thought better of cannot be misapplied.
+        "ponder": {},
+        "pondered": cap,
+    }
+    note_position()
+    bounce GAME
+}
+
+// A position reached, counted once, for the repetition rule.
+bet note_position() {
+    yo key = position_key(GAME["board"])
+    GAME["seen"][key] = GAME["seen"].get(key, 0) + 1
+}
+
+// One entry in the `played` list.
+//
+// The three awkward moves are resolved here rather than in the browser. En
+// passant takes a pawn that is not on the square the capturer lands on, so the
+// square to clear is named outright. Castling moves a rook as well, so the
+// rook's journey travels with the king's. A page that worked either of those
+// out for itself would be a second implementation of the rules, and the two
+// would drift.
+bet remember(move, side) {
+    yo cleared = -1
+    sus (move["special"] == "ep") {
+        cleared = square_at(rank_of(move["from"]), file_of(move["to"]))
+    } kinda_sus (move["captured"] != EMPTY && move["captured"] != ghost) {
+        cleared = move["to"]
+    }
+
+    yo rook_from = -1
+    yo rook_to = -1
+    yo back = rank_of(move["from"])
+    sus (move["special"] == "castle-short") {
+        rook_from = square_at(back, 7)
+        rook_to = square_at(back, 5)
+    } kinda_sus (move["special"] == "castle-long") {
+        rook_from = square_at(back, 0)
+        rook_to = square_at(back, 3)
+    }
+
+    GAME["played"].yeet_in({
+        "side": side,
+        "from": move["from"],
+        "to": move["to"],
+        "piece": move["piece"],
+        "captured_at": cleared,
+        "promotion": move["promotion"] == EMPTY ? "" : piece_letter(move["promotion"]),
+        "rook_from": rook_from,
+        "rook_to": rook_to,
+        "notation": move["notation"],
+    })
+    GAME["history"].yeet_in(move["notation"])
+}
+
+// Everything the page needs to draw itself and to know what may be clicked.
+// The legal moves travel with the state, so the page never has to know a rule:
+// it highlights what it was given, and a click that is not in the list cannot
+// be made.
+bet state_json() {
+    yo board = GAME["board"]
+    yo moves = legal_moves(board)
+    yo listed = []
+    grind m in moves {
+        yo takes = m["special"] == "ep"
+        sus (m["captured"] != EMPTY && m["captured"] != ghost) {
+            takes = fax
+        }
+        listed.yeet_in({
+            "from": m["from"],
+            "to": m["to"],
+            "notation": m["notation"],
+            "promotion": m["promotion"] == EMPTY ? "" : piece_letter(m["promotion"]),
+            "capture": takes,
+        })
+    }
+    yo checked = in_check(board, board["turn"])
+    yo king_at = -1
+    sus (checked) {
+        king_at = king_square(board["squares"], board["turn"])
+    }
+    bounce json.spill({
+        "ok": fax,
+        // Letters on the wire. A piece is a number inside the rules, and that
+        // is an implementation detail the page has no business knowing.
+        "squares": board["squares"].glow_up(lowkey (p) => piece_letter(p)),
+        "turn": board["turn"],
+        "human": GAME["human"],
+        "moves": board["moves"],
+        "legal": listed,
+        "check": checked,
+        "check_square": king_at,
+        "outcome": outcome(board, GAME["seen"]),
+        "last_human": GAME["last_human"],
+        "last_engine": GAME["last_engine"],
+        "white": count_material(board, WHITE),
+        "black": count_material(board, BLACK),
+        "depth": GAME["depth"],
+        "nodes": GAME["nodes"],
+        "pondered": GAME["pondered"],
+        "verdict": GAME["verdict"],
+        "fen": to_fen(board),
+        "history": GAME["history"],
+        "played": GAME["played"],
+    })
+}
+
+// The engine's turn, if it is the engine's turn.
+bet engine_reply() {
+    yo board = GAME["board"]
+    sus (outcome(board, GAME["seen"]) != ghost || board["turn"] == GAME["human"]) {
+        GAME["last_engine"] = ghost
+        bounce ghost
+    }
+    // Was this position already worked out while the player was deciding? The
+    // answer is keyed by the position itself, so finding one here is proof it
+    // belongs to this board and not to some line that was abandoned.
+    yo thought = ghost
+    yo ready = GAME["ponder"].get(position_key(board), ghost)
+    sus (ready != ghost) {
+        yo m = find_move(legal_moves(board), ready["move"])
+        sus (m != ghost) {
+            thought = {"move": m, "score": ready["score"], "nodes": ready["nodes"]}
+            GAME["pondered"] = fax
+        }
+    }
+    sus (thought == ghost) {
+        GAME["pondered"] = cap
+        // `hands_for` decides whether threads are worth it at all: at the
+        // depths the easy and normal settings use they are not, and it says so
+        // by asking for one.
+        yo hands = hands_for(legal_moves(board).how_thicc(), GAME["depth"])
+        thought = best_move_parallel(board, GAME["depth"], hands)
+    }
+    sus (thought["move"] == ghost) {
+        bounce ghost
+    }
+    GAME["board"] = apply_move(board, thought["move"])
+    GAME["last_engine"] = thought["move"]["notation"]
+    remember(thought["move"], other_side(GAME["human"]))
+    note_position()
+    GAME["nodes"] = thought["nodes"]
+    GAME["verdict"] = verdict(GAME["board"], -thought["score"])
+}
+
+// -- thinking while the player is thinking -----------------------------------------------
+
+// One speculative search, on its own thread.
+//
+// Awaiting an intern yields to the event loop rather than blocking it -- that
+// was measured, not assumed -- so the server goes on answering requests for the
+// whole time this is running. If it did block, this would freeze the very loop
+// it is meant to keep responsive, which would be worse than not pondering.
+async_ngl bet ponder_one(fen, key, depth) {
+    sketchy {
+        yo answer = await_fr interns.hire(PONDER_WORKER, {"fen": fen, "depth": depth})
+        sus (answer["move"] != "") {
+            GAME["ponder"][key] = answer
+        }
+    } my_bad (e) {
+        // A speculative search that falls over costs nothing: the move will be
+        // searched for real when it is actually played.
+        vibe
+    }
+    PONDERING.remove(key)
+}
+
+// The player has picked a piece up. Every move that piece can make is a
+// position the engine may shortly have to answer, and there are usually only a
+// handful -- so rather than guess which one is coming, all of them are started
+// at once. Whichever they play, the answer is already there.
+// `src` rather than `from`, because `from` is a keyword -- it belongs to
+// `grind i from 0 to 10` -- and cannot be the name of anything.
+bet start_pondering(src) {
+    yo board = GAME["board"]
+    yo started = 0
+    grind m in legal_moves(board) {
+        sus (m["from"] != src) {
+            nvm
+        }
+        yo after = apply_move(board, m)
+        yo key = position_key(after)
+        sus (GAME["ponder"].has(key) || PONDERING.has(key)) {
+            nvm
+        }
+        PONDERING[key] = fax
+        ponder_one(to_fen(after), key, GAME["depth"])
+        started += 1
+    }
+    bounce started
+}
+
+// -- the routes -------------------------------------------------------------------------
+
+bet route(req) {
+    sus (req["path"] == "/api/state" && req["method"] == "GET") {
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/new" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        yo depth = DEPTH
+        yo human = WHITE
+        sus (asked != ghost && asked.has("depth")) {
+            depth = to_int(asked["depth"])
+            sus (depth < 1) { depth = 1 }
+            sus (depth > 5) { depth = 5 }
+        }
+        sus (asked != ghost && asked.has("side")) {
+            sus (yapper.starts_with(yapper.whisper(to_yap(asked["side"])), "b")) {
+                human = BLACK
+            }
+        }
+        start_game(depth, human)
+        // Playing black means the engine opens, and the page should be shown
+        // that happening rather than handed a board that has silently moved.
+        sus (human == BLACK) {
+            engine_reply()
+        }
+        bounce json_response(200, state_json())
+    }
+
+    // The page says which piece has just been picked up. Nothing is returned
+    // but a count, because the answers are not for the page -- they are for the
+    // engine, the next time it is asked to move.
+    sus (req["path"] == "/api/ponder" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce json_response(400, json.spill({"ok": cap, "error": "that wasn't JSON"}))
+        }
+        sus (GAME["board"]["turn"] != GAME["human"] ||
+             outcome(GAME["board"], GAME["seen"]) != ghost) {
+            bounce json_response(200, json.spill({"ok": fax, "pondering": 0}))
+        }
+        yo started = start_pondering(to_int(asked.get("from", -1)))
+        bounce json_response(200, json.spill({"ok": fax, "pondering": started}))
+    }
+
+    sus (req["path"] == "/api/move" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce json_response(400, json.spill({"ok": cap, "error": "that wasn't JSON"}))
+        }
+        sus (GAME["board"]["turn"] != GAME["human"]) {
+            bounce json_response(409, json.spill({"ok": cap, "error": "it isn't your turn"}))
+        }
+        sus (outcome(GAME["board"], GAME["seen"]) != ghost) {
+            bounce json_response(409, json.spill({"ok": cap, "error": "the game is over"}))
+        }
+
+        yo moves = legal_moves(GAME["board"])
+        // Either spelling: a square pair, which is what a click gives, or the
+        // notation, which is what a person types. Written out rather than as a
+        // ternary across three lines, because a statement ends at a newline
+        // unless it is inside brackets -- so that spelling is a parse error.
+        yo chosen = ghost
+        sus (asked.has("notation")) {
+            chosen = find_move(moves, yapper.whisper(to_yap(asked["notation"])))
+        } nah {
+            chosen = find_move_between(moves, to_int(asked.get("from", 0)),
+                                       to_int(asked.get("to", 0)),
+                                       yapper.whisper(to_yap(asked.get("promotion", ""))))
+        }
+        sus (chosen == ghost) {
+            // The legal list goes back with the refusal, so a page that got
+            // out of step can redraw rather than guess.
+            bounce json_response(422, json.spill({"ok": cap, "error": "not a legal move",
+                                                  "state": "stale"}))
+        }
+
+        // Cleared first: `played` is what has happened *since the page last
+        // looked*, so it starts empty and collects this move and the reply.
+        GAME["played"] = []
+        GAME["board"] = apply_move(GAME["board"], chosen)
+        GAME["last_human"] = chosen["notation"]
+        remember(chosen, GAME["human"])
+        note_position()
+        engine_reply()
+        bounce json_response(200, state_json())
+    }
+
+    // Anything else is a file, and static_target decides whether it is one.
+    sus (req["method"] != "GET" && req["method"] != "HEAD") {
+        bounce json_response(405, json.spill({"ok": cap, "error": "not a thing you can do here"}))
+    }
+    yo target = static_target(WEB_DIR, req["path"])
+    sus (target == ghost) {
+        bounce build_response(404, "no such page\n",
+                              {"Content-Type": "text/plain; charset=utf-8"}, req["method"] == "HEAD")
+    }
+    yo body = read_static(target)
+    sus (body == ghost) {
+        bounce build_response(404, "no such page\n",
+                              {"Content-Type": "text/plain; charset=utf-8"}, req["method"] == "HEAD")
+    }
+    yo headers = {"Content-Type": target["type"]}
+    headers.merge(SECURITY_HEADERS)
+    bounce build_response(200, body, headers, req["method"] == "HEAD")
+}
+
+bet parse_body(req) {
+    sus (yapper.trim(req["body"]) == "") {
+        bounce {}
+    }
+    sketchy {
+        yo parsed = json.parse(req["body"])
+        bounce what_is_it(parsed) == "groupchat" ? parsed : ghost
+    } my_bad (e) {
+        bounce ghost
+    }
+}
+
+// -- the socket loop ----------------------------------------------------------------------
+
+// How long a client gets to complete a TLS handshake before it is dropped.
+deadass HANDSHAKE_MS = 5000
+
+// A connection accepted from a secure listener arrives with its TLS session
+// not yet negotiated, and nothing can be read until it is. It is driven a step
+// at a time, waiting on the event loop in between, so a slow client costs its
+// own task and nobody else's.
+//
+// For a plain listener this returns `fax` straight away and costs nothing,
+// which is why there is one code path rather than two.
+async_ngl bet finish_handshake(conn) {
+    yo deadline = clock.now() + HANDSHAKE_MS / 1000.0
+    bruh (!internet.handshake(conn)) {
+        yo left = to_int((deadline - clock.now()) * 1000.0)
+        sus (left <= 0) {
+            bounce cap
+        }
+        sus (!await_fr internet.hold_up(conn, left)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+// One connection, start to finish. Every read waits on the event loop rather
+// than on the socket, so a browser that opens a connection and says nothing
+// costs one parked task instead of the whole server.
+async_ngl bet handle(customer) {
+    yo conn = customer["conn"]
+    sketchy {
+        // Plain HTTP sent to the TLS port, a client that speaks only TLS 1.0,
+        // or one that connected and then said nothing: all end here, and all
+        // of them are the client's business rather than a reason to log.
+        sus (!await_fr finish_handshake(conn)) {
+            internet.kick_out(conn)
+            bounce ghost
+        }
+        yo req = await_fr read_request(lowkey (ms) => read_more(conn, ms))
+        sus (!req["ok"]) {
+            sus (req["status"] != ghost) {
+                internet.holler_back(conn, build_response(req["status"],
+                                                          STATUS_TEXT.get(req["status"], "no") + "\n",
+                                                          {"Content-Type": "text/plain; charset=utf-8"}))
+            }
+        } nah {
+            SERVED += 1
+            yo answer = ghost
+            sketchy {
+                answer = route(req)
+            } my_bad (e) {
+                // A route that falls over is one 500, not a dead game.
+                yell("500 on " + req["method"] + " " + req["path"] + ": " + e.flavor + ": " + e.message)
+                answer = json_response(500, json.spill({"ok": cap, "error": e.flavor + ": " + e.message}))
+            }
+            internet.holler_back(conn, answer)
+        }
+    } my_bad (e) {
+        vibe
+    }
+    internet.kick_out(conn)
+}
+
+async_ngl bet read_more(conn, ms) {
+    sus (!await_fr internet.hold_up(conn, ms)) {
+        bounce ghost
+    }
+    bounce internet.hear_them_out(conn, 65536, 0)
+}
+
+async_ngl bet watch_for_ctrl_c() {
+    sketchy {
+        await_fr computer.until_ctrl_c()
+        yell("")
+        yell("ctrl-c — closing up.")
+        STOPPING = fax
+    } my_bad (e) {
+        vibe
+    }
+}
+
+bet usage() {
+    yell("usage: serve.funny [PORT] [--host H] [--depth N] [--seconds N] [--no-tls]")
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo port = DEFAULT_PORT
+    yo host = "127.0.0.1"
+    yo seconds = ghost
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--host" && i + 1 < args.how_thicc()) {
+            host = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--depth" && i + 1 < args.how_thicc()) {
+            DEPTH = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--seconds" && i + 1 < args.how_thicc()) {
+            seconds = to_numba(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--pfx" && i + 1 < args.how_thicc()) {
+            PFX = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--pfx-password" && i + 1 < args.how_thicc()) {
+            PFX_PASSWORD = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--no-tls") {
+            NO_TLS = fax
+            i += 1
+        } kinda_sus (yapper.starts_with(a, "-")) {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        } nah {
+            port = to_int(a)
+            i += 1
+        }
+    }
+    sus (DEPTH < 1) { DEPTH = 1 }
+    sus (DEPTH > 5) { DEPTH = 5 }
+
+    WEB_DIR = filez.join_path(filez.dir_of(the_script()), "web")
+    PONDER_WORKER = filez.join_path(filez.dir_of(the_script()), "ponder_worker.funny")
+    start_game(DEPTH, WHITE)
+
+    // TLS unless told otherwise. The identity is this example's own test
+    // certificate, signed by a test CA that nothing else trusts -- a browser
+    // will warn, and should, because that is what an unknown CA is for. It is
+    // test material and not a secret; `certs/make_cert.sh` makes a new pair.
+    sus (PFX == ghost && !NO_TLS) {
+        yo beside = filez.join_path(filez.dir_of(the_script()), "certs/site.p12")
+        sus (filez.is_file(beside)) {
+            PFX = beside
+        }
+    }
+
+    yo listener = ghost
+    yo secure = PFX != ghost && !NO_TLS
+    sketchy {
+        sus (secure) {
+            listener = internet.open_secure_shop(port, host, {"pfx": PFX, "password": PFX_PASSWORD})
+        } nah {
+            listener = internet.open_shop(port, host)
+        }
+    } my_bad (e) {
+        yell("couldn't start: " + e.message)
+        bounce 1
+    }
+    yo bound = internet.shop_port(listener)
+    yo scheme = secure ? "https" : "http"
+    yell("chess at " + scheme + "://" + (host == "0.0.0.0" ? "<this machine>" : "localhost") + ":" +
+         to_yap(bound) + " — ctrl-c to stop")
+    sus (!secure) {
+        yell("(plain http: fine on loopback, and not on a network)")
+    } nah {
+        yell("(a test certificate, so your browser will warn about the issuer -- that is correct)")
+    }
+    yell("you are white and move first; the engine is black, looking " + to_yap(DEPTH) + " moves ahead")
+
+    watch_for_ctrl_c()
+
+    yo deadline = seconds == ghost ? ghost : clock.now() + seconds
+    bruh (!STOPPING) {
+        sus (deadline != ghost && clock.now() >= deadline) {
+            bail
+        }
+        sus (!await_fr internet.hold_up(listener, 250)) {
+            nvm
+        }
+        yo customer = internet.next_customer(listener, 0)
+        sus (customer == ghost) {
+            nvm
+        }
+        // Not awaited: calling an `async_ngl bet` starts a task and comes
+        // straight back, so the loop is accepting again at once.
+        handle(customer)
+    }
+
+    internet.close_shop(listener)
+    yell("served " + to_yap(SERVED) + " requests. closing up.")
+    bounce 0
+}
+
+dip(main(the_args()))

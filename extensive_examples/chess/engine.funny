@@ -1,0 +1,527 @@
+// engine.funny — FunnyLang playing chess.
+//
+// Negamax with alpha-beta pruning, the same shape as the draughts engine next
+// door, with two things chess needs that draughts did not.
+//
+// PIECE-SQUARE TABLES. Material alone plays terrible chess: it has no reason
+// to develop a knight, castle, or push a pawn. Each piece gets a small bonus
+// per square, written from white's point of view and mirrored for black, so a
+// knight prefers the middle to the rim and a king prefers the corner it
+// castled into. They are crude and deliberately so -- they are the smallest
+// thing that turns "legal moves" into "recognisable chess".
+//
+// MOVE ORDERING. Alpha-beta only prunes well when good moves are searched
+// first, and in chess the good move is usually a capture of something big by
+// something small. Sorting captures first, most valuable victim first, cuts
+// the tree enormously. The order stays *deterministic* -- ties break on the
+// move's coordinates -- because a golden that plays a whole game cannot
+// tolerate an engine that shuffles equal moves.
+
+gimme stash
+gimme interns
+gimme filez
+
+gimme { WHITE, BLACK, EMPTY, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING,
+        legal_moves, legal_moves_unsorted, apply_move, outcome, in_check,
+        other_side, color_of, kind_of, is_white, rank_of, file_of, square_at,
+        to_fen, position_key } from "rules.funny"
+
+flex deadass VALUES = {"P": 100, "N": 320, "B": 330, "R": 500, "Q": 900, "K": 20000}
+
+// Bigger than any real evaluation, small enough to negate safely.
+flex deadass WIN = 1000000
+
+flex deadass DEPTHS = {"easy": 1, "normal": 3, "hard": 4}
+
+// Written rank 8 first, the way a board is printed, so these can be read as
+// pictures. Index 0 of each is a8; the lookup flips it for the 0-is-a1 board.
+flex deadass TABLES = {
+    "P": [  0,  0,  0,  0,  0,  0,  0,  0,
+           50, 50, 50, 50, 50, 50, 50, 50,
+           10, 10, 20, 30, 30, 20, 10, 10,
+            5,  5, 10, 25, 25, 10,  5,  5,
+            0,  0,  0, 20, 20,  0,  0,  0,
+            5, -5,-10,  0,  0,-10, -5,  5,
+            5, 10, 10,-20,-20, 10, 10,  5,
+            0,  0,  0,  0,  0,  0,  0,  0],
+    "N": [-50,-40,-30,-30,-30,-30,-40,-50,
+          -40,-20,  0,  0,  0,  0,-20,-40,
+          -30,  0, 10, 15, 15, 10,  0,-30,
+          -30,  5, 15, 20, 20, 15,  5,-30,
+          -30,  0, 15, 20, 20, 15,  0,-30,
+          -30,  5, 10, 15, 15, 10,  5,-30,
+          -40,-20,  0,  5,  5,  0,-20,-40,
+          -50,-40,-30,-30,-30,-30,-40,-50],
+    "B": [-20,-10,-10,-10,-10,-10,-10,-20,
+          -10,  0,  0,  0,  0,  0,  0,-10,
+          -10,  0,  5, 10, 10,  5,  0,-10,
+          -10,  5,  5, 10, 10,  5,  5,-10,
+          -10,  0, 10, 10, 10, 10,  0,-10,
+          -10, 10, 10, 10, 10, 10, 10,-10,
+          -10,  5,  0,  0,  0,  0,  5,-10,
+          -20,-10,-10,-10,-10,-10,-10,-20],
+    "R": [  0,  0,  0,  0,  0,  0,  0,  0,
+            5, 10, 10, 10, 10, 10, 10,  5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+           -5,  0,  0,  0,  0,  0,  0, -5,
+            0,  0,  0,  5,  5,  0,  0,  0],
+    "Q": [-20,-10,-10, -5, -5,-10,-10,-20,
+          -10,  0,  0,  0,  0,  0,  0,-10,
+          -10,  0,  5,  5,  5,  5,  0,-10,
+           -5,  0,  5,  5,  5,  5,  0, -5,
+            0,  0,  5,  5,  5,  5,  0, -5,
+          -10,  5,  5,  5,  5,  5,  0,-10,
+          -10,  0,  5,  0,  0,  0,  0,-10,
+          -20,-10,-10, -5, -5,-10,-10,-20],
+    // The king wants a corner while there are pieces about. An endgame table
+    // would want the opposite, and this engine does not have one -- the README
+    // says so.
+    "K": [-30,-40,-40,-50,-50,-40,-40,-30,
+          -30,-40,-40,-50,-50,-40,-40,-30,
+          -30,-40,-40,-50,-50,-40,-40,-30,
+          -30,-40,-40,-50,-50,-40,-40,-30,
+          -20,-30,-30,-40,-40,-30,-30,-20,
+          -10,-20,-20,-20,-20,-20,-20,-10,
+           20, 20,  0,  0,  0,  0, 20, 20,
+           20, 30, 10,  0,  0, 10, 30, 20],
+}
+
+// -- the same two, indexed by piece rather than by letter --------------------------
+//
+// `VALUES` and `TABLES` above are written with letters because that is how a
+// person reads them, and they are exported that way. The search does not want a
+// letter: a piece is a number now, so these are the same contents arranged to
+// be reached by that number. Index 0 is the empty square and is never asked
+// for. Built once, at load.
+deadass VALUE_BY_KIND = [0, 100, 320, 330, 500, 900, 20000]
+
+bet build_table_by_kind() {
+    yo out = [[]]
+    grind letter in ["P", "N", "B", "R", "Q", "K"] {
+        out.yeet_in(TABLES[letter])
+    }
+    bounce out
+}
+deadass TABLE_BY_KIND = build_table_by_kind()
+
+// The board is 0-is-a1 and the tables are written a8 first, so white reads
+// them upside down and black reads them straight.
+bet table_bonus(piece, n) {
+    yo kind = kind_of(piece)
+    sus (kind < PAWN || kind > KING) {
+        bounce 0
+    }
+    yo r = rank_of(n)
+    yo f = file_of(n)
+    yo row = is_white(piece) ? 7 - r : r
+    bounce TABLE_BY_KIND[kind][row * 8 + f]
+}
+
+// -- scoring a position --------------------------------------------------------------
+
+// From `side`'s point of view: positive is good for `side`.
+flex bet evaluate(pos, side) {
+    yo score = 0
+    grind n from 0 to 64 {
+        yo piece = pos["squares"][n]
+        sus (piece == EMPTY) {
+            nvm
+        }
+        yo worth = VALUE_BY_KIND[kind_of(piece)] + table_bonus(piece, n)
+        score += color_of(piece) == side ? worth : -worth
+    }
+    bounce score
+}
+
+// -- ordering ---------------------------------------------------------------------------
+
+// Captures first, most valuable victim taken by the least valuable attacker,
+// then everything else. Ties break on the move's own coordinates, so the order
+// is total and the engine is reproducible.
+// What taking this move is worth on the face of it: a big victim taken by a
+// small attacker scores highest, and a promotion is worth what it becomes.
+bet gain_of(m) {
+    yo gain = 0
+    sus (m["captured"] != EMPTY && m["captured"] != ghost) {
+        gain = VALUE_BY_KIND[kind_of(m["captured"])] * 10 - VALUE_BY_KIND[kind_of(m["piece"])]
+    }
+    sus (m["promotion"] != EMPTY) {
+        gain += VALUE_BY_KIND[kind_of(m["promotion"])]
+    }
+    bounce gain
+}
+
+// One string key per move, and `sort_by` builds each of them exactly once --
+// which is the reason it is used here rather than a comparator, since a
+// comparator would recompute the gain on every one of an insertion sort's
+// comparisons.
+//
+// The gain is subtracted from a number larger than any of them so that a plain
+// ascending sort puts the best capture first; zero-padded so the text compares
+// the way the number would; and the notation appended so that equal moves fall
+// in a settled order and the engine stays reproducible.
+//
+// What used to be here was a selection sort over a dictionary of used indices,
+// keyed by `to_yap(i)`. Between this and the one in rules.funny, putting moves
+// in order cost more than working out what they were.
+bet ordered(moves) {
+    bounce stash.sort_by(moves, lowkey (m) =>
+        to_yap(300000 - gain_of(m)).pad_left(7, "0") + m["notation"])
+}
+
+// -- searching ----------------------------------------------------------------------------
+
+// The move the engine would play: {"move", "score", "nodes", "depth"}. A ghost
+// move means there is nothing legal, which is checkmate or stalemate rather
+// than the engine giving up.
+// A FRESH TABLE EVERY TIME, deliberately. Keeping it between moves would find
+// more transpositions, but `best_move` would then depend on the history of the
+// game rather than only on the position in front of it -- and that the same
+// position always yields the same move is a property the golden asserts twice
+// and the whole-game test relies on. Purity is worth more here than the hits.
+flex bet best_move(pos, depth) {
+    yo counter = {"nodes": 0, "tt": {}}
+    yo moves = ordered(legal_moves_unsorted(pos))
+    sus (moves.how_thicc() == 0) {
+        bounce {"move": ghost, "score": -WIN, "nodes": 0, "depth": depth}
+    }
+
+    yo best = ghost
+    yo best_score = -WIN - 1
+    yo alpha = -WIN - 1
+    grind m in moves {
+        yo score = -search(apply_move(pos, m), depth - 1, -WIN - 1, -alpha, counter)
+        // Strictly better, so the first move in the ordering wins a tie and the
+        // same position always produces the same move.
+        sus (score > best_score) {
+            best_score = score
+            best = m
+        }
+        sus (score > alpha) {
+            alpha = score
+        }
+    }
+    bounce {"move": best, "score": best_score, "nodes": counter["nodes"], "depth": depth}
+}
+
+// The value of one move, searched on its own, with everything below `alpha`
+// allowed to be cut off. Pass `-WIN - 1` to open the window completely.
+//
+// A move whose real value is above alpha comes back exact, which is all the
+// root needs: one worse than alpha comes back as a bound, and a bound below
+// the best score already found can never win.
+flex bet score_of_move(pos, m, depth, alpha) {
+    yo counter = {"nodes": 0, "tt": {}}
+    yo score = -search(apply_move(pos, m), depth - 1, -WIN - 1, -alpha, counter)
+    bounce {"score": score, "nodes": counter["nodes"]}
+}
+
+// -- the same search, across several threads ------------------------------------------
+
+// Below this depth the split is not used at all.
+//
+// THE TRANSPOSITION TABLE MOVED THIS, and moved it the wrong way. Before the
+// table, splitting was worth 3.2x at depth 4. After it, the same measurement
+// on the same eight-processor machine from the same middlegame reads:
+//
+//     depth 4   one thread 2,927 ms   eight 3,612 ms   0.81x
+//     depth 5   one thread 9,513 ms   eight 8,862 ms   1.07x
+//
+// The two optimisations work against each other. A transposition table pays
+// off by sharing what it has learned across the whole tree, and the root split
+// cuts that tree into eight VMs that share nothing -- so every worker builds
+// its own table from nothing and they collectively look at 2.4 times the
+// positions one thread does. Eight processors now buy seven percent.
+//
+// Five is where it stops being a loss, so five is where it starts. Making the
+// threads worth having again would mean giving the workers the parent's table
+// to begin from, which is possible -- it is plain data, so it can cross -- but
+// it is a copy per worker and has not been tried.
+flex deadass PARALLEL_FROM = 5
+
+// THE ROOT SPLIT, AND WHY IT IS NOT A PLAIN ONE.
+//
+// Every legal move from the position is scored, and the moves are dealt out to
+// `hands` workers. Each worker is a real OS thread with its own VM and its own
+// heap, so nothing is shared and nothing needs a lock -- what crosses is text:
+// a position as FEN and a list of move notations, with a score per move coming
+// back.
+//
+// THE ELDEST BROTHER GOES FIRST. The obvious split -- hand every move straight
+// out -- was measured at *a quarter of the speed* of one thread, because every
+// worker searched with the window wide open and so re-derived all the work
+// that a shared, narrowing alpha would have pruned away. At depth 4 it looked
+// at 76,742 positions where one thread needed 5,940. Alpha-beta at the root
+// gets its power from having already found something good, and splitting the
+// root throws exactly that away.
+//
+// So the best-ordered move is searched here, in full, before anybody is hired,
+// and the alpha it establishes is handed to every worker. They start knowing
+// what they have to beat, and a move that cannot beat it is cut off as cheaply
+// as it would have been in sequence.
+//
+// The moves are then dealt round-robin rather than in blocks: the ordering
+// puts the sharpest moves first and those are much the slowest to search, so a
+// block split would hand the first worker every expensive move and leave the
+// rest with nothing to do.
+//
+// The answer does not depend on any of it. The best move is chosen by walking
+// the same ordered list with the same strictly-better rule the sequential
+// search uses, so a tie goes to the same move whichever worker finished first,
+// and both the move and its score match what one thread would have found.
+flex bet best_move_parallel(pos, depth, hands) {
+    yo moves = ordered(legal_moves_unsorted(pos))
+    sus (moves.how_thicc() == 0) {
+        bounce {"move": ghost, "score": -WIN, "nodes": 0, "depth": depth}
+    }
+    // Whether threads are worth it at all is `hands_for`'s decision, not this
+    // function's: keeping the policy at the call site is what lets the
+    // benchmark force a split at any depth and measure where the crossover
+    // actually is.
+    sus (hands < 2 || moves.how_thicc() < 3) {
+        bounce best_move(pos, depth)
+    }
+
+    yo head = score_of_move(pos, moves[0], depth, -WIN - 1)
+    yo alpha = head["score"]
+    yo nodes = head["nodes"]
+
+    yo rest = []
+    grind i from 1 to moves.how_thicc() {
+        rest.yeet_in(moves[i]["notation"])
+    }
+    yo lots = []
+    grind i from 0 to hands {
+        lots.yeet_in([])
+    }
+    grind i from 0 to rest.how_thicc() {
+        lots[i % hands].yeet_in(rest[i])
+    }
+
+    // Named absolutely. A bare "search_worker.funny" is resolved against the
+    // process's working directory rather than against the file asking for it,
+    // so it is only ever found when `funny` happened to be started from this
+    // directory -- which, run as an example from the top of the repository, it
+    // never is.
+    yo worker = filez.join_path(filez.dir_of(the_script()), "search_worker.funny")
+    yo fen = to_fen(pos)
+    yo hired = []
+    grind lot in lots {
+        sus (lot.how_thicc() > 0) {
+            hired.yeet_in(interns.hire(worker, {"fen": fen, "moves": lot,
+                                                "depth": depth, "alpha": alpha}))
+        }
+    }
+
+    yo scores = {}
+    scores[moves[0]["notation"]] = head["score"]
+    grind batch in interns.everybody(hired) {
+        grind got in batch {
+            scores[got["notation"]] = got["score"]
+            nodes += got["nodes"]
+        }
+    }
+
+    yo best = ghost
+    yo best_score = -WIN - 1
+    grind m in moves {
+        yo score = scores.get(m["notation"], -WIN - 1)
+        sus (score > best_score) {
+            best_score = score
+            best = m
+        }
+    }
+    bounce {"move": best, "score": best_score, "nodes": nodes, "depth": depth}
+}
+
+// How many workers are worth using, which is the whole of the policy. One
+// means "do it in sequence": below PARALLEL_FROM a search finishes sooner than
+// workers can be started, and a position with almost nothing to play has
+// nothing worth dealing out.
+flex bet hands_for(moves_count, depth) {
+    sus (depth < PARALLEL_FROM || moves_count < 3) {
+        bounce 1
+    }
+    // The best-ordered move is searched by the parent before anybody is hired,
+    // so it is the remainder that get dealt out.
+    yo rest = moves_count - 1
+    yo cpus = interns.headcount()
+    sus (cpus > rest) {
+        bounce rest
+    }
+    bounce cpus
+}
+
+// -- the transposition table ------------------------------------------------------------
+//
+// Chess transposes constantly: 1.Nf3 d5 2.d4 and 1.d4 d5 2.Nf3 arrive at the
+// same board, and without a table the search works both out from scratch. The
+// table remembers what a position was worth and how deeply that was
+// established, so the second arrival is a lookup.
+//
+// A score is not always a number, though. Alpha-beta cuts off as soon as it
+// knows a move is too good or not good enough, and in those cases all that was
+// established is a bound. So each entry records which of the three it is, and
+// a bound may only narrow the window rather than answer outright.
+deadass TT_EXACT = 0
+deadass TT_LOWER = 1
+deadass TT_UPPER = 2
+
+// Below this depth the table is not consulted.
+//
+// It was 2, and for a good reason at the time: the key used to be the
+// sixty-four squares joined into a string, which was only worth building when
+// the subtree it might save was larger than the key itself, and near the
+// leaves it never was.
+//
+// The key is now a number the position carries and updates as moves are made,
+// so that reasoning has expired. Probing a ply shallower costs almost nothing
+// -- and it is the only way the hash can pay for itself at all, since it does
+// not make an existing probe faster, it makes more of them affordable, and
+// more probes are what turn into fewer nodes.
+deadass TT_FROM = 1
+
+// A mate score says how far away the mate is *from here*, so filing one away
+// and reading it back somewhere else in the tree would be reading it at the
+// wrong distance. Those are simply not stored.
+deadass MATE_ZONE = WIN - 1000
+
+// The value of `pos` to whoever is to move in it.
+bet search(pos, depth, alpha, beta, counter) {
+    counter["nodes"] += 1
+
+    // THE LEAF COMES FIRST, AND THAT IS THE WHOLE OPTIMISATION. Generating
+    // every legal move at a leaf -- only ever to notice there were none of
+    // them -- was by a wide margin the most expensive thing this search did.
+    // Leaves are the overwhelming majority of any tree, and a legal move list
+    // costs a board copy and a check test *per pseudo-move* to build.
+    //
+    // Checkmate still has to be right, so it is asked about in the cheap
+    // order: a single check test, and only if the side to move is actually in
+    // check is the move list built to see whether it can do anything about it.
+    // Being in check is rare, so that cost is paid rarely. A stalemate exactly
+    // on the horizon is scored as a position rather than as a draw, which is a
+    // real if small loss and is written down in the README.
+    sus (depth <= 0) {
+        sus (in_check(pos, pos["turn"]) && legal_moves_unsorted(pos).how_thicc() == 0) {
+            bounce -WIN + (100 - depth)
+        }
+        bounce evaluate(pos, pos["turn"])
+    }
+
+    // What alpha was before anything here moved it, which is what decides
+    // whether the answer this node produces is exact or merely a bound.
+    yo alpha_orig = alpha
+
+    yo key = ghost
+    sus (depth >= TT_FROM) {
+        // The position carries its own hash, kept up to date by `apply_move`.
+        // This used to join the sixty-four squares into a string at every node
+        // that reached here.
+        key = pos["hash"]
+        yo hit = counter["tt"].get(key, ghost)
+        // Only an entry established at least as deeply as this one is being
+        // asked for can be trusted: a shallower look is not evidence about a
+        // deeper question.
+        sus (hit != ghost && hit["depth"] >= depth) {
+            sus (hit["flag"] == TT_EXACT) {
+                bounce hit["score"]
+            }
+            sus (hit["flag"] == TT_LOWER && hit["score"] > alpha) {
+                alpha = hit["score"]
+            }
+            sus (hit["flag"] == TT_UPPER && hit["score"] < beta) {
+                beta = hit["score"]
+            }
+            sus (alpha >= beta) {
+                bounce hit["score"]
+            }
+        }
+    }
+
+    yo moves = legal_moves_unsorted(pos)
+
+    // No legal move: checkmate if in check, stalemate if not. The depth is
+    // added to the mate score so that a mate further away is worth less than
+    // one right now -- an engine that is winning should finish rather than
+    // dawdle, and one that is losing should make the opponent work.
+    sus (moves.how_thicc() == 0) {
+        bounce in_check(pos, pos["turn"]) ? -WIN + (100 - depth) : 0
+    }
+    sus (pos["quiet"] >= 100) {
+        bounce 0
+    }
+
+    yo best = -WIN - 1
+    grind m in ordered(moves) {
+        yo score = -search(apply_move(pos, m), depth - 1, -beta, -alpha, counter)
+        sus (score > best) {
+            best = score
+        }
+        sus (best > alpha) {
+            alpha = best
+        }
+        // The opponent would never have allowed this position, so nothing else
+        // here can matter.
+        sus (alpha >= beta) {
+            bail
+        }
+    }
+
+    // Filed away with what kind of answer it is. A score that never rose above
+    // the alpha this node started with is only an upper bound -- the real value
+    // may be lower still, because the search stopped caring. One that reached
+    // beta is only a lower bound, because the loop broke early. Anything in
+    // between was searched properly and is exact.
+    sus (key != ghost && best < MATE_ZONE && best > -MATE_ZONE) {
+        yo flag = TT_EXACT
+        sus (best <= alpha_orig) {
+            flag = TT_UPPER
+        }
+        sus (best >= beta) {
+            flag = TT_LOWER
+        }
+        counter["tt"][key] = {"depth": depth, "score": best, "flag": flag}
+    }
+    bounce best
+}
+
+flex bet depth_for(difficulty) {
+    bounce DEPTHS.get(difficulty, DEPTHS["normal"])
+}
+
+// One move, played. The position that comes back is a new one.
+flex bet play_one(pos, depth) {
+    yo thought = best_move(pos, depth)
+    sus (thought["move"] == ghost) {
+        bounce {"pos": pos, "move": ghost, "score": thought["score"], "nodes": thought["nodes"]}
+    }
+    bounce {
+        "pos": apply_move(pos, thought["move"]),
+        "move": thought["move"],
+        "score": thought["score"],
+        "nodes": thought["nodes"],
+    }
+}
+
+// What the engine makes of the position, in words. Positive is good for
+// whoever is to move.
+flex bet verdict(pos, score) {
+    sus (score > WIN - 1000) {
+        bounce pos["turn"] + " is winning"
+    }
+    sus (score < -(WIN - 1000)) {
+        bounce other_side(pos["turn"]) + " is winning"
+    }
+    yo pawns = to_int(score * 10 / VALUES["P"]) / 10.0
+    sus (score > 80) {
+        bounce pos["turn"] + " is ahead by about " + to_yap(pawns) + " pawns"
+    }
+    sus (score < -80) {
+        bounce other_side(pos["turn"]) + " is ahead"
+    }
+    bounce "about level"
+}
