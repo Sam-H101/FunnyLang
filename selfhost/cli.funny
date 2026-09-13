@@ -38,7 +38,7 @@ gimme { run_tests } from "test.funny"
 gimme { run_repl } from "vibe.funny"
 gimme { bootstrap } from "bootstrap.funny"
 
-flex deadass VERSION = "2.1.0"
+flex deadass VERSION = "2.1.1"
 flex deadass BYTECODE_VERSION = 2
 
 flex deadass VIBES_QUIPS = [

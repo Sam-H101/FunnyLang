@@ -7,7 +7,7 @@
    ██╔══╝  ██║   ██║██║╚██╗██║██║╚██╗██║  ╚██╔╝
    ██║     ╚██████╔╝██║ ╚████║██║ ╚████║   ██║
    ╚═╝      ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝   ╚═╝
-        FunnyLang v2.1.0 — it compiles. somehow.
+        FunnyLang v2.1.1 — it compiles. somehow.
 ```
 
 A bytecode-compiled programming language that refuses to take itself seriously — and, as of

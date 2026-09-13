@@ -37,7 +37,7 @@
    every `.py` from the repository and the CI job that proves there are none,
    so nothing checks this any more. Three copies of a version string is
    exactly the kind of thing that drifts silently, and now it can. */
-#define FUNNY_VERSION "2.1.0"
+#define FUNNY_VERSION "2.1.1"
 #define FUNNY_BYTECODE_VERSION 2
 
 static uint8_t *read_file(const char *path, size_t *outLen) {
