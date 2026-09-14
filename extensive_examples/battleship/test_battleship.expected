@@ -1,0 +1,120 @@
+-- rows are lettered and columns numbered --
+  A1 is cell 0, and back again A1
+  A10 is cell 9, and back again A10
+  B7 is cell 16, and back again B7
+  E5 is cell 44, and back again E5
+  J1 is cell 90, and back again J1
+  J10 is cell 99, and back again J10
+  and nothing else parses: ghost ghost ghost ghost ghost ghost ghost
+-- a ship may not wrap a row --
+  a carrier across from A9: ghost
+  across from A6 it just fits: ["A6", "A7", "A8", "A9", "A10"]
+  down from A9 it fits: ["A9", "B9", "C9", "D9", "E9"]
+  down from G9 it does not: ghost
+-- placing --
+  the carrier along the top: ["A1", "A2", "A3", "A4", "A5"]
+  one that would cross it: the battleship would cross the carrier
+  one that runs off the edge: the battleship does not fit there
+  one that does not exist: there is no ship called dinghy
+  the same one twice: the carrier is already on the board
+-- ships may touch, which is the printed rule --
+  right underneath: ["B1", "B2", "B3", "B4"]
+-- and a ship can be lifted off again --
+  gone from the fleet: ghost and from the grid: fax
+  put down elsewhere: ["F3", "G3", "H3", "I3", "J3"]
+-- a random fleet is a legal fleet, whatever it rolls --
+  five ships: fax  seventeen cells: fax  none shared: fax  complete: fax
+  five ships: fax  seventeen cells: fax  none shared: fax  complete: fax
+  five ships: fax  seventeen cells: fax  none shared: fax  complete: fax
+-- firing --
+     1  2  3  4  5  6  7  8  9 10
+ A   A  A  A  A  A  .  .  .  .  .
+ B   .  .  .  .  .  .  .  .  .  .
+ C   .  .  B  B  B  B  .  .  .  .
+ D   .  .  .  .  .  .  .  .  .  .
+ E   .  .  .  .  .  C  .  .  .  .
+ F   .  .  .  .  .  C  .  .  .  .
+ G   .  .  .  .  .  C  .  .  .  .
+ H   .  S  S  S  .  .  .  .  .  .
+ I   .  .  .  .  .  .  .  .  .  .
+ J   .  .  .  .  .  .  .  .  D  D
+  B1 is water: miss
+  J9 is not: hit
+  J10 finishes it: sunk -- the destroyer, which was at ["J9", "J10"]
+  J10 a second time: J10 has already been fired at
+  off the board: that is not a square on the board
+  four still afloat: 4  all sunk: cap
+-- and the seventeenth hit ends it --
+  15 more hits, and the fleet is gone: fax  shots fired at it: 18
+-- the view tells the other side nothing it should not --
+  it has exactly: ["shots", "sunk", "afloat"]
+  a ship still afloat is named, and nothing more: ["name", "size"]
+  still afloat: ["carrier", "battleship", "cruiser", "submarine"]
+  sunk, and where it turned out to be: ["destroyer"] ["J9", "J10"]
+  every cell it names: ["J9", "J10"]
+  of which belong to a ship still afloat: []
+  the whole thing, as it goes over the wire: [{"name":"destroyer","size":2,"cells":[98,99]}]
+-- it opens in the middle, and always on the same cell --
+  density fires at: E5 and asked again: E5
+  that is the highest count on the board: fax
+  a corner is worth far less: 10 against 34
+-- one hit, and it looks next door --
+  C4: hit  unresolved: ["C4"]
+  it fires at: C5  which is next to it: fax
+-- two in a line, and it goes for an end of the line --
+  the ends are: ["C6", "C3"]
+  it fires at: C6  which is one of them: fax
+-- a ship that is gone stops being chased --
+  nothing is unaccounted for: fax
+  so it goes back to hunting: E5  and not into the wreck: fax
+-- a corner nothing could reach is worth nothing --
+  A1 counts: 0  while B2 counts: 10
+  and A1 is not what it fires at: fax
+-- hunt sweeps one colour of the board --
+  ten shots, all one colour: fax  and none repeated: fax
+-- and every strategy finishes the job --
+  random: sunk: fax  inside a hundred shots: fax
+  hunt: sunk: fax  inside a hundred shots: fax
+  density: sunk in 62 shots
+-- a whole game, the hard engine against itself --
+  the fleet with three ships touching:
+     1  2  3  4  5  6  7  8  9 10
+ A   .  .  .  .  .  .  .  .  .  .
+ B   .  A  A  A  A  A  .  .  .  .
+ C   .  B  B  B  B  .  .  .  .  .
+ D   .  C  C  C  .  .  .  .  .  .
+ E   .  .  .  .  .  .  .  .  .  .
+ F   .  .  .  .  S  .  .  .  .  .
+ G   .  .  .  .  S  .  .  .  .  .
+ H   .  .  .  .  S  .  .  .  .  .
+ I   .  .  .  .  .  .  .  .  .  .
+ J   D  D  .  .  .  .  .  .  .  .
+  first to fire (! is a hit, * sinks something):
+    1. E5  F6  D4! D5  E4  C4! C5! C6  C3! C2*
+   11. D3! D2* G7  E8  H5! H4  G5! I5  G4  F5*
+   21. B7  D9  A5  E1  E10  J6  H9  F2  I3  I8 
+   31. B2! B3! B4! B5! B1  B6* B9  C8  D7  F9 
+   41. H2  A8  C10  F3  G1  G8  G10  H6  I1  I7 
+   51. I10  J2! I2  J1*
+  second to fire:
+    1. E5  F6! E6! D6  G6* C4! C5! C6! C7  C3*
+   11. H4! H5  G4  H3! G3  H2* I7  B8  E9  F1 
+   21. A5! A4! A6  A3! A2! A1* C9  D2  D8  E3 
+   31. F8  G9  H8  I9  A9  B2  B10  C1  D4  D10 
+   41. E7  F2  F4  F10  G7  H10  I1  I3  I5  J2 
+   51. J4  J6  J8 
+  shots: 54 against 53
+  winner: the one firing first
+  the fleet that went down:
+     1  2  3  4  5  6  7  8  9 10
+ A   .  .  .  .  o  .  .  o  .  .
+ B   o  #  #  #  #  #  o  .  o  .
+ C   .  #  #  #  #  o  .  o  .  o
+ D   .  #  #  #  o  .  o  .  o  .
+ E   o  .  .  o  o  .  .  o  .  o
+ F   .  o  o  .  #  o  .  .  o  .
+ G   o  .  .  o  #  .  o  o  .  o
+ H   .  o  .  o  #  o  .  .  o  .
+ I   o  o  o  .  o  .  o  o  .  o
+ J   #  #  .  .  .  o  .  .  .  .
+-- done --
