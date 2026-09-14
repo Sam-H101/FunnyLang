@@ -1,0 +1,38 @@
+// measure_worker.funny — one worker's share of the games.
+//
+// Hired by `measure.funny` with `{"strategy", "first", "last"}`: a contiguous
+// range of game numbers to play, and which way to play them. It sends back one
+// number per game -- how many shots that game took -- and nothing else.
+//
+// THE SEED IS THE GAME NUMBER. Game 41 is therefore the same fleet whichever
+// worker draws it and however many workers there are, so `--workers 1` and
+// `--workers 8` measure exactly the same thousand games rather than two
+// different thousands that happen to be the same size. `rizz`'s generator
+// lives in the VM (RUNTIME_PLAN.md R0), and every intern is its own VM, so the
+// workers cannot reach into one another's stream to spoil that.
+
+gimme rizz
+gimme interns
+
+gimme { CELLS, new_board, random_fleet, fire, all_sunk, view_of } from "rules.funny"
+gimme { choose_shot } from "engine.funny"
+
+yo job = interns.assignment()
+yo strategy = job["strategy"]
+yo counts = []
+
+grind game from job["first"] to job["last"] {
+    rizz.seed(game)
+    yo board = random_fleet(new_board())
+    yo shots = 0
+    // A fleet of seventeen cells on a hundred always goes down well inside a
+    // hundred shots; the bound is here so that a strategy with a bug in it
+    // fails a measurement rather than hanging one.
+    bruh (!all_sunk(board) && shots < CELLS) {
+        board = fire(board, choose_shot(view_of(board), strategy))["board"]
+        shots += 1
+    }
+    counts.yeet_in(shots)
+}
+
+interns.deliver(counts)

@@ -1,0 +1,182 @@
+// measure.funny — how good is each strategy, actually.
+//
+//     funny run extensive_examples/battleship/measure.funny
+//     funny run extensive_examples/battleship/measure.funny -- --games 2000 --workers 8
+//     funny run extensive_examples/battleship/measure.funny -- --strategy density
+//
+//   --games N      how many games per strategy (default 1000)
+//   --workers N    how many interns (default: one per core)
+//   --strategy S   random, hunt, density, or all (default all)
+//   --compare      also play them on one worker, to time the split
+//
+// WHETHER A STRATEGY IS ANY GOOD IS A STATISTICAL QUESTION. One game says
+// nothing: a lucky random sweep can beat a careful one. So each strategy plays
+// thousands of games against randomly placed fleets and what comes back is the
+// distribution of how many shots it took.
+//
+// THIS IS WHERE THE THREADS ARE. `serve.funny` is single-threaded because
+// there is one game and one player there. Here there are thousands of games
+// that share nothing at all, which is as parallel as work gets.
+//
+// THE SPLIT IS STATIC, DELIBERATELY -- the opposite of `word_count/`, which
+// deals work out a job at a time because its files are wildly different sizes.
+// Every game here costs about the same, so a contiguous range per worker
+// balances by itself and a mailbox would be pure overhead.
+
+gimme interns
+gimme filez
+gimme clock
+gimme yapper
+gimme stash
+gimme mafs
+
+gimme { STRATEGIES } from "engine.funny"
+
+deadass DEFAULT_GAMES = 1000
+
+bet usage() {
+    yell("usage: measure.funny [--games N] [--workers N] [--strategy S] [--compare]")
+}
+
+bet stats(counts) {
+    yo sorted = stash.sort(counts)
+    yo n = sorted.how_thicc()
+    yo total = 0
+    grind c in counts {
+        total += c
+    }
+    yo middle = n \ 2
+    bounce {
+        "games": n,
+        "mean": total / n,
+        "median": n % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2.0,
+        "best": sorted[0],
+        "worst": sorted[n - 1],
+    }
+}
+
+// `hands` contiguous ranges of game numbers, one per worker, each hired at
+// once. The last few workers get one game fewer when the division is not
+// exact, which is the whole of the load balancing this needs.
+bet run_games(worker, strategy, games, hands) {
+    sus (hands > games) {
+        hands = games
+    }
+    yo share = games \ hands
+    yo extra = games % hands
+    yo hired = []
+    yo at = 0
+    grind w from 0 to hands {
+        yo count = share + (w < extra ? 1 : 0)
+        hired.yeet_in(interns.hire(worker, {"strategy": strategy, "first": at, "last": at + count}))
+        at += count
+    }
+    yo counts = []
+    grind answer in interns.everybody(hired) {
+        counts.extend(answer)
+    }
+    bounce counts
+}
+
+bet row(cells) {
+    yo widths = [10, 8, 8, 8, 7, 7, 9]
+    yo out = ""
+    grind i from 0 to cells.how_thicc() {
+        yo text = to_yap(cells[i])
+        out = out + (i == 0 ? yapper.pad_right(text, widths[i])
+                            : yapper.pad_left(text, widths[i]))
+    }
+    bounce out
+}
+
+bet one_decimal(x) {
+    bounce to_yap(mafs.round(x, 1))
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo games = DEFAULT_GAMES
+    yo hands = interns.headcount()
+    yo only = "all"
+    yo compare = cap
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--games" && i + 1 < args.how_thicc()) {
+            games = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--workers" && i + 1 < args.how_thicc()) {
+            hands = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--strategy" && i + 1 < args.how_thicc()) {
+            only = yapper.whisper(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--compare") {
+            compare = fax
+            i += 1
+        } nah {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        }
+    }
+    sus (games < 1) {
+        games = 1
+    }
+    sus (hands < 1) {
+        hands = 1
+    }
+    sus (only != "all" && !STRATEGIES.contains(only)) {
+        yell("strategy is one of " + STRATEGIES.join(", ") + ", or all.")
+        bounce 2
+    }
+
+    // An intern is hired by path, and a bare relative one resolves against the
+    // process's working directory rather than against the file asking -- so it
+    // is built from `the_script()` and the example runs from anywhere.
+    yo worker = filez.join_path(filez.dir_of(the_script()), "measure_worker.funny")
+
+    yo wanted = only == "all" ? STRATEGIES : [only]
+    yap to_yap(games) + " games per strategy, " + to_yap(hands) +
+        (hands == 1 ? " worker" : " workers") + ", against randomly placed fleets."
+    yap ""
+    yap row(["strategy", "games", "mean", "median", "best", "worst", "seconds"])
+
+    grind strategy in wanted {
+        yo watch = clock.stopwatch()
+        yo counts = run_games(worker, strategy, games, hands)
+        yo took = watch()
+        yo s = stats(counts)
+        yap row([strategy, s["games"], one_decimal(s["mean"]), one_decimal(s["median"]),
+                 s["best"], s["worst"], one_decimal(took)])
+    }
+
+    // One worker over the same games, so the speed-up in the README is a
+    // measurement with its baseline beside it rather than a claim.
+    sus (compare && hands > 1) {
+        yap ""
+        yap "the same games, on one worker:"
+        yap row(["strategy", "games", "mean", "median", "best", "worst", "seconds"])
+        grind strategy in wanted {
+            yo watch = clock.stopwatch()
+            yo counts = run_games(worker, strategy, games, 1)
+            yo took = watch()
+            yo s = stats(counts)
+            yap row([strategy, s["games"], one_decimal(s["mean"]), one_decimal(s["median"]),
+                     s["best"], s["worst"], one_decimal(took)])
+        }
+    }
+
+    bounce 0
+}
+
+dip(main(the_args()))
