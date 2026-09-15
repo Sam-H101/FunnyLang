@@ -1,0 +1,252 @@
+/* style.css — the boards, and only the boards.
+ *
+ * Bootstrap draws the shell: the grid, the cards, the switches, the dark
+ * theme, the type. It has no opinion about a ten-by-ten sea with ships under
+ * it, which is what is left here.
+ *
+ * GEOMETRY NOTE, inherited from the two games next door where it was a real
+ * bug: nothing a cell contains can change a cell's size. The board is an
+ * eleven-by-eleven grid -- a row of column numbers, a column of row letters,
+ * and the hundred squares -- and every mark on a square is drawn inside it
+ * with `position: absolute`, so a peg, a ghost or a shading cannot push the
+ * grid about. Everything is sized in `cqi`, one percent of the board's own
+ * width, so the whole thing scales as one piece.
+ */
+
+.board {
+  --sea: #16323f;
+  --sea-line: #23495a;
+  --hull: #8d9aa6;
+  --hull-sunk: #d2555b;
+  --peg-miss: #9fb4c2;
+  --peg-hit: #ef6a5f;
+  --go: #4dd4ac;
+  --warn: #f0b95f;
+  --heat: #6fb3e0;
+
+  position: relative;
+  aspect-ratio: 1;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(11, 1fr);
+  grid-template-rows: repeat(11, 1fr);
+  gap: 0.35cqi;
+  border-radius: 0.5rem;
+  container-type: inline-size;
+  user-select: none;
+}
+
+/* The letters down the side and the numbers along the top. Drawn as part of
+   the grid rather than in a margin, so they cannot drift out of line with the
+   squares they label. */
+.board .label {
+  display: grid;
+  place-items: center;
+  font-size: 2.6cqi;
+  line-height: 1;
+  font-weight: 600;
+  color: rgb(255 255 255 / 0.42);
+}
+
+.board .cell {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.6cqi;
+  background:
+    linear-gradient(160deg,
+      color-mix(in oklab, var(--sea) 88%, white 12%), var(--sea));
+  box-shadow: inset 0 0 0 0.25cqi var(--sea-line);
+  cursor: default;
+}
+
+.board .cell.playable { cursor: pointer; }
+.board .cell.playable:hover { box-shadow: inset 0 0 0 0.5cqi var(--go); }
+.board .cell:focus-visible { outline: 0.5cqi solid var(--go); outline-offset: -0.5cqi; z-index: 3; }
+
+/* -- what is under the water ---------------------------------------------- */
+
+/* The square a ship is standing on, which is only its shadow on the water --
+   the vessel itself is the hull overlay below, drawn across all of its squares
+   at once. Keeping a darkened square underneath gives the hull something to
+   sit in, so a ship reads as floating rather than pasted on. */
+.board .cell.ship {
+  background: linear-gradient(160deg,
+    color-mix(in oklab, var(--sea) 80%, black 20%),
+    color-mix(in oklab, var(--sea) 70%, black 30%));
+}
+
+/* A square holding a ship the other side has sunk and therefore had to show. */
+.board .cell.wreck {
+  background: linear-gradient(160deg,
+    color-mix(in oklab, var(--sea) 76%, black 24%),
+    color-mix(in oklab, var(--sea) 64%, black 36%));
+}
+
+/* -- the hulls ------------------------------------------------------------ */
+
+/* ONE ELEMENT PER SHIP, NOT ONE PER SQUARE. A carrier is a single five-square
+   vessel and ought to read as one, so each ship is its own overlay spanning
+   the squares it occupies.
+ *
+ * It is placed in the SAME grid as the squares -- `grid-column: 4 / span 5` --
+ * rather than positioned absolutely over them. That matters: the board has a
+ * gap between squares, so percentage arithmetic would drift a little further
+ * out of true with every square, and at five squares the drift is visible.
+ * Sharing the grid means the hull cannot be misaligned, whatever the board is
+ * scaled to.
+ *
+ * Every square carries an explicit grid position for this to be safe -- an
+ * explicitly-placed item would otherwise push the auto-placed squares along
+ * and shear the whole board. See `buildBoard` in battleship.js. */
+.board .hull {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+  margin: 0.7cqi;
+  background: linear-gradient(180deg,
+    color-mix(in oklab, var(--hull) 80%, white 20%) 0%,
+    var(--hull) 52%,
+    color-mix(in oklab, var(--hull) 76%, black 24%) 100%);
+  box-shadow:
+    inset 0 0.35cqi 0.7cqi rgb(255 255 255 / 0.30),
+    inset 0 -0.45cqi 0.9cqi rgb(0 0 0 / 0.32),
+    0 0.5cqi 1.1cqi rgb(0 0 0 / 0.38);
+}
+
+/* The bow is the rounder end, so a ship has a direction rather than being a
+   lozenge. The two radii are the same shape turned a quarter. */
+.board .hull.across { border-radius: 46% 14% 14% 46% / 50% 34% 34% 50%; }
+.board .hull.down { border-radius: 46% 46% 14% 14% / 50% 50% 34% 34%; }
+
+/* A deck line down the middle, so a long hull is not a blank slab. */
+.board .hull::after {
+  content: "";
+  position: absolute;
+  inset: 32% 14%;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.15);
+}
+.board .hull.down::after { inset: 14% 32%; }
+
+.board .hull.sunk {
+  --hull: var(--hull-sunk);
+  opacity: 0.9;
+}
+
+/* -- the pegs -------------------------------------------------------------- */
+
+/* One absolutely-placed disc per shot, centred, at a size taken from the board
+   rather than from the square.
+ *
+ * `z-index: 2` puts a peg above the hulls, which sit at 1 -- a hit on your own
+ * ship has to be visible ON it. This works because `.cell` sets no z-index of
+ * its own and so never becomes a stacking context its pegs would be trapped
+ * inside; do not add one to it. */
+.board .cell.miss::after,
+.board .cell.hit::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  z-index: 2;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.board .cell.miss::after {
+  width: 2.6cqi;
+  height: 2.6cqi;
+  background: var(--peg-miss);
+  opacity: 0.75;
+}
+.board .cell.hit::after {
+  width: 4.4cqi;
+  height: 4.4cqi;
+  background: var(--peg-hit);
+  box-shadow: 0 0 0 0.9cqi color-mix(in oklab, var(--peg-hit) 26%, transparent);
+}
+
+/* -- putting a ship down --------------------------------------------------- */
+
+/* Above the hulls, so that dropping a ship across one you have already put out
+   shows red over the vessel it would cross rather than behind it. Safe to give
+   a stacking context to: nothing has been fired at while you are still
+   placing, so there are no pegs to trap inside it. */
+.board .cell.ghost {
+  z-index: 2;
+  box-shadow: inset 0 0 0 0.7cqi var(--go);
+}
+.board .cell.ghost.bad { box-shadow: inset 0 0 0 0.7cqi var(--hull-sunk); }
+
+/* -- the heat map ---------------------------------------------------------- */
+
+/* Where the hard engine would fire next, shaded. It is worked out from the
+   same view the page already has, so it tells you nothing you were not told --
+   it is a hint, which is why it is off until you ask for it. */
+.board .cell .heat {
+  position: absolute;
+  inset: 0;
+  border-radius: 0.6cqi;
+  background: var(--heat);
+  opacity: 0;
+  pointer-events: none;
+}
+.board.showheat .cell .heat { opacity: calc(var(--weight, 0) * 0.55); }
+
+/* -- what a shot looks like arriving --------------------------------------- */
+
+.board .cell .splash {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  z-index: 3;
+  width: 2cqi;
+  height: 2cqi;
+  border-radius: 50%;
+  border: 0.7cqi solid var(--peg-miss);
+  opacity: 0;
+  pointer-events: none;
+}
+.board .cell.landed-miss .splash { animation: ripple 420ms ease-out; }
+.board .cell.landed-hit .splash {
+  border-color: var(--peg-hit);
+  animation: ripple 420ms ease-out;
+}
+.board .cell.landed-sunk .splash {
+  border-color: var(--warn);
+  animation: ripple 620ms ease-out;
+}
+
+@keyframes ripple {
+  0% { opacity: 0.95; transform: scale(0.3); }
+  100% { opacity: 0; transform: scale(3.2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .board .cell .splash { animation-duration: 1ms !important; }
+}
+
+/* -- the fleet lists ------------------------------------------------------- */
+
+.fleetline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.pips {
+  display: inline-flex;
+  gap: 0.15rem;
+}
+.pip {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 0.15rem;
+  background: #8d9aa6;
+}
+.pip.gone { background: #d2555b; }
+.fleetline.sunk { opacity: 0.55; text-decoration: line-through; }
+
+/* The tray a ship is picked up from. */
+#tray .picked { background: color-mix(in oklab, #4dd4ac 22%, transparent); }
+#tray .down { opacity: 0.6; }

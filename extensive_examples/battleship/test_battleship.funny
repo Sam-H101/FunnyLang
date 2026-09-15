@@ -1,0 +1,365 @@
+// test_battleship.funny — the rules, the engine, and a whole game.
+//
+// `funny test extensive_examples` runs this. Five parts, each able to fail on
+// its own:
+//
+//   1. the board and its notation
+//   2. placing a fleet
+//   3. firing, sinking, and what the other side is allowed to see
+//   4. the engine choosing a shot from hand-made positions
+//   5. a complete game, engine against engine, asserted shot for shot
+//
+// THE GOLDEN NEVER DEPENDS ON A SEEDED RANDOM STREAM. `native/rizz.h` says in
+// as many words that no golden relies on the exact output of the generator,
+// and this one keeps that true. The strongest strategy draws no random number
+// at all, so its every shot is asserted exactly; both fleets in part five are
+// placed by hand; and the two strategies that do roll dice are asserted as
+// *properties* -- all one colour, nothing fired at twice, the fleet sunk
+// inside a hundred shots -- which hold whatever the stream produces.
+//
+// No sockets anywhere. `serve.funny` is a thin wrapper around these modules,
+// and what a wrapper is worth testing for is that it wraps.
+
+gimme yapper
+gimme stash
+gimme rizz
+gimme json
+
+gimme { SIZE, CELLS, UNTRIED, new_board, cell_of, notation_of, cells_for,
+        place, unplace, random_fleet, fleet_complete, fire, all_sunk, view_of,
+        render, afloat_count, row_of, col_of } from "rules.funny"
+gimme { choose_shot, density_map, unresolved_hits, line_ends,
+        neighbours } from "engine.funny"
+
+// A board with the named ships on it, so a rule can be tested without playing
+// half a game to reach it. Each entry is [name, where, across].
+bet fleet_of(placings) {
+    yo board = new_board()
+    grind p in placings {
+        yo next = place(board, p[0], cell_of(p[1]), p[2])
+        no_cap(!next.has("error"), "could not place the " + p[0] + " at " + p[1])
+        board = next
+    }
+    bounce board
+}
+
+bet fire_all(board, shots) {
+    grind s in shots {
+        yo r = fire(board, cell_of(s))
+        no_cap(!r.has("error"), "could not fire at " + s)
+        board = r["board"]
+    }
+    bounce board
+}
+
+bet as_notation(cells) {
+    bounce cells.glow_up(lowkey (c) => notation_of(c))
+}
+
+// What a shot did, in one character, so a game reads as a column of cells
+// rather than a column of sentences.
+bet marker(shot) {
+    sus (shot["result"] == "sunk") {
+        bounce "*"
+    }
+    bounce shot["result"] == "hit" ? "!" : " "
+}
+
+bet highest(counts) {
+    yo best = -1
+    grind n from 0 to CELLS {
+        sus (counts[n] > best) {
+            best = counts[n]
+        }
+    }
+    bounce best
+}
+
+// Ten to a line, numbered, the way the other two games print a game.
+bet in_tens(log) {
+    yo out = []
+    yo i = 0
+    bruh (i < log.how_thicc()) {
+        yo line = []
+        grind k from i to (i + 10 < log.how_thicc() ? i + 10 : log.how_thicc()) {
+            line.yeet_in(log[k])
+        }
+        out.yeet_in("  " + yapper.pad_left(to_yap(i + 1), 3) + ". " + line.join(" "))
+        i += 10
+    }
+    bounce out
+}
+
+// -- part one: the board -------------------------------------------------------------
+
+yap "-- rows are lettered and columns numbered --"
+grind s in ["A1", "A10", "B7", "E5", "J1", "J10"] {
+    yap "  " + s + " is cell " + to_yap(cell_of(s)) + ", and back again " + notation_of(cell_of(s))
+}
+yap "  and nothing else parses:", to_yap(cell_of("A0")), to_yap(cell_of("K1")),
+    to_yap(cell_of("A11")), to_yap(cell_of("b7")), to_yap(cell_of("")),
+    to_yap(cell_of("77")), to_yap(cell_of("A07"))
+
+yap "-- a ship may not wrap a row --"
+yap "  a carrier across from A9:", to_yap(cells_for(cell_of("A9"), 5, fax))
+yap "  across from A6 it just fits:", to_yap(as_notation(cells_for(cell_of("A6"), 5, fax)))
+yap "  down from A9 it fits:", to_yap(as_notation(cells_for(cell_of("A9"), 5, cap)))
+yap "  down from G9 it does not:", to_yap(cells_for(cell_of("G9"), 5, cap))
+
+// -- part two: placing ---------------------------------------------------------------
+
+yap "-- placing --"
+yo start = place(new_board(), "carrier", cell_of("A1"), fax)
+yap "  the carrier along the top:", to_yap(as_notation(start["ships"][0]["cells"]))
+yap "  one that would cross it:", place(start, "battleship", cell_of("A3"), fax)["error"]
+yap "  one that runs off the edge:", place(start, "battleship", cell_of("A9"), fax)["error"]
+yap "  one that does not exist:", place(start, "dinghy", 0, fax)["error"]
+yap "  the same one twice:", place(start, "carrier", cell_of("E1"), fax)["error"]
+
+yap "-- ships may touch, which is the printed rule --"
+yo touching = place(start, "battleship", cell_of("B1"), fax)
+yap "  right underneath:", to_yap(as_notation(touching["ships"][1]["cells"]))
+
+yap "-- and a ship can be lifted off again --"
+yo lifted = unplace(start, "carrier")
+yap "  gone from the fleet:", to_yap(lifted["ships"][0]["cells"]),
+    "and from the grid:", lifted["grid"][cell_of("A1")] == 0
+yap "  put down elsewhere:",
+    to_yap(as_notation(place(lifted, "carrier", cell_of("F3"), cap)["ships"][0]["cells"]))
+
+yap "-- a random fleet is a legal fleet, whatever it rolls --"
+// Asserted as properties, never as positions: see the note at the top.
+rizz.seed(7)
+grind attempt from 0 to 3 {
+    yo r = random_fleet(new_board())
+    yo seen = {}
+    yo cells = 0
+    grind s in r["ships"] {
+        cells += s["cells"].how_thicc()
+        grind c in s["cells"] {
+            no_cap(c >= 0 && c < CELLS, "a ship is off the board")
+            seen[c] = fax
+        }
+    }
+    yap "  five ships:", r["ships"].how_thicc() == 5,
+        " seventeen cells:", cells == 17,
+        " none shared:", seen.how_thicc() == 17,
+        " complete:", fleet_complete(r)
+}
+
+// -- part three: firing ----------------------------------------------------------------
+
+// The fleet the rest of this file shoots at. Spread out, so that a hit is
+// unambiguous.
+deadass SPREAD = [
+    ["carrier", "A1", fax],
+    ["battleship", "C3", fax],
+    ["cruiser", "E6", cap],
+    ["submarine", "H2", fax],
+    ["destroyer", "J9", fax],
+]
+
+yap "-- firing --"
+yo fleet = fleet_of(SPREAD)
+yap render(fleet, cap)
+
+yo r1 = fire(fleet, cell_of("B1"))
+yap "  B1 is water:", r1["result"]
+yo r2 = fire(r1["board"], cell_of("J9"))
+yap "  J9 is not:", r2["result"]
+yo r3 = fire(r2["board"], cell_of("J10"))
+yap "  J10 finishes it:", r3["result"], "-- the " + r3["ship"] + ", which was at " +
+    to_yap(as_notation(r3["cells"]))
+yap "  J10 a second time:", fire(r3["board"], cell_of("J10"))["error"]
+yap "  off the board:", fire(r3["board"], 100)["error"]
+yap "  four still afloat:", afloat_count(r3["board"]), " all sunk:", all_sunk(r3["board"])
+
+yap "-- and the seventeenth hit ends it --"
+yo done = r3["board"]
+yo more = 0
+grind s in fleet["ships"] {
+    grind c in s["cells"] {
+        sus (done["shots"][c] == UNTRIED) {
+            done = fire(done, c)["board"]
+            more += 1
+        }
+    }
+}
+yap "  " + to_yap(more) + " more hits, and the fleet is gone:", all_sunk(done),
+    " shots fired at it:", done["fired"]
+
+yap "-- the view tells the other side nothing it should not --"
+yo seen_board = r3["board"]
+yo v = view_of(seen_board)
+yap "  it has exactly:", to_yap(v.keys())
+yap "  a ship still afloat is named, and nothing more:", to_yap(v["afloat"][0].keys())
+yap "  still afloat:", to_yap(v["afloat"].glow_up(lowkey (s) => s["name"]))
+yap "  sunk, and where it turned out to be:",
+    to_yap(v["sunk"].glow_up(lowkey (s) => s["name"])),
+    to_yap(as_notation(v["sunk"][0]["cells"]))
+
+yo named = []
+grind s in v["sunk"] {
+    grind c in s["cells"] {
+        named.yeet_in(c)
+    }
+}
+yo afloat_cells = {}
+grind s in seen_board["ships"] {
+    sus (s["hits"] == s["size"]) {
+        nvm
+    }
+    grind c in s["cells"] {
+        afloat_cells[c] = fax
+    }
+}
+yo leaked = []
+grind c in named {
+    sus (afloat_cells.has(c)) {
+        leaked.yeet_in(notation_of(c))
+    }
+}
+yap "  every cell it names:", to_yap(as_notation(named))
+yap "  of which belong to a ship still afloat:", to_yap(leaked)
+yap "  the whole thing, as it goes over the wire:", json.spill(v["sunk"])
+
+// -- part four: the engine ---------------------------------------------------------------
+
+yap "-- it opens in the middle, and always on the same cell --"
+yo empty = view_of(new_board())
+yap "  density fires at:", notation_of(choose_shot(empty, "density")),
+    "and asked again:", notation_of(choose_shot(empty, "density"))
+yo map0 = density_map(empty)
+yap "  that is the highest count on the board:", map0[cell_of("E5")] == highest(map0)
+yap "  a corner is worth far less:", map0[cell_of("A1")], "against", map0[cell_of("E5")]
+
+yap "-- one hit, and it looks next door --"
+yo one = fire(fleet, cell_of("C4"))
+yo v1 = view_of(one["board"])
+yap "  C4:", one["result"], " unresolved:", to_yap(as_notation(unresolved_hits(v1)))
+yo pick1 = choose_shot(v1, "density")
+yap "  it fires at:", notation_of(pick1),
+    " which is next to it:", stash.contains(neighbours(cell_of("C4")), pick1)
+
+yap "-- two in a line, and it goes for an end of the line --"
+yo two = fire(one["board"], cell_of("C5"))
+yo v2 = view_of(two["board"])
+yo ends = line_ends(v2, unresolved_hits(v2))
+yap "  the ends are:", to_yap(as_notation(ends))
+yo pick2 = choose_shot(v2, "density")
+yap "  it fires at:", notation_of(pick2), " which is one of them:", stash.contains(ends, pick2)
+
+yap "-- a ship that is gone stops being chased --"
+yo wreck = fire_all(fleet, ["J9", "J10"])
+yo v3 = view_of(wreck)
+yap "  nothing is unaccounted for:", unresolved_hits(v3).how_thicc() == 0
+yo pick3 = choose_shot(v3, "density")
+yap "  so it goes back to hunting:", notation_of(pick3),
+    " and not into the wreck:", !stash.contains(v3["sunk"][0]["cells"], pick3)
+
+yap "-- a corner nothing could reach is worth nothing --"
+// Every ship is two cells or more, so anything covering A1 must also cover A2
+// or B1. With both of those known to be water, A1 cannot be holding anything.
+yo southern = fleet_of([
+    ["carrier", "D1", fax],
+    ["battleship", "F1", fax],
+    ["cruiser", "H1", fax],
+    ["submarine", "H5", fax],
+    ["destroyer", "J1", fax],
+])
+yo boxed = fire_all(southern, ["A2", "B1"])
+yo map4 = density_map(view_of(boxed))
+yap "  A1 counts:", map4[cell_of("A1")], " while B2 counts:", map4[cell_of("B2")]
+yap "  and A1 is not what it fires at:", choose_shot(view_of(boxed), "density") != cell_of("A1")
+
+yap "-- hunt sweeps one colour of the board --"
+// Fired at an empty board, so every shot is a miss and the sweep is never
+// interrupted. The cells themselves are not asserted -- only that they are all
+// one colour and none is repeated, which is true of every stream.
+rizz.seed(1)
+yo sweeping = new_board()
+yo colours = {}
+yo swept = []
+grind i from 0 to 10 {
+    yo at = choose_shot(view_of(sweeping), "hunt")
+    swept.yeet_in(at)
+    colours[(row_of(at) + col_of(at)) % 2] = fax
+    sweeping = fire(sweeping, at)["board"]
+}
+yap "  ten shots, all one colour:", colours.how_thicc() == 1,
+    " and none repeated:", stash.unique(swept).how_thicc() == 10
+
+yap "-- and every strategy finishes the job --"
+grind strategy in ["random", "hunt", "density"] {
+    rizz.seed(11)
+    yo target = fleet
+    yo shots = 0
+    bruh (!all_sunk(target) && shots < CELLS) {
+        target = fire(target, choose_shot(view_of(target), strategy))["board"]
+        shots += 1
+    }
+    // Only density's count is printed: it is the one that draws no random
+    // number, so it is the same on every machine.
+    sus (strategy == "density") {
+        yap "  " + strategy + ": sunk in", shots, "shots"
+    } nah {
+        yap "  " + strategy + ": sunk:", all_sunk(target), " inside a hundred shots:", shots <= CELLS
+    }
+}
+
+// -- part five: a whole game ---------------------------------------------------------------
+
+yap "-- a whole game, the hard engine against itself --"
+// One fleet spread out and one with three ships touching, so that the part of
+// the engine that has to work out which hits are still unaccounted for is
+// exercised rather than merely present.
+yo mine = fleet_of(SPREAD)
+yo theirs = fleet_of([
+    ["carrier", "B2", fax],
+    ["battleship", "C2", fax],
+    ["cruiser", "D2", fax],
+    ["submarine", "F5", cap],
+    ["destroyer", "J1", fax],
+])
+yap "  the fleet with three ships touching:"
+yap render(theirs, cap)
+
+yo log_mine = []
+yo log_theirs = []
+yo winner = ghost
+yo playing = "mine"
+bruh (winner == ghost && mine["fired"] + theirs["fired"] < 2 * CELLS) {
+    sus (playing == "mine") {
+        yo at = choose_shot(view_of(theirs), "density")
+        yo shot = fire(theirs, at)
+        theirs = shot["board"]
+        log_mine.yeet_in(notation_of(at) + marker(shot))
+        sus (all_sunk(theirs)) {
+            winner = "the one firing first"
+        }
+        playing = "theirs"
+    } nah {
+        yo at = choose_shot(view_of(mine), "density")
+        yo shot = fire(mine, at)
+        mine = shot["board"]
+        log_theirs.yeet_in(notation_of(at) + marker(shot))
+        sus (all_sunk(mine)) {
+            winner = "the one firing second"
+        }
+        playing = "mine"
+    }
+}
+
+yap "  first to fire (! is a hit, * sinks something):"
+grind line in in_tens(log_mine) {
+    yap line
+}
+yap "  second to fire:"
+grind line in in_tens(log_theirs) {
+    yap line
+}
+yap "  shots:", log_mine.how_thicc(), "against", log_theirs.how_thicc()
+yap "  winner:", winner
+yap "  the fleet that went down:"
+yap render(all_sunk(theirs) ? theirs : mine, cap)
+yap "-- done --"

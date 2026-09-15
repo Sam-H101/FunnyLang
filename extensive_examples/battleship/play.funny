@@ -1,0 +1,278 @@
+// play.funny — the same game, against a text board.
+//
+//     funny run extensive_examples/battleship/play.funny
+//     funny run extensive_examples/battleship/play.funny -- --difficulty normal
+//     funny run extensive_examples/battleship/play.funny -- --self --seed 7
+//
+//   --difficulty D   easy, normal or hard (default hard)
+//   --seed N         seed the generator, so a --self game can be shown to
+//                    somebody else and come out the same
+//   --self           nobody plays: the engine takes both sides and prints it
+//   --auto           place your fleet for you and get straight to the firing
+//   --shots N        stop after N shots each, whoever is ahead
+//
+// The browser is where this game is meant to be played -- see `serve.funny`.
+// This file is the twin that makes it testable: a game that can only be played
+// through a socket can only be tested through a socket, and `--self` is the
+// quickest way there is to see whether a strategy is any good.
+
+gimme yapper
+gimme rizz
+
+gimme { SIZE, CELLS, FLEET, INITIALS, new_board, cell_of, notation_of, place,
+        unplace, random_fleet, fleet_complete, fire, all_sunk, view_of,
+        render, render_pair, afloat_count } from "rules.funny"
+gimme { choose_shot, strategy_for, DIFFICULTIES } from "engine.funny"
+
+bet usage() {
+    yell("usage: play.funny [--difficulty easy|normal|hard] [--seed N] [--self]")
+    yell("                  [--auto] [--shots N]")
+}
+
+bet fleet_still_out(board) {
+    yo waiting = []
+    grind s in board["ships"] {
+        sus (s["cells"] == ghost) {
+            waiting.yeet_in(s["name"] + " (" + to_yap(s["size"]) + ")")
+        }
+    }
+    bounce waiting
+}
+
+bet say_shot(who, at, shot) {
+    yo where = notation_of(at)
+    sus (shot["result"] == "miss") {
+        bounce who + " fires at " + where + ": nothing there."
+    }
+    sus (shot["result"] == "hit") {
+        bounce who + " fires at " + where + ": a hit."
+    }
+    bounce who + " fires at " + where + ": that sinks the " + shot["ship"] + "."
+}
+
+// -- placing your fleet, by typing at it ---------------------------------------------------
+
+// `place carrier B3 across`, `auto`, `lift cruiser`, `ready`. Anything a
+// person types is upper-cased before it reaches `cell_of`, which is strict on
+// purpose -- the rules keep one spelling, and the interface is the place to be
+// forgiving about it.
+bet lay_out_fleet(board) {
+    yap "put your fleet out. 'place carrier B3 across', 'lift carrier', 'auto', 'ready'."
+    yap "  (across runs left to right, down runs top to bottom)"
+    bruh (fax) {
+        yap ""
+        yap render(board, cap)
+        yo waiting = fleet_still_out(board)
+        sus (waiting.how_thicc() == 0) {
+            yap "your fleet is out. type 'ready' when you are."
+        } nah {
+            yap "still on the quay: " + waiting.join(", ")
+        }
+
+        yo typed = yapper.trim(ask("> "))
+        yo words = yapper.words(yapper.whisper(typed))
+        sus (words.how_thicc() == 0) {
+            nvm
+        }
+        yo verb = words[0]
+
+        sus (verb == "quit") {
+            bounce ghost
+        }
+        sus (verb == "auto") {
+            board = random_fleet(board)
+            nvm
+        }
+        sus (verb == "ready") {
+            sus (fleet_complete(board)) {
+                bounce board
+            }
+            yap "not yet: " + fleet_still_out(board).join(", ") + " still to go."
+            nvm
+        }
+        sus (verb == "lift" && words.how_thicc() > 1) {
+            yo lifted = unplace(board, words[1])
+            sus (lifted.has("error")) {
+                yap lifted["error"]
+            } nah {
+                board = lifted
+            }
+            nvm
+        }
+        sus (verb == "place" && words.how_thicc() > 2) {
+            yo at = cell_of(yapper.SCREAM(words[2]))
+            sus (at == ghost) {
+                yap "'" + words[2] + "' is not a square. they look like B7."
+                nvm
+            }
+            yo across = words.how_thicc() < 4 || !yapper.starts_with(words[3], "d")
+            yo put = place(board, words[1], at, across)
+            sus (put.has("error")) {
+                yap put["error"]
+            } nah {
+                board = put
+            }
+            nvm
+        }
+        yap "i know 'place', 'lift', 'auto', 'ready' and 'quit'."
+    }
+}
+
+// -- the game ------------------------------------------------------------------------------
+
+bet play(mine, theirs, strategy, shot_limit) {
+    yo shots = 0
+    bruh (fax) {
+        sus (all_sunk(theirs)) {
+            yap ""
+            yap "every one of its ships is on the bottom. you win."
+            bail
+        }
+        sus (all_sunk(mine)) {
+            yap ""
+            yap "your fleet is gone. it wins."
+            bail
+        }
+        sus (shot_limit != ghost && shots >= shot_limit) {
+            yap ""
+            yap "stopping after " + to_yap(shots) + " shots each. you have " +
+                to_yap(afloat_count(mine)) + " afloat, it has " +
+                to_yap(afloat_count(theirs)) + "."
+            bail
+        }
+
+        yap ""
+        yap render_pair(mine, theirs, "your fleet", "your shots")
+        yap ""
+        yo typed = yapper.trim(ask("fire at (e.g. B7), or 'quit': "))
+        sus (typed == "quit" || typed == "") {
+            yap "bye."
+            bail
+        }
+        yo at = cell_of(yapper.SCREAM(typed))
+        sus (at == ghost) {
+            yap "'" + typed + "' is not a square. they look like B7."
+            nvm
+        }
+        yo yours = fire(theirs, at)
+        sus (yours.has("error")) {
+            yap yours["error"]
+            nvm
+        }
+        theirs = yours["board"]
+        shots += 1
+        yap say_shot("you", at, yours)
+        sus (all_sunk(theirs)) {
+            nvm
+        }
+
+        yo back = choose_shot(view_of(mine), strategy)
+        yo hit = fire(mine, back)
+        mine = hit["board"]
+        yap say_shot("it", back, hit)
+    }
+}
+
+// Nobody plays. The engine takes both sides, which is the quickest way to see
+// what a strategy is worth -- and, at "hard", draws no random number at all,
+// so the same seed gives the same game every time.
+bet play_itself(mine, theirs, strategy, shot_limit) {
+    yo shots = 0
+    bruh (!all_sunk(mine) && !all_sunk(theirs)) {
+        sus (shot_limit != ghost && shots >= shot_limit) {
+            bail
+        }
+        yo a = choose_shot(view_of(theirs), strategy)
+        yo shot_a = fire(theirs, a)
+        theirs = shot_a["board"]
+        yap say_shot("first", a, shot_a)
+        sus (all_sunk(theirs)) {
+            bail
+        }
+        yo b = choose_shot(view_of(mine), strategy)
+        yo shot_b = fire(mine, b)
+        mine = shot_b["board"]
+        yap say_shot("second", b, shot_b)
+        shots += 1
+    }
+    yap ""
+    yap render_pair(mine, theirs, "first player's fleet", "and what it fired")
+    yap ""
+    yo who = all_sunk(theirs) ? "the one firing first" : "the one firing second"
+    sus (all_sunk(mine) || all_sunk(theirs)) {
+        yap who + " won, after " + to_yap(theirs["fired"]) + " and " +
+            to_yap(mine["fired"]) + " shots."
+    } nah {
+        yap "stopped after " + to_yap(shots) + " shots each."
+    }
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo difficulty = "hard"
+    yo self_play = cap
+    yo auto = cap
+    yo seed = ghost
+    yo shot_limit = ghost
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--difficulty" && i + 1 < args.how_thicc()) {
+            difficulty = yapper.whisper(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--seed" && i + 1 < args.how_thicc()) {
+            seed = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--shots" && i + 1 < args.how_thicc()) {
+            shot_limit = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--self") {
+            self_play = fax
+            i += 1
+        } kinda_sus (a == "--auto") {
+            auto = fax
+            i += 1
+        } nah {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        }
+    }
+    sus (!DIFFICULTIES.has(difficulty)) {
+        yell("difficulty is easy, normal or hard -- not " + difficulty + ".")
+        bounce 2
+    }
+    sus (seed != ghost) {
+        rizz.seed(seed)
+    }
+    yo strategy = strategy_for(difficulty)
+
+    yap "battleship. the engine is playing \"" + difficulty + "\" (" + strategy + ")."
+    yap ""
+
+    sus (self_play) {
+        play_itself(random_fleet(new_board()), random_fleet(new_board()), strategy, shot_limit)
+        bounce 0
+    }
+
+    yo theirs = random_fleet(new_board())
+    yo mine = auto ? random_fleet(new_board()) : lay_out_fleet(new_board())
+    sus (mine == ghost) {
+        yap "bye."
+        bounce 0
+    }
+
+    play(mine, theirs, strategy, shot_limit)
+    bounce 0
+}
+
+dip(main(the_args()))

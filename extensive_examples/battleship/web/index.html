@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>battleship</title>
+<!-- Bootstrap, vendored rather than fetched: this page is served under
+     `default-src 'self'` and is meant to work on a machine with no network. -->
+<link rel="stylesheet" href="/vendor/bootstrap.min.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="bg-body">
+
+<div class="container py-4">
+
+  <header class="d-flex align-items-baseline flex-wrap gap-3 mb-4">
+    <h1 class="h3 mb-0 fw-semibold">battleship</h1>
+    <p id="status" class="mb-0 text-body-secondary" role="status" aria-live="polite">starting…</p>
+  </header>
+
+  <!-- PHASE ONE: putting the fleet out. One grid and a tray of ships; the
+       page shows a ghost of the selected ship under the pointer and the
+       server decides whether it may actually go there. -->
+  <section id="placing" hidden>
+    <div class="row g-4">
+      <div class="col-lg-7">
+        <div class="card shadow-sm border-secondary-subtle">
+          <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+            your waters
+          </div>
+          <div class="card-body p-2 p-sm-3">
+            <div class="board" id="ownboard"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-5">
+        <div class="card shadow-sm border-secondary-subtle mb-3">
+          <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+            your fleet
+          </div>
+          <ul class="list-group list-group-flush" id="tray"></ul>
+          <div class="card-body d-flex flex-wrap gap-2">
+            <button class="btn btn-outline-light btn-sm" type="button" id="rotate">
+              rotate <kbd>R</kbd>
+            </button>
+            <button class="btn btn-outline-light btn-sm" type="button" id="auto">
+              place for me
+            </button>
+            <button class="btn btn-success btn-sm ms-auto" type="button" id="ready" disabled>
+              ready
+            </button>
+          </div>
+        </div>
+        <p class="small text-body-secondary mb-0">
+          Pick a ship, then click where its front should go. It runs
+          <span id="facing">across</span>; press <kbd>R</kbd> or the button to turn it.
+          Ships may touch — that is the printed rule. Click a ship already on the
+          water to lift it off again.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- PHASE TWO: the shooting. Two boards, yours on the left with the damage
+       on it and theirs on the right with only what you have found out. -->
+  <section id="playing" hidden>
+    <div class="row g-4">
+      <div class="col-lg-6">
+        <div class="card shadow-sm border-secondary-subtle">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span class="text-uppercase small text-body-secondary fw-semibold">their waters</span>
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" id="heat">
+              <label class="form-check-label small text-body-secondary" for="heat">where it would fire</label>
+            </div>
+          </div>
+          <div class="card-body p-2 p-sm-3">
+            <div class="board" id="enemyboard"></div>
+          </div>
+        </div>
+        <ul class="list-group list-group-flush mt-3 small" id="enemyfleet"></ul>
+      </div>
+
+      <div class="col-lg-6">
+        <div class="card shadow-sm border-secondary-subtle">
+          <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+            your waters
+          </div>
+          <div class="card-body p-2 p-sm-3">
+            <div class="board" id="ownboard2"></div>
+          </div>
+        </div>
+        <ul class="list-group list-group-flush mt-3 small" id="ownfleet"></ul>
+      </div>
+    </div>
+
+    <div class="row g-4 mt-1">
+      <div class="col-12">
+        <div class="card shadow-sm border-secondary-subtle">
+          <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+            the log
+          </div>
+          <div class="card-body py-2">
+            <p class="font-monospace small mb-0" id="log">nothing yet.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PHASE THREE: over, and the only moment the engine's fleet may be shown. -->
+  <section id="over" hidden>
+    <div class="card shadow-sm border-secondary-subtle mb-4">
+      <div class="card-body">
+        <h2 class="h4 mb-1" id="outcome">—</h2>
+        <p class="text-body-secondary mb-0" id="tally">—</p>
+      </div>
+    </div>
+    <div class="row g-4">
+      <div class="col-lg-6">
+        <div class="card shadow-sm border-secondary-subtle">
+          <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+            where its fleet actually was
+          </div>
+          <div class="card-body p-2 p-sm-3">
+            <div class="board" id="revealedboard"></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <div class="card shadow-sm border-secondary-subtle">
+          <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+            your waters
+          </div>
+          <div class="card-body p-2 p-sm-3">
+            <div class="board" id="ownboard3"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="card shadow-sm border-secondary-subtle mt-4">
+    <div class="card-header text-uppercase small text-body-secondary fw-semibold">new game</div>
+    <div class="card-body">
+      <form id="newgame" class="row g-2 align-items-end">
+        <div class="col-sm-8">
+          <label class="form-label small text-body-secondary" for="difficulty">
+            how the engine plays
+          </label>
+          <select class="form-select" id="difficulty" name="difficulty">
+            <option value="easy">easy — fires anywhere at all</option>
+            <option value="normal">normal — sweeps, then finishes what it hits</option>
+            <option value="hard" selected>hard — works out where your ships must be</option>
+          </select>
+        </div>
+        <div class="col-sm-4">
+          <button class="btn btn-success w-100" type="submit">start again</button>
+        </div>
+      </form>
+      <p class="small text-body-secondary mt-3 mb-0">
+        The three settings are three different ideas about how to play, not one
+        search run to three depths. The hard one draws no random numbers at all,
+        so it opens on the same square every game.
+      </p>
+    </div>
+  </div>
+
+</div>
+
+<script src="/js/battleship.js"></script>
+</body>
+</html>

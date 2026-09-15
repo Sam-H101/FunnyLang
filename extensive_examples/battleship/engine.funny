@@ -1,0 +1,331 @@
+// engine.funny — FunnyLang choosing where to fire.
+//
+// THERE IS NO TREE TO SEARCH HERE, and that is why this example exists. Chess
+// and draughts are games of perfect information, and both engines next door
+// are the same algorithm: build the tree, score the leaves, prune. Battleship
+// gives minimax nothing to bite on. The fleet is hidden, your shot does not
+// change what your opponent can do, and there is no position to evaluate --
+// only a record of what you have fired and what it hit.
+//
+// What replaces the search is inference. Everything the engine knows is the
+// view (`rules.funny`'s `view_of`), and the question it answers is: given the
+// misses, the hits nobody has accounted for, and which ships are still afloat,
+// which untried cell is most likely to be holding one?
+//
+// THE ENGINE IS NEVER HANDED A FLEET. Every function here takes a view, which
+// is the redaction, so there is no board in scope to peek at. That is the
+// property that makes a hidden-information opponent honest, and the golden
+// checks it rather than trusting this paragraph.
+//
+// DIFFICULTY IS AN ALGORITHM, NOT A DEPTH -- the opposite of the other two
+// games, where easy and hard run the same search to different depths. Here
+// they are three genuinely different ideas about how to play, and the weakest
+// one is not a handicapped version of the strongest, it is how somebody plays
+// before they have thought about it.
+
+gimme rizz
+gimme stash
+
+gimme { SIZE, CELLS, UNTRIED, MISS, HIT, cells_for, row_of, col_of,
+        notation_of } from "rules.funny"
+
+flex deadass STRATEGIES = ["random", "hunt", "density"]
+
+// What the page and the terminal call them. "hard" is the one that draws no
+// random numbers, which is also what lets the golden assert a whole game.
+flex deadass DIFFICULTIES = {"easy": "random", "normal": "hunt", "hard": "density"}
+
+flex bet strategy_for(difficulty) {
+    bounce DIFFICULTIES.get(difficulty, "density")
+}
+
+// -- reading a view --------------------------------------------------------------------
+
+// Hit cells that do not belong to a ship already sunk -- so, cells where
+// something still afloat was struck. This is the set the targeting and the
+// density map both hang on, and it is exact rather than inferred **because**
+// sinking a ship reveals its cells. Without that it would be a guess, and
+// where two ships touch the guess can be wrong in both directions: a phantom
+// hit left for the map to chase, or a real one wrongly written off.
+flex bet unresolved_hits(view) {
+    yo resolved = {}
+    grind s in view["sunk"] {
+        grind c in s["cells"] {
+            resolved[c] = fax
+        }
+    }
+    yo out = []
+    grind n from 0 to CELLS {
+        sus (view["shots"][n] == HIT && !resolved.has(n)) {
+            out.yeet_in(n)
+        }
+    }
+    bounce out
+}
+
+flex bet untried_cells(view) {
+    yo out = []
+    grind n from 0 to CELLS {
+        sus (view["shots"][n] == UNTRIED) {
+            out.yeet_in(n)
+        }
+    }
+    bounce out
+}
+
+// One step from `cell`, or ghost if that leaves the board. The horizontal
+// steps are the ones that need the column check: plain arithmetic would walk
+// off the end of one row and onto the start of the next.
+// `stride` rather than `step`, which is a keyword -- it belongs to
+// `grind i from 0 to 10 step 2` and cannot be the name of anything.
+flex bet step_from(cell, stride) {
+    sus (stride == 1 || stride == -1) {
+        yo col = col_of(cell) + stride
+        sus (col < 0 || col >= SIZE) {
+            bounce ghost
+        }
+        bounce cell + stride
+    }
+    yo row = row_of(cell) + (stride > 0 ? 1 : -1)
+    sus (row < 0 || row >= SIZE) {
+        bounce ghost
+    }
+    bounce cell + stride
+}
+
+flex bet neighbours(cell) {
+    yo out = []
+    grind stride in [-SIZE, -1, 1, SIZE] {
+        yo n = step_from(cell, stride)
+        sus (n != ghost) {
+            out.yeet_in(n)
+        }
+    }
+    bounce out
+}
+
+// -- the density map --------------------------------------------------------------------
+
+// For every ship still afloat and every way it could be lying, the placement
+// is *possible* if it crosses no miss and no cell of a ship already sunk.
+// Every possible placement adds one to each untried cell it covers, and the
+// cell under the most of them is the cell most likely to be holding something.
+//
+// When there are hits nobody has accounted for, only placements covering at
+// least one of them count, and each is weighted by how many it would explain:
+// a line of three unresolved hits is much better explained by a cruiser lying
+// along it than by one clipping its end.
+//
+// Parity falls out of this rather than being bolted on. A cell that more
+// placements pass through is one the map already prefers, and on an empty
+// board that is the middle of the board -- so the opening shot is E5, every
+// time, for the same reason a person would tap the middle first.
+//
+// Cost, worst case: five ships, two orientations, a hundred starts, five cells
+// -- about five thousand cheap checks for one shot, in a game of at most a
+// hundred shots.
+flex bet density_map(view) {
+    yo counts = [0] * CELLS
+    yo hits = unresolved_hits(view)
+    yo hit_set = {}
+    grind h in hits {
+        hit_set[h] = fax
+    }
+
+    // Cells no ship still afloat can be occupying: the water it has already
+    // been shown not to be in, and the wrecks of the ships that are gone.
+    yo blocked = [cap] * CELLS
+    grind n from 0 to CELLS {
+        sus (view["shots"][n] == MISS) {
+            blocked[n] = fax
+        }
+    }
+    grind s in view["sunk"] {
+        grind c in s["cells"] {
+            blocked[c] = fax
+        }
+    }
+
+    grind ship in view["afloat"] {
+        grind at from 0 to CELLS {
+            grind across in [fax, cap] {
+                yo cells = cells_for(at, ship["size"], across)
+                sus (cells == ghost) {
+                    nvm
+                }
+                yo possible = fax
+                yo explains = 0
+                grind c in cells {
+                    sus (blocked[c]) {
+                        possible = cap
+                        bail
+                    }
+                    sus (hit_set.has(c)) {
+                        explains += 1
+                    }
+                }
+                sus (!possible) {
+                    nvm
+                }
+                // Once something has been hit, a placement that explains
+                // nothing is not worth counting: the ship that was hit is
+                // somewhere along that line, and finishing it off is worth
+                // more than opening a second front.
+                sus (hits.how_thicc() > 0 && explains == 0) {
+                    nvm
+                }
+                yo weight = hits.how_thicc() > 0 ? explains : 1
+                grind c in cells {
+                    sus (view["shots"][c] == UNTRIED) {
+                        counts[c] += weight
+                    }
+                }
+            }
+        }
+    }
+    bounce counts
+}
+
+// The highest-counted untried cell, ties broken on the lowest cell index. NO
+// RANDOM NUMBER IS DRAWN, which is what makes the hard engine a function of
+// the view it was given -- so the same position always produces the same shot,
+// and the golden can assert a whole game rather than merely that one was
+// played. The cost is that a person can learn its habits; for a
+// demonstration that is a fair trade for being testable at all.
+bet density_shot(view) {
+    yo counts = density_map(view)
+    yo best = -1
+    yo best_count = -1
+    grind n from 0 to CELLS {
+        sus (view["shots"][n] != UNTRIED) {
+            nvm
+        }
+        sus (counts[n] > best_count) {
+            best_count = counts[n]
+            best = n
+        }
+    }
+    sus (best < 0) {
+        bounce ghost
+    }
+    bounce best
+}
+
+// -- hunt and target ---------------------------------------------------------------------
+
+// How a person plays once they have thought about it for a minute.
+//
+// With nothing hit, fire at a random untried cell of ONE PARITY. The smallest
+// ship is two cells long, so every ship covers at least one cell of each
+// colour of the chequerboard, and half the board can be skipped entirely
+// without any risk of missing a ship.
+//
+// With something hit, stop hunting and finish it: fire next to the hits that
+// are unaccounted for, and if two of them are in a line, at the ends of that
+// line rather than beside it -- a ship is straight, so beside it is water.
+bet hunt_shot(view) {
+    yo hits = unresolved_hits(view)
+    sus (hits.how_thicc() > 0) {
+        yo ends = line_ends(view, hits)
+        sus (ends.how_thicc() > 0) {
+            bounce rizz.pick(ends)
+        }
+        yo near = []
+        grind h in hits {
+            grind c in neighbours(h) {
+                sus (view["shots"][c] == UNTRIED) {
+                    near.yeet_in(c)
+                }
+            }
+        }
+        sus (near.how_thicc() > 0) {
+            bounce rizz.pick(stash.unique(near))
+        }
+    }
+
+    yo on_parity = []
+    yo anywhere = []
+    grind n from 0 to CELLS {
+        sus (view["shots"][n] != UNTRIED) {
+            nvm
+        }
+        anywhere.yeet_in(n)
+        sus ((row_of(n) + col_of(n)) % 2 == 0) {
+            on_parity.yeet_in(n)
+        }
+    }
+    sus (on_parity.how_thicc() > 0) {
+        bounce rizz.pick(on_parity)
+    }
+    sus (anywhere.how_thicc() > 0) {
+        bounce rizz.pick(anywhere)
+    }
+    bounce ghost
+}
+
+// The untried cells at either end of a run of unresolved hits. Empty when no
+// two unresolved hits are adjacent, which is the ordinary case of having hit
+// exactly one thing.
+flex bet line_ends(view, hits) {
+    yo hit_set = {}
+    grind h in hits {
+        hit_set[h] = fax
+    }
+    yo out = []
+    grind h in hits {
+        grind stride in [1, SIZE] {
+            yo along = step_from(h, stride)
+            sus (along == ghost || !hit_set.has(along)) {
+                nvm
+            }
+            add_end(view, hit_set, out, h, stride)
+            add_end(view, hit_set, out, h, -stride)
+        }
+    }
+    bounce stash.unique(out)
+}
+
+// Walks from `start` while the cells are unresolved hits, and adds the first
+// cell past the end of the run if it is still untried.
+bet add_end(view, hit_set, out, start, stride) {
+    yo at = start
+    bruh (fax) {
+        yo next = step_from(at, stride)
+        sus (next == ghost) {
+            bounce ghost
+        }
+        sus (hit_set.has(next)) {
+            at = next
+            nvm
+        }
+        sus (view["shots"][next] == UNTRIED) {
+            out.yeet_in(next)
+        }
+        bounce ghost
+    }
+}
+
+// -- choosing ------------------------------------------------------------------------------
+
+// The cell to fire at, or ghost if there is nothing left untried -- which
+// cannot happen in a game, because a fleet of seventeen cells is sunk long
+// before a hundred shots are gone.
+flex bet choose_shot(view, strategy) {
+    sus (strategy == "density") {
+        bounce density_shot(view)
+    }
+    sus (strategy == "hunt") {
+        bounce hunt_shot(view)
+    }
+    yo untried = untried_cells(view)
+    sus (untried.how_thicc() == 0) {
+        bounce ghost
+    }
+    bounce rizz.pick(untried)
+}
+
+// The same thing, written the way a person would say it.
+flex bet describe_shot(view, strategy) {
+    yo at = choose_shot(view, strategy)
+    bounce at == ghost ? "nowhere left" : notation_of(at)
+}

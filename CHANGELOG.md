@@ -2,6 +2,62 @@
 
 All notable changes to FunnyLang are documented here.
 
+## [Unreleased] — battleship
+
+One worked example, and no runtime, standard library or syntax changes at all: everything new is
+under `extensive_examples/battleship/`. Whether this becomes a version number, and which, is a
+separate decision — the three files holding the version constant are untouched, so the embedded
+toolchain has not been regenerated either.
+
+### Added: `extensive_examples/battleship/`
+
+Battleship in a browser, with FunnyLang as the opponent. Put your fleet out, fire, and watch it
+fire back. The rules, the engine, the HTTPS server and the measurement are FunnyLang; the page is
+plain HTML, CSS and JavaScript with no framework in the logic.
+
+- **A game with no tree to search.** Chess and draughts are perfect-information games and both
+  engines in this repository are the same algorithm. Battleship hands minimax nothing: the fleet is
+  hidden, your shot does not change what your opponent can do, and there is no position to
+  evaluate. What replaces it is inference — given the misses, the hits nobody has accounted for and
+  which ships are still afloat, which untried square is most likely to be holding one?
+- **Difficulty is an algorithm, not a depth.** Three genuinely different ideas rather than one
+  search run to three depths: uniformly random, hunt-and-target with parity, and a probability
+  density map that counts every placement each surviving ship could still be lying in. Measured
+  over 2,000 games each, they need about 95, 52 and 44 shots to clear a board of seventeen cells.
+- **The engine cannot cheat, structurally rather than by good intentions.** `rules.funny`'s
+  `view_of` produces the redacted record — your shots, the ships you have sunk and where they
+  turned out to be, and the names and sizes of the ones still out there — and every function in
+  `engine.funny` takes *that*, never a board. There is no fleet in scope for it to consult. The
+  golden asserts that every cell the view names belongs to a ship already sunk, and the same
+  property was checked again from the far side of a real socket.
+- **The threads are in the measurement, not the game.** One game is work for one core, so the
+  server is single-threaded and says why. Two thousand games share nothing at all, so
+  `measure.funny` splits them statically across every core — deliberately the opposite of
+  `word_count/`'s pool, because every game costs about the same. Eight workers beat one in every
+  pairing measured, but the single-worker timings turned out **bimodal across identical repeats**
+  (the same 2,000 games of one strategy took 54 seconds twice and 15 seconds once), so the README
+  prints the three runs it took and deliberately quotes **no speed-up multiplier** — a ratio off
+  those numbers could be anywhere from 1.2× to 6.2×. The distribution figures, by contrast, are
+  identical across every run, on one worker and on eight, because each game is seeded from its own
+  game number.
+
+### Two rules this example decides, and says so
+
+Ships may touch, which is the printed rule and also the case that makes the engine's inference
+hard. And sinking a ship reveals its cells rather than only its name — a departure from the
+physical game, applied to both sides equally, which turns "which of my hits are still unaccounted
+for" from a guess into a set difference. Where two ships touch, that guess is genuinely ambiguous,
+and getting it wrong leaves the engine chasing a hit that has already been explained.
+
+### The golden holds a whole game still without touching the generator
+
+`native/rizz.h` records that no golden depends on the exact output of a seeded stream, and this one
+keeps that true. The strongest strategy draws no random number at all, so its every shot is
+asserted exactly and a complete game is asserted shot for shot; both fleets in that game are placed
+by hand; and the two strategies that do roll dice are asserted as properties — all one colour of
+the board, nothing fired at twice, the fleet sunk inside a hundred shots — which hold whatever the
+stream produces.
+
 ## [2.1.1] — 2026-09-12 — chess
 
 One worked example, plus the mechanics of shipping it. `extensive_examples/chess/` is the only

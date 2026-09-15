@@ -1,0 +1,431 @@
+// rules.funny — the board, the fleet, and what may legally be done to them.
+//
+// This file answers four questions and knows nothing else:
+//
+//   may this ship go here          `place`
+//   what does this shot hit        `fire`
+//   is this fleet finished         `all_sunk`
+//   what may the other side see    `view_of`
+//
+// It never changes a board it is handed. `place` and `fire` return a new one
+// and leave the old exactly as it was, which is the same contract `chess/` and
+// `checkers/` keep -- there it was because the engine searches by making moves
+// on copies, and here it is because a game holds two boards and a shot that
+// half-applied itself to one of them would be very hard to see.
+//
+// THE FOURTH QUESTION IS THE INTERESTING ONE. Battleship is a game of hidden
+// information, so the engine must not be able to see the fleet it is shooting
+// at. That is arranged structurally rather than by good intentions: `view_of`
+// produces the redacted record of what has been fired and what it hit, and
+// that -- not a board -- is what `engine.funny` takes as its argument. A
+// function that is never handed a fleet cannot consult one by accident. The
+// golden asserts that the view carries no cell of any ship still afloat.
+//
+// THE BOARD IS TWO GRIDS AND A FLEET.
+//
+//   {
+//       "grid":  100 numbas, 0 for empty water or 1 + the ship's index
+//       "shots": 100 numbas, UNTRIED / MISS / HIT -- what has been fired here
+//       "ships": five groupchats in FLEET order, "cells" ghost until placed
+//       "fired": how many shots have been taken at this board
+//   }
+//
+// The two grids are separate on purpose. A cell can hold a ship and no shot, a
+// shot and no ship, or both, and folding them into one number would mean
+// unpicking it again everywhere.
+
+gimme yapper
+gimme rizz
+
+flex deadass SIZE = 10
+flex deadass CELLS = 100
+
+// Carrier, battleship, cruiser, submarine, destroyer: seventeen cells, the
+// fleet the game has printed on the box since 2002. Largest first, which is
+// the order `random_fleet` wants -- a destroyer always fits somewhere, and a
+// carrier dropped last into a crowded board can take a great many tries.
+flex deadass FLEET = [
+    ["carrier", 5],
+    ["battleship", 4],
+    ["cruiser", 3],
+    ["submarine", 3],
+    ["destroyer", 2],
+]
+
+// A for aircraft carrier, then B, C, S, D: the letters a paper board is
+// usually marked with, and all five distinct, which "C for carrier and C for
+// cruiser" would not be.
+flex deadass INITIALS = ["A", "B", "C", "S", "D"]
+
+flex deadass UNTRIED = 0
+flex deadass MISS = 1
+flex deadass HIT = 2
+
+// Rows are lettered and columns numbered, so a cell is written "B7" -- the
+// notation the physical game prints down the side of the pegboard, and one a
+// person can type.
+flex deadass ROWS = "ABCDEFGHIJ"
+
+deadass DIGITS = "0123456789"
+
+// -- the board ------------------------------------------------------------------------
+
+flex bet new_board() {
+    yo ships = []
+    grind entry in FLEET {
+        ships.yeet_in({
+            "name": entry[0],
+            "size": entry[1],
+            "cells": ghost,
+            "at": ghost,
+            "across": ghost,
+            "hits": 0,
+        })
+    }
+    bounce {
+        "grid": [0] * CELLS,
+        "shots": [UNTRIED] * CELLS,
+        "ships": ships,
+        "fired": 0,
+    }
+}
+
+flex bet row_of(cell) {
+    bounce cell \ SIZE
+}
+
+flex bet col_of(cell) {
+    bounce cell % SIZE
+}
+
+flex bet on_board(cell) {
+    bounce cell != ghost && cell >= 0 && cell < CELLS
+}
+
+// "B7" -> 16. Ghost for anything that is not exactly one row letter followed
+// by a column number in range: no lower case, no leading zero, no "A0", no
+// "K1". It is strict so that `notation_of(cell_of(s))` is `s` whenever it is
+// anything at all -- a UI that wants to be forgiving upper-cases first, which
+// `play.funny` does, rather than every caller inheriting a loose parser.
+flex bet cell_of(notation) {
+    sus (what_is_it(notation) != "yapstring") {
+        bounce ghost
+    }
+    yo width = notation.how_thicc()
+    sus (width < 2 || width > 3) {
+        bounce ghost
+    }
+    yo row = yapper.index_of(ROWS, notation.at(0))
+    sus (row < 0) {
+        bounce ghost
+    }
+    yo digits = yapper.slice(notation, 1, width)
+    sus (!all_digits(digits) || yapper.starts_with(digits, "0")) {
+        bounce ghost
+    }
+    yo col = to_int(digits)
+    sus (col < 1 || col > SIZE) {
+        bounce ghost
+    }
+    bounce row * SIZE + (col - 1)
+}
+
+bet all_digits(s) {
+    sus (s.how_thicc() == 0) {
+        bounce cap
+    }
+    grind ch in s {
+        sus (!yapper.contains(DIGITS, ch)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+flex bet notation_of(cell) {
+    sus (!on_board(cell)) {
+        bounce "??"
+    }
+    bounce ROWS.at(row_of(cell)) + to_yap(col_of(cell) + 1)
+}
+
+flex bet ship_index(name) {
+    grind i from 0 to FLEET.how_thicc() {
+        sus (FLEET[i][0] == name) {
+            bounce i
+        }
+    }
+    bounce -1
+}
+
+flex bet size_of(name) {
+    yo i = ship_index(name)
+    bounce i < 0 ? ghost : FLEET[i][1]
+}
+
+// The cells a ship of `size` would occupy starting at `at`, or ghost if it
+// would not fit. A horizontal ship is the one that needs thinking about: cell
+// arithmetic is happy to walk off the end of row B and onto row C, and the
+// column check is what stops it. The golden fires at exactly that case.
+flex bet cells_for(at, size, across) {
+    sus (!on_board(at) || size < 1) {
+        bounce ghost
+    }
+    sus (across) {
+        sus (col_of(at) + size > SIZE) {
+            bounce ghost
+        }
+    } nah {
+        sus (row_of(at) + size > SIZE) {
+            bounce ghost
+        }
+    }
+    yo out = []
+    grind i from 0 to size {
+        out.yeet_in(across ? at + i : at + i * SIZE)
+    }
+    bounce out
+}
+
+// -- placing --------------------------------------------------------------------------
+
+// A new board with the ship on it, or `{"error": why}`. The refusal carries a
+// sentence rather than a code, because the page shows it to the player
+// verbatim and a second copy of these reasons in JavaScript would drift.
+//
+// Adjacency is deliberately NOT checked: ships may touch. That is the printed
+// rule, and touching ships are the case that makes the engine's inference
+// hard, which is the part worth having.
+flex bet place(board, name, at, across) {
+    yo idx = ship_index(name)
+    sus (idx < 0) {
+        bounce {"error": "there is no ship called " + to_yap(name)}
+    }
+    sus (board["ships"][idx]["cells"] != ghost) {
+        bounce {"error": "the " + name + " is already on the board"}
+    }
+    yo cells = cells_for(at, FLEET[idx][1], across)
+    sus (cells == ghost) {
+        bounce {"error": "the " + name + " does not fit there"}
+    }
+    grind c in cells {
+        sus (board["grid"][c] != 0) {
+            bounce {"error": "the " + name + " would cross the " +
+                             board["ships"][board["grid"][c] - 1]["name"]}
+        }
+    }
+
+    yo next = deep_clone(board)
+    grind c in cells {
+        next["grid"][c] = idx + 1
+    }
+    next["ships"][idx]["cells"] = cells
+    next["ships"][idx]["at"] = at
+    next["ships"][idx]["across"] = across
+    bounce next
+}
+
+// The ship lifted off again, for a player rearranging their fleet before the
+// shooting starts. A ship that was never placed comes back unchanged rather
+// than as an error: there is nothing to undo and nothing went wrong.
+flex bet unplace(board, name) {
+    yo idx = ship_index(name)
+    sus (idx < 0) {
+        bounce {"error": "there is no ship called " + to_yap(name)}
+    }
+    sus (board["ships"][idx]["cells"] == ghost) {
+        bounce board
+    }
+    yo next = deep_clone(board)
+    grind c in next["ships"][idx]["cells"] {
+        next["grid"][c] = 0
+    }
+    next["ships"][idx]["cells"] = ghost
+    next["ships"][idx]["at"] = ghost
+    next["ships"][idx]["across"] = ghost
+    bounce next
+}
+
+flex bet fleet_complete(board) {
+    grind s in board["ships"] {
+        sus (s["cells"] == ghost) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+// All five placed at random. THE ONLY FUNCTION IN THIS FILE THAT ROLLS DICE,
+// so a caller wanting a reproducible game seeds `rizz` once and knows exactly
+// where the draws happen.
+flex bet random_fleet(board) {
+    yo next = board
+    grind entry in FLEET {
+        yo name = entry[0]
+        sus (next["ships"][ship_index(name)]["cells"] != ghost) {
+            nvm
+        }
+        yo placed = cap
+        yo tries = 0
+        bruh (!placed && tries < 2000) {
+            tries += 1
+            yo attempt = place(next, name, rizz.roll(0, CELLS - 1), rizz.coinflip())
+            sus (!attempt.has("error")) {
+                next = attempt
+                placed = fax
+            }
+        }
+        sus (!placed) {
+            // Unreachable on a 10 x 10 board with seventeen cells of ships:
+            // said out loud anyway, because a silent half-placed fleet would
+            // be a genuinely baffling bug.
+            chuck "could not find anywhere for the " + name
+        }
+    }
+    bounce next
+}
+
+// -- firing ---------------------------------------------------------------------------
+
+// `{"board", "at", "result", "ship", "cells"}`, where `result` is "miss",
+// "hit" or "sunk" -- or `{"error": why}` for a cell off the board or one that
+// has already been fired at.
+//
+// A REPEATED SHOT IS AN ERROR, not a quiet miss. A page or a player that fires
+// twice at one cell has a bug, and counting it as a turn would hide it.
+//
+// SINKING REVEALS THE SHIP'S CELLS, not only its name. That is a departure
+// from the printed game, it applies to both sides equally, and it exists so
+// that "which hits are still unaccounted for" is a set difference rather than
+// a guess -- see the README, and `engine.funny`'s own note.
+flex bet fire(board, cell) {
+    sus (!on_board(cell)) {
+        bounce {"error": "that is not a square on the board"}
+    }
+    sus (board["shots"][cell] != UNTRIED) {
+        bounce {"error": notation_of(cell) + " has already been fired at"}
+    }
+
+    yo next = deep_clone(board)
+    next["fired"] += 1
+    yo which = board["grid"][cell]
+
+    sus (which == 0) {
+        next["shots"][cell] = MISS
+        bounce {"board": next, "at": cell, "result": "miss", "ship": ghost, "cells": []}
+    }
+
+    next["shots"][cell] = HIT
+    yo ship = next["ships"][which - 1]
+    ship["hits"] += 1
+    sus (ship["hits"] == ship["size"]) {
+        bounce {"board": next, "at": cell, "result": "sunk",
+                "ship": ship["name"], "cells": ship["cells"].clone()}
+    }
+    bounce {"board": next, "at": cell, "result": "hit", "ship": ghost, "cells": []}
+}
+
+flex bet all_sunk(board) {
+    sus (!fleet_complete(board)) {
+        bounce cap
+    }
+    grind s in board["ships"] {
+        sus (s["hits"] < s["size"]) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+flex bet afloat_count(board) {
+    yo n = 0
+    grind s in board["ships"] {
+        sus (s["cells"] != ghost && s["hits"] < s["size"]) {
+            n += 1
+        }
+    }
+    bounce n
+}
+
+// -- what the other player may know ---------------------------------------------------
+
+// Everything the opponent is entitled to: their own record of what they have
+// fired, the ships they have sunk and where those turned out to be, and the
+// names and sizes of the ships still afloat. No `grid`, no cell of any ship
+// still in the game, no hit counts.
+//
+// Sizes are not a leak: which five ships are in a fleet is printed on the box,
+// and an opponent who did not know would be playing a different game.
+flex bet view_of(board) {
+    yo sunk = []
+    yo afloat = []
+    grind s in board["ships"] {
+        sus (s["cells"] != ghost && s["hits"] == s["size"]) {
+            sunk.yeet_in({"name": s["name"], "size": s["size"], "cells": s["cells"].clone()})
+        } nah {
+            afloat.yeet_in({"name": s["name"], "size": s["size"]})
+        }
+    }
+    bounce {"shots": board["shots"].clone(), "sunk": sunk, "afloat": afloat}
+}
+
+// A view of a board nobody has fired at yet, which is where both engines start
+// and what the golden builds its hand-made views from.
+flex bet empty_view() {
+    bounce view_of(new_board())
+}
+
+// -- drawing it -----------------------------------------------------------------------
+
+// The grid as text. `hide_ships` is the difference between your own board and
+// the one you are shooting at: `.` untried, `o` a miss, `x` a hit, `#` a cell
+// of a ship that has been sunk, and a letter for one of your own ships still
+// in one piece.
+flex bet render(board, hide_ships) {
+    yo lines = []
+    yo header = "   "
+    grind c from 1 to SIZE + 1 {
+        header = header + yapper.pad_left(to_yap(c), 3)
+    }
+    lines.yeet_in(header)
+    grind r from 0 to SIZE {
+        yo line = " " + ROWS.at(r) + " "
+        grind c from 0 to SIZE {
+            line = line + yapper.pad_left(mark_at(board, r * SIZE + c, hide_ships), 3)
+        }
+        lines.yeet_in(line)
+    }
+    bounce lines.join("\n")
+}
+
+bet mark_at(board, cell, hide_ships) {
+    yo shot = board["shots"][cell]
+    yo which = board["grid"][cell]
+    sus (shot == HIT) {
+        yo ship = board["ships"][which - 1]
+        bounce ship["hits"] == ship["size"] ? "#" : "x"
+    }
+    sus (shot == MISS) {
+        bounce "o"
+    }
+    sus (!hide_ships && which != 0) {
+        bounce INITIALS[which - 1]
+    }
+    bounce "."
+}
+
+// Two boards side by side, which is how a player wants to see a game: your
+// fleet with the damage on it, and your own record of where you have fired.
+flex bet render_pair(mine, theirs, left_title, right_title) {
+    yo left = yapper.lines(render(mine, cap))
+    yo right = yapper.lines(render(theirs, fax))
+    // A rendered row is three characters of margin and ten of three, so 33 --
+    // and four more for a gutter, or the right-hand board's row letter lands
+    // hard against the left-hand board's last column.
+    yo width = 37
+    yo lines = [yapper.pad_right(left_title, width) + right_title]
+    grind i from 0 to left.how_thicc() {
+        lines.yeet_in(yapper.pad_right(left[i], width) + right[i])
+    }
+    bounce lines.join("\n")
+}

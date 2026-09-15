@@ -1,0 +1,536 @@
+// serve.funny — battleship in a browser, and the engine on the other side.
+//
+//     funny run extensive_examples/battleship/serve.funny
+//     funny run extensive_examples/battleship/serve.funny -- 8080 --no-tls
+//
+//   PORT              the port (default 8443; 0 picks a free one)
+//   --host H          where to listen (default 127.0.0.1 -- loopback only)
+//   --difficulty D    easy, normal or hard (default hard)
+//   --seed N          seed the generator, so the engine's fleet is repeatable
+//   --seconds N       stop after N seconds
+//   --no-tls          plain HTTP
+//   --pfx FILE        a real server identity instead of the test one
+//
+// THE PAGE IS THE GAME; this file exists to serve it and to be the opponent.
+//
+// ONE THREAD, AND NOT APOLOGETICALLY. There is one game and one player, and
+// the most expensive thing that happens here is the engine counting ship
+// placements -- five ships, two orientations, a hundred starts: a few thousand
+// cheap checks, once per shot, in a game of at most a hundred shots. Threads
+// would add a lock around the game and buy nothing. The event loop is here so
+// a second tab or a favicon request cannot queue behind a turn. The threads in
+// this example are in `measure.funny`, where the work actually is.
+//
+// Five routes, holding one game:
+//
+//   GET  /api/state    everything the page may know
+//   POST /api/new      {"difficulty": "hard", "seed": 7} -- both optional
+//   POST /api/place    {"ship","at","across"} | {"auto":true} | {"lift":name}
+//   POST /api/ready    the fleet is locked; the shooting starts
+//   POST /api/fire     {"at": 44}, then the engine fires back
+//
+// THE ENGINE'S FLEET NEVER CROSSES THE WIRE. `state_json` sends `view_of` the
+// engine's board and never the board, and there is no flag, route or debug
+// mode here that sends anything more -- until the game is over, which is the
+// one moment it is allowed, and even then it arrives under its own key so the
+// page cannot mistake it for the view. `rules.funny` owns that redaction and
+// the golden asserts it.
+//
+// One game per server, not per browser. This is a program you run to play a
+// game, and pretending to have sessions it does not have would be worse than
+// saying so.
+
+gimme internet
+gimme clock
+gimme yapper
+gimme json
+gimme filez
+gimme computer
+gimme rizz
+
+gimme { SIZE, CELLS, FLEET, new_board, notation_of, place, unplace,
+        random_fleet, fleet_complete, fire, all_sunk, view_of,
+        afloat_count } from "rules.funny"
+gimme { choose_shot, density_map, strategy_for, DIFFICULTIES } from "engine.funny"
+gimme { read_request, build_response, json_response, STATUS_TEXT,
+        SECURITY_HEADERS } from "http.funny"
+gimme { static_target, read_static } from "static.funny"
+
+flex deadass DEFAULT_PORT = 8443
+flex deadass READ_TIMEOUT_MS = 10000
+
+yo GAME = ghost
+yo DIFFICULTY = "hard"
+yo WEB_DIR = ghost
+yo STOPPING = cap
+yo SERVED = 0
+yo PFX = ghost
+yo PFX_PASSWORD = "funnylang"
+yo NO_TLS = cap
+
+// -- the game ---------------------------------------------------------------------------
+
+// The engine's fleet is placed the moment the game begins, before the player
+// has put down a single ship. That is not an advantage to anybody: neither
+// side may look at the other's board, so when the fleets are laid out changes
+// nothing. It does mean `--seed` fixes the engine's fleet, which is what makes
+// a game worth showing somebody else.
+bet start_game(difficulty, seed) {
+    sus (seed != ghost) {
+        rizz.seed(seed)
+    }
+    GAME = {
+        "phase": "placing",
+        "difficulty": difficulty,
+        "you": new_board(),
+        "engine": random_fleet(new_board()),
+        "turn": "you",
+        "outcome": ghost,
+        "last": {"you": ghost, "engine": ghost},
+        // What has happened since the page last looked, in order, for it to
+        // animate. `history` is the whole game, for a page that was reloaded.
+        "played": [],
+        "history": [],
+    }
+    bounce GAME
+}
+
+bet record(by, at, shot) {
+    yo entry = {
+        "by": by,
+        "at": at,
+        "where": notation_of(at),
+        "result": shot["result"],
+        "ship": shot["ship"],
+        "cells": shot["cells"],
+    }
+    GAME["last"][by] = entry
+    GAME["played"].yeet_in(entry)
+    GAME["history"].yeet_in(entry)
+    bounce entry
+}
+
+// The engine's shot, which it chooses from the view of your board and nothing
+// else. `choose_shot` is never handed the board itself.
+bet engine_turn() {
+    yo at = choose_shot(view_of(GAME["you"]), strategy_for(GAME["difficulty"]))
+    sus (at == ghost) {
+        bounce ghost
+    }
+    yo shot = fire(GAME["you"], at)
+    sus (shot.has("error")) {
+        bounce ghost
+    }
+    GAME["you"] = shot["board"]
+    record("engine", at, shot)
+    sus (all_sunk(GAME["you"])) {
+        GAME["outcome"] = "engine"
+        GAME["phase"] = "over"
+    }
+    GAME["turn"] = "you"
+}
+
+// Everything the page needs to draw itself, and nothing the engine is keeping
+// to itself. Your own board goes over in full -- it is yours. The engine's
+// goes over as a view: your record of where you have fired, the ships you have
+// sunk and where they turned out to be, and the names and sizes of the ones
+// still out there.
+bet state_json() {
+    yo yours = GAME["you"]
+    yo theirs = GAME["engine"]
+    yo view = view_of(theirs)
+
+    yo ships = []
+    grind s in yours["ships"] {
+        ships.yeet_in({
+            "name": s["name"],
+            "size": s["size"],
+            "cells": s["cells"],
+            "at": s["at"],
+            "across": s["across"],
+            "sunk": s["cells"] != ghost && s["hits"] == s["size"],
+        })
+    }
+    yo fleet = []
+    grind f in FLEET {
+        fleet.yeet_in({"name": f[0], "size": f[1]})
+    }
+
+    yo body = {
+        "ok": fax,
+        "phase": GAME["phase"],
+        "turn": GAME["turn"],
+        "difficulty": GAME["difficulty"],
+        "outcome": GAME["outcome"],
+        "size": SIZE,
+        "fleet": fleet,
+        "you": {
+            "grid": yours["grid"],
+            "shots": yours["shots"],
+            "ships": ships,
+            "ready": fleet_complete(yours),
+            "afloat": afloat_count(yours),
+        },
+        "engine": view,
+        "last": GAME["last"],
+        "played": GAME["played"],
+        "history": GAME["history"],
+        "shots": {"you": theirs["fired"], "engine": yours["fired"]},
+    }
+
+    // The heat map is worked out from the view the page has already been
+    // given, so it tells it nothing new -- it is the hard engine's own opinion
+    // of where to fire next, drawn out. The page keeps it off by default
+    // because it is a hint, not because it is a leak.
+    sus (GAME["phase"] == "playing") {
+        body["heat"] = density_map(view)
+    }
+    // The one moment the engine's fleet may be shown, under its own key.
+    sus (GAME["phase"] == "over") {
+        body["revealed"] = theirs["grid"]
+    }
+    bounce json.spill(body)
+}
+
+bet refuse(status, why) {
+    bounce json_response(status, json.spill({"ok": cap, "error": why}))
+}
+
+// -- the routes -------------------------------------------------------------------------
+
+bet route(req) {
+    sus (req["path"] == "/api/state" && req["method"] == "GET") {
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/new" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce refuse(400, "that wasn't JSON")
+        }
+        yo difficulty = DIFFICULTY
+        sus (asked.has("difficulty")) {
+            yo want = yapper.whisper(to_yap(asked["difficulty"]))
+            sus (DIFFICULTIES.has(want)) {
+                difficulty = want
+            }
+        }
+        yo seed = asked.has("seed") ? to_int(asked["seed"]) : ghost
+        start_game(difficulty, seed)
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/place" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce refuse(400, "that wasn't JSON")
+        }
+        sus (GAME["phase"] != "placing") {
+            bounce refuse(409, "your fleet has already put to sea")
+        }
+        sus (asked.get("auto", cap) == fax) {
+            GAME["you"] = random_fleet(GAME["you"])
+            bounce json_response(200, state_json())
+        }
+        sus (asked.has("lift")) {
+            yo lifted = unplace(GAME["you"], to_yap(asked["lift"]))
+            sus (lifted.has("error")) {
+                bounce refuse(400, lifted["error"])
+            }
+            GAME["you"] = lifted
+            bounce json_response(200, state_json())
+        }
+        // The refusal is the rules' own sentence, passed through verbatim.
+        // The page shows it as it arrives; a second copy of these reasons in
+        // JavaScript would be a second implementation of the rules.
+        yo put = place(GAME["you"], to_yap(asked.get("ship", "")),
+                       to_int(asked.get("at", -1)), asked.get("across", fax) == fax)
+        sus (put.has("error")) {
+            bounce refuse(400, put["error"])
+        }
+        GAME["you"] = put
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/ready" && req["method"] == "POST") {
+        sus (GAME["phase"] != "placing") {
+            bounce refuse(409, "your fleet has already put to sea")
+        }
+        sus (!fleet_complete(GAME["you"])) {
+            bounce refuse(409, "some of your fleet is still on the quay")
+        }
+        GAME["phase"] = "playing"
+        GAME["turn"] = "you"
+        GAME["played"] = []
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/fire" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce refuse(400, "that wasn't JSON")
+        }
+        sus (GAME["phase"] == "placing") {
+            bounce refuse(409, "nobody has put to sea yet")
+        }
+        sus (GAME["phase"] == "over") {
+            bounce refuse(409, "the game is over")
+        }
+        sus (GAME["turn"] != "you") {
+            bounce refuse(409, "it isn't your turn")
+        }
+
+        // Cleared first: `played` is what has happened *since the page last
+        // looked*, so it starts empty and collects this shot and the reply.
+        GAME["played"] = []
+        yo shot = fire(GAME["engine"], to_int(asked.get("at", -1)))
+        sus (shot.has("error")) {
+            bounce refuse(400, shot["error"])
+        }
+        GAME["engine"] = shot["board"]
+        GAME["last"] = {"you": ghost, "engine": ghost}
+        record("you", to_int(asked["at"]), shot)
+
+        sus (all_sunk(GAME["engine"])) {
+            GAME["outcome"] = "you"
+            GAME["phase"] = "over"
+        } nah {
+            GAME["turn"] = "engine"
+            // Both halves of the exchange come back in one response. The
+            // engine answers in microseconds, so a second round trip would
+            // exist only to be waited for; the page animates them in sequence
+            // regardless.
+            engine_turn()
+        }
+        bounce json_response(200, state_json())
+    }
+
+    // Anything else is a file, and static_target decides whether it is one.
+    sus (req["method"] != "GET" && req["method"] != "HEAD") {
+        bounce refuse(405, "not a thing you can do here")
+    }
+    yo target = static_target(WEB_DIR, req["path"])
+    sus (target == ghost) {
+        bounce build_response(404, "no such page\n",
+                              {"Content-Type": "text/plain; charset=utf-8"},
+                              req["method"] == "HEAD")
+    }
+    yo body = read_static(target)
+    sus (body == ghost) {
+        bounce build_response(404, "no such page\n",
+                              {"Content-Type": "text/plain; charset=utf-8"},
+                              req["method"] == "HEAD")
+    }
+    yo headers = {"Content-Type": target["type"]}
+    headers.merge(SECURITY_HEADERS)
+    bounce build_response(200, body, headers, req["method"] == "HEAD")
+}
+
+bet parse_body(req) {
+    sus (yapper.trim(req["body"]) == "") {
+        bounce {}
+    }
+    sketchy {
+        yo parsed = json.parse(req["body"])
+        bounce what_is_it(parsed) == "groupchat" ? parsed : ghost
+    } my_bad (e) {
+        bounce ghost
+    }
+}
+
+// -- the socket loop ----------------------------------------------------------------------
+
+deadass HANDSHAKE_MS = 5000
+
+// A connection accepted from a secure listener arrives with its TLS session
+// not yet negotiated, and nothing can be read until it is. It is driven a step
+// at a time, waiting on the event loop in between, so a slow client costs its
+// own task and nobody else's. A plain connection answers `fax` at once, which
+// is why there is one path here rather than two.
+async_ngl bet finish_handshake(conn) {
+    yo deadline = clock.now() + HANDSHAKE_MS / 1000.0
+    bruh (!internet.handshake(conn)) {
+        yo left = to_int((deadline - clock.now()) * 1000.0)
+        sus (left <= 0) {
+            bounce cap
+        }
+        sus (!await_fr internet.hold_up(conn, left)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+async_ngl bet read_more(conn, ms) {
+    sus (!await_fr internet.hold_up(conn, ms)) {
+        bounce ghost
+    }
+    bounce internet.hear_them_out(conn, 65536, 0)
+}
+
+// One connection, start to finish. Every read waits on the event loop rather
+// than on the socket, so a browser that opens a connection and says nothing
+// costs one parked task instead of the whole server.
+async_ngl bet handle(customer) {
+    yo conn = customer["conn"]
+    sketchy {
+        sus (!await_fr finish_handshake(conn)) {
+            internet.kick_out(conn)
+            bounce ghost
+        }
+        yo req = await_fr read_request(lowkey (ms) => read_more(conn, ms))
+        sus (!req["ok"]) {
+            sus (req["status"] != ghost) {
+                internet.holler_back(conn,
+                    build_response(req["status"], STATUS_TEXT.get(req["status"], "no") + "\n",
+                                   {"Content-Type": "text/plain; charset=utf-8"}))
+            }
+        } nah {
+            SERVED += 1
+            yo answer = ghost
+            sketchy {
+                answer = route(req)
+            } my_bad (e) {
+                yell("500 on " + req["method"] + " " + req["path"] + ": " + e.flavor + ": " + e.message)
+                answer = refuse(500, e.flavor + ": " + e.message)
+            }
+            internet.holler_back(conn, answer)
+        }
+    } my_bad (e) {
+        vibe
+    }
+    internet.kick_out(conn)
+}
+
+async_ngl bet watch_for_ctrl_c() {
+    sketchy {
+        await_fr computer.until_ctrl_c()
+        yell("")
+        yell("ctrl-c — closing up.")
+        STOPPING = fax
+    } my_bad (e) {
+        vibe
+    }
+}
+
+bet usage() {
+    yell("usage: serve.funny [PORT] [--host H] [--difficulty easy|normal|hard]")
+    yell("                   [--seed N] [--seconds N] [--no-tls] [--pfx FILE]")
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo port = DEFAULT_PORT
+    yo host = "127.0.0.1"
+    yo seconds = ghost
+    yo seed = ghost
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--host" && i + 1 < args.how_thicc()) {
+            host = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--difficulty" && i + 1 < args.how_thicc()) {
+            DIFFICULTY = yapper.whisper(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--seed" && i + 1 < args.how_thicc()) {
+            seed = to_int(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--seconds" && i + 1 < args.how_thicc()) {
+            seconds = to_numba(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--pfx" && i + 1 < args.how_thicc()) {
+            PFX = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--pfx-password" && i + 1 < args.how_thicc()) {
+            PFX_PASSWORD = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--no-tls") {
+            NO_TLS = fax
+            i += 1
+        } kinda_sus (yapper.starts_with(a, "-")) {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        } nah {
+            port = to_int(a)
+            i += 1
+        }
+    }
+    sus (!DIFFICULTIES.has(DIFFICULTY)) {
+        yell("difficulty is easy, normal or hard -- not " + DIFFICULTY + ".")
+        bounce 2
+    }
+
+    WEB_DIR = filez.join_path(filez.dir_of(the_script()), "web")
+    start_game(DIFFICULTY, seed)
+
+    // TLS unless told otherwise. The identity is this example's own test
+    // certificate, signed by a test CA that nothing else trusts -- a browser
+    // will warn, and should, because that is what an unknown CA is for. It is
+    // test material and not a secret; `certs/make_cert.sh` makes a new pair.
+    sus (PFX == ghost && !NO_TLS) {
+        yo beside = filez.join_path(filez.dir_of(the_script()), "certs/site.p12")
+        sus (filez.is_file(beside)) {
+            PFX = beside
+        }
+    }
+
+    yo listener = ghost
+    yo secure = PFX != ghost && !NO_TLS
+    sketchy {
+        sus (secure) {
+            listener = internet.open_secure_shop(port, host, {"pfx": PFX, "password": PFX_PASSWORD})
+        } nah {
+            listener = internet.open_shop(port, host)
+        }
+    } my_bad (e) {
+        yell("couldn't start: " + e.message)
+        bounce 1
+    }
+    yo bound = internet.shop_port(listener)
+    yo scheme = secure ? "https" : "http"
+    yell("battleship at " + scheme + "://" +
+         (host == "0.0.0.0" ? "<this machine>" : "localhost") + ":" + to_yap(bound) +
+         " — ctrl-c to stop")
+    sus (secure) {
+        yell("(a test certificate, so your browser will warn about the issuer -- that is correct)")
+    } nah {
+        yell("(plain http: fine on loopback, and not on a network)")
+    }
+    yell("place your five ships, then fire. the engine is playing \"" + DIFFICULTY + "\".")
+
+    watch_for_ctrl_c()
+
+    yo deadline = seconds == ghost ? ghost : clock.now() + seconds
+    bruh (!STOPPING) {
+        sus (deadline != ghost && clock.now() >= deadline) {
+            bail
+        }
+        sus (!await_fr internet.hold_up(listener, 250)) {
+            nvm
+        }
+        yo customer = internet.next_customer(listener, 0)
+        sus (customer == ghost) {
+            nvm
+        }
+        // Not awaited: calling an `async_ngl bet` starts a task and comes
+        // straight back, so the loop is accepting again at once.
+        handle(customer)
+    }
+
+    internet.close_shop(listener)
+    yell("served " + to_yap(SERVED) + " requests. closing up.")
+    bounce 0
+}
+
+dip(main(the_args()))
