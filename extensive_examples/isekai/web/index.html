@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>the hollow road</title>
+<!-- Bootstrap, vendored rather than fetched: this page is served under
+     `default-src 'self'` and is meant to work on a machine with no network. -->
+<link rel="stylesheet" href="/vendor/bootstrap.min.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="bg-body">
+
+<div class="container py-4">
+
+  <header class="d-flex align-items-baseline flex-wrap gap-3 mb-4">
+    <h1 class="h3 mb-0 fw-semibold">the hollow road</h1>
+    <p id="status" class="mb-0 text-body-secondary" role="status" aria-live="polite">…</p>
+  </header>
+
+  <!-- ONE: the summoning. Three choices, and the sheet redrawn as they are
+       made. Each option says what it closes as loudly as what it opens. -->
+  <section id="summoning" hidden>
+    <p class="lead text-body-secondary mb-4">
+      An hour ago you were nobody in particular. Choose what you were, what the
+      summoning makes of you, and which element answers — then go down.
+    </p>
+    <div class="row g-4">
+      <div class="col-lg-8">
+        <div class="pickers">
+          <div class="card shadow-sm border-secondary-subtle mb-3">
+            <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+              what you were <span class="text-body-tertiary">— stats, and one rule</span>
+            </div>
+            <div class="card-body p-2"><div class="choices" id="origins"></div></div>
+          </div>
+          <div class="card shadow-sm border-secondary-subtle mb-3">
+            <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+              what it makes of you <span class="text-body-tertiary">— the kit, and nothing else</span>
+            </div>
+            <div class="card-body p-2"><div class="choices" id="callings"></div></div>
+          </div>
+          <div class="card shadow-sm border-secondary-subtle">
+            <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+              what answers <span class="text-body-tertiary">— and what it costs you</span>
+            </div>
+            <div class="card-body p-2"><div class="choices" id="affinities"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-4">
+        <div class="card shadow-sm border-secondary-subtle sticky-sheet">
+          <div class="card-header text-uppercase small text-body-secondary fw-semibold">the sheet</div>
+          <div class="card-body">
+            <div id="preview-sheet" class="small"></div>
+            <button class="btn btn-success w-100 mt-3" type="button" id="descend" disabled>
+              go down
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TWO: the descent. The room on the left, you on the right, the kit along
+       the bottom, and the second choice when one is open. -->
+  <section id="descent" hidden>
+    <div class="row g-4">
+      <div class="col-lg-7">
+        <div class="card shadow-sm border-secondary-subtle">
+          <div class="card-header d-flex justify-content-between align-items-baseline">
+            <span class="text-uppercase small text-body-secondary fw-semibold" id="floorname">—</span>
+            <span class="small text-body-tertiary" id="floorcount">—</span>
+          </div>
+          <div class="card-body">
+            <p class="text-body-secondary fst-italic mb-3" id="floorsays">—</p>
+            <div class="ground mb-3" id="ground"></div>
+            <div id="foes"></div>
+          </div>
+        </div>
+
+        <!-- The second choice. Only ever here because of what you just did. -->
+        <div class="card shadow-sm border-warning mt-3" id="pending" hidden>
+          <div class="card-header text-uppercase small text-warning fw-semibold">
+            and now
+          </div>
+          <div class="card-body">
+            <p class="mb-3" id="pendingsays">—</p>
+            <div class="d-flex flex-wrap gap-2" id="pendingoptions"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-5">
+        <div class="card shadow-sm border-secondary-subtle mb-3">
+          <div class="card-header text-uppercase small text-body-secondary fw-semibold">you</div>
+          <div class="card-body" id="sheet"></div>
+        </div>
+        <div class="card shadow-sm border-secondary-subtle">
+          <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+            what happened
+          </div>
+          <div class="card-body p-0">
+            <div class="log" id="log"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card shadow-sm border-secondary-subtle mt-4">
+      <div class="card-header d-flex justify-content-between align-items-baseline">
+        <span class="text-uppercase small text-body-secondary fw-semibold">what you can do</span>
+        <button class="btn btn-sm btn-outline-secondary" type="button" id="undo" hidden>
+          take that back
+        </button>
+      </div>
+      <div class="card-body">
+        <div class="kit" id="kit"></div>
+        <!-- Not an estimate. The server runs the real resolver and throws the
+             answer away, so this is the outcome, worked out and not kept. -->
+        <div class="forecast mt-3" id="forecast">
+          <span class="text-body-tertiary small">hover over something to see what it would do.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- THREE: the reckoning. -->
+  <section id="reckoning" hidden>
+    <div class="card shadow-sm border-secondary-subtle mb-4">
+      <div class="card-body">
+        <div id="reckoninglines"></div>
+        <button class="btn btn-success mt-3" type="button" id="again">go again</button>
+      </div>
+    </div>
+    <div class="card shadow-sm border-secondary-subtle">
+      <div class="card-header text-uppercase small text-body-secondary fw-semibold">
+        the whole of it
+      </div>
+      <div class="card-body p-0">
+        <div class="log" id="fulllog"></div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script src="/js/isekai.js"></script>
+</body>
+</html>

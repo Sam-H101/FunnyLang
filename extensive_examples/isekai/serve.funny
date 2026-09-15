@@ -1,0 +1,432 @@
+// serve.funny — the summoning, the descent, and the reckoning, in a browser.
+//
+//     funny run extensive_examples/isekai/serve.funny
+//     funny run extensive_examples/isekai/serve.funny -- 8080 --no-tls
+//
+//   PORT           the port (default 8443; 0 picks a free one)
+//   --host H       where to listen (default 127.0.0.1 -- loopback only)
+//   --seconds N    stop after N seconds
+//   --no-tls       plain HTTP
+//   --pfx FILE     a real server identity instead of the test one
+//
+// Six routes, holding one run:
+//
+//   GET  /api/state     everything the page needs, whichever screen it is on
+//   POST /api/new       {"origin","calling","affinity"} -- the summoning
+//   POST /api/act       {"art","target"} -- your turn
+//   POST /api/answer    {"option"} -- the second choice, when one is open
+//   POST /api/preview   {"art","target"} -- what that WOULD do
+//   POST /api/undo      the programmer's trait, once a floor
+//
+// `/api/preview` IS THE INTERESTING ONE. It runs the real resolver and throws
+// the answer away, so what the page shows on hover is not an estimate of the
+// outcome, it is the outcome, worked out and then not kept. There is no second
+// predictor in this example to drift out of step with the first -- which is
+// the usual way a game's tooltip starts quietly lying. `resolve` is pure, so
+// this costs nothing but the call.
+//
+// ONE THREAD. One run, one player, and the most expensive thing that happens
+// is walking a table of twenty rules. The event loop is here so that a second
+// tab cannot queue behind a turn.
+//
+// ONE RUN PER SERVER, not per browser. No sessions, no cookies: this is a
+// program you run to play a game.
+
+gimme internet
+gimme clock
+gimme yapper
+gimme json
+gimme filez
+gimme computer
+
+gimme { ORIGINS, CALLINGS, AFFINITIES, ELEMENTS, OPPOSED, STATS, THIRD_TIER_AT,
+        CORRUPTION_NOTICED, CORRUPTION_LOST, kit, find_art, third_tier,
+        has_trait } from "hero.funny"
+gimme { GROUND_SAYS, TRAIT_SAYS, floor_count, standing } from "world.funny"
+gimme { wants_a_target } from "resolve.funny"
+gimme { begin, act, answer_ask, take_back, can_take_back, preview, targets,
+        reckoning } from "run.funny"
+gimme { read_request, build_response, json_response, STATUS_TEXT,
+        SECURITY_HEADERS } from "http.funny"
+gimme { static_target, read_static } from "static.funny"
+
+flex deadass DEFAULT_PORT = 8443
+
+yo RUN = ghost
+yo WEB_DIR = ghost
+yo STOPPING = cap
+yo SERVED = 0
+yo PFX = ghost
+yo PFX_PASSWORD = "funnylang"
+yo NO_TLS = cap
+
+// -- what the page is told ------------------------------------------------------------------
+
+// The three lists, with everything the summoning screen needs to show what a
+// choice opens AND what it closes -- which is the half people leave out.
+bet catalogue() {
+    yo origins = []
+    grind o in ORIGINS.keys() {
+        yo row = ORIGINS[o]
+        origins.yeet_in({
+            "id": o, "was": row["was"], "stats": row["stats"],
+            "trait": row["trait_name"], "trait_says": row["trait_says"],
+        })
+    }
+    yo callings = []
+    grind c in CALLINGS.keys() {
+        yo arts = []
+        grind k in CALLINGS[c]["kit"] {
+            arts.yeet_in({"name": k[1], "cost": k[2], "says": k[6]})
+        }
+        callings.yeet_in({"id": c, "says": CALLINGS[c]["says"], "kit": arts})
+    }
+    yo affinities = []
+    grind a in ELEMENTS {
+        yo tiers = []
+        grind t in AFFINITIES[a]["tiers"] {
+            tiers.yeet_in({"name": t[1], "cost": t[2], "power": t[3], "says": t[4]})
+        }
+        affinities.yeet_in({
+            "id": a, "says": AFFINITIES[a]["says"], "tiers": tiers,
+            "weak_to": OPPOSED[a],
+        })
+    }
+    bounce {
+        "origins": origins, "callings": callings, "affinities": affinities,
+        "stats": STATS, "floors": floor_count(), "third_tier_at": THIRD_TIER_AT,
+        "corruption_noticed": CORRUPTION_NOTICED, "corruption_lost": CORRUPTION_LOST,
+        "ground_says": GROUND_SAYS, "trait_says": TRAIT_SAYS,
+    }
+}
+
+bet arts_now() {
+    yo out = []
+    grind a in kit(RUN["hero"]) {
+        out.yeet_in({
+            "id": a["id"], "name": a["name"], "cost": a["cost"], "power": a["power"],
+            "element": a["element"], "tags": a["tags"], "says": a["says"],
+            "affordable": RUN["hero"]["mp"] >= a["cost"],
+            "needs_target": wants_a_target(a),
+        })
+    }
+    bounce out
+}
+
+bet state_json() {
+    sus (RUN == ghost) {
+        bounce json.spill({"ok": fax, "phase": "summoning", "catalogue": catalogue()})
+    }
+    yo body = {
+        "ok": fax,
+        "phase": RUN["phase"],
+        "catalogue": catalogue(),
+        "hero": RUN["hero"],
+        "floor": RUN["floor"],
+        "depth": RUN["depth"],
+        "floors": floor_count(),
+        "turn": RUN["turn"],
+        "pending": RUN["pending"],
+        "outcome": RUN["outcome"],
+        "kit": arts_now(),
+        "targets": targets(RUN),
+        "log": RUN["log"],
+        "can_undo": can_take_back(RUN),
+        "locked": third_tier(RUN["hero"]),
+    }
+    sus (RUN["phase"] == "over") {
+        body["reckoning"] = reckoning(RUN)
+    }
+    bounce json.spill(body)
+}
+
+bet refuse(status, why) {
+    bounce json_response(status, json.spill({"ok": cap, "error": why}))
+}
+
+// -- the routes ---------------------------------------------------------------------------------
+
+bet route(req) {
+    sus (req["path"] == "/api/state" && req["method"] == "GET") {
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/new" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce refuse(400, "that wasn't JSON")
+        }
+        yo started = begin(to_yap(asked.get("origin", "")),
+                           to_yap(asked.get("calling", "")),
+                           to_yap(asked.get("affinity", "")))
+        sus (started.has("error")) {
+            bounce refuse(400, started["error"])
+        }
+        RUN = started
+        bounce json_response(200, state_json())
+    }
+
+    sus (RUN == ghost) {
+        bounce refuse(409, "nobody has been summoned yet")
+    }
+
+    // What it WOULD do. The real resolver, run and discarded -- see the note
+    // at the top of this file and in resolve.funny.
+    sus (req["path"] == "/api/preview" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce refuse(400, "that wasn't JSON")
+        }
+        yo out = preview(RUN, {"art": to_yap(asked.get("art", "")),
+                               "target": asked.get("target", ghost)})
+        sus (!out["ok"]) {
+            bounce json_response(200, json.spill({"ok": cap, "error": out["error"]}))
+        }
+        bounce json_response(200, json.spill({
+            "ok": fax,
+            "effects": out["effects"],
+            "asks": out["asks"],
+            // The sheet and the room as they would be, so the page can show
+            // the arrows on the meters without working anything out itself.
+            "hero": out["hero"],
+            "floor": out["floor"],
+        }))
+    }
+
+    sus (req["path"] == "/api/act" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce refuse(400, "that wasn't JSON")
+        }
+        yo out = act(RUN, {"art": to_yap(asked.get("art", "")),
+                           "target": asked.get("target", ghost)})
+        sus (!out["ok"]) {
+            bounce refuse(409, out["error"])
+        }
+        RUN = out["run"]
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/answer" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce refuse(400, "that wasn't JSON")
+        }
+        yo out = answer_ask(RUN, to_yap(asked.get("option", "")))
+        sus (!out["ok"]) {
+            bounce refuse(409, out["error"])
+        }
+        RUN = out["run"]
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["path"] == "/api/undo" && req["method"] == "POST") {
+        yo out = take_back(RUN)
+        sus (!out["ok"]) {
+            bounce refuse(409, out["error"])
+        }
+        RUN = out["run"]
+        bounce json_response(200, state_json())
+    }
+
+    sus (req["method"] != "GET" && req["method"] != "HEAD") {
+        bounce refuse(405, "not a thing you can do here")
+    }
+    yo target = static_target(WEB_DIR, req["path"])
+    sus (target == ghost) {
+        bounce build_response(404, "no such page\n",
+                              {"Content-Type": "text/plain; charset=utf-8"},
+                              req["method"] == "HEAD")
+    }
+    yo body = read_static(target)
+    sus (body == ghost) {
+        bounce build_response(404, "no such page\n",
+                              {"Content-Type": "text/plain; charset=utf-8"},
+                              req["method"] == "HEAD")
+    }
+    yo headers = {"Content-Type": target["type"]}
+    headers.merge(SECURITY_HEADERS)
+    bounce build_response(200, body, headers, req["method"] == "HEAD")
+}
+
+bet parse_body(req) {
+    sus (yapper.trim(req["body"]) == "") {
+        bounce {}
+    }
+    sketchy {
+        yo parsed = json.parse(req["body"])
+        bounce what_is_it(parsed) == "groupchat" ? parsed : ghost
+    } my_bad (e) {
+        bounce ghost
+    }
+}
+
+// -- the socket loop ------------------------------------------------------------------------------
+
+deadass HANDSHAKE_MS = 5000
+
+async_ngl bet finish_handshake(conn) {
+    yo deadline = clock.now() + HANDSHAKE_MS / 1000.0
+    bruh (!internet.handshake(conn)) {
+        yo left = to_int((deadline - clock.now()) * 1000.0)
+        sus (left <= 0) {
+            bounce cap
+        }
+        sus (!await_fr internet.hold_up(conn, left)) {
+            bounce cap
+        }
+    }
+    bounce fax
+}
+
+async_ngl bet read_more(conn, ms) {
+    sus (!await_fr internet.hold_up(conn, ms)) {
+        bounce ghost
+    }
+    bounce internet.hear_them_out(conn, 65536, 0)
+}
+
+async_ngl bet handle(customer) {
+    yo conn = customer["conn"]
+    sketchy {
+        sus (!await_fr finish_handshake(conn)) {
+            internet.kick_out(conn)
+            bounce ghost
+        }
+        yo req = await_fr read_request(lowkey (ms) => read_more(conn, ms))
+        sus (!req["ok"]) {
+            sus (req["status"] != ghost) {
+                internet.holler_back(conn,
+                    build_response(req["status"], STATUS_TEXT.get(req["status"], "no") + "\n",
+                                   {"Content-Type": "text/plain; charset=utf-8"}))
+            }
+        } nah {
+            SERVED += 1
+            yo answer = ghost
+            sketchy {
+                answer = route(req)
+            } my_bad (e) {
+                yell("500 on " + req["method"] + " " + req["path"] + ": " + e.flavor + ": " + e.message)
+                answer = refuse(500, e.flavor + ": " + e.message)
+            }
+            internet.holler_back(conn, answer)
+        }
+    } my_bad (e) {
+        vibe
+    }
+    internet.kick_out(conn)
+}
+
+async_ngl bet watch_for_ctrl_c() {
+    sketchy {
+        await_fr computer.until_ctrl_c()
+        yell("")
+        yell("ctrl-c — closing up.")
+        STOPPING = fax
+    } my_bad (e) {
+        vibe
+    }
+}
+
+bet usage() {
+    yell("usage: serve.funny [PORT] [--host H] [--seconds N] [--no-tls] [--pfx FILE]")
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo port = DEFAULT_PORT
+    yo host = "127.0.0.1"
+    yo seconds = ghost
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--host" && i + 1 < args.how_thicc()) {
+            host = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--seconds" && i + 1 < args.how_thicc()) {
+            seconds = to_numba(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--pfx" && i + 1 < args.how_thicc()) {
+            PFX = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--pfx-password" && i + 1 < args.how_thicc()) {
+            PFX_PASSWORD = args[i + 1]
+            i += 2
+        } kinda_sus (a == "--no-tls") {
+            NO_TLS = fax
+            i += 1
+        } kinda_sus (yapper.starts_with(a, "-")) {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        } nah {
+            port = to_int(a)
+            i += 1
+        }
+    }
+
+    WEB_DIR = filez.join_path(filez.dir_of(the_script()), "web")
+
+    sus (PFX == ghost && !NO_TLS) {
+        yo beside = filez.join_path(filez.dir_of(the_script()), "certs/site.p12")
+        sus (filez.is_file(beside)) {
+            PFX = beside
+        }
+    }
+
+    yo listener = ghost
+    yo secure = PFX != ghost && !NO_TLS
+    sketchy {
+        sus (secure) {
+            listener = internet.open_secure_shop(port, host, {"pfx": PFX, "password": PFX_PASSWORD})
+        } nah {
+            listener = internet.open_shop(port, host)
+        }
+    } my_bad (e) {
+        yell("couldn't start: " + e.message)
+        bounce 1
+    }
+    yo bound = internet.shop_port(listener)
+    yo scheme = secure ? "https" : "http"
+    yell("the hollow road at " + scheme + "://" +
+         (host == "0.0.0.0" ? "<this machine>" : "localhost") + ":" + to_yap(bound) +
+         " — ctrl-c to stop")
+    sus (secure) {
+        yell("(a test certificate, so your browser will warn about the issuer -- that is correct)")
+    } nah {
+        yell("(plain http: fine on loopback, and not on a network)")
+    }
+    yell("you were nobody an hour ago. choose what the summoning makes of you.")
+
+    watch_for_ctrl_c()
+
+    yo deadline = seconds == ghost ? ghost : clock.now() + seconds
+    bruh (!STOPPING) {
+        sus (deadline != ghost && clock.now() >= deadline) {
+            bail
+        }
+        sus (!await_fr internet.hold_up(listener, 250)) {
+            nvm
+        }
+        yo customer = internet.next_customer(listener, 0)
+        sus (customer == ghost) {
+            nvm
+        }
+        handle(customer)
+    }
+
+    internet.close_shop(listener)
+    yell("served " + to_yap(SERVED) + " requests. closing up.")
+    bounce 0
+}
+
+dip(main(the_args()))
