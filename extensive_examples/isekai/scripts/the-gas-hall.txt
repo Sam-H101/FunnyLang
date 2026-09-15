@@ -1,0 +1,67 @@
+# the gas hall — a cleric of fire, and what fire does to a room already full of it.
+#
+#   funny run extensive_examples/isekai/play.funny -- \
+#       --origin nurse --calling cleric --affinity fire --script scripts/the-gas-hall.txt
+#
+# There are no dice in this example, so this file is a whole descent that
+# somebody else can watch happen exactly as it happened here. A number is a
+# thing in your kit; a second number is what to aim it at; and while something
+# is being asked, the numbers are its options instead.
+#
+# The kit of a cleric: 1 Mend, 2 Ward, 3 Smite, 4 Consecrate, 5 Ember.
+
+# -- the wet stair --------------------------------------------------------
+# Smite is light whatever your element is, so it lifts the dark off the room
+# and turns up something that was not meant to be found. Leave it.
+3 1
+2
+3 1
+1
+3 1
+1
+3 1
+
+# -- the gas hall ---------------------------------------------------------
+# Ember into a room full of gas. This is the whole example in one move: the
+# hall goes up, the rats go up, and so do you. Press anyway.
+5 1
+2
+1
+3 1
+3 1
+
+# -- the frozen chapel ----------------------------------------------------
+# Fire is exactly right for a frost-blooded warden and exactly wrong for a
+# sacred floor, and the floor is also wet. So: do it the dull way.
+1
+3 1
+1
+3 1
+1
+3 1
+
+# -- the iron gallery -----------------------------------------------------
+# Three of them. Take the flier down first, then ward and grind.
+2
+3 3
+1
+2
+3 1
+1
+3 1
+2
+1
+3 1
+1
+3 1
+2
+3 1
+
+# -- the hollow throne ----------------------------------------------------
+# Light against the undead is not a bonus. It is the entire reason to have
+# chosen this.
+3 1
+1
+2
+3 1
+3 1

@@ -1,0 +1,358 @@
+// play.funny — the same descent, against a text screen.
+//
+//     funny run extensive_examples/isekai/play.funny
+//     funny run extensive_examples/isekai/play.funny -- --origin soldier --calling knight --affinity storm
+//     funny run extensive_examples/isekai/play.funny -- --script scripts/the-gas-hall.txt
+//     funny run extensive_examples/isekai/play.funny -- --list
+//
+//   --origin / --calling / --affinity   skip the summoning and go straight down
+//   --script FILE   replay a file of commands, one per line, and stop
+//   --list          print the three lists and exit
+//
+// The browser is where this is meant to be played -- see `serve.funny`. This
+// is the twin that makes it testable, and `--script` is what makes a
+// particular descent something you can hand to somebody else: there are no
+// dice in this example, so the same script always produces the same run.
+//
+// Commands during a descent:
+//
+//   3        do the third thing in your kit, at whatever is selected
+//   3 2      do the third thing at the second thing in the room
+//   at 2     select the second thing in the room
+//   back     take it back (the programmer's trait, once a floor)
+//   look     print the room again
+//   quit
+
+gimme yapper
+gimme filez
+
+gimme { ORIGINS, CALLINGS, AFFINITIES, ELEMENTS, OPPOSED, kit,
+        sheet_lines } from "hero.funny"
+gimme { floor_count, standing, floor_lines } from "world.funny"
+gimme { wants_a_target } from "resolve.funny"
+gimme { begin, act, answer_ask, take_back, can_take_back, preview,
+        reckoning, effect_line } from "run.funny"
+
+bet usage() {
+    yell("usage: play.funny [--origin X] [--calling X] [--affinity X] [--script FILE] [--list]")
+}
+
+bet show_lists() {
+    yap "what you were:"
+    grind o in ORIGINS.keys() {
+        yap "  " + yapper.pad_right(o, 12) + ORIGINS[o]["trait_name"] + " -- " +
+            ORIGINS[o]["trait_says"]
+    }
+    yap "what it makes of you:"
+    grind c in CALLINGS.keys() {
+        yo names = []
+        grind k in CALLINGS[c]["kit"] {
+            names.yeet_in(k[1])
+        }
+        yap "  " + yapper.pad_right(c, 12) + names.join(", ")
+    }
+    yap "what answers:"
+    grind a in ELEMENTS {
+        yo tiers = []
+        grind t in AFFINITIES[a]["tiers"] {
+            tiers.yeet_in(t[1])
+        }
+        yap "  " + yapper.pad_right(a, 12) + tiers.join(" / ") + "   (soft to " + OPPOSED[a] + ")"
+    }
+}
+
+// -- drawing ------------------------------------------------------------------------------
+
+bet show_room(run) {
+    yap ""
+    yap "  floor " + to_yap(run["depth"]) + " of " + to_yap(floor_count()) +
+        ", turn " + to_yap(run["turn"])
+    grind line in floor_lines(run["floor"], run["floor"]["seen"]) {
+        yap line
+    }
+    yap ""
+    grind line in sheet_lines(run["hero"]) {
+        yap line
+    }
+}
+
+bet show_kit(run, aimed) {
+    yap ""
+    yo arts = kit(run["hero"])
+    grind i from 0 to arts.how_thicc() {
+        yo a = arts[i]
+        yo mark = run["hero"]["mp"] >= a["cost"] ? " " : "x"
+        yap "  " + mark + " " + to_yap(i + 1) + ") " + yapper.pad_right(a["name"], 14) +
+            yapper.pad_left(to_yap(a["cost"]), 2) + " will   " + a["says"]
+    }
+    yo up = standing(run["floor"])
+    sus (up.how_thicc() > 0) {
+        yo bits = []
+        grind i from 0 to up.how_thicc() {
+            yo pick = aimed == up[i]["id"] ? ">" : " "
+            bits.yeet_in(pick + to_yap(i + 1) + ") " + up[i]["name"])
+        }
+        yap "  in the room: " + bits.join("   ")
+    }
+}
+
+bet show_new(run, printed) {
+    grind i from printed to run["log"].how_thicc() {
+        yo entry = run["log"][i]
+        grind e in entry["effects"] {
+            yap "      " + yapper.pad_right(entry["who"], 5) + " " + effect_line(e)
+        }
+    }
+    bounce run["log"].how_thicc()
+}
+
+// -- one command ----------------------------------------------------------------------------
+
+// `{"run", "printed", "aimed", "stop"}`. Shared by the interactive loop and
+// `--script`, so a replay and a person go through exactly the same code.
+bet obey(run, typed, printed, aimed) {
+    yo words = yapper.words(yapper.whisper(yapper.trim(typed)))
+    sus (words.how_thicc() == 0) {
+        bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+    }
+    yo head = words[0]
+
+    sus (head == "quit") {
+        bounce {"run": run, "printed": printed, "aimed": aimed, "stop": fax}
+    }
+    sus (head == "look") {
+        show_room(run)
+        show_kit(run, aimed)
+        bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+    }
+    sus (head == "back") {
+        yo out = take_back(run)
+        sus (!out["ok"]) {
+            yap "  " + out["error"]
+            bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+        }
+        yap "  taken back."
+        bounce {"run": out["run"], "printed": out["run"]["log"].how_thicc(),
+                "aimed": ghost, "stop": cap}
+    }
+    sus (head == "at" && words.how_thicc() > 1) {
+        yo up = standing(run["floor"])
+        yo n = to_int(words[1])
+        sus (n < 1 || n > up.how_thicc()) {
+            yap "  there is no " + words[1] + " in the room."
+            bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+        }
+        yap "  aiming at " + up[n - 1]["name"] + "."
+        bounce {"run": run, "printed": printed, "aimed": up[n - 1]["id"], "stop": cap}
+    }
+
+    sus (!yapper.is_numba(head)) {
+        yap "  a number, or 'at N', 'back', 'look', 'quit'."
+        bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+    }
+    yo n = to_int(head)
+
+    // While something is being asked, the numbers mean its options -- the turn
+    // is not over until it is answered.
+    sus (run["pending"] != ghost) {
+        yo opts = run["pending"]["options"]
+        sus (n < 1 || n > opts.how_thicc()) {
+            yap "  that was not one of them."
+            bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+        }
+        yo out = answer_ask(run, opts[n - 1]["id"])
+        sus (!out["ok"]) {
+            yap "  " + out["error"]
+            bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+        }
+        bounce {"run": out["run"], "printed": show_new(out["run"], printed),
+                "aimed": ghost, "stop": cap}
+    }
+
+    yo arts = kit(run["hero"])
+    sus (n < 1 || n > arts.how_thicc()) {
+        yap "  you have no " + head + "."
+        bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+    }
+    yo art = arts[n - 1]
+    yo pick = aimed
+    sus (words.how_thicc() > 1 && yapper.is_numba(words[1])) {
+        yo up = standing(run["floor"])
+        yo k = to_int(words[1])
+        sus (k >= 1 && k <= up.how_thicc()) {
+            pick = up[k - 1]["id"]
+        }
+    }
+    sus (wants_a_target(art) && pick == ghost) {
+        yo up = standing(run["floor"])
+        sus (up.how_thicc() > 0) {
+            pick = up[0]["id"]
+        }
+    }
+
+    yo out = act(run, {"art": art["id"], "target": pick})
+    sus (!out["ok"]) {
+        yap "  " + out["error"]
+        bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+    }
+    bounce {"run": out["run"], "printed": show_new(out["run"], printed),
+            "aimed": pick, "stop": cap}
+}
+
+// -- the loops --------------------------------------------------------------------------------
+
+bet play(run, script) {
+    yo printed = show_new(run, 0)
+    yo aimed = ghost
+    yo at = 0
+    show_room(run)
+
+    bruh (run["phase"] == "descending") {
+        show_kit(run, aimed)
+        sus (run["pending"] != ghost) {
+            yap ""
+            yap "  " + run["pending"]["says"]
+            grind i from 0 to run["pending"]["options"].how_thicc() {
+                yo o = run["pending"]["options"][i]
+                yap "    " + to_yap(i + 1) + ") " + yapper.pad_right(o["name"], 20) + o["hint"]
+            }
+        }
+
+        yo typed = ghost
+        sus (script == ghost) {
+            typed = ask("> ")
+        } nah {
+            sus (at >= script.how_thicc()) {
+                yap ""
+                yap "  (the script ran out)"
+                bail
+            }
+            typed = script[at]
+            at += 1
+            yap "> " + typed
+        }
+        sus (typed == ghost) {
+            bail
+        }
+
+        yo outcome = obey(run, typed, printed, aimed)
+        run = outcome["run"]
+        printed = outcome["printed"]
+        aimed = outcome["aimed"]
+        sus (outcome["stop"]) {
+            yap "  bye."
+            bounce run
+        }
+        sus (run["phase"] == "descending") {
+            show_room(run)
+        }
+    }
+
+    yap ""
+    grind line in reckoning(run) {
+        yap "  " + line
+    }
+    bounce run
+}
+
+bet pick_one(what, lot, given) {
+    sus (given != ghost && lot.contains(given)) {
+        bounce given
+    }
+    yap ""
+    yap what + ": " + lot.join(", ")
+    bruh (fax) {
+        yo typed = yapper.whisper(yapper.trim(ask("> ")))
+        sus (lot.contains(typed)) {
+            bounce typed
+        }
+        sus (typed == "quit" || typed == "") {
+            bounce ghost
+        }
+        yap "  one of: " + lot.join(", ")
+    }
+}
+
+bet main(raw_args) {
+    yo args = []
+    grind a in raw_args {
+        sus (a != "--") {
+            args.yeet_in(a)
+        }
+    }
+
+    yo origin = ghost
+    yo calling = ghost
+    yo affinity = ghost
+    yo script_file = ghost
+    yo i = 0
+    bruh (i < args.how_thicc()) {
+        yo a = args[i]
+        sus (a == "--help" || a == "-h") {
+            usage()
+            bounce 0
+        } kinda_sus (a == "--list") {
+            show_lists()
+            bounce 0
+        } kinda_sus (a == "--origin" && i + 1 < args.how_thicc()) {
+            origin = yapper.whisper(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--calling" && i + 1 < args.how_thicc()) {
+            calling = yapper.whisper(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--affinity" && i + 1 < args.how_thicc()) {
+            affinity = yapper.whisper(args[i + 1])
+            i += 2
+        } kinda_sus (a == "--script" && i + 1 < args.how_thicc()) {
+            script_file = args[i + 1]
+            i += 2
+        } nah {
+            yell("don't know " + a + ".")
+            usage()
+            bounce 2
+        }
+    }
+
+    yo script = ghost
+    sus (script_file != ghost) {
+        yo where = script_file
+        sus (!filez.is_file(where)) {
+            where = filez.join_path(filez.dir_of(the_script()), script_file)
+        }
+        sus (!filez.is_file(where)) {
+            yell("no such script: " + script_file)
+            bounce 2
+        }
+        script = []
+        grind line in yapper.lines(filez.slurp(where)) {
+            yo trimmed = yapper.trim(line)
+            sus (trimmed != "" && !yapper.starts_with(trimmed, "#")) {
+                script.yeet_in(trimmed)
+            }
+        }
+    }
+
+    yap "you were nobody an hour ago."
+    origin = pick_one("what you were", ORIGINS.keys(), origin)
+    sus (origin == ghost) {
+        bounce 0
+    }
+    calling = pick_one("what the summoning makes of you", CALLINGS.keys(), calling)
+    sus (calling == ghost) {
+        bounce 0
+    }
+    affinity = pick_one("what answers", ELEMENTS, affinity)
+    sus (affinity == ghost) {
+        bounce 0
+    }
+
+    yo run = begin(origin, calling, affinity)
+    sus (run.has("error")) {
+        yell(run["error"])
+        bounce 1
+    }
+    play(run, script)
+    bounce 0
+}
+
+dip(main(the_args()))
