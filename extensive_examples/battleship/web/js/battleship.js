@@ -61,6 +61,13 @@
   // Eleven by eleven: a row of column numbers, a column of row letters, and
   // the hundred squares. Built once each and then only ever re-classed, so a
   // redraw never rebuilds the DOM under the pointer.
+  //
+  // EVERY ITEM IS PLACED EXPLICITLY, and that is load-bearing rather than
+  // tidy. The hull overlays live in this same grid and span several tracks, so
+  // they have to be placed explicitly; and CSS places explicit items before it
+  // auto-flows the rest, so a single auto-placed square would be shoved past
+  // the hull sitting on it and shear the board. Nothing here is auto-placed,
+  // so there is nothing to shove.
   function buildBoard(id, onClick, onHover) {
     const host = document.getElementById(id);
     if (!host || host.dataset.built) return host;
@@ -68,10 +75,12 @@
 
     const corner = document.createElement("span");
     corner.className = "label";
+    corner.style.gridArea = "1 / 1";
     frag.appendChild(corner);
     for (let c = 0; c < SIZE; c++) {
       const s = document.createElement("span");
       s.className = "label";
+      s.style.gridArea = `1 / ${c + 2}`;
       s.textContent = String(c + 1);
       frag.appendChild(s);
     }
@@ -80,6 +89,7 @@
     for (let r = 0; r < SIZE; r++) {
       const s = document.createElement("span");
       s.className = "label";
+      s.style.gridArea = `${r + 2} / 1`;
       s.textContent = LETTERS[r];
       frag.appendChild(s);
       for (let c = 0; c < SIZE; c++) {
@@ -87,6 +97,7 @@
         const cell = document.createElement("button");
         cell.type = "button";
         cell.className = "cell";
+        cell.style.gridArea = `${r + 2} / ${c + 2}`;
         cell.setAttribute("aria-label", notation(n));
 
         const heat = document.createElement("span");
@@ -113,6 +124,64 @@
 
   const ownBoards = ["ownboard", "ownboard2", "ownboard3"];
 
+  // -- the hulls -------------------------------------------------------------
+
+  // One element per ship rather than one per square, so a carrier reads as a
+  // single five-square vessel. Each is a grid item spanning the squares it
+  // occupies, which is what keeps it aligned with them at any board size --
+  // see the note in style.css.
+  function drawHulls(host, specs) {
+    if (!host || !host.cells) return;
+    host.querySelectorAll(".hull").forEach((el) => el.remove());
+    for (const spec of specs) {
+      const el = document.createElement("div");
+      el.className = "hull " + (spec.across ? "across" : "down") + (spec.sunk ? " sunk" : "");
+      const row = Math.floor(spec.at / SIZE) + 2;
+      const col = (spec.at % SIZE) + 2;
+      el.style.gridRow = spec.across ? String(row) : `${row} / span ${spec.size}`;
+      el.style.gridColumn = spec.across ? `${col} / span ${spec.size}` : String(col);
+      host.appendChild(el);
+    }
+  }
+
+  // Where a ship starts, how long it is and which way it lies, worked out from
+  // the squares alone. Used for the ships the server reports by cell list only
+  // — the enemy's sunk ones, and its whole fleet once the game is over.
+  function hullSpec(cells) {
+    const sorted = [...cells].sort((a, b) => a - b);
+    return {
+      at: sorted[0],
+      size: sorted.length,
+      across: sorted.length < 2 || sorted[1] === sorted[0] + 1
+    };
+  }
+
+  // Your own fleet. The server sends `at` and `across` for these, so there is
+  // nothing to work out.
+  function ownSpecs() {
+    return state.you.ships
+      .filter((s) => s.cells)
+      .map((s) => ({ at: s.at, size: s.size, across: s.across, sunk: s.sunk }));
+  }
+
+  // The engine's fleet, once the game is over and it may be shown. It arrives
+  // as a grid of ship numbers, so the ships are regrouped out of it.
+  function revealedSpecs() {
+    const byShip = new Map();
+    state.revealed.forEach((which, n) => {
+      if (which === 0) return;
+      if (!byShip.has(which)) byShip.set(which, []);
+      byShip.get(which).push(n);
+    });
+    const out = [];
+    byShip.forEach((cells) => {
+      const spec = hullSpec(cells);
+      spec.sunk = cells.every((c) => state.engine.shots[c] === 2);
+      out.push(spec);
+    });
+    return out;
+  }
+
   // -- drawing ---------------------------------------------------------------
 
   function clear(cell) {
@@ -123,23 +192,14 @@
   function drawOwn(host) {
     if (!host || !host.cells || !state) return;
     const mine = state.you;
-    const sunkShips = new Set();
-    mine.ships.forEach((s) => { if (s.sunk) sunkShips.add(s.name); });
-    const sunkCells = new Set();
-    mine.ships.forEach((s) => {
-      if (s.sunk && s.cells) s.cells.forEach((c) => sunkCells.add(c));
-    });
-
     host.cells.forEach((cell, n) => {
       clear(cell);
-      if (mine.grid[n] !== 0) {
-        cell.classList.add("ship");
-        if (sunkCells.has(n)) cell.classList.add("sunk");
-      }
+      if (mine.grid[n] !== 0) cell.classList.add("ship");
       if (mine.shots[n] === 1) cell.classList.add("miss");
       if (mine.shots[n] === 2) cell.classList.add("hit");
       cell.disabled = true;
     });
+    drawHulls(host, ownSpecs());
   }
 
   // Their waters: only what you have found out, plus the ships you sank.
@@ -164,6 +224,9 @@
       const weight = heat && open ? heat[n] / most : 0;
       cell.style.setProperty("--weight", String(weight));
     });
+    // Only the ships you have sunk: those are the only ones the server has
+    // told you the shape of, and the only ones there is anything to draw.
+    drawHulls(host, view.sunk.map((s) => Object.assign(hullSpec(s.cells), { sunk: true })));
   }
 
   // The engine's fleet, once the game is over and it may be shown.
@@ -177,6 +240,7 @@
       if (view.shots[n] === 2) cell.classList.add("hit");
       cell.disabled = true;
     });
+    drawHulls(host, revealedSpecs());
   }
 
   // While placing: your ships so far, plus a ghost of the one in hand.
@@ -198,6 +262,7 @@
       cell.disabled = busy;
       cell.style.setProperty("--weight", "0");
     });
+    drawHulls(host, ownSpecs());
   }
 
   // The cells a ship would cover, or null if it would run off the edge. This

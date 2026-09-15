@@ -67,37 +67,90 @@
 
 /* -- what is under the water ---------------------------------------------- */
 
-/* Your own ships. Drawn as a slab that fills the square, so a ship reads as
-   one continuous shape across the cells it occupies rather than as a row of
-   separate counters. */
+/* The square a ship is standing on, which is only its shadow on the water --
+   the vessel itself is the hull overlay below, drawn across all of its squares
+   at once. Keeping a darkened square underneath gives the hull something to
+   sit in, so a ship reads as floating rather than pasted on. */
 .board .cell.ship {
   background: linear-gradient(160deg,
-    color-mix(in oklab, var(--hull) 92%, white 8%), var(--hull));
-  box-shadow: inset 0 0 0 0.25cqi rgb(0 0 0 / 0.25);
-}
-.board .cell.ship.sunk {
-  background: linear-gradient(160deg,
-    color-mix(in oklab, var(--hull-sunk) 88%, black 12%), var(--hull-sunk));
+    color-mix(in oklab, var(--sea) 80%, black 20%),
+    color-mix(in oklab, var(--sea) 70%, black 30%));
 }
 
-/* A ship the other side has sunk and therefore had to show you. */
+/* A square holding a ship the other side has sunk and therefore had to show. */
 .board .cell.wreck {
   background: linear-gradient(160deg,
-    color-mix(in oklab, var(--hull-sunk) 70%, black 30%),
-    color-mix(in oklab, var(--hull-sunk) 55%, black 45%));
-  box-shadow: inset 0 0 0 0.25cqi rgb(0 0 0 / 0.3);
+    color-mix(in oklab, var(--sea) 76%, black 24%),
+    color-mix(in oklab, var(--sea) 64%, black 36%));
+}
+
+/* -- the hulls ------------------------------------------------------------ */
+
+/* ONE ELEMENT PER SHIP, NOT ONE PER SQUARE. A carrier is a single five-square
+   vessel and ought to read as one, so each ship is its own overlay spanning
+   the squares it occupies.
+ *
+ * It is placed in the SAME grid as the squares -- `grid-column: 4 / span 5` --
+ * rather than positioned absolutely over them. That matters: the board has a
+ * gap between squares, so percentage arithmetic would drift a little further
+ * out of true with every square, and at five squares the drift is visible.
+ * Sharing the grid means the hull cannot be misaligned, whatever the board is
+ * scaled to.
+ *
+ * Every square carries an explicit grid position for this to be safe -- an
+ * explicitly-placed item would otherwise push the auto-placed squares along
+ * and shear the whole board. See `buildBoard` in battleship.js. */
+.board .hull {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+  margin: 0.7cqi;
+  background: linear-gradient(180deg,
+    color-mix(in oklab, var(--hull) 80%, white 20%) 0%,
+    var(--hull) 52%,
+    color-mix(in oklab, var(--hull) 76%, black 24%) 100%);
+  box-shadow:
+    inset 0 0.35cqi 0.7cqi rgb(255 255 255 / 0.30),
+    inset 0 -0.45cqi 0.9cqi rgb(0 0 0 / 0.32),
+    0 0.5cqi 1.1cqi rgb(0 0 0 / 0.38);
+}
+
+/* The bow is the rounder end, so a ship has a direction rather than being a
+   lozenge. The two radii are the same shape turned a quarter. */
+.board .hull.across { border-radius: 46% 14% 14% 46% / 50% 34% 34% 50%; }
+.board .hull.down { border-radius: 46% 46% 14% 14% / 50% 50% 34% 34%; }
+
+/* A deck line down the middle, so a long hull is not a blank slab. */
+.board .hull::after {
+  content: "";
+  position: absolute;
+  inset: 32% 14%;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.15);
+}
+.board .hull.down::after { inset: 14% 32%; }
+
+.board .hull.sunk {
+  --hull: var(--hull-sunk);
+  opacity: 0.9;
 }
 
 /* -- the pegs -------------------------------------------------------------- */
 
 /* One absolutely-placed disc per shot, centred, at a size taken from the board
-   rather than from the square. */
+   rather than from the square.
+ *
+ * `z-index: 2` puts a peg above the hulls, which sit at 1 -- a hit on your own
+ * ship has to be visible ON it. This works because `.cell` sets no z-index of
+ * its own and so never becomes a stacking context its pegs would be trapped
+ * inside; do not add one to it. */
 .board .cell.miss::after,
 .board .cell.hit::after {
   content: "";
   position: absolute;
   inset: 0;
   margin: auto;
+  z-index: 2;
   border-radius: 50%;
   pointer-events: none;
 }
@@ -116,7 +169,14 @@
 
 /* -- putting a ship down --------------------------------------------------- */
 
-.board .cell.ghost { box-shadow: inset 0 0 0 0.7cqi var(--go); }
+/* Above the hulls, so that dropping a ship across one you have already put out
+   shows red over the vessel it would cross rather than behind it. Safe to give
+   a stacking context to: nothing has been fired at while you are still
+   placing, so there are no pegs to trap inside it. */
+.board .cell.ghost {
+  z-index: 2;
+  box-shadow: inset 0 0 0 0.7cqi var(--go);
+}
 .board .cell.ghost.bad { box-shadow: inset 0 0 0 0.7cqi var(--hull-sunk); }
 
 /* -- the heat map ---------------------------------------------------------- */
@@ -140,6 +200,7 @@
   position: absolute;
   inset: 0;
   margin: auto;
+  z-index: 3;
   width: 2cqi;
   height: 2cqi;
   border-radius: 50%;

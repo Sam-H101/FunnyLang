@@ -279,6 +279,19 @@ repeated-shot error is a thing the page cannot cause. A ring for a miss, a
 burst for a hit; then, a beat later, the engine's shot lands on your board the
 same way. A ship you sink is drawn where the server said it was.
 
+**A ship is one object, not five squares.** Each vessel is drawn as a single
+hull spanning the squares it occupies, with a rounded bow so it has a
+direction, and the square underneath darkened so the hull reads as floating in
+it rather than pasted on. The hull is placed **in the same CSS grid as the
+squares** — `grid-column: 4 / span 5` — rather than positioned absolutely over
+them. That is the whole trick: the board has a gap between squares, so
+percentage arithmetic would drift a little further out of true with every
+square it crossed, and across a five-square carrier the drift is visible.
+Sharing the grid makes misalignment impossible at any board size. The cost is
+that every square must carry an explicit grid position too, because CSS places
+explicit items before it auto-flows the rest and a single auto-placed square
+would be shoved past the hull sitting on it.
+
 **Over**, and the engine's fleet is revealed — the one moment it may be, and it
 arrives under a separate `revealed` key so the page cannot mistake it for the
 view.
@@ -339,11 +352,20 @@ no-leak property at each phase, and a `/../rules.funny` that comes back 404.
 ## What it is not
 
 - **The page has not been opened in a browser here.** The environment this was
-  built in has no browser in it. The server was driven end to end over a real
-  loopback socket — every route, a game played to a finish, the JSON read and
-  checked at each phase — and `web/` was written against exactly the state that
-  produced. That is a weaker statement than "it was played", and it is the
-  honest one.
+  built in has no browser in it. Two things were done instead. The server was
+  driven end to end over a real loopback socket — every route, a game played to
+  a finish, the JSON read and checked at each phase — and `web/` was written
+  against exactly the state that produced. And `battleship.js` was then run
+  against a stub DOM to check the part most likely to be quietly wrong, which
+  is the hull geometry: that every square is placed explicitly, that a carrier
+  at A1 spans five columns on row 2, that a cruiser at E6 spans three rows from
+  column 7, that the enemy board draws a hull only for a ship actually sunk,
+  and that redrawing does not pile hulls up. That check is **not in this
+  repository**, deliberately: it needs Node, and a repository whose whole claim
+  is that it needs nothing installed should not grow a JavaScript test runner
+  to check a hundred lines of page code. So it stays outside, and what is
+  written down here is that it was done. None of this is the same as somebody
+  having played a game in a browser, and that remains untested.
 - **One game per server, not per browser.** No sessions and no cookies: this is
   a program you run to play a game. A second tab shares the first one's board.
 - **One human against the engine.** Battleship is a two-player game, and
