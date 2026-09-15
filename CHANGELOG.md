@@ -2,12 +2,44 @@
 
 All notable changes to FunnyLang are documented here.
 
-## [Unreleased] — battleship
+## [Unreleased] — battleship and the hollow road
 
-One worked example, and no runtime, standard library or syntax changes at all: everything new is
-under `extensive_examples/battleship/`. Whether this becomes a version number, and which, is a
-separate decision — the three files holding the version constant are untouched, so the embedded
-toolchain has not been regenerated either.
+Two worked examples, and no runtime, standard library or syntax changes at all: everything new is
+under `extensive_examples/battleship/` and `extensive_examples/isekai/`. Whether this becomes a
+version number, and which, is a separate decision — the three files holding the version constant
+are untouched, so the embedded toolchain has not been regenerated either.
+
+### Added: `extensive_examples/isekai/`
+
+A simulation you play in a browser. You are summoned into another world, you choose what you were,
+what the summoning makes of you and which element answers, and then you go down five floors of it.
+
+- **The outcomes are not written down anywhere.** There is a model — your element, the ground you
+  are standing on, what the thing in front of you is made of, and the state you are in — and
+  twenty-one rules over it. A rule may read those four things and **may not name a floor or a
+  creature**, which is what keeps it a model rather than a pile of special cases. The table is
+  ordered and **additive rather than first-match**, because first-match is how a simulation quietly
+  turns back into a lookup table. Fire at an armoured frost-blooded warden on a wet floor is half
+  for the water, half for the plate and double for the cold: two damage, and the cold is gone
+  afterwards. Nobody typed that.
+- **Some results open a second choice instead of ending your turn.** Setting a gas-filled hall
+  alight is not a damage number: it takes the room, takes some of you, leaves the floor burning, and
+  then asks whether you cover the room or press the attack while everything is on fire. Nothing else
+  moves until it is answered.
+- **The hover forecast is the outcome, not an estimate.** `resolve` is pure, so the page's preview
+  and the actual act are the same call made twice rather than two code paths that agree. There is no
+  second predictor to drift out of step — the usual way a game's tooltip starts lying. Asserted over
+  252 combinations in the golden, and again from the far side of a real socket.
+- **No dice anywhere.** There is no `gimme rizz` in any file in this example; where a game would
+  roll, this consults a stat. That is what lets the golden assert a whole descent line for line and
+  `scripts/the-gas-hall.txt` be a run somebody else can replay exactly — and it is the point, because
+  a consequence you can blame on a die roll is not a consequence.
+- **Two meters that are not two ends of one bar.** Resonance rises only when you act in tune with
+  your element and unlocks its third tier; corruption rises from void, from burning sacred ground,
+  and from striking things that could not answer. A run can end carrying a great deal of both.
+
+The golden's second part is most of it and is the part that matters: every rule fired in a room
+where it must fire, and again in one differing only in its condition, where it must not.
 
 ### Added: `extensive_examples/battleship/`
 

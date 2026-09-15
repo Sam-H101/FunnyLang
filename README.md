@@ -30,10 +30,11 @@ the pass that makes the standard library safe on them, and the corpus that prove
 - **A dump of what every thread is waiting on**, on Ctrl-`\` or over `sus.threads()`.
 - **Kinder parser errors**, and a line may now start with `.` so a long chain reads one step per
   line.
-- **Worked examples** under `extensive_examples/` — ten of them now: a web server, the same over
+- **Worked examples** under `extensive_examples/` — eleven of them now: a web server, the same over
   HTTPS, parallel word count, a static site generator, a Lisp, a key-value database, a chat over
-  WebSockets, checkers in a browser, chess, and battleship. Each has a README and a golden that CI
-  runs on every platform.
+  WebSockets, checkers in a browser, chess, battleship, and an isekai simulation whose outcomes come
+  out of a rule table rather than a script. Each has a README and a golden that CI runs on every
+  platform.
 
 Every stdlib module has a threaded golden that runs the same work on one thread and then on eight
 at once and passes only if all nine answers agree. CI runs that corpus, and the examples, under
