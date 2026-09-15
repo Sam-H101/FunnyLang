@@ -8,7 +8,7 @@
   librarian  MIG 3  FOC 4  GRI 3  WIT 5   Read the Room: you can see what a thing is made of before you touch it
   soldier    MIG 5  FOC 3  GRI 4  WIT 3   Drilled: the first thing you do on a floor costs you nothing
   nurse      MIG 3  FOC 5  GRI 3  WIT 4   Triage: when you mend, you also clear one condition
-  chef       MIG 4  FOC 3  GRI 5  WIT 3   Mise en Place: what you carry works twice as well and never costs a turn
+  chef       MIG 4  FOC 3  GRI 5  WIT 3   Mise en Place: you come down already carrying, and using it costs you no turn
   programmer MIG 3  FOC 4  GRI 3  WIT 5   Rubber Duck: once a floor, you may take back a resolution and choose again
 -- a mage gets the whole element, everybody else gets the first of it --
   knight  Guard, Shield Bash, Riposte, Hold the Line, Chill
@@ -108,107 +108,238 @@
   turn 5 [floor 1]  Smite -> ghoul-2
             you   damage    ghoul: the other one  (8)
             you   kill      ghoul: down
+            room  note      you pick up a flask of oil on the way down
+            room  ground    don't. whatever it is you're about to do, don't.
             room  note      down again. a long room, a low ceiling, and an old smell with weight to it.
   turn 6 [floor 2]  Ember -> rats
             you   note      the gas goes up all at once, and the whole hall with it
+            you   note      they were not part of this
             you   damage    a boil of rats: a floor that is moving  (5)
+            you   damage    a man with a lamp: a man with a lamp  (10)
+            you   kill      a man with a lamp: down
             you   ground    the floor is burning now
             you   hurt      you: and some of that was yours  (6)
             you   meter     the world minds you a little more  (1)
+            you   meter     and it minds you in the other way too  (3)
   turn 6 [floor 2]  ASKED: the hall is alight and so is everything in it, you included.
             answered: press
             you   damage    a boil of rats: already alight  (6)
             you   hurt      you: you are in the room too  (4)
             them  hurt      you: a boil of rats reaches you  (3)
             room  damage    a boil of rats: standing in it  (3)
-            room  note      it is yours; it does not touch you
+            room  hurt      you: you are standing in it as well  (3)
+            room  ground    the fire runs out of things to eat
             room  note      a boil of rats: it comes apart into two of itself
   turn 7 [floor 2]  Smite -> rats
             you   damage    a boil of rats: a floor that is moving  (4)
             you   kill      a boil of rats: down
             them  hurt      you: a boil of rats (the rest) reaches you  (3)
-            room  damage    a boil of rats (the rest): standing in it  (3)
-            room  kill      a boil of rats (the rest): down
-            room  note      it is yours; it does not touch you
+  turn 8 [floor 2]  Smite -> rats-b
+            you   damage    a boil of rats (the rest): what is left of it, going the other way  (4)
+            you   kill      a boil of rats (the rest): down
+            room  ground    she has heard about you, and she has gone very still.
             room  note      down again. pews, ice, and something that has been kneeling for a very long time.
-  turn 8 [floor 3]  Smite -> warden
-            you   damage    the warden: cold all the way through, and plated over that  (8)
-            them  hurt      you: the warden reaches you  (5)
   turn 9 [floor 3]  Smite -> warden
             you   damage    the warden: cold all the way through, and plated over that  (8)
             them  hurt      you: the warden reaches you  (5)
-  turn 10 [floor 3]  Mend -> ghost
+  turn 10 [floor 3]  Smite -> warden
+            you   damage    the warden: cold all the way through, and plated over that  (8)
+            them  hurt      you: the warden reaches you  (5)
+  turn 11 [floor 3]  Mend -> ghost
             you   heal      closed, mostly  (11)
             them  hurt      you: the warden reaches you  (5)
-  turn 11 [floor 3]  Smite -> warden
+  turn 12 [floor 3]  Smite -> warden
             you   damage    the warden: cold all the way through, and plated over that  (8)
             you   kill      the warden: down
+            room  ground    she will not look at you. word gets down here faster than you do.
             room  note      down again. walkways, railings, and a draught coming up through all of it.
-  turn 12 [floor 4]  Ward -> ghost
+  turn 13 [floor 4]  Ward -> ghost
             you   self      set, and taking half of everything
             them  hurt      you: iron sentinel reaches you  (1)
             them  hurt      you: iron sentinel reaches you  (1)
             them  hurt      you: shrike reaches you  (1)
-  turn 13 [floor 4]  Smite -> shrike
+  turn 14 [floor 4]  Smite -> shrike
             you   damage    shrike: nowhere near the floor  (8)
             you   kill      shrike: down
             them  hurt      you: iron sentinel reaches you  (3)
             them  hurt      you: iron sentinel reaches you  (3)
-  turn 14 [floor 4]  Mend -> ghost
+  turn 15 [floor 4]  Mend -> ghost
             you   heal      closed, mostly  (11)
             them  hurt      you: iron sentinel reaches you  (3)
             them  hurt      you: iron sentinel reaches you  (3)
-  turn 15 [floor 4]  Smite -> sentinel-1
+  turn 16 [floor 4]  Smite -> sentinel-1
             you   damage    iron sentinel: plated, and patient  (8)
             them  hurt      you: iron sentinel reaches you  (3)
             them  hurt      you: iron sentinel reaches you  (3)
-  turn 16 [floor 4]  Ward -> ghost
+  turn 17 [floor 4]  Ward -> ghost
             you   self      set, and taking half of everything
             them  hurt      you: iron sentinel reaches you  (1)
             them  hurt      you: iron sentinel reaches you  (1)
-  turn 17 [floor 4]  Smite -> sentinel-1
+  turn 18 [floor 4]  Smite -> sentinel-1
             you   damage    iron sentinel: plated, and patient  (8)
             you   kill      iron sentinel: down
             them  hurt      you: iron sentinel reaches you  (3)
-  turn 18 [floor 4]  Mend -> ghost
+  turn 19 [floor 4]  Mend -> ghost
             you   heal      closed, mostly  (11)
             them  hurt      you: iron sentinel reaches you  (3)
-  turn 19 [floor 4]  Smite -> sentinel-2
+  turn 20 [floor 4]  Smite -> sentinel-2
             you   damage    iron sentinel: the same again  (8)
             them  hurt      you: iron sentinel reaches you  (3)
-  turn 20 [floor 4]  Ward -> ghost
+  turn 21 [floor 4]  Ward -> ghost
             you   self      set, and taking half of everything
             them  hurt      you: iron sentinel reaches you  (1)
-  turn 21 [floor 4]  Smite -> sentinel-2
+  turn 22 [floor 4]  Smite -> sentinel-2
             you   damage    iron sentinel: the same again  (8)
             you   kill      iron sentinel: down
             room  note      down again. it has been waiting the whole time, and it knew which way you would come.
-  turn 22 [floor 5]  Smite -> king
+  turn 23 [floor 5]  Smite -> king
             you   note      the dark goes, all at once, and does not come back
             you   damage    the hollow king: finished with once already, and unconvinced  (24)
-  turn 22 [floor 5]  ASKED: there is something behind the stonework that was not meant to be found.
+  turn 23 [floor 5]  ASKED: there is something behind the stonework that was not meant to be found.
             answered: take
-            you   self      whatever it was, it was full of something
+            you   self      you come away with a stone that hums
             you   meter     and it was somebody's  (1)
             them  hurt      you: the hollow king reaches you  (7)
-  turn 23 [floor 5]  Ward -> ghost
+  turn 24 [floor 5]  Ward -> ghost
             you   self      set, and taking half of everything
             them  hurt      you: the hollow king reaches you  (3)
-  turn 24 [floor 5]  Smite -> king
+  turn 25 [floor 5]  Smite -> king
             you   damage    the hollow king: finished with once already, and unconvinced  (24)
             you   kill      the hollow king: down
             room  note      there is nothing below this. you are through.
 
 -- the reckoning --
   you came out the other side of it.
-  floors: 5 of 5   turns: 24
+  floors: 5 of 5   turns: 25
   it was starting to notice you: resonance 2.
-  with a little on your hands: corruption 1.
+  with a little on your hands: corruption 4.
+  3 people saw you coming. 2 of them are still alive.
 
   nurse        -> cleric   of fire   (soft to frost)
   MIG 3   FOC 5   GRI 3   WIT 4
-  hp 21/39   mp 19/20   resonance 2   corruption 1
+  hp 18/39   mp 18/20   resonance 2   corruption 4
 
   THE HOLLOW THRONE   (sacred)
   it has been waiting the whole time, and it knew which way you would come.
+
+-- an item is an art, and that is the whole of the design --
+  a flask of oil    [ground_add]
+  a waterskin       [ground_add]
+  tinder            [ground_add]
+  a censer          [ground_add]
+  grit-salt         [ground_clear]
+  smelling salts    [heal restore]
+  a stone that hums [attune]
+-- a chef comes down already carrying, and nobody else does --
+  chef       ["a flask of oil", "a waterskin"]
+  soldier    []
+  librarian  []
+-- four slots, and a fifth is refused by name --
+  your hands are full -- put something down first (smelling salts)
+  after putting one down, it fits: fax
+-- POUR, THEN LIGHT: two rules that were always there, combined by a player --
+  ember on its own:               2 done, 0 taken, asks nothing
+  a flask of oil leaves the floor: sacred, damp, gas
+  and then ember:                 5 done, 6 taken, asks ignition
+  and pouring one onto a floor that is already gas:
+     the floor is already gas
+-- a chef's consumable does not end the turn; everybody else's does --
+  chef   turn 1 -> 1
+  nurse  turn 1 -> 2
+-- and a flask previews exactly as it resolves --
+  7 items, 0 that resolved differently the second time
+
+-- what a turn does to the mountain --
+  a fire art:                    heat +2
+  a frost art:                   heat -1
+  an earth art:                  wet -1
+  a void art:                    foul +2
+  a storm art:                   foul +1
+  fire on a damp floor:          heat +2  wet +1
+  frost on a damp floor:         heat -1  wet +1
+  a turn that ended alight:      heat +1  foul +1
+  grit-salt:                     foul -2
+  a heal, on ordinary ground:    nothing
+  and nothing leaves 0..10:      0, 10
+-- and what it does to a room you walk into, on arrival and never otherwise --
+  the wet stair, calm:           damp, dark
+  the wet stair, heat 4:         dark, dry
+  the wet stair, heat 7:         dark, dry, gas
+  the iron gallery, wet 4:       metal, windy, damp
+  the iron gallery, foul 4:      metal, windy, choking
+  the frozen chapel, foul 4:     sacred, damp, choking
+  the frozen chapel, foul 8:     damp, choking   (it is not sacred any more)
+  heat 6 against wet 4:          dark, dry
+  heat 4 against wet 6:          damp, dark
+  heat 5 against wet 5:          damp, dark   (a tie condenses)
+-- a fire on dry ground is a different animal --
+  burning, ordinary ground:      3 to the room, and the floor is now: 
+  burning on dry ground:         6 to the room, and the floor is now: burning, dry
+  burning with gas still to eat: 3 to the room, and the floor is now: burning
+  choking costs everything 2:    2 to the room, and the floor is now: choking
+
+-- 22. a floor that meant something will not help somebody like you --
+  clean, on sacred ground:       +11
+  corruption 5, on sacred:       +5
+  corruption 5, anywhere else:   +11
+-- 23. and void gets cheaper, which is the whole point of the meter --
+  hollow (3 will), clean:        0 net
+  hollow (3 will), corruption 5: -1 net
+-- 26. as does your own element, once the world minds you enough --
+  flare at resonance 0:          4
+  flare at resonance 8:          3
+-- 24. a hollow place, which nothing can lay down but you --
+  glimmer, ordinarily:           2
+  glimmer, hollow:               1
+  whisper, ordinarily:           2
+  whisper, hollow:               3
+  consecrate, hollow:            there is nothing here that will take that
+-- 25. what your own element costs you, and when it stops --
+  element     raw  mastered
+  fire          3         0
+  frost         2         0
+  storm         5         0
+  earth         3         0
+  void          2         0
+  light is absent, and that is the point: it costs its user nothing to
+  begin with, so there is nothing for mastery of it to hand back.
+
+-- THE ASSERTION THIS WHOLE THING EXISTS FOR --
+   ignite the gas hall with a person standing in it, and then with a rat
+   of exactly their size standing exactly where they stood.
+  the rules did the same arithmetic, line for line: fax
+     note       0
+     damage     5
+     damage    10
+     kill       0
+     ground     0
+     hurt       6
+  and the only difference is rule 27, which is the one rule about them:
+     corruption 0 against 3
+-- an untargeted strike never finds them --
+  it hit: a boil of rats
+-- a floor with a survivor on it still ends --
+  standing: 1   cleared: fax   and they take no turn: fax
+-- a Mend can be pointed at one of them --
+  their hp 2 -> 6, marked tended, and yours untouched at 20
+  untargeted it is still you: 31
+-- and what became of them --
+  killed  -> killed
+  helped  -> helped
+  left    -> left
+
+-- the other run: a void-caller who stops for nobody --
+  floors 4 of 5, turns 15, lost
+  resonance 15   corruption 24   and both at once is the point
+  it walked into a hollow room: fax
+  the sky it left behind: heat 0  wet 0  foul 10
+  the ledger:
+     a man with a lamp       killed
+     a girl behind the altar killed
+     a woman on the stair    killed
+  you got as far as the iron gallery.
+  floors: 4 of 5   turns: 15
+  the world learned your name: resonance 15.
+  and it will be a long time putting right what you did: corruption 24.
+  3 people saw you coming. not one of them is still alive.
 -- done --

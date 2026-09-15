@@ -27,8 +27,18 @@ gimme yapper
 gimme { summon, kit, find_art, has_trait, sheet_lines, THIRD_TIER_AT,
         CORRUPTION_NOTICED, CORRUPTION_LOST } from "hero.funny"
 gimme { fresh_floor, floor_count, standing, cleared, floor_lines,
-        has_ground } from "world.funny"
+        has_ground, add_ground } from "world.funny"
 gimme { resolve, answer, cascade, foes_act } from "resolve.funny"
+gimme { give, drop, SLOTS, carrying_names } from "carried.funny"
+gimme { new_sky, after_turn, apply_sky, sky_line } from "sky.funny"
+gimme { place, folk_here, what_became_of, gift_of, tended_line, has_killed,
+        ledger_lines } from "folk.funny"
+
+// Something for clearing the one floor that has nobody on it. Every other
+// floor's item comes from the person standing on it, if they are still
+// standing when you leave -- which makes stopping for somebody the main way
+// anybody who is not a chef ends up carrying anything at all.
+deadass FLOOR_PRIZES = {1: "oil"}
 
 // What you get back for reaching the next floor down. Not a full heal: the
 // run has to cost something across its whole length, or the last floor is the
@@ -52,10 +62,25 @@ flex bet begin(origin, calling, affinity) {
     sus (hero.has("error")) {
         bounce hero
     }
+    // Mise en place is everything prepared before service starts, so a chef
+    // comes down already holding the two things that change a room.
+    sus (has_trait(hero, "mise_en_place")) {
+        give(hero, "oil")
+        give(hero, "waterskin")
+    }
     yo run = {
         "phase": "descending",
         "hero": hero,
-        "floor": arrive(hero, 1),
+        // Set below, because arriving somewhere needs the run that is
+        // arriving: the weather, and later what you have become and who has
+        // heard about you, all decide what a floor looks like when you reach
+        // it. See §3.2 of WORLD_PLAN.md.
+        "floor": ghost,
+        "sky": new_sky(),
+        // What became of everybody who was down here: one entry each,
+        // `helped`, `left` or `killed`. Read in exactly three places -- rule
+        // 27 is not one of them, because a rule may not read a ledger.
+        "ledger": [],
         "depth": 1,
         "turn": 1,
         // The second choice, when one is open. While this is set, `act` is
@@ -73,15 +98,53 @@ flex bet begin(origin, calling, affinity) {
         {"kind": "note", "says": "you are somewhere else now, and it is downhill.",
          "who": ghost, "amount": 0},
     ])
+    run["floor"] = arrive(run, 1)
     bounce run
 }
 
-// A floor, set up for this particular hero. The librarian walks in already
-// knowing what things are made of; everybody else has to spend an action.
-bet arrive(hero, n) {
+// THE ARRIVAL PIPELINE. Everything that decides what a floor looks like when
+// you walk into it happens here, in this order, and nowhere else:
+//
+//   1. the room, as it is written
+//   2. the weather -- what you have done to the mountain so far
+//   3. what you have become           (W3)
+//   4. who is here, and whether they will speak to you   (W4)
+//   5. what you can see of it
+//   6. and a line in the log for anything that changed
+//
+// The order is load-bearing rather than tidy. Weather goes before corruption
+// so that a fouled room which is also hollow is both, rather than whichever
+// ran last; corruption goes before the people because being hollow is one of
+// the reasons somebody will not talk to you.
+bet arrive(run, n) {
+    yo hero = run["hero"]
+
     yo floor = fresh_floor(n)
+
+    yo weathered = apply_sky(floor, run["sky"])
+    floor = weathered["floor"]
+    yo notes = weathered["notes"]
+
+    // 3. What you have become. Nothing can lay `hollow` down: it arrives
+    //    because of you, which is the only way a meter becomes a place.
+    sus (hero["corruption"] >= CORRUPTION_LOST) {
+        add_ground(floor, "hollow")
+        notes.yeet_in("nothing in here means anything, and it is not the room's doing")
+    }
+
+    // 4. Who is here, and whether they will talk to you. This is the second of
+    //    the three places the ledger is read, and it is not a rule: it is what
+    //    `folk.funny` does when it puts somebody in a room.
+    grind line in place(floor, n, run["ledger"], has_ground(floor, "hollow")) {
+        notes.yeet_in(line)
+    }
+
     sus (has_trait(hero, "read_the_room")) {
         floor["seen"] = fax
+    }
+
+    grind line in notes {
+        remember(run, "room", [{"kind": "ground", "says": line, "who": ghost, "amount": 0}])
     }
     bounce floor
 }
@@ -140,6 +203,11 @@ flex bet act(run, choice) {
         bounce {"ok": cap, "error": "answer what you started first", "run": run}
     }
 
+    // The ground as it was before you did anything, which is what the sky
+    // needs: fire on a damp floor raises `wet`, and by the time the turn is
+    // over that floor is not damp any more.
+    yo was = deep_clone(run["floor"]["ground"])
+
     yo out = resolve({"hero": run["hero"], "floor": run["floor"]}, choice)
     sus (!out["ok"]) {
         bounce {"ok": cap, "error": out["error"], "run": run}
@@ -161,7 +229,35 @@ flex bet act(run, choice) {
     }
 
     run["undo"] = snapshot
-    finish_turn(run)
+
+    // The second half of mise en place: using what you carry does not cost a
+    // chef the turn. Nothing else moves, so they may act again -- which is why
+    // "pour, then light" is one turn for a chef and two for everybody else.
+    sus (out.get("consumed", cap) && has_trait(run["hero"], "mise_en_place")) {
+        remember(run, "you", [
+            {"kind": "note", "says": "mise en place: that cost you no turn",
+             "who": ghost, "amount": 0},
+        ])
+        bounce {"ok": fax, "run": run}
+    }
+
+    finish_turn(run, out["element"], out["art_id"], was)
+    bounce {"ok": fax, "run": run}
+}
+
+// Put something down, to make room. Not a turn: you are not doing anything to
+// anybody, you are opening your hand.
+flex bet put_down(run, id) {
+    yo hero = deep_clone(run["hero"])
+    yo out = drop(hero, id)
+    sus (!out["ok"]) {
+        bounce {"ok": cap, "error": out["error"], "run": run}
+    }
+    run["hero"] = hero
+    remember(run, "you", [
+        {"kind": "note", "says": out["dropped"]["name"] + ", left behind",
+         "who": ghost, "amount": 0},
+    ])
     bounce {"ok": fax, "run": run}
 }
 
@@ -179,6 +275,7 @@ flex bet answer_ask(run, option_id) {
         bounce {"ok": cap, "error": "that was not one of the choices", "run": run}
     }
 
+    yo was = deep_clone(run["floor"]["ground"])
     yo out = answer({"hero": run["hero"], "floor": run["floor"]},
                     run["pending"]["id"], option_id)
     sus (!out["ok"]) {
@@ -188,7 +285,9 @@ flex bet answer_ask(run, option_id) {
     run["floor"] = out["floor"]
     run["pending"] = ghost
     remember(run, "you", out["effects"])
-    finish_turn(run)
+    // An answer carries no element of its own -- it is the back half of a turn
+    // whose front half already told the sky what it was.
+    finish_turn(run, ghost, ghost, was)
     bounce {"ok": fax, "run": run}
 }
 
@@ -208,8 +307,8 @@ flex bet take_back(run) {
     bounce {"ok": fax, "run": restored}
 }
 
-// Their turn, then the room's, then whatever that leaves.
-bet finish_turn(run) {
+// Their turn, then the room's, then the sky's, then whatever that leaves.
+bet finish_turn(run, element, art_id, was) {
     sus (run["hero"]["hp"] > 0 && !cleared(run["floor"])) {
         yo theirs = foes_act({"hero": run["hero"], "floor": run["floor"]})
         run["hero"] = theirs["hero"]
@@ -224,6 +323,12 @@ bet finish_turn(run) {
         remember(run, "room", room["effects"])
     }
 
+    // The sky moves once, here, from what the turn turned out to be. Nothing
+    // shifts it mid-resolution, which is why `resolve` never has to predict it
+    // and a preview stays honest.
+    yo weather = after_turn(run["sky"], element, art_id, was, run["floor"]["ground"])
+    run["sky"] = weather["sky"]
+
     run["turn"] = run["turn"] + 1
 
     sus (run["hero"]["hp"] > 0 && run["hero"]["mp"] < run["hero"]["max_mp"]) {
@@ -237,6 +342,7 @@ bet finish_turn(run) {
     sus (run["hero"]["hp"] <= 0) {
         run["phase"] = "over"
         run["outcome"] = "lost"
+        close_the_book(run)
         remember(run, "room", [
             {"kind": "note", "says": "the floor is very cold and you are not getting up.",
              "who": ghost, "amount": 0},
@@ -246,6 +352,34 @@ bet finish_turn(run) {
 
     sus (cleared(run["floor"])) {
         descend(run)
+    }
+    bounce run
+}
+
+// One ledger entry for the floor being left, and the gift if they are still
+// standing. Called when you go down and again if you do not.
+bet close_the_book(run) {
+    yo fate = what_became_of(run["floor"])
+    sus (fate == ghost) {
+        bounce run
+    }
+    grind entry in run["ledger"] {
+        sus (entry["id"] == fate["id"]) {
+            bounce run
+        }
+    }
+    run["ledger"].yeet_in(fate)
+
+    sus (fate["did"] == "helped") {
+        yo gift = gift_of(fate["id"])
+        sus (gift != ghost) {
+            yo got = give(run["hero"], gift)
+            sus (got["ok"]) {
+                remember(run, "room", [
+                    {"kind": "note", "says": tended_line(fate["id"]), "who": ghost, "amount": 0},
+                ])
+            }
+        }
     }
     bounce run
 }
@@ -261,6 +395,29 @@ bet descend(run) {
         bounce run
     }
 
+    // What became of whoever was on the floor you are leaving. Worked out from
+    // the floor itself rather than tracked as you go, so there is exactly one
+    // place it can be wrong.
+    close_the_book(run)
+
+    // Something for the floor you are leaving, if your hands are free for it.
+    yo prize = FLOOR_PRIZES.get(run["depth"], ghost)
+    sus (prize != ghost) {
+        yo got = give(run["hero"], prize)
+        sus (got["ok"]) {
+            remember(run, "room", [
+                {"kind": "note", "says": "you pick up " + got["got"]["name"] + " on the way down",
+                 "who": ghost, "amount": 0},
+            ])
+        } nah {
+            remember(run, "room", [
+                {"kind": "note", "says": "there is " + got["offered"]["name"] +
+                                         " here, and nowhere to put it",
+                 "who": ghost, "amount": 0},
+            ])
+        }
+    }
+
     run["depth"] = run["depth"] + 1
     yo hero = run["hero"]
     hero["mp"] = hero["mp"] + MP_ON_DESCENT
@@ -273,7 +430,7 @@ bet descend(run) {
     }
     hero["conditions"] = []
     hero["used_this_floor"] = []
-    run["floor"] = arrive(hero, run["depth"])
+    run["floor"] = arrive(run, run["depth"])
     run["undo"] = ghost
     run["undo_used_on"] = -1
     remember(run, "room", [
@@ -318,6 +475,11 @@ flex bet reckoning(run) {
         lines.yeet_in("with a little on your hands: corruption " + to_yap(hero["corruption"]) + ".")
     } nah {
         lines.yeet_in("and you took nothing that was not yours.")
+    }
+
+    // The third and last place the ledger is read.
+    grind line in ledger_lines(run["ledger"]) {
+        lines.yeet_in(line)
     }
     bounce lines
 }

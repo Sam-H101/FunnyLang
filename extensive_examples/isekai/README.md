@@ -28,6 +28,8 @@ $ funny run extensive_examples/isekai/play.funny -- --list
 $ funny run extensive_examples/isekai/play.funny -- --origin soldier --calling knight --affinity storm
 $ funny run extensive_examples/isekai/play.funny -- \
       --origin nurse --calling cleric --affinity fire --script scripts/the-gas-hall.txt
+$ funny run extensive_examples/isekai/play.funny -- \
+      --origin chef --calling cleric --affinity fire --script scripts/the-oil-and-the-spark.txt
 $ funny test extensive_examples/isekai
 ```
 
@@ -38,7 +40,10 @@ $ funny test extensive_examples/isekai
 | `resolve.funny` | **the simulation**: the rule table, the cascade, the follow-ups |
 | `hero.funny` | origins, callings, affinities, the sheet, the kit |
 | `world.funny` | ground tags, material traits, the five floors |
-| `run.funny` | a descent as a state machine: summon, turn, floor, reckoning |
+| `carried.funny` | the seven things you can carry, which are arts like any other |
+| `sky.funny` | the mountain's weather, which is what you have done to it |
+| `folk.funny` | the three people who are down here too, and what became of them |
+| `run.funny` | a descent as a state machine: summon, arrival, turn, reckoning |
 | `serve.funny` | the HTTPS server and the six-route API |
 | `web/` | three screens, no framework in the logic |
 | `play.funny` | the same modules against a text screen, and `--script` |
@@ -56,7 +61,7 @@ A branching story is a tree somebody wrote down. Option A leads to paragraph
 seven because an author typed that it does. Nothing is being modelled, and the
 second time through, the tree is the whole game.
 
-This is the other thing. Twenty-one rules, each with a condition over four
+This is the other thing. Twenty-seven rules, each with a condition over four
 things and nothing else:
 
 - **the element in play** — fire, frost, storm, earth, light, void, or nothing
@@ -117,11 +122,145 @@ out:
 | 19 | void, always | drains the thing into you, **+1 corruption**, no exceptions |
 | 20 | striking something `held` or `stumbling` | **+1 corruption** |
 | 21 | acting in tune with your affinity | **+1 resonance** |
+| 22 | `corruption ≥ 5`, healing on `sacred` ground | **halved** — the floor will not help you |
+| 23 | `corruption ≥ 5`, a void art | costs **one less** |
+| 24 | on `hollow` ground | light **halved**, void **+2 power**, and no blessing will take |
+| 25 | `resonance ≥ 5` | what your own element costs you stops costing you |
+| 26 | `resonance ≥ 8` | arts of your own element cost **one less** |
+
+**And one about people:**
+
+| | when | what |
+| --- | --- | --- |
+| 27 | striking anything with `bystander` | **+3 corruption**, on top of rule 20 |
 
 Then a **cascade** runs at the top of every turn: `burning` ground damages
-everything standing on it and burns off any remaining `gas`; `frost-blooded`
-things in a burning room stop being frost-blooded; `slick` ground trips what
-walks on it; and a `swarm` cut below half **comes apart into two of itself**.
+everything standing on it and burns off any remaining `gas`, then goes out
+unless the floor is `dry`, in which case it burns for double and does not stop;
+`frost-blooded` things in a burning room stop being frost-blooded; `slick`
+ground trips what walks on it, **and you**; `choking` air costs everything in
+the room two; and a `swarm` cut below half **comes apart into two of itself**.
+
+## What you carry
+
+Seven things, four slots. An item is not a second kind of thing — **it is an
+art**, the same record as Ember with one more field saying it is spent when
+used. It goes in the kit with everything else, `resolve` needs no new path, and
+the page previews a flask of oil for free because it previews arts.
+
+| | what it does |
+| --- | --- |
+| a flask of oil | the floor gains `gas` |
+| a waterskin | the floor gains `damp` |
+| tinder | the floor gains `burning` |
+| a censer | the floor gains `sacred` |
+| grit-salt | `slick` and `choking` lift |
+| smelling salts | every condition on you, cleared |
+| a stone that hums | **+2 resonance** |
+
+**The flask is the point.** Up to now the ground was something the floor
+decided. With a flask in your hand it is a move: pour, then light, and rule 9
+does the rest. Two rules that were always in the table, combined by a player
+into a thing neither of them describes. In the frozen chapel, where fire is
+right for the warden and wrong for the wet sacred floor, Ember alone does **2**;
+after a flask it does **5** and takes the room with it.
+
+**The chef's trait was a lie until now, and this fixed it.** It reads *what you
+carry works twice as well and never costs a turn*, and there was nothing in the
+game to carry: the trait name appeared in one file and nowhere else, so anybody
+who picked the chef got worse stats than a soldier and nothing in exchange. It
+now means what its name means — *mise en place* is everything prepared before
+service starts — so a chef **comes down already carrying** a flask and a
+waterskin, and **using what they carry does not cost them the turn**. Pour and
+light is one turn for a chef and two for everybody else.
+
+## The mountain's weather
+
+You are five floors underground, so literal weather would be a lie and a random
+one would break the no-dice rule. The weather here is **what you have done to
+the mountain**: heat you put in, water you boiled or froze, and air you spoiled.
+
+| axis | up | down |
+| --- | --- | --- |
+| `heat` | a fire art +2, a turn ending alight +1 | a frost art −1 |
+| `wet` | fire or frost on `damp` +1 | an earth art −1 |
+| `foul` | a turn ending alight +1, void +2, storm +1 | grit-salt −2 |
+
+It moves once a turn and **only ever does anything on arrival**, so it is
+something you walk into and never something that shifts under you mid-fight —
+which is also what keeps the forecast honest, since `resolve` never has to
+predict it. At `heat ≥ 4` a floor arrives `dry` with its `damp` gone; at 7 the
+mountain starts venting `gas`. At `wet ≥ 4` it arrives `damp` whether it would
+have or not. At `foul ≥ 4` it arrives `choking`, and at 8 it is not `sacred` any
+more — you have fouled it past meaning anything. Heat and wet both want the
+floor; the larger wins, and on a tie the steam condenses.
+
+So the fifth floor's ground is a consequence of how the first four were played.
+A fire-caller arrives at the hollow throne in a dried-out, choking room of their
+own making. That is the rule table's trick one level up.
+
+## Somebody who remembers
+
+Three people, on floors two, three and four. A man with a lamp in a hall full of
+gas. A girl behind the altar in the room where fire is the right answer. A woman
+on the stair.
+
+Each is an ordinary creature with **`bystander`** in its traits, no attack, and
+two hit points, so that anything meant for the room will do for them as well.
+
+**No rule was added to make an area effect kill one.** Rule 9 takes the whole
+room. Rule 13 chains through everything standing in water. The cascade burns
+everything on burning ground. The tragedy was already in the table; it had never
+had anybody to happen to. The golden asserts exactly that: it ignites the gas
+hall with the man in it, then with a rat of his size standing where he stood,
+and checks **the effect lists are identical line for line** — same kinds, same
+numbers, same order. The only difference is rule 27, which is the one rule in
+the table that is about them.
+
+You can **mend one** — Mend gained an optional target, and untargeted it is
+still you — and they live, and give you something when you leave. You can
+**leave them**, and at two hit points they live only if nothing touches the
+room. Or you can **kill one**, on purpose or because you set the room alight and
+they were in it. The model does not distinguish, and neither does the ledger.
+
+What is in the ledger is read in three places and only one of them is a rule:
+rule 27 charges you; the next person you meet will not speak to you and gives
+nothing; and the reckoning says how many saw you and how many are still alive.
+
+## Corruption that does something
+
+It used to be a score that only the reckoning read. Five rules give it teeth,
+and they read the sheet, which the table could always read.
+
+**Rule 23 is the important one.** Void gets *cheaper* the further you fall.
+Corruption must not be a straight penalty, or it is a losing condition with
+extra steps that nobody walks into on purpose; it has to be a road that is
+genuinely easier. Past corruption 10 every floor arrives **`hollow`**, where
+light is halved, void is stronger, no blessing will take, and nobody will talk
+to you. Nothing can lay `hollow` down — it arrives because of what you have
+become, which is the only way a meter becomes a place.
+
+**Rule 25 took something away.** A fire-caller used to be immune to their own
+burning rooms from the first turn. Now that waits on resonance 5: until the
+world has agreed the fire is yours, it burns you like anybody else. The same
+rule covers what every element costs its user — ice you trip on, storm that
+comes back up your arm, a ceiling that is heavy to hold, air you spoiled — with
+one absence. **Light costs its user nothing, so mastery of it hands nothing
+back.** It is the element with no downside and therefore the one that cannot be
+improved, and that asymmetry is deliberate.
+
+## Everything that happens on arrival happens in one place
+
+Three of those four additions change what a floor looks like when you reach it,
+so they all go through one pipeline, in one order, and nowhere else: the room as
+written, then the weather, then what you have become, then who is here and
+whether they will speak, then what you can see, then a line in the log for
+anything that changed.
+
+The order is load-bearing. Weather goes before corruption so a fouled room that
+is also hollow is both rather than whichever ran last, and corruption goes
+before the people because being hollow is one of the reasons somebody will not
+talk to you.
 
 ### What that adds up to
 
@@ -235,6 +374,7 @@ Six routes, holding one run:
 | `POST /api/act` | `{"art","target"}` — your turn |
 | `POST /api/answer` | `{"option"}` — the second choice, when one is open |
 | `POST /api/preview` | the same as `act`, run and discarded |
+| `POST /api/drop` | `{"item"}` — put something down; four slots, seven finds |
 | `POST /api/undo` | the programmer's trait, once a floor |
 
 Acting while a question is open is a `409` — you owe the world an answer first.
@@ -280,13 +420,17 @@ network.
 $ funny test extensive_examples/isekai
 ```
 
-Five parts, about a quarter of a second, no sockets. The sheet; **the rule
-table one rule at a time**, each in a room where it must fire and again in one
-differing only in its condition; the compositions; preview-equals-outcome; and
-a whole descent asserted turn by turn.
+Ten parts, no sockets. The sheet; **the rule table one rule at a time**, each in
+a room where it must fire and again in one differing only in its condition; the
+compositions; preview-equals-outcome; a whole descent asserted turn by turn;
+what you carry, including pour-then-light; the weather, axis by axis and
+threshold by threshold; corruption's five rules; the people, including the
+identical-to-a-rat assertion; and **a second descent that takes every bad
+road** — a void-caller who stops for nobody, and who finishes with resonance 15
+*and* corruption 24, which is the run the two meters exist to make possible.
 
-The second of those is most of the golden and the part that matters. A rule
-table is only trustworthy if each row has been shown to fire *and* shown not to.
+The second part is most of the golden and the part that matters. A rule table is
+only trustworthy if each row has been shown to fire *and* shown not to.
 
 ## What it is not
 
@@ -308,9 +452,14 @@ table is only trustworthy if each row has been shown to fire *and* shown not to.
   the fifth floor is a damage race rather than a duel.
 - **Five fixed floors, and no generation.** A generated dungeon needs a seed,
   and a seed is the one thing this example is built to do without.
-- **Twenty-one rules is not a world.** There is no weather, no time, no
-  inventory, no NPC who remembers you. Corruption changes what the reckoning
-  says and nothing else — a longer version would have it change what the world
-  does.
+- **Three people is not a population.** They are three fixed encounters on three
+  fixed floors, with one line each and a ledger with three entries in it. They
+  do not move, trade, follow you, or have anything to say about the fourth
+  thing you did. A world would have people in it who were doing something before
+  you arrived.
+- **Three numbers is not a climate.** The weather is heat, wet and foul, it
+  moves only when you move it, and it only ever does anything between floors.
+  There is no time of day, no season, and nothing happening in the mountain that
+  is not your fault.
 - **One run per server, not per browser.** No sessions and no cookies.
 - **No save, no undo beyond the programmer's one-a-floor**, and no way back up.

@@ -99,6 +99,33 @@
 .meter.res .n { color: var(--good); }
 .meter.cor .n { color: var(--void); }
 
+/* The mountain's weather: three axes, and what you did to put them there.
+   Drawn small and under the meters, because it is context rather than a
+   decision -- but drawn, because three numbers nobody reads are worse than
+   no numbers at all. */
+.sky { margin-top: 0.6rem; }
+.sky > .k {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  text-transform: uppercase;
+  margin-bottom: 0.2rem;
+}
+.skyrow { display: flex; align-items: center; gap: 0.45rem; font-size: 0.75rem; }
+.skyrow .axis { color: var(--dim); min-width: 2.6rem; }
+.skyrow .track {
+  flex: 1;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.07);
+  overflow: hidden;
+}
+.skyrow .skyfill { display: block; height: 100%; border-radius: 999px; }
+.skyrow .skyfill.heat { background: var(--fire); }
+.skyrow .skyfill.wet { background: var(--frost); }
+.skyrow .skyfill.foul { background: var(--void); }
+.skyrow .n { color: var(--dim); min-width: 1rem; text-align: right; }
+
 /* -- the room ---------------------------------------------------------- */
 
 .ground { display: flex; flex-wrap: wrap; gap: 0.35rem; }
@@ -145,6 +172,31 @@
 .art:disabled { opacity: 0.4; cursor: not-allowed; }
 .art .name { font-weight: 600; }
 .art .meta { font-size: 0.75rem; color: var(--dim); }
+
+/* A carried thing sits in the kit like everything else, because it IS an art.
+   The only difference the page needs to know is that this one can be put
+   down. */
+.slot { position: relative; display: flex; }
+.slot .art { flex: 1; }
+.art.carried {
+  border-style: dashed;
+  background: rgb(255 255 255 / 0.045);
+}
+.putdown {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.3rem;
+  font-size: 0.65rem;
+  line-height: 1;
+  padding: 0.2rem 0.35rem;
+  border-radius: 0.3rem;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.putdown:hover:not(:disabled) { color: var(--ink); border-color: rgb(255 255 255 / 0.4); }
+.putdown:disabled { opacity: 0.3; cursor: not-allowed; }
 
 .art[data-element="fire"] { border-left: 3px solid var(--fire); }
 .art[data-element="frost"] { border-left: 3px solid var(--frost); }

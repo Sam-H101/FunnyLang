@@ -190,6 +190,25 @@
     meters.append(res, cor);
     box.append(meters);
 
+    // The mountain's weather, which is what you have done to it. Three numbers
+    // nobody reads would be worse than none, so they get a line each and the
+    // log says in words when a floor arrives changed because of them.
+    if (state.sky) {
+      const sky = text("div", "sky");
+      sky.append(text("div", "k", "the mountain"));
+      for (const axis of ["heat", "wet", "foul"]) {
+        const row = text("div", "skyrow");
+        row.append(text("span", "axis", axis));
+        const track = text("span", "track");
+        const fill = text("span", "skyfill " + axis);
+        fill.style.width = Math.min(100, state.sky[axis] * 10) + "%";
+        track.append(fill);
+        row.append(track, text("span", "n", String(state.sky[axis])));
+        sky.append(row);
+      }
+      box.append(sky);
+    }
+
     if (h.conditions.length) {
       box.append(text("p", "mb-0 mt-2 text-warning small", h.conditions.join(", ")));
     }
@@ -229,23 +248,46 @@
     if (!alive.length) el.foes.append(text("p", "text-body-tertiary mb-0", "nothing left standing."));
   }
 
+  // An item is an art, so it is in this list with everything else and the page
+  // needs to know only one thing about the difference: a carried thing can be
+  // put down, because there are four slots and seven things to find.
   function drawKit() {
     el.kit.replaceChildren(...state.kit.map((a) => {
-      const b = text("button", "art");
+      const slot = text("div", "slot");
+      const b = text("button", "art" + (a.carried ? " carried" : ""));
       b.type = "button";
       if (a.element) b.dataset.element = a.element;
       b.disabled = !a.affordable || busy || Boolean(state.pending);
       b.append(text("div", "name", a.name));
       b.append(text("div", "meta",
-        (a.cost ? a.cost + " will" : "free") + (a.element ? " · " + a.element : "") +
-        (a.power ? " · " + a.power : "")));
+        (a.carried ? "carried" : a.cost ? a.cost + " will" : "free") +
+        (a.element ? " · " + a.element : "") + (a.power ? " · " + a.power : "")));
       b.append(text("div", "meta", a.says));
       b.addEventListener("mouseenter", () => forecast(a));
       b.addEventListener("focus", () => forecast(a));
       b.addEventListener("click", () => doAct(a));
-      return b;
+      slot.append(b);
+
+      if (a.carried) {
+        const put = text("button", "putdown", "put down");
+        put.type = "button";
+        put.disabled = busy || Boolean(state.pending);
+        put.addEventListener("click", () => doDrop(a));
+        slot.append(put);
+      }
+      return slot;
     }));
     el.undo.hidden = !state.can_undo;
+  }
+
+  async function doDrop(a) {
+    if (busy) return;
+    busy = true;
+    drawKit();
+    const fresh = await post("/api/drop", { item: a.id });
+    busy = false;
+    if (fresh && fresh.ok) { state = fresh; draw(); }
+    else { say((fresh && fresh.error) || "it refused that", "text-warning"); drawKit(); }
   }
 
   // The forecast is the outcome, worked out by the server and discarded.

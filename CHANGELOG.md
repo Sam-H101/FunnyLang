@@ -41,6 +41,46 @@ what the summoning makes of you and which element answers, and then you go down 
 The golden's second part is most of it and is the part that matters: every rule fired in a room
 where it must fire, and again in one differing only in its condition, where it must not.
 
+### And then the four things its own README admitted it was not
+
+The example shipped with a list of what it is not, ending "twenty-one rules is not a world: no
+weather, nothing to carry, nobody who remembers you, and corruption changes what the reckoning says
+and nothing else". That list is now four rules, three small files and one seam shorter — built under
+a single constraint, that **none of it may add an input to the rule table**. A rule still reads the
+element in play, the ground, the material traits and the sheet, and nothing else. Twenty-one rules
+became twenty-seven.
+
+- **Something to carry, which fixes a defect that shipped.** Four of the five origins had their
+  traits wired up; the chef's promised that "what you carry works twice as well" and there was
+  nothing in the game to carry. An item is now simply **an art** — the same record as Ember with one
+  more field — so it appears in the kit, resolves through the same call, and is previewable for
+  free. A flask of oil lays down `gas`, which turns rule 9 from something that happens to you into
+  something you set up: in the frozen chapel, where fire is right for the warden and wrong for the
+  wet sacred floor, Ember alone does 2 and Ember after a flask does 5 and takes the room. A chef
+  comes down already carrying and a consumable does not cost them the turn, so pour-and-light is one
+  turn for them and two for anybody else.
+- **Weather that is caused rather than rolled.** Heat you put in, water you boiled, air you spoiled
+  — three axes that move once a turn and only ever do anything on arrival, so the fifth floor's
+  ground is a consequence of how the first four were played and a preview never has to predict them.
+  A fire-caller reaches the hollow throne in a dried-out, choking room of their own making.
+- **Three people, and no rule that mentions them.** A man with a lamp in a hall full of gas; a girl
+  behind the altar in the room where fire is the right answer; a woman on the stair. Each is a
+  creature with a `bystander` trait and two hit points, and **nothing was added to make an area
+  effect kill one** — rule 9 takes the room and they are in the room. The golden ignites the gas hall
+  with the man in it, then with a rat of his size standing where he stood, and asserts the damage
+  arithmetic is identical line for line. The one rule that is about them, rule 27, is the only
+  difference.
+- **Corruption that changes what the world does.** Sacred ground stops healing you, void gets
+  *cheaper* — the meter has to be a road that is easier to walk, or it is only a warning light —
+  and past ten every floor arrives `hollow`, where light is halved, void is stronger and nobody
+  will speak to you. Resonance answers it: what your own element costs you stops costing you. That
+  rule **took something away** — a fire-caller used to be immune to their own burning rooms from the
+  first turn and now waits until the world has agreed the fire is theirs. Light gains nothing from
+  it, because light costs its user nothing to begin with, and the README says so.
+
+The golden grew a second descent for this: a void-caller who stops for nobody, finishing with
+resonance 15 **and** corruption 24, which is the run the two meters exist to make possible.
+
 ### Added: `extensive_examples/battleship/`
 
 Battleship in a browser, with FunnyLang as the opponent. Put your fleet out, fire, and watch it

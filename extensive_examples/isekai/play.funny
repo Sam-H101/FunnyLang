@@ -19,9 +19,13 @@
 //   3        do the third thing in your kit, at whatever is selected
 //   3 2      do the third thing at the second thing in the room
 //   at 2     select the second thing in the room
+//   drop 6   put the sixth thing in your kit down -- four slots, seven finds
 //   back     take it back (the programmer's trait, once a floor)
 //   look     print the room again
 //   quit
+//
+// What you are carrying is in the kit with everything else, because an item is
+// an art. A Mend pointed at somebody (`1 2`) mends them instead of you.
 
 gimme yapper
 gimme filez
@@ -31,7 +35,9 @@ gimme { ORIGINS, CALLINGS, AFFINITIES, ELEMENTS, OPPOSED, kit,
 gimme { floor_count, standing, floor_lines } from "world.funny"
 gimme { wants_a_target } from "resolve.funny"
 gimme { begin, act, answer_ask, take_back, can_take_back, preview,
-        reckoning, effect_line } from "run.funny"
+        reckoning, effect_line, put_down } from "run.funny"
+gimme { carrying_names } from "carried.funny"
+gimme { sky_line } from "sky.funny"
 
 bet usage() {
     yell("usage: play.funny [--origin X] [--calling X] [--affinity X] [--script FILE] [--list]")
@@ -74,6 +80,9 @@ bet show_room(run) {
     grind line in sheet_lines(run["hero"]) {
         yap line
     }
+    yo carried = carrying_names(run["hero"])
+    yo carry_says = carried.how_thicc() == 0 ? "nothing" : carried.join(", ")
+    yap "  carrying: " + yapper.pad_right(carry_says, 44) + "sky: " + sky_line(run["sky"])
 }
 
 bet show_kit(run, aimed) {
@@ -146,8 +155,24 @@ bet obey(run, typed, printed, aimed) {
         bounce {"run": run, "printed": printed, "aimed": up[n - 1]["id"], "stop": cap}
     }
 
+    sus (head == "drop" && words.how_thicc() > 1) {
+        yo arts = kit(run["hero"])
+        yo n = to_int(words[1])
+        sus (n < 1 || n > arts.how_thicc()) {
+            yap "  you have no " + words[1] + "."
+            bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+        }
+        yo out = put_down(run, arts[n - 1]["id"])
+        sus (!out["ok"]) {
+            yap "  " + out["error"]
+            bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
+        }
+        bounce {"run": out["run"], "printed": show_new(out["run"], printed),
+                "aimed": aimed, "stop": cap}
+    }
+
     sus (!yapper.is_numba(head)) {
-        yap "  a number, or 'at N', 'back', 'look', 'quit'."
+        yap "  a number, or 'at N', 'drop N', 'back', 'look', 'quit'."
         bounce {"run": run, "printed": printed, "aimed": aimed, "stop": cap}
     }
     yo n = to_int(head)

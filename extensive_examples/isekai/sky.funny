@@ -1,0 +1,162 @@
+// sky.funny — the mountain's weather, which is to say what you have done to it.
+//
+// You are five floors underground. Literal weather would be a lie, and a
+// random one would break the rule this whole example is built on -- there are
+// no dice here. So the weather is CAUSED: heat you put in, water you boiled or
+// froze, and air you spoiled. It is the corruption meter's idea one level
+// down, the world keeping score of your element rather than of your conduct.
+//
+// THREE AXES, pushed once a turn by fixed amounts and by nothing else:
+//
+//   heat   a fire art +2, a turn ending on burning ground +1; a frost art -1
+//   wet    fire or frost on damp +1 (steam has to go somewhere); earth -1
+//   foul   a turn ending on burning ground +1, void +2, storm +1; grit-salt -2
+//
+// AND THEY ONLY EVER DO ANYTHING ON ARRIVAL. The weather is something you walk
+// into, never something that shifts under you mid-fight, which is what keeps a
+// preview honest: `resolve` never has to predict the sky, because the sky does
+// not move until the floor does.
+//
+// The point of it is that the fifth floor's ground becomes a consequence of
+// how the first four were played. A fire mage arrives at the hollow throne in
+// a dried-out, choking room of their own making. Nobody wrote that down; it is
+// the rule table's trick one level up.
+
+gimme yapper
+
+gimme { has_ground, add_ground, drop_ground } from "world.funny"
+
+flex deadass AXES = ["heat", "wet", "foul"]
+
+// Nothing goes below nothing or above ten, so a long run cannot push an axis
+// somewhere the thresholds stop meaning anything.
+flex deadass FLOOR_OF_AXIS = 0
+flex deadass CEILING = 10
+
+flex deadass DRY_AT = 4
+flex deadass VENTING_AT = 7
+flex deadass DAMP_AT = 4
+flex deadass CHOKING_AT = 4
+flex deadass UNMEANING_AT = 8
+
+flex bet new_sky() {
+    bounce {"heat": 0, "wet": 0, "foul": 0}
+}
+
+bet nudge(moved, axis, by) {
+    moved[axis] = moved.get(axis, 0) + by
+    bounce moved
+}
+
+// What one turn did to the mountain. `was` and `now` are the floor's ground
+// before the turn and after it: fire on a damp floor raises `wet`, and by the
+// time the turn is over that floor is not damp any more, so both are needed
+// and saying so is better than quietly using the wrong one.
+flex bet after_turn(sky, element, art_id, was, now) {
+    yo moved = {}
+
+    sus (element == "fire") {
+        nudge(moved, "heat", 2)
+    }
+    sus (element == "frost") {
+        nudge(moved, "heat", -1)
+    }
+    sus (element == "earth") {
+        nudge(moved, "wet", -1)
+    }
+    sus (element == "void") {
+        nudge(moved, "foul", 2)
+    }
+    sus (element == "storm") {
+        nudge(moved, "foul", 1)
+    }
+
+    // Steam. Either element will do it: one boils the water off and the other
+    // takes it out of the air, and both of them put it somewhere else.
+    sus ((element == "fire" || element == "frost") && was.contains("damp")) {
+        nudge(moved, "wet", 1)
+    }
+
+    // A turn that ended with the room alight. This is the one that runs away
+    // with itself, and it is meant to.
+    sus (now.contains("burning")) {
+        nudge(moved, "heat", 1)
+        nudge(moved, "foul", 1)
+    }
+
+    // The only thing that takes foul back out, and it costs you the salt.
+    sus (art_id == "salt") {
+        nudge(moved, "foul", -2)
+    }
+
+    yo next = {}
+    grind axis in AXES {
+        yo n = sky[axis] + moved.get(axis, 0)
+        sus (n < FLOOR_OF_AXIS) {
+            n = FLOOR_OF_AXIS
+        }
+        sus (n > CEILING) {
+            n = CEILING
+        }
+        next[axis] = n
+    }
+    bounce {"sky": next, "moved": moved}
+}
+
+// What the mountain does to a room you are walking into. Returns the floor and
+// the lines to put in the log, because a weather nobody is told about is three
+// numbers and a shrug.
+flex bet apply_sky(floor, sky) {
+    yo notes = []
+
+    // Heat and wet both want the floor, and fire on a damp floor pushes both.
+    // The larger wins; on a tie the steam condenses and the room is damp.
+    yo hot = sky["heat"] >= DRY_AT
+    yo soaked = sky["wet"] >= DAMP_AT
+    sus (hot && soaked) {
+        sus (sky["wet"] >= sky["heat"]) {
+            hot = cap
+        } nah {
+            soaked = cap
+        }
+    }
+
+    sus (hot) {
+        sus (has_ground(floor, "damp")) {
+            drop_ground(floor, "damp")
+        }
+        add_ground(floor, "dry")
+        notes.yeet_in("the mountain has been running hot, and there is nothing wet left in here")
+        sus (sky["heat"] >= VENTING_AT) {
+            add_ground(floor, "gas")
+            notes.yeet_in("and it is venting something heavier than air")
+        }
+    }
+
+    sus (soaked) {
+        sus (has_ground(floor, "dry")) {
+            drop_ground(floor, "dry")
+        }
+        add_ground(floor, "damp")
+        notes.yeet_in("everything you boiled off has come back down, and it is ankle deep")
+    }
+
+    sus (sky["foul"] >= CHOKING_AT) {
+        add_ground(floor, "choking")
+        notes.yeet_in("the air in here is worse than the air behind you")
+        sus (sky["foul"] >= UNMEANING_AT && has_ground(floor, "sacred")) {
+            drop_ground(floor, "sacred")
+            notes.yeet_in("and whatever this place was meant to be, it is not that now")
+        }
+    }
+
+    bounce {"floor": floor, "notes": notes}
+}
+
+flex bet sky_line(sky) {
+    yo bits = []
+    grind axis in AXES {
+        bits.yeet_in(axis + " " + to_yap(sky[axis]))
+    }
+    bounce bits.join("  ")
+}

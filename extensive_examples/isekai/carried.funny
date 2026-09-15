@@ -1,0 +1,150 @@
+// carried.funny — the things you pick up, which are arts like any other.
+//
+// THIS FILE IS A BUG FIX BEFORE IT IS A FEATURE. `hero.funny` ships five
+// origins and wires up four of their traits. The chef's read:
+//
+//     Mise en Place -- what you carry works twice as well and never costs a
+//     turn
+//
+// and there was nothing in the game to carry. `mise_en_place` appeared in
+// `hero.funny` and in no other file, so one of the five origins was a
+// decorative sentence: anybody who picked the chef got worse stats than a
+// soldier and nothing at all in exchange.
+//
+// AN ITEM IS AN ART. The same record every other art uses -- `id`, `name`,
+// `cost`, `power`, `element`, `tags`, `says` -- with one more field saying it
+// is spent when used. `kit()` appends what you are carrying, `find_art` finds
+// it, `resolve` needs no new path, and the page's hover forecast previews a
+// flask of oil for free because it previews arts. That is the whole reason
+// WORLD_PLAN.md §0 rule 1 exists: a new kind of thing would have needed a new
+// kind of everything.
+//
+// THE FLASK IS THE POINT. It lays down `gas`, which is what rule 9 keys on.
+// Up to now the ground was something the floor decided; with a flask in your
+// hand it is a move, and "pour, then light" is two rules that were always
+// there being combined by a player into a thing neither of them describes.
+
+gimme yapper
+
+// Four, so that seven possible finds means choosing what to put down.
+flex deadass SLOTS = 4
+
+// Every item, in the order they are listed anywhere they are listed.
+//
+// `adds` and `clears` are read by `resolve.funny`'s existing `ground_add` and
+// `ground_clear` branches, which used to be hard-wired to Consecrate and
+// Dispel. Giving those branches a field to read cost two lines and meant the
+// items needed no branch of their own.
+flex deadass ITEMS = {
+    "oil": {
+        "id": "oil", "name": "a flask of oil", "cost": 0, "power": 0,
+        "element": ghost, "tags": ["ground_add"], "adds": "gas",
+        "consumable": fax,
+        "says": "it goes everywhere, and it does not evaporate",
+    },
+    "waterskin": {
+        "id": "waterskin", "name": "a waterskin", "cost": 0, "power": 0,
+        "element": ghost, "tags": ["ground_add"], "adds": "damp",
+        "consumable": fax,
+        "says": "more of it than anybody could drink, and heavy",
+    },
+    "tinder": {
+        "id": "tinder", "name": "tinder", "cost": 0, "power": 0,
+        "element": ghost, "tags": ["ground_add"], "adds": "burning",
+        "consumable": fax,
+        "says": "dry stuff in a tin, and a striker",
+    },
+    "censer": {
+        "id": "censer", "name": "a censer", "cost": 0, "power": 0,
+        "element": ghost, "tags": ["ground_add"], "adds": "sacred",
+        "consumable": fax,
+        "says": "somebody swung this at something once, and meant it",
+    },
+    "salt": {
+        "id": "salt", "name": "grit-salt", "cost": 0, "power": 0,
+        "element": ghost, "tags": ["ground_clear"], "clears": ["slick", "choking"],
+        "consumable": fax,
+        "says": "for a floor that will not hold you up",
+    },
+    "salts": {
+        "id": "salts", "name": "smelling salts", "cost": 0, "power": 0,
+        "element": ghost, "tags": ["heal", "restore"],
+        "consumable": fax,
+        "says": "unpleasant, and it works",
+    },
+    "stone": {
+        "id": "stone", "name": "a stone that hums", "cost": 0, "power": 0,
+        "element": ghost, "tags": ["attune"], "attune": 2,
+        "consumable": fax,
+        "says": "it is warm, and it is humming, and it is not doing either",
+    },
+}
+
+// A fresh copy every time, because what you carry is yours to spend and the
+// table is a constant.
+flex bet item(id) {
+    sus (!ITEMS.has(id)) {
+        bounce ghost
+    }
+    bounce deep_clone(ITEMS[id])
+}
+
+flex bet is_consumable(art) {
+    bounce art != ghost && art.get("consumable", cap) == fax
+}
+
+flex bet carrying_names(hero) {
+    yo out = []
+    grind a in hero["carrying"] {
+        out.yeet_in(a["name"])
+    }
+    bounce out
+}
+
+flex bet is_carrying(hero, id) {
+    grind a in hero["carrying"] {
+        sus (a["id"] == id) {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
+// Put something in a free slot. `{"ok", "error"}`; the hero is changed in
+// place, because by the time anything is found the caller already owns the
+// only copy of it.
+flex bet give(hero, id) {
+    yo found = item(id)
+    sus (found == ghost) {
+        bounce {"ok": cap, "error": "there is no such thing as " + to_yap(id)}
+    }
+    sus (hero["carrying"].how_thicc() >= SLOTS) {
+        bounce {"ok": cap, "error": "your hands are full -- put something down first",
+                "offered": found}
+    }
+    hero["carrying"].yeet_in(found)
+    bounce {"ok": fax, "got": found}
+}
+
+flex bet drop(hero, id) {
+    yo kept = []
+    yo gone = ghost
+    grind a in hero["carrying"] {
+        sus (a["id"] == id && gone == ghost) {
+            gone = a
+        } nah {
+            kept.yeet_in(a)
+        }
+    }
+    sus (gone == ghost) {
+        bounce {"ok": cap, "error": "you are not carrying that"}
+    }
+    hero["carrying"] = kept
+    bounce {"ok": fax, "dropped": gone}
+}
+
+// What is left after using one. Called by `resolve` on the copy it owns, so
+// nothing here has to worry about purity.
+flex bet spend(hero, id) {
+    bounce drop(hero, id)
+}

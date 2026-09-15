@@ -21,11 +21,16 @@ gimme yapper
 gimme json
 
 gimme { ORIGINS, CALLINGS, AFFINITIES, OPPOSED, STATS, ELEMENTS, summon, kit,
-        find_art, third_tier, sheet_lines, THIRD_TIER_AT } from "hero.funny"
-gimme { fresh_floor, floor_count, standing, find_foe, has_ground } from "world.funny"
-gimme { resolve, answer, cascade, foes_act } from "resolve.funny"
+        find_art, third_tier, sheet_lines, THIRD_TIER_AT, CORRUPTION_NOTICED,
+        RESONANCE_EASY, RESONANCE_CHEAPER } from "hero.funny"
+gimme { fresh_floor, floor_count, standing, cleared, find_foe,
+        has_ground } from "world.funny"
+gimme { resolve, answer, cascade, foes_act, mastered } from "resolve.funny"
 gimme { begin, act, answer_ask, take_back, can_take_back, preview, options,
-        reckoning, effect_line, run_lines } from "run.funny"
+        reckoning, effect_line, run_lines, put_down } from "run.funny"
+gimme { ITEMS, item, give, drop, is_consumable, carrying_names, SLOTS } from "carried.funny"
+gimme { AXES, new_sky, after_turn, apply_sky, sky_line } from "sky.funny"
+gimme { FOLK, TENDED, folk_here, what_became_of, ledger_lines } from "folk.funny"
 
 // -- a room built to order, so one rule can be looked at on its own ----------------
 
@@ -446,5 +451,354 @@ grind line in reckoning(run) {
 yap ""
 grind line in run_lines(run) {
     yap line
+}
+
+// -- part six: what you carry ---------------------------------------------------------------
+
+yap ""
+yap "-- an item is an art, and that is the whole of the design --"
+grind id in ITEMS.keys() {
+    yo a = item(id)
+    no_cap(is_consumable(a), id + " is not consumable")
+    yap "  " + yapper.pad_right(a["name"], 18) + "[" + a["tags"].join(" ") + "]"
+}
+
+yap "-- a chef comes down already carrying, and nobody else does --"
+grind o in ["chef", "soldier", "librarian"] {
+    yo who = begin(o, "mage", "fire")
+    yap "  " + yapper.pad_right(o, 11) + to_yap(carrying_names(who["hero"]))
+}
+
+yap "-- four slots, and a fifth is refused by name --"
+yo hands = summon("nurse", "cleric", "light")
+grind id in ["oil", "waterskin", "tinder", "censer"] {
+    no_cap(give(hands, id)["ok"], "could not give " + id)
+}
+yo fifth = give(hands, "salts")
+yap "  " + fifth["error"] + " (" + fifth["offered"]["name"] + ")"
+drop(hands, "tinder")
+yap "  after putting one down, it fits: " + to_yap(give(hands, "salts")["ok"])
+
+yap "-- POUR, THEN LIGHT: two rules that were always there, combined by a player --"
+yo dry_chapel = {"hero": summon("chef", "mage", "fire"), "floor": fresh_floor(3)}
+give(dry_chapel["hero"], "oil")
+yo alone = resolve(dry_chapel, {"art": "ember", "target": "warden"})
+yap "  ember on its own:               " + to_yap(harm(alone)) + " done, " +
+    to_yap(taken(alone)) + " taken, asks " + to_yap(alone["asks"] == ghost ? "nothing" : alone["asks"]["id"])
+yo poured = resolve(dry_chapel, {"art": "oil", "target": ghost})
+yap "  a flask of oil leaves the floor: " + poured["floor"]["ground"].join(", ")
+yo lit_after_oil = resolve({"hero": poured["hero"], "floor": poured["floor"]},
+                           {"art": "ember", "target": "warden"})
+yap "  and then ember:                 " + to_yap(harm(lit_after_oil)) + " done, " +
+    to_yap(taken(lit_after_oil)) + " taken, asks " + to_yap(lit_after_oil["asks"]["id"])
+yap "  and pouring one onto a floor that is already gas:"
+yo already_gas = {"hero": summon("chef", "mage", "fire"), "floor": fresh_floor(2)}
+give(already_gas["hero"], "oil")
+yap "     " + to_yap(effects_of(resolve(already_gas, {"art": "oil", "target": ghost}))[0]["says"])
+
+yap "-- a chef's consumable does not end the turn; everybody else's does --"
+grind o in ["chef", "nurse"] {
+    yo them = begin(o, "mage", "fire")
+    give(them["hero"], "waterskin")
+    yo turn_was = them["turn"]
+    yo turn_now = act(them, {"art": "waterskin", "target": ghost})["run"]["turn"]
+    yap "  " + yapper.pad_right(o, 7) + "turn " + to_yap(turn_was) + " -> " + to_yap(turn_now)
+}
+
+yap "-- and a flask previews exactly as it resolves --"
+yo drifted_items = 0
+grind id in ITEMS.keys() {
+    yo s = {"hero": summon("chef", "mage", "frost"), "floor": fresh_floor(1)}
+    give(s["hero"], id)
+    yo a = resolve(s, {"art": id, "target": ghost})
+    yo b = resolve(s, {"art": id, "target": ghost})
+    sus (json.spill(a) != json.spill(b)) {
+        drifted_items = drifted_items + 1
+    }
+}
+yap "  " + to_yap(ITEMS.keys().how_thicc()) + " items, " + to_yap(drifted_items) +
+    " that resolved differently the second time"
+
+// -- part seven: the mountain's weather -------------------------------------------------------
+
+yap ""
+yap "-- what a turn does to the mountain --"
+bet moved_by(element, art_id, was, now) {
+    yo m = after_turn(new_sky(), element, art_id, was, now)["moved"]
+    yo bits = []
+    grind a in AXES {
+        sus (m.get(a, 0) != 0) {
+            bits.yeet_in(a + " " + (m[a] > 0 ? "+" : "") + to_yap(m[a]))
+        }
+    }
+    bounce bits.how_thicc() == 0 ? "nothing" : bits.join("  ")
+}
+yap "  a fire art:                    " + moved_by("fire", "ember", [], [])
+yap "  a frost art:                   " + moved_by("frost", "chill", [], [])
+yap "  an earth art:                  " + moved_by("earth", "shard", [], [])
+yap "  a void art:                    " + moved_by("void", "whisper", [], [])
+yap "  a storm art:                   " + moved_by("storm", "spark", [], [])
+yap "  fire on a damp floor:          " + moved_by("fire", "ember", ["damp"], [])
+yap "  frost on a damp floor:         " + moved_by("frost", "chill", ["damp"], [])
+yap "  a turn that ended alight:      " + moved_by(ghost, "mend", [], ["burning"])
+yap "  grit-salt:                     " + moved_by(ghost, "salt", [], [])
+yap "  a heal, on ordinary ground:    " + moved_by(ghost, "mend", [], [])
+yo floored = after_turn(new_sky(), "frost", "chill", [], [])["sky"]
+yo capped = after_turn({"heat": 10, "wet": 0, "foul": 0}, "fire", "ember", [], [])["sky"]
+yap "  and nothing leaves 0..10:      " + to_yap(floored["heat"]) + ", " + to_yap(capped["heat"])
+
+yap "-- and what it does to a room you walk into, on arrival and never otherwise --"
+bet weathered(n, pairs) {
+    yo s = new_sky()
+    grind k in pairs.keys() {
+        s[k] = pairs[k]
+    }
+    bounce apply_sky(fresh_floor(n), s)["floor"]["ground"].join(", ")
+}
+yap "  the wet stair, calm:           " + weathered(1, {})
+yap "  the wet stair, heat 4:         " + weathered(1, {"heat": 4})
+yap "  the wet stair, heat 7:         " + weathered(1, {"heat": 7})
+yap "  the iron gallery, wet 4:       " + weathered(4, {"wet": 4})
+yap "  the iron gallery, foul 4:      " + weathered(4, {"foul": 4})
+yap "  the frozen chapel, foul 4:     " + weathered(3, {"foul": 4})
+yap "  the frozen chapel, foul 8:     " + weathered(3, {"foul": 8}) + "   (it is not sacred any more)"
+yap "  heat 6 against wet 4:          " + weathered(1, {"heat": 6, "wet": 4})
+yap "  heat 4 against wet 6:          " + weathered(1, {"heat": 4, "wet": 6})
+yap "  heat 5 against wet 5:          " + weathered(1, {"heat": 5, "wet": 5}) + "   (a tie condenses)"
+
+yap "-- a fire on dry ground is a different animal --"
+bet burned(ground) {
+    yo s = {"hero": summon("chef", "mage", "frost"), "floor": fresh_floor(2)}
+    s["floor"]["ground"] = deep_clone(ground)
+    yo out = cascade(s)
+    bounce to_yap(harm(out)) + " to the room, and the floor is now: " +
+           out["floor"]["ground"].join(", ")
+}
+yap "  burning, ordinary ground:      " + burned(["burning"])
+yap "  burning on dry ground:         " + burned(["burning", "dry"])
+yap "  burning with gas still to eat: " + burned(["burning", "gas"])
+yap "  choking costs everything 2:    " + burned(["choking"])
+
+// -- part eight: corruption that does something -----------------------------------------------
+
+yap ""
+yap "-- 22. a floor that meant something will not help somebody like you --"
+bet mended(cor, ground) {
+    yo s = {"hero": summon("nurse", "cleric", "light"), "floor": fresh_floor(1)}
+    s["floor"]["ground"] = deep_clone(ground)
+    s["hero"]["corruption"] = cor
+    s["hero"]["hp"] = 10
+    bounce resolve(s, {"art": "mend", "target": ghost})["hero"]["hp"] - 10
+}
+yap "  clean, on sacred ground:       +" + to_yap(mended(0, ["sacred"]))
+yap "  corruption 5, on sacred:       +" + to_yap(mended(CORRUPTION_NOTICED, ["sacred"]))
+yap "  corruption 5, anywhere else:   +" + to_yap(mended(CORRUPTION_NOTICED, []))
+
+yap "-- 23. and void gets cheaper, which is the whole point of the meter --"
+bet void_costs(cor, art_id) {
+    yo h = summon("chef", "mage", "void")
+    h["corruption"] = cor
+    h["mp"] = 6
+    bounce 6 - resolve({"hero": h, "floor": fresh_floor(2)},
+                       {"art": art_id, "target": "rats"})["hero"]["mp"]
+}
+yap "  hollow (3 will), clean:        " + to_yap(void_costs(0, "hollow")) + " net"
+yap "  hollow (3 will), corruption 5: " + to_yap(void_costs(CORRUPTION_NOTICED, "hollow")) + " net"
+
+yap "-- 26. as does your own element, once the world minds you enough --"
+bet fire_costs(res) {
+    yo h = summon("chef", "mage", "fire")
+    h["resonance"] = res
+    bounce h["mp"] - resolve({"hero": h, "floor": fresh_floor(2)},
+                             {"art": "flare", "target": "rats"})["hero"]["mp"]
+}
+yap "  flare at resonance 0:          " + to_yap(fire_costs(0))
+yap "  flare at resonance 8:          " + to_yap(fire_costs(RESONANCE_CHEAPER))
+
+yap "-- 24. a hollow place, which nothing can lay down but you --"
+bet in_hollow(affinity, art_id, ground) {
+    yo s = {"hero": summon("chef", "mage", affinity), "floor": fresh_floor(2)}
+    s["floor"]["ground"] = deep_clone(ground)
+    bounce harm(resolve(s, {"art": art_id, "target": "rats"}))
+}
+yap "  glimmer, ordinarily:           " + to_yap(in_hollow("light", "glimmer", ["dark"]))
+yap "  glimmer, hollow:               " + to_yap(in_hollow("light", "glimmer", ["dark", "hollow"]))
+yap "  whisper, ordinarily:           " + to_yap(in_hollow("void", "whisper", []))
+yap "  whisper, hollow:               " + to_yap(in_hollow("void", "whisper", ["hollow"]))
+yo unbless = {"hero": summon("nurse", "cleric", "light"), "floor": fresh_floor(2)}
+unbless["floor"]["ground"] = ["hollow"]
+yap "  consecrate, hollow:            " +
+    to_yap(effects_of(resolve(unbless, {"art": "consecrate", "target": ghost}))[0]["says"])
+
+yap "-- 25. what your own element costs you, and when it stops --"
+yap "  " + yapper.pad_right("element", 10) + yapper.pad_left("raw", 5) + yapper.pad_left("mastered", 10)
+bet own_cost(affinity, how, res) {
+    yo s = {"hero": summon("chef", "mage", affinity), "floor": fresh_floor(2)}
+    s["hero"]["resonance"] = res
+    sus (how == "burning") {
+        s["floor"]["ground"] = ["burning"]
+        bounce taken(cascade(s))
+    }
+    sus (how == "slick") {
+        s["floor"]["ground"] = ["slick"]
+        bounce taken(cascade(s))
+    }
+    sus (how == "choking") {
+        s["floor"]["ground"] = ["choking"]
+        bounce taken(cascade(s))
+    }
+    sus (how == "metal") {
+        s["floor"]["ground"] = ["metal", "narrow"]
+        bounce taken(resolve(s, {"art": "spark", "target": "rats"}))
+    }
+    s["floor"]["ground"] = ["narrow"]
+    bounce taken(answer(s, "collapse", "hold"))
+}
+grind row in [["fire", "burning"], ["frost", "slick"], ["storm", "metal"],
+              ["earth", "hold"], ["void", "choking"]] {
+    yap "  " + yapper.pad_right(row[0], 10) +
+        yapper.pad_left(to_yap(own_cost(row[0], row[1], 0)), 5) +
+        yapper.pad_left(to_yap(own_cost(row[0], row[1], RESONANCE_EASY)), 10)
+}
+yap "  light is absent, and that is the point: it costs its user nothing to"
+yap "  begin with, so there is nothing for mastery of it to hand back."
+
+// -- part nine: somebody who remembers ---------------------------------------------------------
+
+yap ""
+yap "-- THE ASSERTION THIS WHOLE THING EXISTS FOR --"
+yap "   ignite the gas hall with a person standing in it, and then with a rat"
+yap "   of exactly their size standing exactly where they stood."
+
+bet bystander_at(hp) {
+    bounce {"id": "lamp", "name": "a man with a lamp", "hp": hp, "max_hp": 6, "power": 0,
+            "traits": ["bystander", "grounded"], "conditions": [], "says": "a man with a lamp"}
+}
+
+bet rat_at(hp) {
+    bounce {"id": "decoy", "name": "another boil of rats", "hp": hp, "max_hp": 6, "power": 0,
+            "traits": ["grounded"], "conditions": [], "says": "another boil of rats"}
+}
+
+bet hall_holding(extra) {
+    yo f = fresh_floor(2)
+    f["foes"].yeet_in(extra)
+    f["seen"] = fax
+    bounce {"hero": summon("chef", "mage", "fire"), "floor": f}
+}
+
+// What the RULES worked out, with who it happened to stripped out. Meters and
+// rule 27's own line are left out: those are the sheet's business, and rule 27
+// is the one rule in the table that is about bystanders at all -- it is
+// required to differ. Everything else is the damage arithmetic.
+bet arithmetic_of(out) {
+    yo rows = []
+    grind e in effects_of(out) {
+        sus (e["kind"] == "meter" || e["says"] == "they were not part of this") {
+            nvm
+        }
+        rows.yeet_in([e["kind"], e["amount"]])
+    }
+    bounce rows
+}
+
+yo on_a_person = resolve(hall_holding(bystander_at(2)), {"art": "ember", "target": "rats"})
+yo on_a_rat = resolve(hall_holding(rat_at(2)), {"art": "ember", "target": "rats"})
+yap "  the rules did the same arithmetic, line for line: " +
+    to_yap(json.spill(arithmetic_of(on_a_person)) == json.spill(arithmetic_of(on_a_rat)))
+grind r in arithmetic_of(on_a_person) {
+    yap "     " + yapper.pad_right(r[0], 8) + yapper.pad_left(to_yap(r[1]), 4)
+}
+yap "  and the only difference is rule 27, which is the one rule about them:"
+yap "     corruption " + to_yap(on_a_rat["hero"]["corruption"]) + " against " +
+    to_yap(on_a_person["hero"]["corruption"])
+
+yap "-- an untargeted strike never finds them --"
+yo blind = hall_holding(bystander_at(2))
+blind["hero"] = summon("nurse", "cleric", "light")
+grind e in effects_of(resolve(blind, {"art": "smite", "target": ghost})) {
+    sus (e["kind"] == "damage") {
+        yap "  it hit: " + e["who"]
+    }
+}
+
+yap "-- a floor with a survivor on it still ends --"
+yo emptied = hall_holding(bystander_at(2))
+find_foe(emptied["floor"], "rats")["hp"] = 0
+yap "  standing: " + to_yap(standing(emptied["floor"]).how_thicc()) +
+    "   cleared: " + to_yap(cleared(emptied["floor"])) +
+    "   and they take no turn: " + to_yap(effects_of(foes_act(emptied)).how_thicc() == 0)
+
+yap "-- a Mend can be pointed at one of them --"
+yo tend = hall_holding(bystander_at(2))
+tend["hero"] = summon("nurse", "cleric", "light")
+tend["hero"]["hp"] = 20
+yo tended = resolve(tend, {"art": "mend", "target": "lamp"})
+yap "  their hp 2 -> " + to_yap(find_foe(tended["floor"], "lamp")["hp"]) +
+    ", marked " + find_foe(tended["floor"], "lamp")["conditions"].join(",") +
+    ", and yours untouched at " + to_yap(tended["hero"]["hp"])
+yap "  untargeted it is still you: " +
+    to_yap(resolve(tend, {"art": "mend", "target": ghost})["hero"]["hp"])
+
+yap "-- and what became of them --"
+grind did in ["killed", "helped", "left"] {
+    yo f = fresh_floor(2)
+    yo p = bystander_at(did == "killed" ? 0 : 2)
+    sus (did == "helped") {
+        p["conditions"].yeet_in(TENDED)
+    }
+    f["foes"].yeet_in(p)
+    yap "  " + yapper.pad_right(did, 8) + "-> " + what_became_of(f)["did"]
+}
+
+// -- part ten: the cruel descent ------------------------------------------------------------------
+
+yap ""
+yap "-- the other run: a void-caller who stops for nobody --"
+// No playbook, because this one needs no thought: reach for void, aim it at
+// whoever is nearest, and if somebody is standing there who cannot fight back,
+// aim it at them. Deterministic like everything else, and it is the run the
+// two meters exist to make possible -- high resonance AND high corruption.
+yo bleak = begin("librarian", "mage", "void")
+yo bleak_turns = 0
+yo seen_hollow = cap
+bruh (bleak["phase"] == "descending" && bleak_turns < 90) {
+    bleak_turns = bleak_turns + 1
+    sus (bleak["pending"] != ghost) {
+        bleak = answer_ask(bleak, bleak["pending"]["options"][0]["id"])["run"]
+        nvm
+    }
+    sus (has_ground(bleak["floor"], "hollow")) {
+        seen_hollow = fax
+    }
+    yo person = folk_here(bleak["floor"])
+    yo aim = ghost
+    sus (person != ghost && person["hp"] > 0) {
+        aim = person["id"]
+    }
+    yo reach = bleak["hero"]["mp"] >= 3 ? "hollow" : "whisper"
+    yo r2 = act(bleak, {"art": reach, "target": aim})
+    sus (!r2["ok"]) {
+        r2 = act(bleak, {"art": "whisper", "target": aim})
+    }
+    sus (!r2["ok"]) {
+        yap "  it ran out of road: " + r2["error"]
+        bail
+    }
+    bleak = r2["run"]
+}
+yap "  floors " + to_yap(bleak["depth"]) + " of " + to_yap(floor_count()) +
+    ", turns " + to_yap(bleak["turn"] - 1) + ", " + to_yap(bleak["outcome"])
+yap "  resonance " + to_yap(bleak["hero"]["resonance"]) +
+    "   corruption " + to_yap(bleak["hero"]["corruption"]) +
+    "   and both at once is the point"
+yap "  it walked into a hollow room: " + to_yap(seen_hollow)
+yap "  the sky it left behind: " + sky_line(bleak["sky"])
+yap "  the ledger:"
+grind entry in bleak["ledger"] {
+    yap "     " + yapper.pad_right(entry["name"], 24) + entry["did"]
+}
+grind line in reckoning(bleak) {
+    yap "  " + line
 }
 yap "-- done --"

@@ -22,11 +22,14 @@ gimme yapper
 
 flex deadass GROUND_TAGS = [
     "damp", "gas", "narrow", "sacred", "dark", "metal", "windy", "burning", "slick",
+    "dry", "choking", "hollow",
 ]
 
-// Tags an action can put down or lift. Everything else is a fact about the
-// room that you are stuck with.
-flex deadass CAUSED_TAGS = ["burning", "slick", "dark", "sacred"]
+// Tags an action can put down or lift, or that arrive because of something you
+// did earlier. Everything else is a fact about the room that you are stuck
+// with. `hollow` is the odd one out: nothing can lay it down, because it is
+// laid down by what you have become -- see WORLD_PLAN.md §4.3.
+flex deadass CAUSED_TAGS = ["burning", "slick", "dark", "sacred", "dry", "choking", "hollow"]
 
 flex deadass TRAITS = [
     "frost-blooded", "ember-blooded", "armoured", "undead", "swarm", "flying", "grounded", "wet",
@@ -42,6 +45,9 @@ flex deadass GROUND_SAYS = {
     "windy": "a draught from somewhere above, moving hard",
     "burning": "alight, and spreading",
     "slick": "frozen over, and going nowhere gracefully",
+    "dry": "baked out; there is nothing wet in here at all",
+    "choking": "the air is thick with what you have been burning",
+    "hollow": "the place has stopped meaning anything, and it is because of you",
 }
 
 flex deadass TRAIT_SAYS = {
@@ -231,8 +237,17 @@ flex bet standing(floor) {
     bounce out
 }
 
+// A floor is done when nothing HOSTILE is left standing. Bystanders stay in
+// `standing`, because every area rule and the whole cascade must keep seeing
+// them -- that is the entire point of them -- but a floor with a survivor on
+// it would otherwise never end.
 flex bet cleared(floor) {
-    bounce standing(floor).how_thicc() == 0
+    grind f in standing(floor) {
+        sus (!f["traits"].contains("bystander")) {
+            bounce cap
+        }
+    }
+    bounce fax
 }
 
 flex bet find_foe(floor, id) {

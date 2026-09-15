@@ -1,0 +1,200 @@
+// folk.funny — the three people who are down here too.
+//
+// THE WHOLE DESIGN OF THIS FILE IS THAT IT IS BARELY A FILE. A person is an
+// ordinary creature record with `bystander` in its traits, no attack, and two
+// hit points out of six or eight -- so that anything meant for the room will
+// do for them as well.
+//
+// NO RULE IS ADDED TO MAKE AN AREA EFFECT KILL ONE. Rule 9 takes the whole
+// room. Rule 13 chains through everything standing in water. The cascade burns
+// everything on burning ground and chokes everything in bad air. The tragedy
+// was already in the table; it has simply never had anybody to happen to. The
+// golden asserts exactly that, by igniting a room with a person in it and
+// checking the effect list is identical to igniting the same room with another
+// boil of rats standing where they stood.
+//
+// The one rule that IS added is 27, for striking one on purpose -- and the
+// model cannot tell "on purpose" from "you set the room alight and they were
+// in it", which is the point of putting them in rooms where the obvious move
+// is an area effect. A lamp, in a hall full of gas. A child, in the room where
+// fire is the right answer.
+//
+// Nobody on the first floor, which should teach the rules, and nobody on the
+// last, which should be about what you have become.
+
+gimme yapper
+
+flex deadass TENDED = "tended"
+
+// Keyed by the floor they are on. `gift` is what they hand over if they are
+// still standing when you leave -- which makes helping somebody the main way
+// anybody who is not a chef ends up carrying anything.
+flex deadass FOLK = {
+    2: {
+        "id": "lamp",
+        "name": "a man with a lamp",
+        "hp": 2,
+        "max_hp": 6,
+        "gift": "salts",
+        "says": "don't. whatever it is you're about to do, don't.",
+        "silent": "he has the lamp behind his back and he is not saying anything.",
+        "tended": "he sits down against the wall, and breathes.",
+    },
+    3: {
+        "id": "altar",
+        "name": "a girl behind the altar",
+        "hp": 2,
+        "max_hp": 8,
+        "gift": "censer",
+        "says": "it kneels all day. it doesn't see me. you might not either.",
+        "silent": "she has heard about you, and she has gone very still.",
+        "tended": "she takes the censer off the shelf and pushes it at you.",
+    },
+    4: {
+        "id": "stair",
+        "name": "a woman on the stair",
+        "hp": 2,
+        "max_hp": 8,
+        "gift": "tinder",
+        "says": "the ones below told me you were coming. they said you were all right.",
+        "silent": "she will not look at you. word gets down here faster than you do.",
+        "tended": "she gives you her tinder, which she will want back.",
+    },
+}
+
+bet as_creature(row) {
+    bounce {
+        "id": row["id"],
+        "name": row["name"],
+        "hp": row["hp"],
+        "max_hp": row["max_hp"],
+        "power": 0,
+        // `grounded` because they are standing on the floor like everything
+        // else, and every rule that cares about that should care about them.
+        "traits": ["bystander", "grounded"],
+        "conditions": [],
+        "says": row["name"],
+    }
+}
+
+flex bet is_bystander(f) {
+    bounce f != ghost && f["traits"].contains("bystander")
+}
+
+// Whoever is on this floor, standing or not.
+flex bet folk_here(floor) {
+    grind f in floor["foes"] {
+        sus (is_bystander(f)) {
+            bounce f
+        }
+    }
+    bounce ghost
+}
+
+// Step 4 of the arrival pipeline. Returns the lines for the log; the floor is
+// changed in place, because by now the caller owns the only copy of it.
+//
+// Whether they speak is the second of the three places the ledger is read, and
+// it is not a rule -- it is what this function does when it puts somebody in a
+// room. Somebody who has heard what you did to the last one says nothing and
+// gives nothing.
+flex bet place(floor, n, ledger, hollow) {
+    sus (!FOLK.has(n)) {
+        bounce []
+    }
+    yo row = FOLK[n]
+    yo person = as_creature(row)
+    floor["foes"].yeet_in(person)
+
+    sus (has_killed(ledger) || hollow) {
+        person["conditions"].yeet_in("wary")
+        bounce [row["silent"]]
+    }
+    bounce [row["says"]]
+}
+
+flex bet has_killed(ledger) {
+    grind entry in ledger {
+        sus (entry["did"] == "killed") {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
+flex bet will_speak(floor, ledger) {
+    yo person = folk_here(floor)
+    sus (person == ghost) {
+        bounce cap
+    }
+    bounce !person["conditions"].contains("wary")
+}
+
+// What became of whoever was on this floor, worked out from the floor itself
+// rather than tracked as you go -- so there is one place it can be wrong.
+flex bet what_became_of(floor) {
+    yo person = folk_here(floor)
+    sus (person == ghost) {
+        bounce ghost
+    }
+    sus (person["hp"] <= 0) {
+        bounce {"id": person["id"], "name": person["name"], "did": "killed"}
+    }
+    sus (person["conditions"].contains(TENDED)) {
+        bounce {"id": person["id"], "name": person["name"], "did": "helped"}
+    }
+    bounce {"id": person["id"], "name": person["name"], "did": "left"}
+}
+
+flex bet gift_of(id) {
+    grind n in FOLK.keys() {
+        sus (FOLK[n]["id"] == id) {
+            bounce FOLK[n]["gift"]
+        }
+    }
+    bounce ghost
+}
+
+flex bet tended_line(id) {
+    grind n in FOLK.keys() {
+        sus (FOLK[n]["id"] == id) {
+            bounce FOLK[n]["tended"]
+        }
+    }
+    bounce ""
+}
+
+// The third place the ledger is read: the reckoning.
+flex bet ledger_lines(ledger) {
+    sus (ledger.how_thicc() == 0) {
+        bounce ["nobody was down here but you."]
+    }
+    yo alive = 0
+    yo helped = 0
+    yo killed = 0
+    grind entry in ledger {
+        sus (entry["did"] == "killed") {
+            killed = killed + 1
+        } nah {
+            alive = alive + 1
+        }
+        sus (entry["did"] == "helped") {
+            helped = helped + 1
+        }
+    }
+    yo out = []
+    yo saw = to_yap(ledger.how_thicc()) +
+             (ledger.how_thicc() == 1 ? " person saw you coming. " : " people saw you coming. ")
+    sus (killed == 0) {
+        out.yeet_in(saw + "all of them are still alive.")
+    } kinda_sus (alive == 0) {
+        out.yeet_in(saw + "not one of them is still alive.")
+    } nah {
+        out.yeet_in(saw + to_yap(alive) + (alive == 1 ? " of them is still alive." :
+                                                        " of them are still alive."))
+    }
+    sus (helped > 0) {
+        out.yeet_in("you stopped for " + to_yap(helped) + " of them.")
+    }
+    bounce out
+}

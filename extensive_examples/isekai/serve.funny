@@ -16,6 +16,7 @@
 //   POST /api/act       {"art","target"} -- your turn
 //   POST /api/answer    {"option"} -- the second choice, when one is open
 //   POST /api/preview   {"art","target"} -- what that WOULD do
+//   POST /api/drop      {"item"} -- put something down; four slots, seven finds
 //   POST /api/undo      the programmer's trait, once a floor
 //
 // `/api/preview` IS THE INTERESTING ONE. It runs the real resolver and throws
@@ -45,7 +46,9 @@ gimme { ORIGINS, CALLINGS, AFFINITIES, ELEMENTS, OPPOSED, STATS, THIRD_TIER_AT,
 gimme { GROUND_SAYS, TRAIT_SAYS, floor_count, standing } from "world.funny"
 gimme { wants_a_target } from "resolve.funny"
 gimme { begin, act, answer_ask, take_back, can_take_back, preview, targets,
-        reckoning } from "run.funny"
+        reckoning, put_down } from "run.funny"
+gimme { sky_line } from "sky.funny"
+gimme { SLOTS } from "carried.funny"
 gimme { read_request, build_response, json_response, STATUS_TEXT,
         SECURITY_HEADERS } from "http.funny"
 gimme { static_target, read_static } from "static.funny"
@@ -108,6 +111,9 @@ bet arts_now() {
             "element": a["element"], "tags": a["tags"], "says": a["says"],
             "affordable": RUN["hero"]["mp"] >= a["cost"],
             "needs_target": wants_a_target(a),
+            // An item is an art, and the only thing the page needs to know
+            // about the difference is that this one can be put down.
+            "carried": a.get("consumable", cap) == fax,
         })
     }
     bounce out
@@ -133,6 +139,11 @@ bet state_json() {
         "log": RUN["log"],
         "can_undo": can_take_back(RUN),
         "locked": third_tier(RUN["hero"]),
+        // The mountain's weather, which is to say what you have done to it.
+        "sky": RUN["sky"],
+        "slots": SLOTS,
+        // What became of everybody down here.
+        "ledger": RUN["ledger"],
     }
     sus (RUN["phase"] == "over") {
         body["reckoning"] = reckoning(RUN)
@@ -213,6 +224,21 @@ bet route(req) {
             bounce refuse(400, "that wasn't JSON")
         }
         yo out = answer_ask(RUN, to_yap(asked.get("option", "")))
+        sus (!out["ok"]) {
+            bounce refuse(409, out["error"])
+        }
+        RUN = out["run"]
+        bounce json_response(200, state_json())
+    }
+
+    // Not a turn: you are not doing anything to anybody, you are opening your
+    // hand. Four slots and seven things to find means this gets used.
+    sus (req["path"] == "/api/drop" && req["method"] == "POST") {
+        yo asked = parse_body(req)
+        sus (asked == ghost) {
+            bounce refuse(400, "that wasn't JSON")
+        }
+        yo out = put_down(RUN, to_yap(asked.get("item", "")))
         sus (!out["ok"]) {
             bounce refuse(409, out["error"])
         }

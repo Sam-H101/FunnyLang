@@ -49,6 +49,17 @@ flex deadass THIRD_TIER_AT = 10
 flex deadass CORRUPTION_NOTICED = 5
 flex deadass CORRUPTION_LOST = 10
 
+// Resonance is not only a key to the third tier. At EASY, whatever your own
+// element costs you stops costing you -- your fire stops burning you, your ice
+// stops tripping you. At CHEAPER, it costs a point less to reach for.
+//
+// Light appears nowhere in that first clause, deliberately: light costs its
+// user nothing to begin with, so there is nothing for mastery of it to give
+// back. It is the element with no downside and therefore the one that cannot
+// be improved.
+flex deadass RESONANCE_EASY = 5
+flex deadass RESONANCE_CHEAPER = 8
+
 // -- what you were ----------------------------------------------------------------------
 
 flex deadass ORIGINS = {
@@ -81,8 +92,14 @@ flex deadass ORIGINS = {
         "was": "a line, a pass, and a burn scar shaped like a whisk",
         "stats": {"grit": 2, "might": 1},
         "trait": "mise_en_place",
+        // Mise en place is everything prepared before service starts, so this
+        // is two things: you come down already carrying, and using what you
+        // carry does not cost you the turn. The trait used to say "works twice
+        // as well", which would have applied to one number on one item -- and
+        // there was nothing to carry at all, which is the defect WORLD_PLAN.md
+        // W1 exists to fix.
         "trait_name": "Mise en Place",
-        "trait_says": "what you carry works twice as well and never costs a turn",
+        "trait_says": "you come down already carrying, and using it costs you no turn",
     },
     "programmer": {
         "name": "programmer",
@@ -264,6 +281,10 @@ flex bet summon(origin, calling, affinity) {
         // Conditions on you, same vocabulary the world uses for everything
         // else: "guarded", "held", "stumbling", "burning".
         "conditions": [],
+        // What you are carrying, which is a stash of arts -- see
+        // `carried.funny`. `kit()` appends them, so everything downstream
+        // treats a flask of oil exactly as it treats Ember.
+        "carrying": [],
         // Spent by `rubber_duck` and `drilled`, both of which are once a floor.
         "used_this_floor": [],
     }
@@ -297,6 +318,13 @@ flex bet kit(hero) {
             tags.yeet_in("area")
         }
         out.yeet_in(art(tier[0], tier[1], tier[2], tier[3], hero["affinity"], tags, tier[4]))
+    }
+
+    // And whatever is in your hands. An item is an art, so it goes on the end
+    // of the same list and nothing downstream has to know the difference --
+    // `find_art` finds it, `resolve` resolves it, the page previews it.
+    grind carried in hero["carrying"] {
+        out.yeet_in(carried)
     }
     bounce out
 }

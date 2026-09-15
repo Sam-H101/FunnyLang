@@ -1,7 +1,9 @@
 # FunnyLang — World Plan (`extensive_examples/isekai/`)
 
-> **Status:** planned, nothing built. Branch `feature/isekai-world`, to be cut from `master` once
-> `feature/isekai` has landed. §12 has the state of each milestone, §15 every deviation.
+> **Status:** built. W1 through W6 are done and `funny test extensive_examples` is 12/12 on this
+> machine. Branch `feature/isekai-world`, cut from `feature/isekai` rather than from `master`,
+> because `feature/isekai` has not landed yet and this work is meaningless without it (§15).
+> §12 has the state of each milestone and §15 every deviation.
 > **Prerequisite:** `extensive_examples/isekai/PLAN.md`, complete — the four model files, the
 > twenty-one rules, the server, the page, the terminal twin and the golden.
 > **Deliverable:** the four things the example's own README admits it is not. Something to carry,
@@ -545,41 +547,44 @@ Each is worth shipping on its own and each leaves the suite green. W1 first beca
 W2 before W3 and W4 because it builds the arrival pipeline they both plug into.
 
 ### W1 — the chef's trait stops being a lie
-- [ ] `carried.funny`; `carrying` on the sheet; items resolve as arts through the existing path
-- [ ] `ground_add` arts gain a per-art `adds`; a used consumable leaves `carrying`
-- [ ] the `revealed` follow-up gives an item; a chef begins with two; four slots; `drop`
-- [ ] `mise_en_place`: a consumable does not end the chef's turn; the trait's text corrected
-- [ ] golden part 1; `play.funny` gains `carry` and `drop`; `/api/drop`; the kit marks carried items
+- [x] `carried.funny`; `carrying` on the sheet; items resolve as arts through the existing path
+- [x] `ground_add` arts gain a per-art `adds`, `ground_clear` a per-art `clears`; a used consumable
+      leaves `carrying`
+- [x] the `revealed` follow-up gives an item; a chef begins with two; four slots; `drop`
+- [x] `mise_en_place`: a consumable does not end the chef's turn; the trait's text corrected (§15)
+- [x] golden part 6; `play.funny` gains `drop`; `/api/drop`; the kit marks carried items
 
 ### W2 — the arrival pipeline, and the mountain's weather
-- [ ] `arrive()` becomes the six-step pipeline of §3.2, with the log line
-- [ ] `sky.funny`; `run["sky"]`; the push after the cascade; `dry` and `choking`
-- [ ] the cascade's `dry` and `choking` behaviour; the sheet and status line show the axes
-- [ ] golden part 2; the careful descent's `.expected` regenerated and the diff explained (§8)
+- [x] `arrive()` becomes the six-step pipeline of §3.2, with a log line per change
+- [x] `sky.funny`; `run["sky"]`; the push after the cascade; `dry` and `choking`
+- [x] the cascade's `dry` and `choking` behaviour; the sheet and status line show the axes
+- [x] golden part 7; the careful descent's `.expected` regenerated (§8, and §15 on what else moved)
 
 ### W3 — corruption that does something
-- [ ] rules 22–26; the fire immunity moved behind rule 25; `slick` trips the hero
-- [ ] `hollow` in `world.funny`; pipeline step 3; `Consecrate` refused on `hollow`
-- [ ] golden part 3
+- [x] rules 22–26; the fire immunity moved behind rule 25; `slick` trips the hero
+- [x] `hollow` in `world.funny`; pipeline step 3; `Consecrate` refused on `hollow`
+- [x] golden part 8, each rule fired and not fired, and light asserted to gain nothing
 
 ### W4 — somebody who remembers
-- [ ] `folk.funny`; the three people; pipeline step 4; the ledger; rule 27
-- [ ] the default-target fallback skips `bystander`; `cleared()` ignores it; `foes_act` skips it
-- [ ] `Mend` takes an optional target; *triage* applies to them
-- [ ] the item for a person still alive when the floor clears
-- [ ] golden part 4, **including the identical-to-a-rat assertion**; the reckoning's people line
-- [ ] the page draws them with what they said; the terminal prints it
+- [x] `folk.funny`; the three people; pipeline step 4; the ledger; rule 27
+- [x] the default-target fallback skips `bystander`; `cleared()` ignores it; `foes_act` skips it
+- [x] `Mend` takes an optional target; *triage* applies through the same branch
+- [x] the item for a person still alive when the floor clears
+- [x] golden part 9, **including the identical-to-a-rat assertion**; the reckoning's people line
+- [x] the page draws them in the room with the rest; the terminal prints what they said
 
 ### W5 — the second descent
-- [ ] `scripts/the-oil-and-the-spark.txt` — a chef, pour then light, the man with the lamp
-- [ ] `scripts/the-long-way-down.txt` — the cruel one
-- [ ] golden part 5; `.expected` regenerated
+- [x] `scripts/the-oil-and-the-spark.txt` — a chef, pour then light, the man with the lamp, and a
+      run that goes badly on purpose (§15)
+- [x] the cruel run lives in golden part 10 rather than in a second script (§15)
+- [x] `.expected` regenerated; 345 lines
 
 ### W6 — the write-up
-- [ ] `README.md`: the table at twenty-seven; the sky; the carry with pour-then-light as the worked
+- [x] `README.md`: the table at twenty-seven; the sky; the carry with pour-then-light as the worked
       example; the three people and the identical-to-a-rat assertion; rule 25's harshness; light's
-      asymmetry; a **shorter** "what it is not"
-- [ ] `CHANGELOG.md`; the API driven end to end again; the page against a stub DOM again
+      asymmetry; and four lines out of "what it is not", two in
+- [x] `CHANGELOG.md`; the API driven end to end again (40 checks); the page against a stub DOM
+      again (35 checks)
 
 ---
 
@@ -613,4 +618,63 @@ reason not to do it.
 
 ## 15. Deviations log
 
-*(empty — nothing built yet)*
+**The headline assertion compares the arithmetic, not the whole effect list, and that is a better
+claim.** §9 part 4 asks the golden to check the effect list from igniting a room with a person in it
+is identical to igniting it with a rat of the same size. It cannot be *literally* identical, because
+rule 27 fires: there is an extra line saying "they were not part of this" and the corruption meter
+reads 3 instead of 0. What the golden asserts instead is that the **damage arithmetic** is identical
+— every effect's kind and number, in order, with meters and rule 27's own line excluded. That is the
+actual claim ("the table did not know he was different"), it is sharper than the original wording,
+and it passes: six rows, line for line.
+
+**The `revealed` follow-up always gives the same thing, and the item sources are simpler than §4.1.**
+The plan had seven sources, one of which was the fifth floor's `revealed` handing over a waterskin.
+`answer()` would have had to look at which floor it was on to do that, and a follow-up handler
+keying on a floor number is exactly the smell §0 rule 2 exists to prevent. So `revealed` always
+yields a stone that hums, clearing the first floor yields the flask, and the other four items come
+from the three people if they are alive to hand them over — which makes stopping for somebody the
+main way anybody who is not a chef ends up carrying anything, and is a better design than the one
+that was planned.
+
+**The chef's trait dropped "works twice as well".** §4.1 kept half of the old text. Only one of the
+seven items has a number on it at all, so doubling would have applied to the stone and to nothing
+else. The trait is now "comes down already carrying, and using it costs no turn", which is what
+*mise en place* means and is worth having on its own.
+
+**`burning` now goes out.** §4.2 gives `dry` the property that fire "burns for double and does not go
+out", which quietly assumes fire went out somewhere else — and it never did: `burning` was eternal
+once laid down. It now burns off any `gas` first, then goes out, unless the floor is `dry`. That is
+what gives `dry` teeth, and it makes tinder a decision rather than a permanent win.
+
+**`resolve` returns three more things.** `consumed`, `element` and `art_id`, so the run can tell
+whether the turn is over (a chef's is not) and the sky can tell what the turn was made of. These are
+outputs, not inputs: no rule reads them, and §0 rule 1 is intact — `resolve.funny` still takes the
+element, the ground, the traits and the sheet and nothing else.
+
+**The cruel descent is a policy, not a script, and there is no `the-long-way-down.txt`.** §12's W5
+asks for two scripts. The cruel run needs no plan at all — reach for void, and aim it at whoever
+cannot fight back — so it is eight lines of policy in golden part 10, where it can be **asserted**
+rather than merely replayed. It finishes with resonance 15 and corruption 24, walks into hollow
+rooms, fouls the mountain to the ceiling, and kills all three people. A script would have shown the
+same run and proved nothing about it.
+
+**`the-oil-and-the-spark.txt` ends in failure, deliberately.** It was written to finish and does
+not: the chef ignites the gas hall with the man in it, the chapel goes up too, corruption passes ten,
+the rooms start arriving hollow and the run ends on the fourth floor with all three dead. That is a
+truer demonstration of the example's argument than a win would have been, and the script's header
+says so rather than pretending it was aimed at.
+
+**§8 under-predicted what the careful descent's expected output would do.** It reasoned about the
+sky and rule 25 and concluded the run might come out byte-identical. It does not, and the reason is
+one §8 did not consider because it was written before the people existed: the careful cleric ignites
+the gas hall on the second floor, and there is now a man standing in it. The regenerated run kills
+him, gains four corruption instead of one, and ends with the reckoning reporting that two of three
+are still alive. The numbers in §8 were right about the sky and wrong about the scope.
+
+**The branch was cut from `feature/isekai`, not from `master`.** The status block plans for
+`feature/isekai` to have landed first. It has not, and this work does not compile without it.
+
+**Both test harnesses stayed out of the repository again**, for the reasons the isekai README already
+gives: the API driver needs a running server and the golden deliberately has no sockets, and the page
+check needs Node. Both were re-run against this work — 40 checks over the socket, 35 against a stub
+DOM — and both pass. And the page has still never been opened in a browser.
