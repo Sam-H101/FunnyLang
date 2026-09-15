@@ -1,0 +1,349 @@
+// hero.funny — who you were, what the summoning made of you, and what answers.
+//
+// Three choices, and they do different jobs on purpose:
+//
+//   ORIGIN     what you were an hour ago. Gives stats, and one TRAIT that is a
+//              rule rather than a number -- the interesting half.
+//   CALLING    what the summoning made of you. Gates the kit, and nothing
+//              else: a calling that was also a stat block would make the
+//              origin's stats decorative.
+//   AFFINITY   which element answered. Boosts its own, and carries the
+//              matching weakness. There is no affinity without a cost.
+//
+// TWO METERS MAKE THIS AN ISEKAI RATHER THAN A DUNGEON CRAWL. Resonance is how
+// far the world has accepted you, and it rises when you act in tune with your
+// affinity; at 10 the third tier of your element opens. Corruption is how hard
+// you have pushed against it, and it rises from `void`, from burning a sacred
+// floor, and from striking something that could not answer. They are not two
+// ends of one bar -- a run can carry a great deal of both, and that is the
+// most interesting way for one to end.
+//
+// NOTHING HERE ROLLS. There is no `gimme rizz` in this example at all. Where a
+// game would roll, this consults a stat. See the README, and PLAN.md rule 2.
+
+gimme yapper
+
+flex deadass BASE_STAT = 3
+flex deadass BASE_HP = 30
+flex deadass BASE_MP = 10
+
+flex deadass STATS = ["might", "focus", "grit", "wit"]
+flex deadass ELEMENTS = ["fire", "frost", "storm", "earth", "light", "void"]
+
+// Opposed in pairs. Your affinity's opposite is the thing you are soft to, and
+// it is also, usually, the thing you most want to be holding.
+flex deadass OPPOSED = {
+    "fire": "frost",
+    "frost": "fire",
+    "storm": "earth",
+    "earth": "storm",
+    "light": "void",
+    "void": "light",
+}
+
+// Resonance needed before an affinity's third tier will answer you.
+flex deadass THIRD_TIER_AT = 10
+
+// Corruption at which the world starts answering differently, and at which the
+// reckoning says so.
+flex deadass CORRUPTION_NOTICED = 5
+flex deadass CORRUPTION_LOST = 10
+
+// -- what you were ----------------------------------------------------------------------
+
+flex deadass ORIGINS = {
+    "librarian": {
+        "name": "librarian",
+        "was": "eleven years of other people's returns, and a reading habit nobody asked about",
+        "stats": {"wit": 2, "focus": 1},
+        "trait": "read_the_room",
+        "trait_name": "Read the Room",
+        "trait_says": "you can see what a thing is made of before you touch it",
+    },
+    "soldier": {
+        "name": "soldier",
+        "was": "six years in, two of them somewhere you do not talk about",
+        "stats": {"might": 2, "grit": 1},
+        "trait": "drilled",
+        "trait_name": "Drilled",
+        "trait_says": "the first thing you do on a floor costs you nothing",
+    },
+    "nurse": {
+        "name": "nurse",
+        "was": "nights, mostly. you are very calm and very tired",
+        "stats": {"focus": 2, "wit": 1},
+        "trait": "triage",
+        "trait_name": "Triage",
+        "trait_says": "when you mend, you also clear one condition",
+    },
+    "chef": {
+        "name": "chef",
+        "was": "a line, a pass, and a burn scar shaped like a whisk",
+        "stats": {"grit": 2, "might": 1},
+        "trait": "mise_en_place",
+        "trait_name": "Mise en Place",
+        "trait_says": "what you carry works twice as well and never costs a turn",
+    },
+    "programmer": {
+        "name": "programmer",
+        "was": "a chair, a curve, and a strong opinion about tabs",
+        "stats": {"wit": 2, "focus": 1},
+        "trait": "rubber_duck",
+        "trait_name": "Rubber Duck",
+        "trait_says": "once a floor, you may take back a resolution and choose again",
+    },
+}
+
+// -- what the summoning made of you -------------------------------------------------------
+
+// A skill is the same record everywhere: what it costs, what it hits for, what
+// element it carries (ghost for something purely physical), and the tags the
+// resolver reads. Nothing in `resolve.funny` knows a skill by name.
+bet art(id, name, cost, power, element, tags, says) {
+    bounce {
+        "id": id,
+        "name": name,
+        "cost": cost,
+        "power": power,
+        "element": element,
+        "tags": tags,
+        "says": says,
+    }
+}
+
+flex deadass CALLINGS = {
+    "knight": {
+        "name": "knight",
+        "says": "the summoning gave you a shield and a reason to stand in front of people",
+        "kit": [
+            ["guard", "Guard", 0, 0, ghost, ["guard"],
+             "you take half of everything until your next turn"],
+            ["shield_bash", "Shield Bash", 1, 6, ghost, ["physical", "hold"],
+             "a hit, and the thing it hits does not move"],
+            ["riposte", "Riposte", 2, 9, ghost, ["physical"],
+             "you let it come, and then you do not"],
+            ["hold_the_line", "Hold the Line", 3, 0, ghost, ["guard", "area"],
+             "half of everything, for everyone behind you"],
+        ],
+    },
+    "mage": {
+        "name": "mage",
+        "says": "the summoning gave you the whole of your element and no advice at all",
+        "kit": [
+            ["dispel", "Dispel", 2, 0, ghost, ["ground_clear"],
+             "one thing you did to this room, undone"],
+            ["read_aether", "Read Aether", 1, 0, ghost, ["reveal"],
+             "you see what everything is made of, and what the floor is doing"],
+        ],
+    },
+    "ranger": {
+        "name": "ranger",
+        "says": "the summoning gave you a bow and an unnerving sense of where things are",
+        "kit": [
+            ["loose", "Loose", 0, 5, ghost, ["physical"],
+             "one arrow, from further away than it should work"],
+            ["snare", "Snare", 1, 0, ghost, ["hold"],
+             "the ground takes hold of something that walks on it"],
+            ["scout", "Scout", 1, 0, ghost, ["reveal"],
+             "you see what everything is made of"],
+            ["volley", "Volley", 3, 5, ghost, ["physical", "area"],
+             "everything in the room, at once, less hard"],
+        ],
+    },
+    "cleric": {
+        "name": "cleric",
+        "says": "the summoning gave you something that listens, which is not the same as a god",
+        "kit": [
+            ["mend", "Mend", 2, 11, ghost, ["heal"],
+             "closed, mostly"],
+            ["ward", "Ward", 2, 0, ghost, ["guard"],
+             "half of everything until your next turn"],
+            ["smite", "Smite", 3, 8, "light", [],
+             "light, whatever your element is -- this one is not yours"],
+            ["consecrate", "Consecrate", 3, 0, ghost, ["ground_add"],
+             "the floor becomes sacred, which is a promise and a liability"],
+        ],
+    },
+}
+
+// The tiers of each element. A mage gets all three; everyone else gets the
+// first, because an affinity that only mattered for one calling would not be a
+// choice, it would be a class requirement.
+flex deadass AFFINITIES = {
+    "fire": {
+        "name": "fire",
+        "says": "it is enthusiastic and it does not check what else is in the room",
+        "tiers": [
+            ["ember", "Ember", 2, 5, "a handful of it, thrown"],
+            ["flare", "Flare", 4, 9, "enough to read by, briefly"],
+            ["conflagration", "Conflagration", 7, 15, "the room, and everything in it, and you"],
+        ],
+    },
+    "frost": {
+        "name": "frost",
+        "says": "it is patient. it takes the heat out of things and then takes the things",
+        "tiers": [
+            ["chill", "Chill", 2, 4, "the air goes thin and sharp"],
+            ["rime", "Rime", 4, 8, "it creeps outward along whatever is wet"],
+            ["deepfreeze", "Deepfreeze", 7, 13, "everything stops, including some of you"],
+        ],
+    },
+    "storm": {
+        "name": "storm",
+        "says": "it goes where it likes, which is wherever conducts",
+        "tiers": [
+            ["spark", "Spark", 2, 5, "a short argument between two points"],
+            ["arc", "Arc", 4, 9, "it finds the shortest way and takes it"],
+            ["thunderhead", "Thunderhead", 7, 14, "the ceiling disagrees with the floor"],
+        ],
+    },
+    "earth": {
+        "name": "earth",
+        "says": "it is slow and extremely certain, and it cannot reach anything that flies",
+        "tiers": [
+            ["shard", "Shard", 2, 6, "the floor gives up a piece of itself"],
+            ["tremor", "Tremor", 4, 10, "everything standing has an opinion about it"],
+            ["upheaval", "Upheaval", 7, 16, "the room is a different shape afterwards"],
+        ],
+    },
+    "light": {
+        "name": "light",
+        "says": "it is not kind. it is only very hard to hide from",
+        "tiers": [
+            ["glimmer", "Glimmer", 2, 4, "a small honest brightness"],
+            ["radiance", "Radiance", 4, 8, "nothing in the room has a shadow now"],
+            ["dawn", "Dawn", 7, 13, "it arrives as though it were owed"],
+        ],
+    },
+    "void": {
+        "name": "void",
+        "says": "it works. that is the entire argument in its favour",
+        "tiers": [
+            ["whisper", "Whisper", 1, 4, "something leaves the thing and arrives in you"],
+            ["hollow", "Hollow", 3, 8, "there is less of it than there was"],
+            ["unmaking", "Unmaking", 6, 14, "you would rather not know where it goes"],
+        ],
+    },
+}
+
+// -- building one -------------------------------------------------------------------------
+
+// `{"error": why}` for anything that is not one of the three lists, which is
+// what the API hands back to a page that has got out of step.
+flex bet summon(origin, calling, affinity) {
+    sus (!ORIGINS.has(origin)) {
+        bounce {"error": "nobody has ever been a " + to_yap(origin)}
+    }
+    sus (!CALLINGS.has(calling)) {
+        bounce {"error": "the summoning does not make " + to_yap(calling) + "s"}
+    }
+    sus (!AFFINITIES.has(affinity)) {
+        bounce {"error": to_yap(affinity) + " is not an element that answers"}
+    }
+
+    yo stats = {}
+    grind s in STATS {
+        stats[s] = BASE_STAT
+    }
+    grind s in ORIGINS[origin]["stats"].keys() {
+        stats[s] = stats[s] + ORIGINS[origin]["stats"][s]
+    }
+
+    bounce {
+        "origin": origin,
+        "calling": calling,
+        "affinity": affinity,
+        "weak_to": OPPOSED[affinity],
+        "stats": stats,
+        "hp": BASE_HP + stats["grit"] * 3,
+        "max_hp": BASE_HP + stats["grit"] * 3,
+        "mp": BASE_MP + stats["focus"] * 2,
+        "max_mp": BASE_MP + stats["focus"] * 2,
+        "resonance": 0,
+        "corruption": 0,
+        // Conditions on you, same vocabulary the world uses for everything
+        // else: "guarded", "held", "stumbling", "burning".
+        "conditions": [],
+        // Spent by `rubber_duck` and `drilled`, both of which are once a floor.
+        "used_this_floor": [],
+    }
+}
+
+flex bet trait_of(hero) {
+    bounce ORIGINS[hero["origin"]]["trait"]
+}
+
+flex bet has_trait(hero, name) {
+    bounce trait_of(hero) == name
+}
+
+// Everything this hero may do right now. The affinity's third tier is in the
+// list only once the world has agreed to it, which is what resonance is for.
+flex bet kit(hero) {
+    yo out = []
+    grind row in CALLINGS[hero["calling"]]["kit"] {
+        out.yeet_in(art(row[0], row[1], row[2], row[3], row[4], row[5], row[6]))
+    }
+
+    yo tiers = AFFINITIES[hero["affinity"]]["tiers"]
+    yo how_many = hero["calling"] == "mage" ? 3 : 1
+    grind i from 0 to how_many {
+        sus (i == 2 && hero["resonance"] < THIRD_TIER_AT) {
+            nvm
+        }
+        yo tier = tiers[i]
+        yo tags = []
+        sus (i == 2) {
+            tags.yeet_in("area")
+        }
+        out.yeet_in(art(tier[0], tier[1], tier[2], tier[3], hero["affinity"], tags, tier[4]))
+    }
+    bounce out
+}
+
+flex bet find_art(hero, id) {
+    grind a in kit(hero) {
+        sus (a["id"] == id) {
+            bounce a
+        }
+    }
+    bounce ghost
+}
+
+// What the third tier would be, named, even when it is not available yet --
+// the summoning screen shows it greyed out, because a locked thing you can see
+// is a reason to play and a locked thing you cannot is an absence.
+flex bet third_tier(hero) {
+    yo tier = AFFINITIES[hero["affinity"]]["tiers"][2]
+    bounce {"id": tier[0], "name": tier[1], "at": THIRD_TIER_AT, "says": tier[4]}
+}
+
+flex bet alive(hero) {
+    bounce hero["hp"] > 0
+}
+
+flex bet has_condition(hero, name) {
+    bounce hero["conditions"].contains(name)
+}
+
+// -- printing one --------------------------------------------------------------------------
+
+flex bet sheet_lines(hero) {
+    yo out = []
+    out.yeet_in("  " + yapper.pad_right(hero["origin"], 12) + " -> " +
+                yapper.pad_right(hero["calling"], 8) + " of " + hero["affinity"] +
+                "   (soft to " + hero["weak_to"] + ")")
+    yo bits = []
+    grind s in STATS {
+        bits.yeet_in(yapper.SCREAM(yapper.slice(s, 0, 3)) + " " + to_yap(hero["stats"][s]))
+    }
+    out.yeet_in("  " + bits.join("   "))
+    out.yeet_in("  hp " + to_yap(hero["hp"]) + "/" + to_yap(hero["max_hp"]) +
+                "   mp " + to_yap(hero["mp"]) + "/" + to_yap(hero["max_mp"]) +
+                "   resonance " + to_yap(hero["resonance"]) +
+                "   corruption " + to_yap(hero["corruption"]))
+    sus (hero["conditions"].how_thicc() > 0) {
+        out.yeet_in("  " + hero["conditions"].join(", "))
+    }
+    bounce out
+}

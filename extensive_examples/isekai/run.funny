@@ -1,0 +1,343 @@
+// run.funny — one descent, from the summoning to whatever the end of it is.
+//
+// The resolver knows what one action does. This knows what a turn is, what a
+// floor is, and when to stop. It holds the only mutable thing in the example:
+// the run itself.
+//
+// A TURN, IN ORDER:
+//
+//   you act        -> resolve.funny
+//     |
+//     +-- if that opened a second choice, THE TURN STOPS HERE and waits.
+//         Nothing else moves until you answer it. That is the whole point of
+//         the mechanic: a follow-up is part of your turn, not a new one.
+//     |
+//   they act       -> everything still standing, in order, no rolls
+//   the room acts  -> the cascade: fire spreads, ice trips, swarms divide
+//
+// TAKING IT BACK. The programmer's trait is "Rubber Duck": once a floor, look
+// at what just happened and decide you would rather it had not. That is
+// ordinarily an expensive thing to build -- you need a snapshot, and every
+// piece of mutable state has to be in it. Here it is four lines, because
+// `resolve` is pure: the previous run is simply the value we were holding
+// before, so keeping one copy of it is the entire feature.
+
+gimme yapper
+
+gimme { summon, kit, find_art, has_trait, sheet_lines, THIRD_TIER_AT,
+        CORRUPTION_NOTICED, CORRUPTION_LOST } from "hero.funny"
+gimme { fresh_floor, floor_count, standing, cleared, floor_lines,
+        has_ground } from "world.funny"
+gimme { resolve, answer, cascade, foes_act } from "resolve.funny"
+
+// What you get back for reaching the next floor down. Not a full heal: the
+// run has to cost something across its whole length, or the last floor is the
+// only one that matters.
+// A floor is a unit of attrition, and the gap between two of them is where you
+// get your breath back. Not a full heal -- the descent has to cost something
+// across its whole length, or only the last floor would matter.
+flex deadass MP_ON_DESCENT = 6
+flex deadass HP_ON_DESCENT = 8
+
+// What comes back every turn on its own. Without this a run simply stops --
+// not beaten, just empty, which is the least interesting way for anything to
+// end. With it, mana is a budget across a floor rather than across the whole
+// descent, and the choice between a cheap answer and the right one stays live.
+flex deadass MP_PER_TURN = 2
+
+// -- starting one -------------------------------------------------------------------------
+
+flex bet begin(origin, calling, affinity) {
+    yo hero = summon(origin, calling, affinity)
+    sus (hero.has("error")) {
+        bounce hero
+    }
+    yo run = {
+        "phase": "descending",
+        "hero": hero,
+        "floor": arrive(hero, 1),
+        "depth": 1,
+        "turn": 1,
+        // The second choice, when one is open. While this is set, `act` is
+        // refused: you owe the world an answer first.
+        "pending": ghost,
+        // Everything that has happened, grouped by who did it.
+        "log": [],
+        "outcome": ghost,
+        // One whole previous run, for the programmer's trait. Purity makes
+        // this a copy of a value rather than an undo stack.
+        "undo": ghost,
+        "undo_used_on": -1,
+    }
+    remember(run, "room", [
+        {"kind": "note", "says": "you are somewhere else now, and it is downhill.",
+         "who": ghost, "amount": 0},
+    ])
+    bounce run
+}
+
+// A floor, set up for this particular hero. The librarian walks in already
+// knowing what things are made of; everybody else has to spend an action.
+bet arrive(hero, n) {
+    yo floor = fresh_floor(n)
+    sus (has_trait(hero, "read_the_room")) {
+        floor["seen"] = fax
+    }
+    bounce floor
+}
+
+bet remember(run, who, effects) {
+    sus (effects.how_thicc() == 0) {
+        bounce run
+    }
+    run["log"].yeet_in({"turn": run["turn"], "who": who, "effects": effects})
+    bounce run
+}
+
+// -- what you may do right now ---------------------------------------------------------------
+
+flex bet options(run) {
+    sus (run["phase"] != "descending") {
+        bounce []
+    }
+    sus (run["pending"] != ghost) {
+        bounce run["pending"]["options"]
+    }
+    bounce kit(run["hero"])
+}
+
+flex bet targets(run) {
+    yo out = []
+    grind f in standing(run["floor"]) {
+        out.yeet_in({"id": f["id"], "name": f["name"], "hp": f["hp"], "max_hp": f["max_hp"]})
+    }
+    bounce out
+}
+
+// What an action WOULD do, worked out by running the real resolver and
+// throwing the answer away. There is deliberately no second, cheaper predictor
+// here: that is how a tooltip starts lying. See resolve.funny's own note.
+flex bet preview(run, choice) {
+    sus (run["phase"] != "descending" || run["pending"] != ghost) {
+        bounce {"ok": cap, "error": "not right now"}
+    }
+    bounce resolve({"hero": run["hero"], "floor": run["floor"]}, choice)
+}
+
+flex bet can_take_back(run) {
+    bounce has_trait(run["hero"], "rubber_duck") &&
+           run["undo"] != ghost &&
+           run["undo_used_on"] != run["depth"]
+}
+
+// -- a turn ---------------------------------------------------------------------------------
+
+flex bet act(run, choice) {
+    sus (run["phase"] != "descending") {
+        bounce {"ok": cap, "error": "the run is over", "run": run}
+    }
+    sus (run["pending"] != ghost) {
+        bounce {"ok": cap, "error": "answer what you started first", "run": run}
+    }
+
+    yo out = resolve({"hero": run["hero"], "floor": run["floor"]}, choice)
+    sus (!out["ok"]) {
+        bounce {"ok": cap, "error": out["error"], "run": run}
+    }
+
+    // The snapshot is taken here, before anything is adopted, which is why
+    // taking it back is free.
+    yo snapshot = deep_clone(run)
+
+    run["hero"] = out["hero"]
+    run["floor"] = out["floor"]
+    remember(run, "you", out["effects"])
+
+    sus (out["asks"] != ghost) {
+        // The turn stops. Nothing else moves until this is answered.
+        run["pending"] = out["asks"]
+        run["undo"] = snapshot
+        bounce {"ok": fax, "run": run}
+    }
+
+    run["undo"] = snapshot
+    finish_turn(run)
+    bounce {"ok": fax, "run": run}
+}
+
+flex bet answer_ask(run, option_id) {
+    sus (run["pending"] == ghost) {
+        bounce {"ok": cap, "error": "nothing is waiting on you", "run": run}
+    }
+    yo known = cap
+    grind o in run["pending"]["options"] {
+        sus (o["id"] == option_id) {
+            known = fax
+        }
+    }
+    sus (!known) {
+        bounce {"ok": cap, "error": "that was not one of the choices", "run": run}
+    }
+
+    yo out = answer({"hero": run["hero"], "floor": run["floor"]},
+                    run["pending"]["id"], option_id)
+    sus (!out["ok"]) {
+        bounce {"ok": cap, "error": out["error"], "run": run}
+    }
+    run["hero"] = out["hero"]
+    run["floor"] = out["floor"]
+    run["pending"] = ghost
+    remember(run, "you", out["effects"])
+    finish_turn(run)
+    bounce {"ok": fax, "run": run}
+}
+
+// Once a floor: the last resolution, unresolved.
+flex bet take_back(run) {
+    sus (!can_take_back(run)) {
+        bounce {"ok": cap, "error": "not this floor, and not with that head on you", "run": run}
+    }
+    yo was = run["depth"]
+    yo restored = run["undo"]
+    restored["undo"] = ghost
+    restored["undo_used_on"] = was
+    remember(restored, "room", [
+        {"kind": "note", "says": "you talk it through with nobody in particular, and try again.",
+         "who": ghost, "amount": 0},
+    ])
+    bounce {"ok": fax, "run": restored}
+}
+
+// Their turn, then the room's, then whatever that leaves.
+bet finish_turn(run) {
+    sus (run["hero"]["hp"] > 0 && !cleared(run["floor"])) {
+        yo theirs = foes_act({"hero": run["hero"], "floor": run["floor"]})
+        run["hero"] = theirs["hero"]
+        run["floor"] = theirs["floor"]
+        remember(run, "them", theirs["effects"])
+    }
+
+    sus (run["hero"]["hp"] > 0) {
+        yo room = cascade({"hero": run["hero"], "floor": run["floor"]})
+        run["hero"] = room["hero"]
+        run["floor"] = room["floor"]
+        remember(run, "room", room["effects"])
+    }
+
+    run["turn"] = run["turn"] + 1
+
+    sus (run["hero"]["hp"] > 0 && run["hero"]["mp"] < run["hero"]["max_mp"]) {
+        yo hero = run["hero"]
+        hero["mp"] = hero["mp"] + MP_PER_TURN
+        sus (hero["mp"] > hero["max_mp"]) {
+            hero["mp"] = hero["max_mp"]
+        }
+    }
+
+    sus (run["hero"]["hp"] <= 0) {
+        run["phase"] = "over"
+        run["outcome"] = "lost"
+        remember(run, "room", [
+            {"kind": "note", "says": "the floor is very cold and you are not getting up.",
+             "who": ghost, "amount": 0},
+        ])
+        bounce run
+    }
+
+    sus (cleared(run["floor"])) {
+        descend(run)
+    }
+    bounce run
+}
+
+bet descend(run) {
+    sus (run["depth"] >= floor_count()) {
+        run["phase"] = "over"
+        run["outcome"] = "through"
+        remember(run, "room", [
+            {"kind": "note", "says": "there is nothing below this. you are through.",
+             "who": ghost, "amount": 0},
+        ])
+        bounce run
+    }
+
+    run["depth"] = run["depth"] + 1
+    yo hero = run["hero"]
+    hero["mp"] = hero["mp"] + MP_ON_DESCENT
+    sus (hero["mp"] > hero["max_mp"]) {
+        hero["mp"] = hero["max_mp"]
+    }
+    hero["hp"] = hero["hp"] + HP_ON_DESCENT
+    sus (hero["hp"] > hero["max_hp"]) {
+        hero["hp"] = hero["max_hp"]
+    }
+    hero["conditions"] = []
+    hero["used_this_floor"] = []
+    run["floor"] = arrive(hero, run["depth"])
+    run["undo"] = ghost
+    run["undo_used_on"] = -1
+    remember(run, "room", [
+        {"kind": "note", "says": "down again. " + run["floor"]["says"], "who": ghost, "amount": 0},
+    ])
+    bounce run
+}
+
+// -- the reckoning ---------------------------------------------------------------------------
+
+// What the run added up to. Resonance and corruption are not two ends of one
+// bar, so a run can finish carrying a great deal of both -- which is the most
+// interesting way for one to end and the reason they are reported separately.
+flex bet reckoning(run) {
+    yo hero = run["hero"]
+    yo lines = []
+    sus (run["outcome"] == "through") {
+        lines.yeet_in("you came out the other side of it.")
+    } kinda_sus (run["outcome"] == "lost") {
+        lines.yeet_in("you got as far as " + run["floor"]["name"] + ".")
+    } nah {
+        lines.yeet_in("still down there.")
+    }
+    lines.yeet_in("floors: " + to_yap(run["depth"]) + " of " + to_yap(floor_count()) +
+                  "   turns: " + to_yap(run["turn"] - 1))
+
+    sus (hero["resonance"] >= THIRD_TIER_AT) {
+        lines.yeet_in("the world learned your name: resonance " + to_yap(hero["resonance"]) + ".")
+    } kinda_sus (hero["resonance"] > 0) {
+        lines.yeet_in("it was starting to notice you: resonance " + to_yap(hero["resonance"]) + ".")
+    } nah {
+        lines.yeet_in("you were never really here: resonance 0.")
+    }
+
+    sus (hero["corruption"] >= CORRUPTION_LOST) {
+        lines.yeet_in("and it will be a long time putting right what you did: corruption " +
+                      to_yap(hero["corruption"]) + ".")
+    } kinda_sus (hero["corruption"] >= CORRUPTION_NOTICED) {
+        lines.yeet_in("and it noticed the other thing too: corruption " +
+                      to_yap(hero["corruption"]) + ".")
+    } kinda_sus (hero["corruption"] > 0) {
+        lines.yeet_in("with a little on your hands: corruption " + to_yap(hero["corruption"]) + ".")
+    } nah {
+        lines.yeet_in("and you took nothing that was not yours.")
+    }
+    bounce lines
+}
+
+// -- printing one --------------------------------------------------------------------------------
+
+flex bet run_lines(run) {
+    yo out = []
+    grind line in sheet_lines(run["hero"]) {
+        out.yeet_in(line)
+    }
+    out.yeet_in("")
+    grind line in floor_lines(run["floor"], run["floor"]["seen"]) {
+        out.yeet_in(line)
+    }
+    bounce out
+}
+
+flex bet effect_line(e) {
+    yo who = e["who"] == ghost ? "" : e["who"] + ": "
+    yo amount = e["amount"] == 0 ? "" : "  (" + to_yap(e["amount"]) + ")"
+    bounce yapper.pad_right(e["kind"], 10) + who + e["says"] + amount
+}

@@ -1,0 +1,450 @@
+// test_isekai.funny — the sheet, the rule table, and a whole descent.
+//
+// `funny test extensive_examples` runs this. Five parts, each able to fail on
+// its own:
+//
+//   1. the sheet: every build in the three lists, and what each choice costs
+//   2. the rule table, ONE RULE AT A TIME -- each in a room where it must
+//      fire, and again in one differing only in its condition, where it must
+//      not. This is most of the golden, and it is what makes the table
+//      trustworthy rather than merely present.
+//   3. rules composing: the outcomes nobody wrote down
+//   4. the preview is the outcome, asserted rather than promised
+//   5. a whole run, turn by turn, every effect and every follow-up
+//
+// NOTHING IN THIS EXAMPLE ROLLS. There is no `gimme rizz` in any file here, so
+// there is no seed to fix and no stream to depend on: a run is a pure function
+// of the build and the choices. That is what lets part five assert a descent
+// line for line.
+
+gimme yapper
+gimme json
+
+gimme { ORIGINS, CALLINGS, AFFINITIES, OPPOSED, STATS, ELEMENTS, summon, kit,
+        find_art, third_tier, sheet_lines, THIRD_TIER_AT } from "hero.funny"
+gimme { fresh_floor, floor_count, standing, find_foe, has_ground } from "world.funny"
+gimme { resolve, answer, cascade, foes_act } from "resolve.funny"
+gimme { begin, act, answer_ask, take_back, can_take_back, preview, options,
+        reckoning, effect_line, run_lines } from "run.funny"
+
+// -- a room built to order, so one rule can be looked at on its own ----------------
+
+bet dummy(traits) {
+    bounce {
+        "id": "it", "name": "it", "hp": 200, "max_hp": 200, "power": 0,
+        "traits": traits, "conditions": [], "says": "the thing in the room",
+    }
+}
+
+bet chamber(ground, traits) {
+    bounce {
+        "n": 0, "name": "the test chamber", "says": "", "asks": "",
+        "ground": ground, "foes": [dummy(traits)], "blocked": cap, "seen": fax,
+    }
+}
+
+bet stage(affinity, ground, traits) {
+    bounce {"hero": summon("chef", "mage", affinity), "floor": chamber(ground, traits)}
+}
+
+bet cast(affinity, ground, traits, art) {
+    bounce resolve(stage(affinity, ground, traits), {"art": art, "target": "it"})
+}
+
+// The same, for the third tier, which does not exist until the world has
+// agreed to it.
+bet cast_deep(affinity, ground, traits, art) {
+    yo where = stage(affinity, ground, traits)
+    where["hero"]["resonance"] = THIRD_TIER_AT
+    bounce resolve(where, {"art": art, "target": "it"})
+}
+
+// Loud rather than obscure: an action the resolver refused has no effects at
+// all, and "key `effects` left the group chat" is a terrible way to find that
+// out.
+bet effects_of(out) {
+    no_cap(out.has("effects"), "the resolver refused that: " + to_yap(out.get("error", "?")))
+    bounce out["effects"]
+}
+
+bet harm(out) {
+    yo total = 0
+    grind e in effects_of(out) {
+        sus (e["kind"] == "damage") {
+            total = total + e["amount"]
+        }
+    }
+    bounce total
+}
+
+bet taken(out) {
+    yo total = 0
+    grind e in effects_of(out) {
+        sus (e["kind"] == "hurt") {
+            total = total + e["amount"]
+        }
+    }
+    bounce total
+}
+
+bet saw(out, kind) {
+    grind e in effects_of(out) {
+        sus (e["kind"] == kind) {
+            bounce fax
+        }
+    }
+    bounce cap
+}
+
+// One rule, in the room where it fires and the room where it does not.
+bet rule(n, name, fired, control, measure) {
+    yo a = measure == "harm" ? harm(fired) : taken(fired)
+    yo b = measure == "harm" ? harm(control) : taken(control)
+    yap "  " + yapper.pad_left(to_yap(n), 2) + ". " + yapper.pad_right(name, 44) +
+        yapper.pad_left(to_yap(a), 4) + "  vs " + yapper.pad_left(to_yap(b), 4)
+}
+
+// -- part one: the sheet -----------------------------------------------------------
+
+yap "-- every build in the three lists is a legal one --"
+yo made = 0
+grind o in ORIGINS.keys() {
+    grind c in CALLINGS.keys() {
+        grind a in AFFINITIES.keys() {
+            yo h = summon(o, c, a)
+            no_cap(!h.has("error"), "could not summon " + o + "/" + c + "/" + a)
+            no_cap(h["weak_to"] == OPPOSED[a], "wrong weakness for " + a)
+            no_cap(kit(h).how_thicc() > 0, "empty kit")
+            made = made + 1
+        }
+    }
+}
+yap "  " + to_yap(made) + " of them"
+
+yap "-- and nothing outside the lists is --"
+yap "  " + summon("wizard", "mage", "fire")["error"]
+yap "  " + summon("librarian", "bard", "fire")["error"]
+yap "  " + summon("librarian", "mage", "custard")["error"]
+
+yap "-- an origin is stats and a rule; a calling is only a kit --"
+grind o in ORIGINS.keys() {
+    yo h = summon(o, "knight", "earth")
+    yo bits = []
+    grind s in STATS {
+        bits.yeet_in(yapper.SCREAM(yapper.slice(s, 0, 3)) + " " + to_yap(h["stats"][s]))
+    }
+    yap "  " + yapper.pad_right(o, 11) + bits.join("  ") + "   " +
+        ORIGINS[o]["trait_name"] + ": " + ORIGINS[o]["trait_says"]
+}
+
+yap "-- a mage gets the whole element, everybody else gets the first of it --"
+grind c in CALLINGS.keys() {
+    yo h = summon("chef", c, "frost")
+    yo names = []
+    grind a in kit(h) {
+        names.yeet_in(a["name"])
+    }
+    yap "  " + yapper.pad_right(c, 8) + names.join(", ")
+}
+
+yap "-- and the third tier waits on the world --"
+yo m = summon("chef", "mage", "frost")
+yap "  locked:   " + to_yap(kit(m).how_thicc()) + " arts, and " +
+    third_tier(m)["name"] + " is not one of them"
+m["resonance"] = THIRD_TIER_AT
+yap "  at " + to_yap(THIRD_TIER_AT) + ":     " + to_yap(kit(m).how_thicc()) + " arts, including " +
+    find_art(m, "deepfreeze")["name"]
+
+yap "-- every affinity is soft to its opposite --"
+grind e in ELEMENTS {
+    yap "  " + yapper.pad_right(e, 7) + "-> soft to " + OPPOSED[e]
+}
+
+// -- part two: the rule table, one rule at a time ---------------------------------------
+
+yap ""
+yap "-- the material rules: what a thing is made of --"
+yap "      " + yapper.pad_right("rule", 44) + " fires   else"
+rule(1, "armoured halves anything but storm and light",
+     cast("fire", [], ["armoured"], "ember"), cast("fire", [], [], "ember"), "harm")
+rule(2, "a swarm takes half from a single strike",
+     cast("fire", [], ["swarm"], "ember"), cast("fire", [], [], "ember"), "harm")
+rule(2, "  and double from anything that covers the room",
+     cast_deep("fire", [], ["swarm"], "conflagration"),
+     cast_deep("fire", [], [], "conflagration"), "harm")
+rule(3, "fire doubles against the frost-blooded",
+     cast("fire", [], ["frost-blooded"], "ember"), cast("fire", [], [], "ember"), "harm")
+rule(4, "frost doubles against the wet",
+     cast("frost", [], ["wet"], "chill"), cast("frost", [], [], "chill"), "harm")
+rule(5, "storm doubles against armour instead of halving",
+     cast("storm", [], ["armoured"], "spark"), cast("storm", [], [], "spark"), "harm")
+rule(6, "earth cannot reach anything flying",
+     cast("earth", [], ["flying"], "shard"), cast("earth", [], ["grounded"], "shard"), "harm")
+rule(7, "light triples against the undead",
+     cast("light", [], ["undead"], "glimmer"), cast("light", [], [], "glimmer"), "harm")
+rule(8, "fire does nothing to the ember-blooded",
+     cast("fire", [], ["ember-blooded"], "ember"), cast("fire", [], [], "ember"), "harm")
+
+yap ""
+yap "-- the ground rules: where you are standing --"
+yap "      " + yapper.pad_right("rule", 44) + " fires   else"
+rule(9, "fire on gas takes the whole room",
+     cast("fire", ["gas"], [], "ember"), cast("fire", [], [], "ember"), "harm")
+rule(9, "  and a good deal of you with it",
+     cast("fire", ["gas"], [], "ember"), cast("fire", [], [], "ember"), "taken")
+rule(10, "fire on damp is half wasted boiling it",
+     cast("fire", ["damp"], [], "ember"), cast("fire", [], [], "ember"), "harm")
+rule(12, "frost on damp freezes the floor over",
+     cast("frost", ["damp"], [], "chill"), cast("frost", [], [], "chill"), "harm")
+rule(14, "storm on metal comes back up your arm",
+     cast("storm", ["metal"], [], "spark"), cast("storm", [], [], "spark"), "taken")
+rule(15, "storm in a narrow room has nowhere else to be",
+     cast("storm", ["narrow"], [], "spark"), cast("storm", [], [], "spark"), "taken")
+rule(18, "wind thins anything that has to travel",
+     cast("fire", ["windy"], [], "ember"), cast("fire", [], [], "ember"), "harm")
+
+yap ""
+yap "-- the rules that change the room rather than the numbers --"
+yo steam = cast("fire", ["damp"], [], "ember")
+yap "  fire on damp leaves:            " + steam["floor"]["ground"].join(", ")
+yo ice = cast("frost", ["damp"], [], "chill")
+yap "  frost on damp leaves:           " + ice["floor"]["ground"].join(", ")
+yo lit = cast("light", ["dark"], [], "glimmer")
+yap "  light on dark leaves:           " + lit["floor"]["ground"].join(", ") +
+    "   (and asks: " + lit["asks"]["id"] + ")"
+yo boom = cast("fire", ["gas"], [], "ember")
+yap "  fire on gas leaves:             " + boom["floor"]["ground"].join(", ") +
+    "   (and asks: " + boom["asks"]["id"] + ")"
+yo fall = cast("earth", ["narrow"], [], "shard")
+yap "  earth in a narrow room asks:    " + fall["asks"]["id"]
+yo holy = cast("fire", ["sacred"], [], "ember")
+yap "  fire on sacred costs:           corruption " + to_yap(holy["hero"]["corruption"])
+yo drain = cast("void", [], [], "whisper")
+yo drain_before = summon("chef", "mage", "void")
+yap "  void always costs:              corruption " + to_yap(drain["hero"]["corruption"]) +
+    ", and mp goes " + to_yap(drain_before["mp"]) + " -> " + to_yap(drain["hero"]["mp"]) +
+    " despite the cost"
+
+yap ""
+yap "-- resonance is the only thing an affinity is for --"
+yo tuned = cast("fire", [], [], "ember")
+yo other = resolve({"hero": summon("chef", "cleric", "frost"), "floor": chamber([], [])},
+                   {"art": "smite", "target": "it"})
+yap "  in tune:      resonance " + to_yap(tuned["hero"]["resonance"])
+yap "  out of tune:  resonance " + to_yap(other["hero"]["resonance"])
+
+yap "-- and striking something that cannot answer is noticed --"
+yo held = stage("fire", [], ["wet"])
+held["floor"]["foes"][0]["conditions"] = ["held"]
+yo cruel = resolve(held, {"art": "ember", "target": "it"})
+yap "  corruption " + to_yap(cruel["hero"]["corruption"])
+
+// -- part three: rules composing -------------------------------------------------------
+
+yap ""
+yap "-- the outcomes nobody wrote down --"
+
+yo both = cast("fire", ["gas", "sacred"], [], "ember")
+yap "  fire into a gas-filled chapel:  " + to_yap(harm(both)) + " done, " +
+    to_yap(taken(both)) + " taken, corruption " + to_yap(both["hero"]["corruption"]) +
+    ", and it still asks " + both["asks"]["id"]
+
+yo wet_warden = cast("fire", ["damp"], ["frost-blooded", "armoured"], "ember")
+yap "  fire at an armoured frost-thing, in water:"
+yap "     half for the water, half for the plate, double for the cold: " +
+    to_yap(harm(wet_warden))
+yap "     and the cold is gone afterwards: " + to_yap(saw(wet_warden, "trait"))
+
+yo narrow_storm = cast("storm", ["damp", "narrow"], [], "spark")
+yap "  storm into a narrow flooded room: " + to_yap(harm(narrow_storm)) + " done, " +
+    to_yap(taken(narrow_storm)) + " taken -- the water includes you"
+
+yo gallery = resolve({"hero": summon("chef", "mage", "storm"), "floor": fresh_floor(4)},
+                     {"art": "spark", "target": "sentinel-1"})
+yap "  storm down the iron gallery:     " + to_yap(harm(gallery)) + " across " +
+    to_yap(standing(gallery["floor"]).how_thicc()) + " of them, " + to_yap(taken(gallery)) + " back"
+
+yap ""
+yap "-- the cascade: what the room does once you have changed it --"
+yo burning = stage("frost", ["burning", "gas"], ["frost-blooded"])
+yo after = cascade(burning)
+yap "  a frost mage in a burning room takes " + to_yap(taken(after)) +
+    " (their own opposite, doubled)"
+yap "  and the thing in it stops being frost-blooded: " + to_yap(saw(after, "trait"))
+yap "  and the gas goes: " + after["floor"]["ground"].join(", ")
+
+yo slippery = stage("earth", ["slick"], ["grounded"])
+yap "  slick ground trips what stands on it: " +
+    cascade(slippery)["floor"]["foes"][0]["conditions"].join(", ")
+
+yo halved = stage("fire", [], ["swarm"])
+halved["floor"]["foes"][0]["hp"] = 40
+halved["floor"]["foes"][0]["max_hp"] = 200
+yap "  a swarm cut in half becomes two of itself: " +
+    to_yap(cascade(halved)["floor"]["foes"].how_thicc()) + " of them"
+
+// -- part four: the preview is the outcome ----------------------------------------------
+
+yap ""
+yap "-- the preview and the outcome are the same call --"
+yo checked = 0
+yo drifted = 0
+grind e in ELEMENTS {
+    grind ground in [[], ["gas"], ["damp"], ["narrow"], ["metal"], ["sacred"], ["dark"]] {
+        grind traits in [[], ["armoured"], ["undead"], ["flying"], ["wet"], ["frost-blooded"]] {
+            yo where = stage(e, ground, traits)
+            yo art = AFFINITIES[e]["tiers"][0][0]
+            yo a = resolve(where, {"art": art, "target": "it"})
+            yo b = resolve(where, {"art": art, "target": "it"})
+            checked = checked + 1
+            sus (json.spill(a) != json.spill(b)) {
+                drifted = drifted + 1
+            }
+        }
+    }
+}
+yap "  " + to_yap(checked) + " rooms, " + to_yap(drifted) + " that resolved differently the second time"
+
+yap "-- and resolving never touches the state it was handed --"
+yo untouched = stage("fire", ["gas", "damp"], ["frost-blooded"])
+yo copy = json.spill(untouched)
+resolve(untouched, {"art": "ember", "target": "it"})
+resolve(untouched, {"art": "flare", "target": "it"})
+cascade(untouched)
+foes_act(untouched)
+yap "  identical afterwards: " + to_yap(json.spill(untouched) == copy)
+
+// -- part five: a whole descent -----------------------------------------------------------
+
+yap ""
+yap "-- a whole descent --"
+
+// One build, one fixed list of choices. An entry is either an art with a
+// target, or the answer to whatever the last one opened -- both in the same
+// list, because a follow-up is part of the turn that caused it and keeping two
+// lists in step would be a worse lie than keeping one.
+//
+// A CLERIC OF FIRE, deliberately: Smite is light whatever your element is, so
+// this build carries an answer to the dark on the first floor and to the
+// undead on the last, while its own element is a catastrophe on the second and
+// nearly useless on the third. Three follow-ups get triggered along the way,
+// and both branches of one of them.
+// KEPT PER FLOOR rather than as one flat list, because a floor does not take
+// a fixed number of turns: setting the gas hall alight clears it in two, and
+// the same list flattened would then run the third floor's plan on the second
+// and be meaningless. Keyed by depth, it says what it means -- "this is the
+// plan for the frozen chapel" -- and stays readable when the numbers move.
+deadass PLAYBOOK = {
+    1: [
+        {"art": "smite", "target": "ghoul-1"},
+        {"answer": "leave"},
+        {"art": "smite", "target": "ghoul-1"},
+        {"art": "mend", "target": ghost},
+        {"art": "smite", "target": "ghoul-2"},
+        {"art": "smite", "target": "ghoul-2"},
+    ],
+    2: [
+        {"art": "ember", "target": "rats"},
+        {"answer": "press"},
+        {"art": "smite", "target": "rats"},
+        {"art": "smite", "target": "rats-b"},
+    ],
+    3: [
+        {"art": "smite", "target": "warden"},
+        {"art": "smite", "target": "warden"},
+        {"art": "mend", "target": ghost},
+        {"art": "smite", "target": "warden"},
+    ],
+    4: [
+        {"art": "ward", "target": ghost},
+        {"art": "smite", "target": "shrike"},
+        {"art": "mend", "target": ghost},
+        {"art": "smite", "target": "sentinel-1"},
+        {"art": "ward", "target": ghost},
+        {"art": "smite", "target": "sentinel-1"},
+        {"art": "mend", "target": ghost},
+        {"art": "smite", "target": "sentinel-2"},
+        {"art": "ward", "target": ghost},
+        {"art": "smite", "target": "sentinel-2"},
+    ],
+    5: [
+        {"art": "smite", "target": "king"},
+        {"answer": "take"},
+        {"art": "ward", "target": ghost},
+        {"art": "smite", "target": "king"},
+        {"art": "mend", "target": ghost},
+        {"art": "smite", "target": "king"},
+        {"art": "ward", "target": ghost},
+        {"art": "smite", "target": "king"},
+    ],
+}
+
+// When a floor's plan runs out, fall back to the obvious thing. Deterministic,
+// like everything else here: mend below half, otherwise hit it.
+bet fallback(run) {
+    sus (run["hero"]["hp"] * 2 < run["hero"]["max_hp"]) {
+        bounce {"art": "mend", "target": ghost}
+    }
+    bounce {"art": "smite", "target": ghost}
+}
+
+yo run = begin("nurse", "cleric", "fire")
+yap "  " + run["hero"]["origin"] + ", " + run["hero"]["calling"] + " of " +
+    run["hero"]["affinity"] + " (soft to " + run["hero"]["weak_to"] + ")"
+yap ""
+
+yo cursor = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+yo guard = 0
+// How much of the log has already been printed. The run keeps everything that
+// has ever happened, so "what is new" is a count rather than a filter on the
+// turn number -- a follow-up does not advance the turn, and clearing a floor
+// advances it twice.
+yo printed = 0
+bruh (run["phase"] == "descending" && guard < 80) {
+    guard = guard + 1
+    yo depth = run["depth"]
+    yo plan = PLAYBOOK[depth]
+    yo choice = ghost
+    sus (cursor[depth] < plan.how_thicc()) {
+        choice = plan[cursor[depth]]
+        cursor[depth] = cursor[depth] + 1
+    } nah {
+        choice = fallback(run)
+    }
+    yo out = ghost
+    sus (run["pending"] != ghost) {
+        no_cap(choice.has("answer"), "the script owes an answer to " + run["pending"]["id"])
+        yap "  turn " + to_yap(run["turn"]) + " [floor " + to_yap(run["depth"]) + "]  ASKED: " +
+            run["pending"]["says"]
+        yap "            answered: " + choice["answer"]
+        out = answer_ask(run, choice["answer"])
+    } nah {
+        no_cap(!choice.has("answer"), "the script answered a question nobody asked")
+        yap "  turn " + to_yap(run["turn"]) + " [floor " + to_yap(run["depth"]) + "]  " +
+            find_art(run["hero"], choice["art"])["name"] + " -> " + to_yap(choice["target"])
+        out = act(run, choice)
+    }
+    sus (!out["ok"]) {
+        yap "            refused: " + out["error"]
+        bail
+    }
+    run = out["run"]
+    grind i from printed to run["log"].how_thicc() {
+        yo entry = run["log"][i]
+        grind e in entry["effects"] {
+            yap "            " + yapper.pad_right(entry["who"], 5) + " " + effect_line(e)
+        }
+    }
+    printed = run["log"].how_thicc()
+}
+
+yap ""
+yap "-- the reckoning --"
+grind line in reckoning(run) {
+    yap "  " + line
+}
+yap ""
+grind line in run_lines(run) {
+    yap line
+}
+yap "-- done --"

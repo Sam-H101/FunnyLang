@@ -1,0 +1,719 @@
+// resolve.funny — what actually happens, and why.
+//
+// This is the simulation. Everything else in this example is a way of getting
+// choices into it and effects out of it.
+//
+// AN ACTION IS NOT "INPUT, THEN OUTPUT". It is your element, meeting the
+// ground you are standing on, meeting what the thing in front of you is made
+// of, meeting the state you are in -- and the answer is whatever the rules add
+// up to. Nobody wrote down what happens when you throw Ember into a gas-filled
+// hall at a frost-blooded warden while standing in water. Several rules fire,
+// in order, and the result is their sum.
+//
+// THE TABLE IS ORDERED AND ADDITIVE, NOT FIRST-MATCH. First-match is how a
+// simulation quietly turns back into a lookup table: one condition wins, the
+// rest are dead, and the interesting compositions never happen. Here every
+// rule whose condition holds fires, and `fire` on a floor that is both `gas`
+// and `sacred` both ignites the room and stains you for it.
+//
+// A RULE MAY READ ONLY four things: the element in play, the ground tags, the
+// material traits of what is being hit, and the sheet. No rule may name a
+// floor or a creature. That restriction is the whole reason this is a model
+// rather than a pile of special cases -- see world.funny's own note.
+//
+// `resolve` IS PURE. It deep-clones the state it is handed, works on the copy,
+// and returns it; the caller keeps the answer or throws it away. That is how
+// the page's hover preview and the actual outcome are guaranteed identical:
+// they are not two code paths that agree, they are one call made twice. There
+// is no "predict" function here to drift out of step with this one, which is
+// the usual way a game's tooltip starts lying.
+//
+// NOTHING ROLLS. No `gimme rizz` anywhere in this example.
+
+gimme yapper
+
+gimme { OPPOSED, THIRD_TIER_AT, find_art, has_trait, alive } from "hero.funny"
+gimme { has_ground, add_ground, drop_ground, foe_has, drop_trait, add_condition,
+        drop_condition, standing, find_foe, cleared } from "world.funny"
+
+// What burning ground does to everything standing on it, per turn.
+flex deadass BURN_PER_TURN = 3
+
+// -- effects ---------------------------------------------------------------------------------
+
+// Everything that happens is one of these, in the order it happened. The page
+// renders them one at a time; the terminal prints them; the golden asserts
+// them. One vocabulary, three consumers.
+bet effect(kind, says, who, amount) {
+    bounce {"kind": kind, "says": says, "who": who, "amount": amount}
+}
+
+bet note(ctx, says) {
+    ctx["effects"].yeet_in(effect("note", says, ghost, 0))
+}
+
+// -- the shape of one action -------------------------------------------------------------------
+
+bet new_ctx(hero, floor, art, target_id) {
+    bounce {
+        "hero": hero,
+        "floor": floor,
+        "art": art,
+        "element": art["element"],
+        "power": art["power"],
+        "is_area": art["tags"].contains("area"),
+        // Multipliers the GROUND rules apply to everything at once. Material
+        // rules are per-target and live in `damage_to`.
+        "global": 1.0,
+        "targets": [],
+        "self_damage": 0,
+        "self_heal": 0,
+        "mp_gain": 0,
+        "resonance": 0,
+        "corruption": 0,
+        "ground_add": [],
+        "ground_drop": [],
+        "asks": ghost,
+        "effects": [],
+    }
+}
+
+// -- the material rules: what a thing is made of ------------------------------------------------
+//
+// Per target, because armour is a fact about one creature and not about the
+// room. The multiplier each returns is composed with every other that holds.
+
+bet damage_to(ctx, f) {
+    yo element = ctx["element"]
+    yo mult = ctx["global"]
+
+    // 1. ARMOURED halves anything that is not storm and not light. Plate is
+    //    very good against a sword and no use at all against a potential
+    //    difference or a truth.
+    sus (foe_has(f, "armoured") && element != "storm" && element != "light") {
+        mult = mult * 0.5
+    }
+
+    // 2. A SWARM is the opposite shape of problem: there is no one thing to
+    //    hit, so a single strike is half wasted and anything that covers the
+    //    room is twice as good.
+    sus (foe_has(f, "swarm")) {
+        mult = ctx["is_area"] ? mult * 2.0 : mult * 0.5
+    }
+
+    // 3. FIRE against something FROST-BLOODED is the textbook answer, and the
+    //    cold does not come back afterwards.
+    sus (element == "fire" && foe_has(f, "frost-blooded")) {
+        mult = mult * 2.0
+    }
+
+    // 4. FROST against something already WET has something to work with.
+    sus (element == "frost" && foe_has(f, "wet")) {
+        mult = mult * 2.0
+    }
+
+    // 5. STORM against ARMOURED: the plate is a path rather than a wall, and
+    //    this is the rule that cancels rule 1 rather than arguing with it.
+    sus (element == "storm" && foe_has(f, "armoured")) {
+        mult = mult * 2.0
+    }
+
+    // 6. EARTH cannot reach anything that is not touching the floor.
+    sus (element == "earth" && foe_has(f, "flying")) {
+        bounce 0
+    }
+
+    // 7. LIGHT against the UNDEAD is not a bonus, it is the whole point of it.
+    sus (element == "light" && foe_has(f, "undead")) {
+        mult = mult * 3.0
+    }
+
+    // 8. EMBER-BLOODED things are fed by fire rather than hurt by it.
+    sus (element == "fire" && foe_has(f, "ember-blooded")) {
+        bounce 0
+    }
+
+    bounce to_int(ctx["power"] * mult)
+}
+
+// The per-target consequences that are not damage, applied after it lands.
+bet material_aftermath(ctx, f) {
+    yo element = ctx["element"]
+
+    sus (element == "fire" && foe_has(f, "frost-blooded")) {
+        drop_trait(f, "frost-blooded")
+        ctx["effects"].yeet_in(effect("trait", "the cold goes out of it", f["name"], 0))
+    }
+    sus (element == "frost" && foe_has(f, "wet")) {
+        add_condition(f, "held")
+        ctx["effects"].yeet_in(effect("condition", "frozen where it stands", f["name"], 0))
+    }
+    sus (element == "storm" && foe_has(f, "armoured")) {
+        ctx["effects"].yeet_in(effect("note", "the plate carries it straight through", f["name"], 0))
+    }
+    sus (element == "earth" && foe_has(f, "flying")) {
+        ctx["effects"].yeet_in(effect("miss", "it is not standing on anything", f["name"], 0))
+    }
+    sus (ctx["art"]["tags"].contains("hold")) {
+        sus (foe_has(f, "flying") && ctx["art"]["id"] == "snare") {
+            ctx["effects"].yeet_in(effect("miss", "a snare needs a floor to be on", f["name"], 0))
+        } nah {
+            add_condition(f, "held")
+            ctx["effects"].yeet_in(effect("condition", "held", f["name"], 0))
+        }
+    }
+}
+
+// -- the ground rules: where you are standing ------------------------------------------------
+//
+// These are global: they change who is hit, what the room becomes, and what it
+// costs you. They run before any damage is worked out.
+
+bet ground_rules(ctx) {
+    yo element = ctx["element"]
+    yo floor = ctx["floor"]
+    yo hero = ctx["hero"]
+
+    // 9. FIRE on GAS. The obvious thing, and a catastrophe. Everything in the
+    //    room is a target now, including you, and the room is alight
+    //    afterwards. This is the first rule that OPENS A SECOND CHOICE: with
+    //    the hall burning, whether you cover the room or press into it is a
+    //    real question and not a flourish.
+    sus (element == "fire" && has_ground(floor, "gas")) {
+        ctx["global"] = ctx["global"] * 2.0
+        ctx["targets"] = every_id(floor)
+        ctx["self_damage"] = ctx["self_damage"] + 6
+        ctx["ground_drop"].yeet_in("gas")
+        ctx["ground_add"].yeet_in("burning")
+        note(ctx, "the gas goes up all at once, and the whole hall with it")
+        ctx["asks"] = {
+            "id": "ignition",
+            "says": "the hall is alight and so is everything in it, you included.",
+            "options": [
+                {"id": "shield", "name": "cover the room",
+                 "hint": "you take the worst of it so nothing else spreads"},
+                {"id": "press", "name": "press the attack",
+                 "hint": "everything burns harder, and you are in the room"},
+            ],
+        }
+    }
+
+    // 10. FIRE on DAMP. Half of it goes into boiling the water, and the steam
+    //     takes the room's visibility with it -- which matters later, because
+    //     `dark` is a condition Light has an answer to.
+    sus (element == "fire" && has_ground(floor, "damp")) {
+        ctx["global"] = ctx["global"] * 0.5
+        ctx["ground_drop"].yeet_in("damp")
+        ctx["ground_add"].yeet_in("dark")
+        note(ctx, "half of it goes into the water; the room fills with steam")
+    }
+
+    // 11. FIRE on SACRED. It works perfectly well. That is not the problem.
+    sus (element == "fire" && has_ground(floor, "sacred")) {
+        ctx["corruption"] = ctx["corruption"] + 2
+        note(ctx, "somebody meant this place, and you have just set light to it")
+    }
+
+    // 12. FROST on DAMP. The floor goes over, and anything standing on it is
+    //     going nowhere gracefully.
+    sus (element == "frost" && has_ground(floor, "damp")) {
+        ctx["ground_drop"].yeet_in("damp")
+        ctx["ground_add"].yeet_in("slick")
+        note(ctx, "the water goes solid from the walls inward")
+    }
+
+    // 13. STORM on DAMP. Water conducts, so there is no such thing as a single
+    //     target any more.
+    sus (element == "storm" && has_ground(floor, "damp")) {
+        ctx["targets"] = every_id(floor)
+        note(ctx, "the water carries it to everything standing in it")
+    }
+
+    // 14. STORM on METAL. Rails and walkways conduct better than water, and
+    //     you are holding one end of the circuit.
+    sus (element == "storm" && has_ground(floor, "metal")) {
+        ctx["targets"] = every_id(floor)
+        ctx["self_damage"] = ctx["self_damage"] + to_int(ctx["power"] / 3.0)
+        note(ctx, "the gallery is one circuit, and a third of it comes back up your arm")
+    }
+
+    // 15. STORM in a NARROW room. There is nowhere to be that is not next to
+    //     everything else.
+    sus (element == "storm" && has_ground(floor, "narrow")) {
+        ctx["self_damage"] = ctx["self_damage"] + 4
+        note(ctx, "no room in here to be out of the way of it")
+    }
+
+    // 16. EARTH in a NARROW room brings it down, and a collapse is the second
+    //     place this asks you something: a blocked passage is a wall for them
+    //     and for you.
+    sus (element == "earth" && has_ground(floor, "narrow")) {
+        note(ctx, "the ceiling takes the hint")
+        ctx["asks"] = {
+            "id": "collapse",
+            "says": "the roof is coming down. it will come down on all of it, or you can hold it.",
+            "options": [
+                {"id": "drop", "name": "bring it down",
+                 "hint": "everything on the floor takes it; the way back is gone"},
+                {"id": "hold", "name": "hold it up",
+                 "hint": "nothing extra, the way back stays open, and it costs you"},
+            ],
+        }
+    }
+
+    // 17. LIGHT on DARK. The room stops being dark, which is worth more than
+    //     the damage was, and you find out what has been in here with you.
+    sus (element == "light" && has_ground(floor, "dark")) {
+        ctx["ground_drop"].yeet_in("dark")
+        note(ctx, "the dark goes, all at once, and does not come back")
+        ctx["asks"] = {
+            "id": "revealed",
+            "says": "there is something behind the stonework that was not meant to be found.",
+            "options": [
+                {"id": "take", "name": "take it",
+                 "hint": "it is worth having, and this was somebody's"},
+                {"id": "leave", "name": "leave it where it is",
+                 "hint": "the world notices restraint too"},
+            ],
+        }
+    }
+
+    // 18. WINDY ground thins anything that has to travel: an arrow, a thrown
+    //     handful of fire. It does nothing to a sword or to lightning.
+    sus (has_ground(floor, "windy") && (element == "fire" || ctx["art"]["tags"].contains("physical"))) {
+        ctx["global"] = ctx["global"] * 0.75
+        note(ctx, "the draught takes the edge off it")
+    }
+}
+
+// Whether this art is pointed at something. Anything that mends, guards,
+// reveals or rearranges the floor is pointed at the room instead, and `power`
+// on those means something other than damage.
+flex bet wants_a_target(art) {
+    grind t in ["heal", "guard", "reveal", "ground_add", "ground_clear"] {
+        sus (art["tags"].contains(t)) {
+            bounce cap
+        }
+    }
+    bounce art["power"] > 0 || art["tags"].contains("hold")
+}
+
+bet every_id(floor) {
+    yo out = []
+    grind f in standing(floor) {
+        out.yeet_in(f["id"])
+    }
+    bounce out
+}
+
+// -- the sheet rules ----------------------------------------------------------------------------
+
+bet sheet_rules(ctx) {
+    yo hero = ctx["hero"]
+
+    // 19. VOID always costs something. It takes from the thing and gives to
+    //     you, and there is no version of that which is free.
+    sus (ctx["element"] == "void") {
+        ctx["mp_gain"] = ctx["mp_gain"] + 3
+        ctx["corruption"] = ctx["corruption"] + 1
+        note(ctx, "something leaves it and arrives in you")
+    }
+
+    // 20. Striking something that cannot answer. The world is keeping score of
+    //     this whether or not you are.
+    grind id in ctx["targets"] {
+        yo f = find_foe(ctx["floor"], id)
+        sus (f != ghost && (f["conditions"].contains("held") ||
+                            f["conditions"].contains("stumbling"))) {
+            ctx["corruption"] = ctx["corruption"] + 1
+            note(ctx, "it could not have answered that, and you did it anyway")
+            bail
+        }
+    }
+
+    // 21. Acting in tune. This is the only way resonance goes up, which is why
+    //     an affinity is a commitment and not a damage bonus.
+    sus (ctx["element"] != ghost && ctx["element"] == hero["affinity"]) {
+        ctx["resonance"] = ctx["resonance"] + 1
+    }
+}
+
+// -- putting it together ---------------------------------------------------------------------------
+
+// The whole of one action. PURE: the state handed in is never touched.
+//
+//   state  {"hero", "floor"}
+//   choice {"art": id, "target": foe id or ghost}
+//
+// Back: {"ok", "hero", "floor", "effects", "asks", "error"}.
+flex bet resolve(state, choice) {
+    yo hero = deep_clone(state["hero"])
+    yo floor = deep_clone(state["floor"])
+
+    yo art = find_art(hero, choice.get("art", ""))
+    sus (art == ghost) {
+        bounce {"ok": cap, "error": "you do not know how to do that"}
+    }
+
+    // The soldier's first action of a floor is free. A trait that is a rule
+    // rather than a number, which is the point of origins.
+    yo free = has_trait(hero, "drilled") && !hero["used_this_floor"].contains("drilled")
+    yo cost = free ? 0 : art["cost"]
+    sus (hero["mp"] < cost) {
+        bounce {"ok": cap, "error": "you have not got it in you -- " +
+                                    to_yap(art["cost"]) + " mp, and you have " + to_yap(hero["mp"])}
+    }
+
+    yo ctx = new_ctx(hero, floor, art, choice.get("target", ghost))
+    hero["mp"] = hero["mp"] - cost
+    sus (free) {
+        hero["used_this_floor"].yeet_in("drilled")
+        note(ctx, "drilled: the first thing you do here is free")
+    }
+
+    // Who is being hit, before the ground gets an opinion about it. An art
+    // that is not pointed at anything gets no target at all -- `power` on a
+    // Mend is how much it closes, not how hard it hits, and a heal that also
+    // took a swing at the nearest thing would be a quietly terrible bug.
+    sus (wants_a_target(art)) {
+        sus (ctx["is_area"]) {
+            ctx["targets"] = every_id(floor)
+        } nah {
+            yo want = choice.get("target", ghost)
+            yo f = want == ghost ? ghost : find_foe(floor, want)
+            sus (f == ghost || f["hp"] <= 0) {
+                // A target that has already gone down, or none named: take
+                // whatever is still standing, so a script or a stale page
+                // cannot waste a turn on a corpse.
+                yo up = standing(floor)
+                sus (up.how_thicc() > 0) {
+                    ctx["targets"] = [up[0]["id"]]
+                }
+            } nah {
+                ctx["targets"] = [f["id"]]
+            }
+        }
+    }
+
+    ground_rules(ctx)
+    sheet_rules(ctx)
+    apply(ctx)
+
+    bounce {
+        "ok": fax,
+        "hero": ctx["hero"],
+        "floor": ctx["floor"],
+        "effects": ctx["effects"],
+        "asks": ctx["asks"],
+    }
+}
+
+// Damage, healing, ground, meters -- in that order, because the ground rules
+// have all had their say by now and this is only bookkeeping.
+bet apply(ctx) {
+    yo hero = ctx["hero"]
+    yo floor = ctx["floor"]
+    yo art = ctx["art"]
+
+    // Support first: a guard put up before the swing lands is the whole idea.
+    sus (art["tags"].contains("guard")) {
+        sus (!hero["conditions"].contains("guarded")) {
+            hero["conditions"].yeet_in("guarded")
+        }
+        ctx["effects"].yeet_in(effect("self", "set, and taking half of everything", ghost, 0))
+    }
+    sus (art["tags"].contains("heal")) {
+        yo healed = art["power"]
+        // The nurse's trait, and the chef's, are both rules about other rules.
+        sus (has_trait(hero, "triage") && hero["conditions"].how_thicc() > 0) {
+            yo gone = hero["conditions"][0]
+            drop_hero_condition(hero, gone)
+            ctx["effects"].yeet_in(effect("self", "triage: " + gone + ", dealt with", ghost, 0))
+        }
+        hero["hp"] = hero["hp"] + healed > hero["max_hp"] ? hero["max_hp"] : hero["hp"] + healed
+        ctx["effects"].yeet_in(effect("heal", "closed, mostly", ghost, healed))
+    }
+    sus (art["tags"].contains("reveal")) {
+        floor["seen"] = fax
+        ctx["effects"].yeet_in(effect("self", "you can see what everything is made of", ghost, 0))
+    }
+    sus (art["tags"].contains("ground_add")) {
+        add_ground(floor, "sacred")
+        ctx["effects"].yeet_in(effect("ground", "the floor means something now", ghost, 0))
+    }
+    sus (art["tags"].contains("ground_clear")) {
+        yo lifted = ghost
+        grind t in ["burning", "slick", "dark"] {
+            sus (has_ground(floor, t)) {
+                drop_ground(floor, t)
+                lifted = t
+                bail
+            }
+        }
+        // Written out rather than as a ternary across three lines: a statement
+        // ends at a newline, so that spelling is a parse error.
+        sus (lifted == ghost) {
+            ctx["effects"].yeet_in(effect("note", "there was nothing here of yours to undo", ghost, 0))
+        } nah {
+            ctx["effects"].yeet_in(effect("ground", "the " + lifted + " lifts", ghost, 0))
+        }
+    }
+
+    // Then the damage.
+    grind id in ctx["targets"] {
+        yo f = find_foe(floor, id)
+        sus (f == ghost || f["hp"] <= 0) {
+            nvm
+        }
+        yo hit = damage_to(ctx, f)
+        // `material_aftermath` may already have said why nothing happened --
+        // an earth shard at something flying, a snare at the same. Only fall
+        // back to a generic miss when it had nothing to say.
+        yo said = ctx["effects"].how_thicc()
+        material_aftermath(ctx, f)
+        sus (hit <= 0) {
+            sus (art["power"] > 0 && ctx["effects"].how_thicc() == said) {
+                ctx["effects"].yeet_in(effect("miss", "nothing", f["name"], 0))
+            }
+            nvm
+        }
+        f["hp"] = f["hp"] - hit
+        ctx["effects"].yeet_in(effect("damage", f["says"], f["name"], hit))
+        sus (f["hp"] <= 0) {
+            f["hp"] = 0
+            ctx["effects"].yeet_in(effect("kill", "down", f["name"], 0))
+        }
+    }
+
+    // Then what it cost the room and you.
+    grind t in ctx["ground_drop"] {
+        drop_ground(floor, t)
+    }
+    grind t in ctx["ground_add"] {
+        add_ground(floor, t)
+        ctx["effects"].yeet_in(effect("ground", "the floor is " + t + " now", ghost, 0))
+    }
+    sus (ctx["self_damage"] > 0) {
+        hurt_hero(ctx, ctx["self_damage"], "and some of that was yours")
+    }
+    sus (ctx["mp_gain"] > 0) {
+        hero["mp"] = hero["mp"] + ctx["mp_gain"]
+        sus (hero["mp"] > hero["max_mp"]) {
+            hero["mp"] = hero["max_mp"]
+        }
+        ctx["effects"].yeet_in(effect("self", "you are fuller than you were", ghost, ctx["mp_gain"]))
+    }
+    sus (ctx["resonance"] > 0) {
+        yo was = hero["resonance"]
+        hero["resonance"] = hero["resonance"] + ctx["resonance"]
+        ctx["effects"].yeet_in(effect("meter", "the world minds you a little more", ghost,
+                                      ctx["resonance"]))
+        sus (was < THIRD_TIER_AT && hero["resonance"] >= THIRD_TIER_AT) {
+            ctx["effects"].yeet_in(effect("meter", "and it will answer the whole of your element now",
+                                          ghost, 0))
+        }
+    }
+    sus (ctx["corruption"] > 0) {
+        hero["corruption"] = hero["corruption"] + ctx["corruption"]
+        ctx["effects"].yeet_in(effect("meter", "and it minds you in the other way too", ghost,
+                                      ctx["corruption"]))
+    }
+}
+
+flex bet drop_hero_condition(hero, name) {
+    yo kept = []
+    grind c in hero["conditions"] {
+        sus (c != name) {
+            kept.yeet_in(c)
+        }
+    }
+    hero["conditions"] = kept
+    bounce hero
+}
+
+bet hurt_hero(ctx, amount, says) {
+    yo hero = ctx["hero"]
+    yo taken = amount
+    sus (hero["conditions"].contains("guarded")) {
+        taken = to_int(taken / 2.0)
+    }
+    hero["hp"] = hero["hp"] - taken
+    ctx["effects"].yeet_in(effect("hurt", says, "you", taken))
+    sus (hero["hp"] <= 0) {
+        hero["hp"] = 0
+        ctx["effects"].yeet_in(effect("down", "and that is as far as you get", "you", 0))
+    }
+}
+
+// -- the second choice ------------------------------------------------------------------------------
+
+// The follow-up. Same purity: a copy in, a copy out.
+flex bet answer(state, ask_id, option_id) {
+    yo hero = deep_clone(state["hero"])
+    yo floor = deep_clone(state["floor"])
+    yo ctx = new_ctx(hero, floor, {"id": "answer", "cost": 0, "power": 0, "element": ghost,
+                                   "tags": []}, ghost)
+
+    sus (ask_id == "ignition") {
+        sus (option_id == "shield") {
+            hurt_hero(ctx, 5, "you put yourself between the room and the rest of it")
+            note(ctx, "it stays where it is")
+        } nah {
+            grind f in standing(floor) {
+                f["hp"] = f["hp"] - 6
+                ctx["effects"].yeet_in(effect("damage", "already alight", f["name"], 6))
+                sus (f["hp"] <= 0) {
+                    f["hp"] = 0
+                    ctx["effects"].yeet_in(effect("kill", "down", f["name"], 0))
+                }
+            }
+            hurt_hero(ctx, 4, "you are in the room too")
+        }
+    } kinda_sus (ask_id == "collapse") {
+        sus (option_id == "drop") {
+            grind f in standing(floor) {
+                sus (foe_has(f, "grounded")) {
+                    f["hp"] = f["hp"] - 8
+                    ctx["effects"].yeet_in(effect("damage", "the ceiling arrives", f["name"], 8))
+                    sus (f["hp"] <= 0) {
+                        f["hp"] = 0
+                        ctx["effects"].yeet_in(effect("kill", "down", f["name"], 0))
+                    }
+                }
+            }
+            floor["blocked"] = fax
+            ctx["effects"].yeet_in(effect("ground", "the way back is gone", ghost, 0))
+        } nah {
+            hurt_hero(ctx, 3, "you hold it, and it is heavier than it looks")
+            ctx["effects"].yeet_in(effect("ground", "the way back stays open", ghost, 0))
+        }
+    } kinda_sus (ask_id == "revealed") {
+        sus (option_id == "take") {
+            hero["mp"] = hero["max_mp"]
+            ctx["effects"].yeet_in(effect("self", "whatever it was, it was full of something",
+                                          ghost, 0))
+            sus (has_ground(floor, "sacred")) {
+                hero["corruption"] = hero["corruption"] + 1
+                ctx["effects"].yeet_in(effect("meter", "and it was somebody's", ghost, 1))
+            }
+        } nah {
+            hero["resonance"] = hero["resonance"] + 1
+            ctx["effects"].yeet_in(effect("meter", "the world notices restraint too", ghost, 1))
+        }
+    } nah {
+        bounce {"ok": cap, "error": "there is nothing to answer"}
+    }
+
+    bounce {"ok": fax, "hero": ctx["hero"], "floor": ctx["floor"],
+            "effects": ctx["effects"], "asks": ghost}
+}
+
+// -- the cascade -------------------------------------------------------------------------------------
+
+// The other half of the propagation, run at the top of every turn: what the
+// room does on its own now that you have changed it.
+flex bet cascade(state) {
+    yo hero = deep_clone(state["hero"])
+    yo floor = deep_clone(state["floor"])
+    yo ctx = new_ctx(hero, floor, {"id": "cascade", "cost": 0, "power": 0, "element": ghost,
+                                   "tags": []}, ghost)
+
+    sus (has_ground(floor, "burning")) {
+        grind f in standing(floor) {
+            sus (foe_has(f, "ember-blooded")) {
+                nvm
+            }
+            f["hp"] = f["hp"] - BURN_PER_TURN
+            ctx["effects"].yeet_in(effect("damage", "standing in it", f["name"], BURN_PER_TURN))
+            sus (foe_has(f, "frost-blooded")) {
+                drop_trait(f, "frost-blooded")
+                ctx["effects"].yeet_in(effect("trait", "the cold goes out of it", f["name"], 0))
+            }
+            sus (f["hp"] <= 0) {
+                f["hp"] = 0
+                ctx["effects"].yeet_in(effect("kill", "down", f["name"], 0))
+            }
+        }
+        // Your own element decides how much of this is your problem.
+        yo mine = OPPOSED[hero["affinity"]] == "fire" ? BURN_PER_TURN * 2 : BURN_PER_TURN
+        sus (hero["affinity"] == "fire") {
+            ctx["effects"].yeet_in(effect("note", "it is yours; it does not touch you", ghost, 0))
+        } nah {
+            hurt_hero(ctx, mine, "you are standing in it as well")
+        }
+        // Fire eats the gas and then itself.
+        sus (has_ground(floor, "gas")) {
+            drop_ground(floor, "gas")
+            ctx["effects"].yeet_in(effect("ground", "the last of the gas goes", ghost, 0))
+        }
+    }
+
+    sus (has_ground(floor, "slick")) {
+        grind f in standing(floor) {
+            sus (foe_has(f, "grounded") && !f["conditions"].contains("stumbling")) {
+                add_condition(f, "stumbling")
+                ctx["effects"].yeet_in(effect("condition", "cannot get a footing", f["name"], 0))
+            }
+        }
+    }
+
+    // A swarm that has been halved is two smaller problems. The `swarm` trait
+    // is what makes this happen; nothing here knows it is rats.
+    yo split = []
+    grind f in standing(floor) {
+        sus (foe_has(f, "swarm") && f["hp"] * 2 <= f["max_hp"] && !f["conditions"].contains("split")) {
+            add_condition(f, "split")
+            yo half = to_int(f["hp"] / 2.0)
+            sus (half > 0) {
+                f["hp"] = f["hp"] - half
+                split.yeet_in({"id": f["id"] + "-b", "name": f["name"] + " (the rest)",
+                               "hp": half, "max_hp": f["max_hp"], "power": f["power"],
+                               "traits": deep_clone(f["traits"]), "conditions": ["split"],
+                               "says": "what is left of it, going the other way"})
+                ctx["effects"].yeet_in(effect("note", "it comes apart into two of itself",
+                                              f["name"], 0))
+            }
+        }
+    }
+    grind s in split {
+        floor["foes"].yeet_in(s)
+    }
+
+    bounce {"ok": fax, "hero": ctx["hero"], "floor": ctx["floor"],
+            "effects": ctx["effects"], "asks": ghost}
+}
+
+// -- their turn ---------------------------------------------------------------------------------------
+
+// Deterministic, like everything else: each thing still standing hits you for
+// what it has, unless it cannot act. No rolls, so no bad luck -- only bad
+// decisions, which is the point.
+flex bet foes_act(state) {
+    yo hero = deep_clone(state["hero"])
+    yo floor = deep_clone(state["floor"])
+    yo ctx = new_ctx(hero, floor, {"id": "theirs", "cost": 0, "power": 0, "element": ghost,
+                                   "tags": []}, ghost)
+
+    grind f in standing(floor) {
+        sus (f["conditions"].contains("held")) {
+            drop_condition(f, "held")
+            ctx["effects"].yeet_in(effect("note", "still held", f["name"], 0))
+            nvm
+        }
+        sus (f["conditions"].contains("stumbling")) {
+            drop_condition(f, "stumbling")
+            ctx["effects"].yeet_in(effect("note", "goes over instead", f["name"], 0))
+            nvm
+        }
+        hurt_hero(ctx, f["power"], f["name"] + " reaches you")
+        sus (hero["hp"] <= 0) {
+            bail
+        }
+    }
+
+    // A guard lasts until your next turn, and this was it.
+    drop_hero_condition(hero, "guarded")
+
+    bounce {"ok": fax, "hero": ctx["hero"], "floor": ctx["floor"],
+            "effects": ctx["effects"], "asks": ghost}
+}

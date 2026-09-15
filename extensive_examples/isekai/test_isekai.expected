@@ -1,0 +1,214 @@
+-- every build in the three lists is a legal one --
+  120 of them
+-- and nothing outside the lists is --
+  nobody has ever been a wizard
+  the summoning does not make bards
+  custard is not an element that answers
+-- an origin is stats and a rule; a calling is only a kit --
+  librarian  MIG 3  FOC 4  GRI 3  WIT 5   Read the Room: you can see what a thing is made of before you touch it
+  soldier    MIG 5  FOC 3  GRI 4  WIT 3   Drilled: the first thing you do on a floor costs you nothing
+  nurse      MIG 3  FOC 5  GRI 3  WIT 4   Triage: when you mend, you also clear one condition
+  chef       MIG 4  FOC 3  GRI 5  WIT 3   Mise en Place: what you carry works twice as well and never costs a turn
+  programmer MIG 3  FOC 4  GRI 3  WIT 5   Rubber Duck: once a floor, you may take back a resolution and choose again
+-- a mage gets the whole element, everybody else gets the first of it --
+  knight  Guard, Shield Bash, Riposte, Hold the Line, Chill
+  mage    Dispel, Read Aether, Chill, Rime
+  ranger  Loose, Snare, Scout, Volley, Chill
+  cleric  Mend, Ward, Smite, Consecrate, Chill
+-- and the third tier waits on the world --
+  locked:   4 arts, and Deepfreeze is not one of them
+  at 10:     5 arts, including Deepfreeze
+-- every affinity is soft to its opposite --
+  fire   -> soft to frost
+  frost  -> soft to fire
+  storm  -> soft to earth
+  earth  -> soft to storm
+  light  -> soft to void
+  void   -> soft to light
+
+-- the material rules: what a thing is made of --
+      rule                                         fires   else
+   1. armoured halves anything but storm and light   2  vs    5
+   2. a swarm takes half from a single strike        2  vs    5
+   2.   and double from anything that covers the room  30  vs   15
+   3. fire doubles against the frost-blooded        10  vs    5
+   4. frost doubles against the wet                  8  vs    4
+   5. storm doubles against armour instead of halving  10  vs    5
+   6. earth cannot reach anything flying             0  vs    6
+   7. light triples against the undead              12  vs    4
+   8. fire does nothing to the ember-blooded         0  vs    5
+
+-- the ground rules: where you are standing --
+      rule                                         fires   else
+   9. fire on gas takes the whole room              10  vs    5
+   9.   and a good deal of you with it               6  vs    0
+  10. fire on damp is half wasted boiling it         2  vs    5
+  12. frost on damp freezes the floor over           4  vs    4
+  14. storm on metal comes back up your arm          1  vs    0
+  15. storm in a narrow room has nowhere else to be   4  vs    0
+  18. wind thins anything that has to travel         3  vs    5
+
+-- the rules that change the room rather than the numbers --
+  fire on damp leaves:            dark
+  frost on damp leaves:           slick
+  light on dark leaves:              (and asks: revealed)
+  fire on gas leaves:             burning   (and asks: ignition)
+  earth in a narrow room asks:    collapse
+  fire on sacred costs:           corruption 2
+  void always costs:              corruption 1, and mp goes 16 -> 16 despite the cost
+
+-- resonance is the only thing an affinity is for --
+  in tune:      resonance 1
+  out of tune:  resonance 0
+-- and striking something that cannot answer is noticed --
+  corruption 1
+
+-- the outcomes nobody wrote down --
+  fire into a gas-filled chapel:  10 done, 6 taken, corruption 2, and it still asks ignition
+  fire at an armoured frost-thing, in water:
+     half for the water, half for the plate, double for the cold: 2
+     and the cold is gone afterwards: fax
+  storm into a narrow flooded room: 5 done, 4 taken -- the water includes you
+  storm down the iron gallery:     25 across 3 of them, 1 back
+
+-- the cascade: what the room does once you have changed it --
+  a frost mage in a burning room takes 6 (their own opposite, doubled)
+  and the thing in it stops being frost-blooded: fax
+  and the gas goes: burning
+  slick ground trips what stands on it: stumbling
+  a swarm cut in half becomes two of itself: 2 of them
+
+-- the preview and the outcome are the same call --
+  252 rooms, 0 that resolved differently the second time
+-- and resolving never touches the state it was handed --
+  identical afterwards: fax
+
+-- a whole descent --
+  nurse, cleric of fire (soft to frost)
+
+  turn 1 [floor 1]  Smite -> ghoul-1
+            room  note      you are somewhere else now, and it is downhill.
+            you   note      the dark goes, all at once, and does not come back
+            you   damage    ghoul: waterlogged and in no hurry  (8)
+  turn 1 [floor 1]  ASKED: there is something behind the stonework that was not meant to be found.
+            answered: leave
+            you   meter     the world notices restraint too  (1)
+            them  hurt      you: ghoul reaches you  (4)
+            them  hurt      you: ghoul reaches you  (4)
+  turn 2 [floor 1]  Smite -> ghoul-1
+            you   damage    ghoul: waterlogged and in no hurry  (8)
+            you   kill      ghoul: down
+            them  hurt      you: ghoul reaches you  (4)
+  turn 3 [floor 1]  Mend -> ghost
+            you   heal      closed, mostly  (11)
+            them  hurt      you: ghoul reaches you  (4)
+  turn 4 [floor 1]  Smite -> ghoul-2
+            you   damage    ghoul: the other one  (8)
+            them  hurt      you: ghoul reaches you  (4)
+  turn 5 [floor 1]  Smite -> ghoul-2
+            you   damage    ghoul: the other one  (8)
+            you   kill      ghoul: down
+            room  note      down again. a long room, a low ceiling, and an old smell with weight to it.
+  turn 6 [floor 2]  Ember -> rats
+            you   note      the gas goes up all at once, and the whole hall with it
+            you   damage    a boil of rats: a floor that is moving  (5)
+            you   ground    the floor is burning now
+            you   hurt      you: and some of that was yours  (6)
+            you   meter     the world minds you a little more  (1)
+  turn 6 [floor 2]  ASKED: the hall is alight and so is everything in it, you included.
+            answered: press
+            you   damage    a boil of rats: already alight  (6)
+            you   hurt      you: you are in the room too  (4)
+            them  hurt      you: a boil of rats reaches you  (3)
+            room  damage    a boil of rats: standing in it  (3)
+            room  note      it is yours; it does not touch you
+            room  note      a boil of rats: it comes apart into two of itself
+  turn 7 [floor 2]  Smite -> rats
+            you   damage    a boil of rats: a floor that is moving  (4)
+            you   kill      a boil of rats: down
+            them  hurt      you: a boil of rats (the rest) reaches you  (3)
+            room  damage    a boil of rats (the rest): standing in it  (3)
+            room  kill      a boil of rats (the rest): down
+            room  note      it is yours; it does not touch you
+            room  note      down again. pews, ice, and something that has been kneeling for a very long time.
+  turn 8 [floor 3]  Smite -> warden
+            you   damage    the warden: cold all the way through, and plated over that  (8)
+            them  hurt      you: the warden reaches you  (5)
+  turn 9 [floor 3]  Smite -> warden
+            you   damage    the warden: cold all the way through, and plated over that  (8)
+            them  hurt      you: the warden reaches you  (5)
+  turn 10 [floor 3]  Mend -> ghost
+            you   heal      closed, mostly  (11)
+            them  hurt      you: the warden reaches you  (5)
+  turn 11 [floor 3]  Smite -> warden
+            you   damage    the warden: cold all the way through, and plated over that  (8)
+            you   kill      the warden: down
+            room  note      down again. walkways, railings, and a draught coming up through all of it.
+  turn 12 [floor 4]  Ward -> ghost
+            you   self      set, and taking half of everything
+            them  hurt      you: iron sentinel reaches you  (1)
+            them  hurt      you: iron sentinel reaches you  (1)
+            them  hurt      you: shrike reaches you  (1)
+  turn 13 [floor 4]  Smite -> shrike
+            you   damage    shrike: nowhere near the floor  (8)
+            you   kill      shrike: down
+            them  hurt      you: iron sentinel reaches you  (3)
+            them  hurt      you: iron sentinel reaches you  (3)
+  turn 14 [floor 4]  Mend -> ghost
+            you   heal      closed, mostly  (11)
+            them  hurt      you: iron sentinel reaches you  (3)
+            them  hurt      you: iron sentinel reaches you  (3)
+  turn 15 [floor 4]  Smite -> sentinel-1
+            you   damage    iron sentinel: plated, and patient  (8)
+            them  hurt      you: iron sentinel reaches you  (3)
+            them  hurt      you: iron sentinel reaches you  (3)
+  turn 16 [floor 4]  Ward -> ghost
+            you   self      set, and taking half of everything
+            them  hurt      you: iron sentinel reaches you  (1)
+            them  hurt      you: iron sentinel reaches you  (1)
+  turn 17 [floor 4]  Smite -> sentinel-1
+            you   damage    iron sentinel: plated, and patient  (8)
+            you   kill      iron sentinel: down
+            them  hurt      you: iron sentinel reaches you  (3)
+  turn 18 [floor 4]  Mend -> ghost
+            you   heal      closed, mostly  (11)
+            them  hurt      you: iron sentinel reaches you  (3)
+  turn 19 [floor 4]  Smite -> sentinel-2
+            you   damage    iron sentinel: the same again  (8)
+            them  hurt      you: iron sentinel reaches you  (3)
+  turn 20 [floor 4]  Ward -> ghost
+            you   self      set, and taking half of everything
+            them  hurt      you: iron sentinel reaches you  (1)
+  turn 21 [floor 4]  Smite -> sentinel-2
+            you   damage    iron sentinel: the same again  (8)
+            you   kill      iron sentinel: down
+            room  note      down again. it has been waiting the whole time, and it knew which way you would come.
+  turn 22 [floor 5]  Smite -> king
+            you   note      the dark goes, all at once, and does not come back
+            you   damage    the hollow king: finished with once already, and unconvinced  (24)
+  turn 22 [floor 5]  ASKED: there is something behind the stonework that was not meant to be found.
+            answered: take
+            you   self      whatever it was, it was full of something
+            you   meter     and it was somebody's  (1)
+            them  hurt      you: the hollow king reaches you  (7)
+  turn 23 [floor 5]  Ward -> ghost
+            you   self      set, and taking half of everything
+            them  hurt      you: the hollow king reaches you  (3)
+  turn 24 [floor 5]  Smite -> king
+            you   damage    the hollow king: finished with once already, and unconvinced  (24)
+            you   kill      the hollow king: down
+            room  note      there is nothing below this. you are through.
+
+-- the reckoning --
+  you came out the other side of it.
+  floors: 5 of 5   turns: 24
+  it was starting to notice you: resonance 2.
+  with a little on your hands: corruption 1.
+
+  nurse        -> cleric   of fire   (soft to frost)
+  MIG 3   FOC 5   GRI 3   WIT 4
+  hp 21/39   mp 19/20   resonance 2   corruption 1
+
+  THE HOLLOW THRONE   (sacred)
+  it has been waiting the whole time, and it knew which way you would come.
+-- done --

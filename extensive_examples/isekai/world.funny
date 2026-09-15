@@ -1,0 +1,267 @@
+// world.funny — the ground you are standing on, and what is standing on it.
+//
+// THE POINT OF THIS FILE IS THAT IT NAMES NOTHING SPECIAL. A troll is not a
+// troll to the resolver. It is `frost-blooded` and `grounded`, and everything
+// that happens to it follows from those two words and from what the floor is
+// made of. `resolve.funny` may read a ground tag and a material trait; it may
+// not read a floor's name or a creature's. That rule is what keeps the rule
+// table a model rather than a pile of special cases, and it is the reason the
+// interesting outcomes are ones nobody wrote down.
+//
+// GROUND TAGS come in two kinds. Some a room simply has -- `damp`, `gas`,
+// `narrow`, `sacred`, `metal`, `windy`. Two only ever arrive by being caused:
+// `burning` and `slick`. `dark` is both, which is what makes Light interesting
+// on the first floor and on the last.
+//
+// THE DESCENT IS FIXED, five floors, and that is a decision rather than a
+// shortcut. A generated dungeon needs a seed, and a seed is the one thing this
+// example is built to do without -- see PLAN.md rule 2. It also means the
+// golden asserts a rule set rather than asserting a dungeon.
+
+gimme yapper
+
+flex deadass GROUND_TAGS = [
+    "damp", "gas", "narrow", "sacred", "dark", "metal", "windy", "burning", "slick",
+]
+
+// Tags an action can put down or lift. Everything else is a fact about the
+// room that you are stuck with.
+flex deadass CAUSED_TAGS = ["burning", "slick", "dark", "sacred"]
+
+flex deadass TRAITS = [
+    "frost-blooded", "ember-blooded", "armoured", "undead", "swarm", "flying", "grounded", "wet",
+]
+
+flex deadass GROUND_SAYS = {
+    "damp": "water underfoot, ankle deep in the low places",
+    "gas": "something heavier than air has been pooling here a long time",
+    "narrow": "no room to be anywhere but next to each other",
+    "sacred": "somebody meant this place, once",
+    "dark": "your eyes are not going to adjust",
+    "metal": "grating, rails, and a great deal of iron",
+    "windy": "a draught from somewhere above, moving hard",
+    "burning": "alight, and spreading",
+    "slick": "frozen over, and going nowhere gracefully",
+}
+
+flex deadass TRAIT_SAYS = {
+    "frost-blooded": "cold all the way through",
+    "ember-blooded": "runs hot; heat is a gift to it",
+    "armoured": "plated, and the plate is the point",
+    "undead": "was finished with once already",
+    "swarm": "too many to count, and dividing is a thing it can do",
+    "flying": "not touching the floor at all",
+    "grounded": "standing on the floor, for better or worse",
+    "wet": "soaked through",
+}
+
+bet foe(id, name, hp, power, traits, says) {
+    bounce {
+        "id": id,
+        "name": name,
+        "hp": hp,
+        "max_hp": hp,
+        "power": power,
+        "traits": traits,
+        "conditions": [],
+        "says": says,
+    }
+}
+
+// -- the descent ---------------------------------------------------------------------------
+
+// Five floors, each built so that a different rule is the one that matters. A
+// player who picked fire has a wonderful second floor and a miserable first
+// one; a player who picked earth cannot touch the shrike on the fourth and has
+// to solve it another way. That is the whole design: no affinity is correct.
+flex deadass FLOORS = [
+    {
+        "n": 1,
+        "name": "the wet stair",
+        "says": "a hundred steps down, and water coming the other way.",
+        "ground": ["damp", "dark"],
+        "asks": "does your element get on with water?",
+        "foes": [
+            ["ghoul-1", "ghoul", 12, 4, ["wet", "grounded"], "waterlogged and in no hurry"],
+            ["ghoul-2", "ghoul", 12, 4, ["wet", "grounded"], "the other one"],
+        ],
+    },
+    {
+        "n": 2,
+        "name": "the gas hall",
+        "says": "a long room, a low ceiling, and an old smell with weight to it.",
+        "ground": ["gas", "narrow"],
+        "asks": "the obvious thing here is a catastrophe. do it anyway?",
+        "foes": [
+            ["rats", "a boil of rats", 20, 3, ["swarm", "grounded"], "a floor that is moving"],
+        ],
+    },
+    {
+        "n": 3,
+        "name": "the frozen chapel",
+        "says": "pews, ice, and something that has been kneeling for a very long time.",
+        "ground": ["sacred", "damp"],
+        "asks": "the right answer to the warden is the wrong answer to the room.",
+        "foes": [
+            ["warden", "the warden", 22, 5, ["frost-blooded", "grounded", "armoured"],
+             "cold all the way through, and plated over that"],
+        ],
+    },
+    {
+        "n": 4,
+        "name": "the iron gallery",
+        "says": "walkways, railings, and a draught coming up through all of it.",
+        "ground": ["metal", "windy"],
+        "asks": "armour and lightning have a strong opinion about each other.",
+        "foes": [
+            ["sentinel-1", "iron sentinel", 12, 3, ["armoured", "grounded"], "plated, and patient"],
+            ["sentinel-2", "iron sentinel", 12, 3, ["armoured", "grounded"], "the same again"],
+            ["shrike", "shrike", 6, 3, ["flying"], "nowhere near the floor"],
+        ],
+    },
+    {
+        "n": 5,
+        "name": "the hollow throne",
+        "says": "it has been waiting the whole time, and it knew which way you would come.",
+        "ground": ["dark", "sacred"],
+        "asks": "everything you chose, all at once.",
+        "foes": [
+            ["king", "the hollow king", 36, 7, ["undead", "armoured", "grounded"],
+             "finished with once already, and unconvinced"],
+        ],
+    },
+]
+
+flex bet floor_count() {
+    bounce FLOORS.how_thicc()
+}
+
+// A floor you may safely change. FLOORS is a constant and the run mutates its
+// copy every single turn, so this is the only way in.
+flex bet fresh_floor(n) {
+    sus (n < 1 || n > FLOORS.how_thicc()) {
+        bounce ghost
+    }
+    yo raw = FLOORS[n - 1]
+    yo foes = []
+    grind row in raw["foes"] {
+        foes.yeet_in(foe(row[0], row[1], row[2], row[3], deep_clone(row[4]), row[5]))
+    }
+    bounce {
+        "n": raw["n"],
+        "name": raw["name"],
+        "says": raw["says"],
+        "asks": raw["asks"],
+        "ground": deep_clone(raw["ground"]),
+        "foes": foes,
+        // Set by `earth` in a narrow room, and checked by the run.
+        "blocked": cap,
+        // Whether you can see what things are made of. The librarian knows
+        // from the start; everybody else has to spend an action on it.
+        "seen": cap,
+    }
+}
+
+// -- the ground ------------------------------------------------------------------------------
+
+flex bet has_ground(floor, tag) {
+    bounce floor["ground"].contains(tag)
+}
+
+flex bet add_ground(floor, tag) {
+    sus (!floor["ground"].contains(tag)) {
+        floor["ground"].yeet_in(tag)
+    }
+    bounce floor
+}
+
+flex bet drop_ground(floor, tag) {
+    yo kept = []
+    grind t in floor["ground"] {
+        sus (t != tag) {
+            kept.yeet_in(t)
+        }
+    }
+    floor["ground"] = kept
+    bounce floor
+}
+
+// -- what is on it ----------------------------------------------------------------------------
+
+flex bet foe_has(f, trait) {
+    bounce f["traits"].contains(trait)
+}
+
+flex bet drop_trait(f, trait) {
+    yo kept = []
+    grind t in f["traits"] {
+        sus (t != trait) {
+            kept.yeet_in(t)
+        }
+    }
+    f["traits"] = kept
+    bounce f
+}
+
+flex bet add_condition(f, name) {
+    sus (!f["conditions"].contains(name)) {
+        f["conditions"].yeet_in(name)
+    }
+    bounce f
+}
+
+flex bet drop_condition(f, name) {
+    yo kept = []
+    grind c in f["conditions"] {
+        sus (c != name) {
+            kept.yeet_in(c)
+        }
+    }
+    f["conditions"] = kept
+    bounce f
+}
+
+flex bet standing(floor) {
+    yo out = []
+    grind f in floor["foes"] {
+        sus (f["hp"] > 0) {
+            out.yeet_in(f)
+        }
+    }
+    bounce out
+}
+
+flex bet cleared(floor) {
+    bounce standing(floor).how_thicc() == 0
+}
+
+flex bet find_foe(floor, id) {
+    grind f in floor["foes"] {
+        sus (f["id"] == id) {
+            bounce f
+        }
+    }
+    bounce ghost
+}
+
+// -- printing it -------------------------------------------------------------------------------
+
+flex bet floor_lines(floor, seen) {
+    yo out = []
+    out.yeet_in("  " + yapper.SCREAM(floor["name"]) + "   (" + floor["ground"].join(", ") + ")")
+    out.yeet_in("  " + floor["says"])
+    grind f in standing(floor) {
+        yo line = "   - " + yapper.pad_right(f["name"], 16) +
+                  yapper.pad_left(to_yap(f["hp"]) + "/" + to_yap(f["max_hp"]), 7) + " hp"
+        // What a thing is made of is hidden unless you have a reason to know
+        // it: the librarian's trait, a ranger's Scout, a mage's Read Aether.
+        sus (seen) {
+            line = line + "   " + f["traits"].join(", ")
+        }
+        sus (f["conditions"].how_thicc() > 0) {
+            line = line + "   [" + f["conditions"].join(", ") + "]"
+        }
+        out.yeet_in(line)
+    }
+    bounce out
+}
