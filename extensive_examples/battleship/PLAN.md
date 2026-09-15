@@ -605,11 +605,23 @@ stronger algorithm than the one the 62–65 figure describes. The other two pred
 is what makes the third one readable as a difference in the algorithm rather than in the
 arithmetic.
 
-**The static split is a loss on cheap work, and the README says so.** At 2,000 games per strategy
-it is worth 5.0× on `density` and 1.4× on `random`; at 120 games `random` was *slower* on eight
-workers than on one, 0.8 s against 0.5 s, because eight VM startups are most of the budget for work
-that small. §4.6 did not predict this. It is in the README with its numbers rather than measured
-only at the size that flatters the threads.
+**No speed-up multiplier is published, because the timings would not reproduce.** §1 and §4.6 both
+assume the parallel measurement yields a number worth printing. It does not, on this machine. Three
+repeats of the identical 2,000-game command gave single-worker `hunt` at 54.6 s, 54.3 s and 15.2 s,
+and single-worker `density` at 290.1 s, 142.2 s and 284.3 s — bimodal across runs whose input is
+byte-for-byte identical. A ratio drawn from those lands anywhere between 1.2× and 6.2× depending on
+which pair is chosen. Contention is not the explanation: the first run was taken while the machine
+was busy and the other two while it was idle, and the outlier is an idle run.
+
+Eight workers beat one in all nine pairings, so the README says the split is worth having and shows
+all three runs, and it explicitly declines to quote a multiplier. Whatever is moving — CPU
+frequency behaviour, or how one long-lived worker's heap behaves across two thousand games where
+eight short-lived ones never get there — is not characterised, and is worth a look on its own terms
+rather than being smoothed over here.
+
+The *distribution* figures have none of this problem: five runs at two game counts, on one worker
+and on eight, produced identical means, medians, bests and worsts. That is what seeding each game
+from its own game number buys, and it is the measurement this example actually rests on.
 
 **The top-level `README.md`'s example bullet was reworded rather than recounted.** §7's B6 asks for
 "the example count and list" to be updated. That bullet sits inside the *"New in v2.1.0"* block and
