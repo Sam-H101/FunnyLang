@@ -1,0 +1,34 @@
+# docker compose -f extensive_examples/battleship/compose.yaml up --build
+#
+# The build context is the repository root, because the image compiles the
+# language from C source before it compiles the game.
+
+name: funnylang-battleship
+
+services:
+  battleship:
+    build:
+      context: ../..
+      dockerfile: extensive_examples/battleship/Dockerfile
+    image: funnylang-battleship:local
+    ports:
+      - "8443:8443"
+
+    # The server writes no files at all: it reads `web/` and the certificate
+    # and keeps one game in memory. `tmpfs` is belt and braces rather than a
+    # known requirement.
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # No healthcheck here on purpose: the image already declares one, and it is
+    # a better one than a compose file would write -- it completes the TLS
+    # handshake against the certificate the server is presenting and insists on
+    # a real game in the answer.
+
+    restart: unless-stopped

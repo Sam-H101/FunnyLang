@@ -1,0 +1,42 @@
+# What never needs to reach a build context.
+#
+# The Docker build compiles the language from C source, so it needs `native/`,
+# `selfhost/`, `tools/`, `build.sh` and whichever example is being built --
+# and nothing else. Everything below is either history, a build output, or
+# something that would invalidate the cache on every commit.
+
+.git
+.github
+.gitattributes
+.claude
+
+# Build outputs. The image builds its own; shipping a Windows or macOS binary
+# into a Linux build context would at best be ignored and at worst be used.
+/funny
+/funny.exe
+/funnyrt
+/funnyrt.exe
+/hello_standalone
+/hello_standalone.exe
+/funny_tsan
+*.o
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+/build/
+/bootstrap/*.funnypak
+*.funnyc
+*.funnypak
+
+# Docs and plans: read by people, not by the compiler.
+*.md
+!README.md
+docs/
+
+# Editor and OS litter.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

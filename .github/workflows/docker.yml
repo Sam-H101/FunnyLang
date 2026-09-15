@@ -1,0 +1,120 @@
+name: docker
+
+# A Dockerfile that nothing builds is a Dockerfile that has already stopped
+# working. This builds the battleship image on every change that could break
+# it, then runs the container and plays a turn against it.
+#
+# It does not push anywhere. Publishing to a registry is a decision about
+# credentials and naming that belongs to whoever owns the repository, not to
+# a file that only wants to know whether the thing still builds.
+
+on:
+  push:
+    paths:
+      - 'native/**'
+      - 'selfhost/**'
+      - 'build.sh'
+      - 'extensive_examples/battleship/**'
+      - '.dockerignore'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    paths:
+      - 'native/**'
+      - 'selfhost/**'
+      - 'build.sh'
+      - 'extensive_examples/battleship/**'
+      - '.dockerignore'
+      - '.github/workflows/docker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: build the image, then play a game in it
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: extensive_examples/battleship/Dockerfile
+          tags: funnylang-battleship:ci
+          load: true
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The point of the two-stage build. If a compiler or an interpreter can
+      # be found in the runtime image, the second stage has picked something up
+      # it should not have.
+      - name: There is no toolchain in the runtime image
+        run: |
+          set -eu
+          if docker run --rm --entrypoint /bin/sh funnylang-battleship:ci \
+               -c 'command -v gcc || command -v cc || command -v python3 || command -v make'; then
+            echo "FAIL: the runtime image can build things."
+            exit 1
+          fi
+          echo "no compiler, no interpreter, nothing to run a .funny with."
+
+      - name: How big is it
+        run: docker image ls funnylang-battleship:ci --format '  {{.Size}}'
+
+      - name: Start it, and wait for its own healthcheck
+        run: |
+          set -eu
+          docker run -d --name bs -p 8443:8443 --read-only --tmpfs /tmp funnylang-battleship:ci
+          for i in $(seq 1 60); do
+            health=$(docker inspect --format '{{.State.Health.Status}}' bs)
+            [ "$health" = healthy ] && break
+            [ "$health" = unhealthy ] && { docker logs bs; exit 1; }
+            sleep 1
+          done
+          [ "$(docker inspect --format '{{.State.Health.Status}}' bs)" = healthy ]
+          echo "healthy -- which means it completed a TLS handshake and found a game behind it."
+
+      - name: Play a turn against it from outside the container
+        run: |
+          set -eu
+          docker cp bs:/app/certs/ca.pem ./ca.pem
+          curl -sS --cacert ./ca.pem https://localhost:8443/api/state -o state.json \
+               -w '  GET  /api/state   %{http_code}\n'
+          grep -q '"phase":"placing"' state.json
+          curl -sS --cacert ./ca.pem -X POST https://localhost:8443/api/place \
+               -H 'content-type: application/json' -d '{"auto":true}' -o /dev/null \
+               -w '  POST /api/place    %{http_code}\n'
+          curl -sS --cacert ./ca.pem -X POST https://localhost:8443/api/ready \
+               -H 'content-type: application/json' -d '{}' -o /dev/null \
+               -w '  POST /api/ready    %{http_code}\n'
+          curl -sS --cacert ./ca.pem -X POST https://localhost:8443/api/fire \
+               -H 'content-type: application/json' -d '{"at":44}' -o fired.json \
+               -w '  POST /api/fire     %{http_code}\n'
+          grep -q '"result"' fired.json
+          echo "  a shot was fired at E5 and the engine answered."
+
+      - name: And it is not running as root
+        run: |
+          set -eu
+          who=$(docker exec bs id -un 2>/dev/null || docker inspect --format '{{.Config.User}}' bs)
+          echo "  running as: $who"
+          [ "$who" != root ] && [ "$who" != 0 ]
+
+      - name: Logs, if anything above went wrong
+        if: failure()
+        run: docker logs bs || true
+
+      - name: Stop
+        if: always()
+        run: docker rm -f bs || true

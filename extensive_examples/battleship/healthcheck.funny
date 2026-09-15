@@ -1,0 +1,86 @@
+// healthcheck.funny — is there a game in there, or only a process?
+//
+// Docker's HEALTHCHECK needs something to run, and the usual answer is to
+// install curl or wget into the runtime image. That would be a strange thing
+// to do here: the whole claim of this repository is that a FunnyLang program
+// needs nothing installed, and an image that had to add an HTTP client to ask
+// its own server a question would rather undercut it.
+//
+// So the healthcheck is FunnyLang too, yeeted into its own small executable
+// beside the server. The runtime image holds two binaries, some HTML and a
+// test certificate, and nothing else at all.
+//
+// IT ASKS A REAL QUESTION. A TCP connect would only prove something is
+// listening, which a half-started or wedged server manages perfectly well.
+// This completes the TLS handshake against the certificate the server is
+// actually serving, sends a real request, and insists on a real game in the
+// answer. If the fleet cannot be read, the container is not healthy.
+//
+//   BATTLESHIP_PORT   default 8443
+//   BATTLESHIP_TLS    "0" to speak plain HTTP; anything else is TLS
+//   BATTLESHIP_CA     default /app/certs/ca.pem
+
+gimme internet
+gimme computer
+gimme yapper
+
+deadass HOST = "127.0.0.1"
+deadass DEADLINE_MS = 3000
+deadass READ_TRIES = 40
+
+bet dial() {
+    yo port = to_int(computer.env("BATTLESHIP_PORT", "8443"))
+    sus (computer.env("BATTLESHIP_TLS", "1") == "0") {
+        bounce internet.slide_into(HOST, port, DEADLINE_MS)
+    }
+    // Verified against the CA the image ships with, not skipped -- so this
+    // also checks the server is presenting the certificate it should be.
+    bounce internet.slide_into(HOST, port, {
+        "timeout_ms": DEADLINE_MS,
+        "tls": fax,
+        "server_name": "localhost",
+        "ca": computer.env("BATTLESHIP_CA", "/app/certs/ca.pem"),
+    })
+}
+
+bet main() {
+    yo conn = ghost
+    sketchy {
+        conn = dial()
+    } my_bad (e) {
+        yell("no answer on the port: " + e.message)
+        bounce 1
+    }
+
+    internet.holler_back(conn,
+        "GET /api/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+
+    yo said = ""
+    grind i from 0 to READ_TRIES {
+        yo more = internet.hear_them_out(conn, 65536, 250)
+        sus (more == "") {
+            bail
+        }
+        sus (more != ghost) {
+            said = said + more
+        }
+        sus (yapper.contains(said, "\"ok\":true")) {
+            bail
+        }
+    }
+    internet.kick_out(conn)
+
+    sus (!yapper.starts_with(said, "HTTP/1.1 200")) {
+        yell("it answered, but not with a 200: " + yapper.slice(said, 0, 60))
+        bounce 1
+    }
+    // Not just a 200: a state with a board in it. A server that is up but has
+    // lost its game would still 200 a static file.
+    sus (!yapper.contains(said, "\"ok\":true") || !yapper.contains(said, "\"fleet\"")) {
+        yell("200, but there is no game in it")
+        bounce 1
+    }
+    bounce 0
+}
+
+dip(main())

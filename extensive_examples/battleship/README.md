@@ -38,6 +38,8 @@ $ funny test extensive_examples/battleship
 | `play.funny` | the same modules against a text board |
 | `http.funny`, `static.funny` | request parsing, and serving `web/` and nothing else |
 | `test_battleship.funny` | the golden: the rules, the engine, and a whole game |
+| `Dockerfile`, `compose.yaml` | a C compiler in, a 1.2 MB game out |
+| `healthcheck.funny` | what the container asks itself, in FunnyLang |
 | `certs/` | a test certificate, and the script that made it |
 
 `http.funny` and `static.funny` are copies of chess's, which are copies of
@@ -316,6 +318,69 @@ queue behind a turn.
 
 The threads are in `measure.funny`, where the work actually is, and they share
 nothing at all — so they need no lock either.
+
+## In a container
+
+```console
+$ docker build -f extensive_examples/battleship/Dockerfile -t funnylang-battleship .
+$ docker run --rm -p 8443:8443 funnylang-battleship
+```
+
+Then <https://localhost:8443>, and accept the certificate warning for the same
+reason as ever. Or `docker compose -f extensive_examples/battleship/compose.yaml
+up --build`, which adds a read-only root filesystem and drops every capability.
+
+**The build stage installs a C compiler and nothing else.** `gcc` and
+`libc6-dev` go in; about fifteen seconds later a working toolchain comes out,
+the example's golden runs, and the game is frozen into a standalone executable.
+No Python, no package manager for the language, no build system, no
+third-party library. This repository already has a CI job that proves that in a
+bare Debian container; a Dockerfile is the same proof in a form you can run.
+
+**The runtime stage has no toolchain in it at all.** `funny yeet` appends
+compiled bytecode to the runtime stub, so what ships is two binaries of about
+450 KB, the page, and a test certificate — 1.2 MB of `/app` in total. There is
+no interpreter in the image and nothing that could compile anything, which the
+CI job checks by looking for one.
+
+**The healthcheck is FunnyLang too.** The usual move is to `apt-get` curl into
+the runtime image so Docker has something to ask the server with, which would be
+a strange thing to do to an image whose whole point is that it needs nothing
+installed. `healthcheck.funny` is yeeted beside the server: it completes the TLS
+handshake **against the certificate the server is actually presenting**, sends a
+real request, and insists on a real game in the reply. A process that is
+listening but has lost its board is not healthy.
+
+Two things worth knowing before you change the command:
+
+- **`--host 0.0.0.0` is not optional.** The server binds loopback by default,
+  and a container's loopback is not yours. It is in the image's `CMD`; if you
+  replace that, keep it.
+- **If you move the port, move `BATTLESHIP_PORT` with it**, or the healthcheck
+  will be asking the wrong door whether anybody is home.
+
+Run it with `--no-tls` behind a reverse proxy and the image does not need
+OpenSSL at all — `ldd` on the yeeted binary lists libm, libc and the loader and
+nothing else, because OpenSSL is `dlopen`'d the first time a TLS socket opens.
+
+### What was actually checked
+
+There is no Docker on the machine this was written on, so **the image has never
+been built**. What was done instead was to run every command in the Dockerfile
+on Linux, outside Docker: the toolchain compiles from C source alone in 15
+seconds, the golden passes, both programs yeet, and a yeeted server started from
+an unrelated directory finds `web/` and `certs/` beside its own executable and
+serves the game over TLS verified against its own CA. The healthcheck was
+exercised in all five states a container can be in — nothing listening, a real
+TLS server, the wrong CA, plain HTTP checked plainly, and plain HTTP checked as
+TLS — and returns the right answer each time. The `.dockerignore` was checked by
+building from a pruned copy of the tree with everything it excludes deleted.
+
+That is a good deal better than nothing and it is **not** the same as a built
+image. `.github/workflows/docker.yml` is what closes the gap: it builds the
+image, proves there is no compiler in it, waits for the container's own
+healthcheck, and then places a fleet and fires a shot from outside the
+container. Until that workflow has run green, treat the image as unproven.
 
 ## The certificate
 
