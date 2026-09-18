@@ -1,0 +1,31 @@
+// worker.funny — one intern, one song at a time.
+//
+// Hired by `grab.funny` when there is more than one link. Its assignment is
+// the run's options; each message is a URL to fetch, and `"stop"` ends it.
+// It answers `dm("boss", outcome)` with exactly what `grab_one` returned, so
+// the main thread's bookkeeping is the same whether a song was fetched here or
+// on the main thread itself.
+//
+// It runs `pipeline.grab_one` rather than its own copy of the steps, which is
+// the whole reason that module exists: what the golden proves about one song
+// has to be the thing that runs when there are four.
+//
+// Nothing crosses between VMs but portable values -- no functions -- so there
+// is no progress callback in here. A worker says what it did when it is done,
+// which is also the only sane thing to print when several are running.
+
+gimme interns
+
+gimme { grab_one } from "pipeline.funny"
+
+yo opts = interns.assignment()
+
+bruh (fax) {
+    yo note = interns.wait_up(interns.check_dms(120000))
+    sus (note == ghost) { bail }
+    yo msg = note["msg"]
+    sus (msg == "stop") { bail }
+    interns.dm("boss", grab_one(msg, opts))
+}
+
+interns.deliver(ghost)

@@ -1,0 +1,308 @@
+// grab.funny — the command line.
+//
+//     funny run extensive_examples/suno_grab/grab.funny -- https://suno.com/s/<code>
+//     funny run extensive_examples/suno_grab/grab.funny -- <url> <url> --workers 3 --out ./songs
+//     funny run extensive_examples/suno_grab/grab.funny -- --from-file links.txt --manifest out.json
+//     funny run extensive_examples/suno_grab/grab.funny -- <url> --print-only
+//
+// Exit status is 0 when everything arrived, 1 when nothing did, and 2 when
+// some did and some did not -- so a shell script can tell "the network is
+// down" from "one of these forty links was deleted", which a single non-zero
+// would not.
+//
+// WHY THE DEFAULT IS TWO WORKERS AND NOT THE CORE COUNT. The other end is
+// somebody else's server. `word_count/` hires one intern per core because the
+// only thing it can saturate is this machine; here the thing being saturated
+// belongs to a company that did not ask to be. Two is enough to hide the
+// latency of resolving one song behind the download of another, which is the
+// only speed-up actually on offer.
+
+gimme filez
+gimme yapper
+gimme interns
+gimme json
+gimme clock
+
+gimme "pipeline.funny"
+gimme "namer.funny"
+
+deadass MAX_WORKERS = 8
+
+bet usage() {
+    yell("usage: grab.funny [options] URL...")
+    yell("")
+    yell("  --out DIR           where the files go (default: .)")
+    yell("  --format KIND       m4a (default), mp4, mp3, or best")
+    yell("  --workers N         parallel downloads, 1-8 (default 2)")
+    yell("  --name TEMPLATE     {title}, {artist}, {handle}, {id}, {date}")
+    yell("                      (default: \"{title}\")")
+    yell("  --from-file PATH    read links from a file, one per line")
+    yell("  --manifest PATH     write a JSON record of the run")
+    yell("  --print-only        resolve and print, download nothing")
+    yell("  --resume            keep .part files and continue them")
+    yell("  --skip-existing     leave a song alone if its file is already there")
+    yell("  --no-tags           write the file exactly as it arrived")
+    yell("  --no-cover          tag it, but do not fetch the artwork")
+    yell("  --header \"K: V\"     an extra request header; repeatable")
+    yell("  --allow-host HOST   another host the audio may come from; repeatable")
+    yell("  --quiet             only the final line per song")
+    yell("")
+    yell("  there is usually no mp3. --format mp3 explains why when it fails.")
+}
+
+bet main(raw) {
+    yo urls = []
+    yo opts = {"out": ".", "format": "m4a", "workers": 2, "headers": {},
+               "name_template": namer.DEFAULT_TEMPLATE}
+    yo manifest_path = ghost
+    yo quiet = cap
+    yo allow = []
+
+    yo args = []
+    grind a in raw {
+        sus (a != "--") { args.yeet_in(a) }
+    }
+
+    yo i = 0
+    bruh (i < how_thicc(args)) {
+        yo a = args[i]
+        yo next = i + 1 < how_thicc(args) ? args[i + 1] : ghost
+        sus (a == "-h" || a == "--help") { usage(); bounce 0 }
+        kinda_sus (a == "--out" && next != ghost) { opts["out"] = next; i += 2 }
+        kinda_sus (a == "--format" && next != ghost) { opts["format"] = next; i += 2 }
+        kinda_sus (a == "--name" && next != ghost) { opts["name_template"] = next; i += 2 }
+        kinda_sus (a == "--workers" && next != ghost) { opts["workers"] = to_int(next); i += 2 }
+        kinda_sus (a == "--manifest" && next != ghost) { manifest_path = next; i += 2 }
+        kinda_sus (a == "--from-file" && next != ghost) {
+            grind line in yapper.lines(filez.slurp(next)) {
+                yo trimmed = yapper.trim(line)
+                sus (trimmed != "" && !yapper.starts_with(trimmed, "#")) { urls.yeet_in(trimmed) }
+            }
+            i += 2
+        }
+        kinda_sus (a == "--header" && next != ghost) {
+            yo colon = yapper.index_of(next, ":")
+            sus (colon < 1) {
+                yell("a --header needs to look like \"Name: value\", not " + next)
+                bounce 1
+            }
+            opts["headers"][yapper.trim(yapper.slice(next, 0, colon))] =
+                yapper.trim(yapper.slice(next, colon + 1, how_thicc(next)))
+            i += 2
+        }
+        kinda_sus (a == "--allow-host" && next != ghost) { allow.yeet_in(next); i += 2 }
+        kinda_sus (a == "--print-only") { opts["print_only"] = fax; i += 1 }
+        kinda_sus (a == "--resume") { opts["resume"] = fax; i += 1 }
+        kinda_sus (a == "--skip-existing") { opts["skip_existing"] = fax; i += 1 }
+        kinda_sus (a == "--no-tags") { opts["no_tags"] = fax; i += 1 }
+        kinda_sus (a == "--no-cover") { opts["no_cover"] = fax; i += 1 }
+        kinda_sus (a == "--quiet") { quiet = fax; i += 1 }
+        // The three that point the resolver somewhere else. They exist so the
+        // golden can drive the whole program against a fixture on loopback,
+        // and they are documented rather than hidden because a flag that only
+        // the tests use is a flag that rots.
+        kinda_sus (a == "--api-base" && next != ghost) { opts["api_base"] = next; i += 2 }
+        kinda_sus (a == "--page-base" && next != ghost) { opts["page_base"] = next; i += 2 }
+        kinda_sus (a == "--cdn-base" && next != ghost) { opts["cdn_base"] = next; i += 2 }
+        kinda_sus (yapper.starts_with(a, "-")) {
+            yell("no such option: " + a)
+            usage()
+            bounce 1
+        }
+        nah { urls.yeet_in(a); i += 1 }
+    }
+
+    sus (how_thicc(allow) > 0) { opts["allow_hosts"] = allow }
+    sus (how_thicc(urls) == 0) { usage(); bounce 1 }
+    sus (opts["workers"] < 1) { opts["workers"] = 1 }
+    sus (opts["workers"] > MAX_WORKERS) { opts["workers"] = MAX_WORKERS }
+
+    sus (opts["out"] != "." && !filez.is_dir(opts["out"])) {
+        filez.mkdir(opts["out"])
+    }
+
+    yo started = clock.stopwatch()
+    yo results = how_thicc(urls) == 1 || opts["workers"] == 1 || opts.get("print_only", cap)
+        ? one_at_a_time(urls, opts, quiet)
+        : in_parallel(urls, opts, quiet)
+    yo elapsed = started()
+
+    yo good = 0
+    grind r in results {
+        sus (r["ok"]) { good += 1 }
+    }
+    sus (how_thicc(urls) > 1) {
+        yap ""
+        yap to_yap(good) + " of " + to_yap(how_thicc(urls)) + " in " +
+            to_yap(round_to(elapsed, 2)) + " s"
+    }
+    grind r in results {
+        sus (!r["ok"]) { yell("  " + pipeline.short_url(r["url"]) + ": " + r["error"]) }
+    }
+
+    sus (manifest_path != ghost) {
+        filez.yeet_out_atomic(manifest_path, json.spill(manifest_of(results, elapsed),
+                                                        {"pretty": fax}))
+        yap "manifest  " + manifest_path
+    }
+
+    sus (good == 0) { bounce 1 }
+    sus (good < how_thicc(urls)) { bounce 2 }
+    bounce 0
+}
+
+// -- one at a time, with a progress bar ------------------------------------------------------
+
+bet one_at_a_time(urls, opts, quiet) {
+    yo results = []
+    grind url in urls {
+        yo run_opts = opts.clone()
+        sus (!quiet) {
+            run_opts["say"] = lowkey (label, value) => yap pad(label) + value
+            run_opts["on_progress"] = lowkey (done, total) => draw_bar(done, total)
+        }
+        yo r = pipeline.grab_one(url, run_opts)
+        sus (!quiet && !r.get("printed", cap)) { mumble "\r" + " " * 72 + "\r" }
+        announce(r, quiet)
+        results.yeet_in(r)
+    }
+    bounce results
+}
+
+bet draw_bar(done, total) {
+    yo width = 30
+    sus (total == ghost || total <= 0) {
+        mumble "\rdownloading  " + comma(done) + " B"
+        bounce ghost
+    }
+    yo filled = (done * width) \ total
+    sus (filled > width) { filled = width }
+    mumble "\rdownloading  " + "#" * filled + "." * (width - filled) + "  " +
+           comma(done) + " / " + comma(total) + " B"
+}
+
+// -- several at once -------------------------------------------------------------------------
+//
+// A pool, not a static split: songs differ in length by a factor of ten, so
+// dealing a job to whichever worker is free beats deciding up front who gets
+// what. That is the lesson `word_count/` drew, in the one example where it
+// costs nothing to apply.
+
+bet in_parallel(urls, opts, quiet) {
+    yo HERE = filez.dir_of(the_script())
+    yo crew = []
+    yo count = opts["workers"] < how_thicc(urls) ? opts["workers"] : how_thicc(urls)
+    // What crosses to a worker is a deep copy of portable values only: no
+    // functions, so the `say` and `on_progress` callbacks stay behind. A
+    // worker reports when it is done instead, which is also why the output is
+    // one line per finished song rather than N bars fighting over the cursor.
+    yo job_opts = portable(opts)
+    grind k from 0 to count {
+        crew.yeet_in(interns.hire(filez.join_path(HERE, "worker.funny"), job_opts))
+    }
+
+    yo results = []
+    yo next = 0
+    grind w in crew {
+        sus (next < how_thicc(urls)) {
+            interns.dm(w, urls[next])
+            next += 1
+        }
+    }
+    bruh (how_thicc(results) < how_thicc(urls)) {
+        yo note = interns.wait_up(interns.check_dms(120000))
+        sus (note == ghost) { bail }
+        results.yeet_in(note["msg"])
+        announce(note["msg"], quiet)
+        sus (next < how_thicc(urls)) {
+            interns.dm(note["from"], urls[next])
+            next += 1
+        }
+    }
+    grind w in crew { interns.dm(w, "stop") }
+    grind w in crew { interns.wait_up(w) }
+    bounce results
+}
+
+bet portable(opts) {
+    yo out = {}
+    grind key in ["out", "format", "name_template", "headers", "resume", "skip_existing",
+                  "no_tags", "no_cover", "api_base", "page_base", "cdn_base", "allow_hosts",
+                  "timeout_ms", "retries", "max_redirects", "ca"] {
+        sus (opts.has(key)) { out[key] = opts[key] }
+    }
+    bounce out
+}
+
+// -- saying what happened ----------------------------------------------------------------------
+
+bet announce(r, quiet) {
+    sus (!r["ok"]) {
+        yell("failed    " + pipeline.short_url(r["url"]) + " -- " + r["error"])
+        bounce ghost
+    }
+    sus (r.get("printed", cap)) {
+        yap json.spill(printable(r["record"]), {"pretty": fax})
+        bounce ghost
+    }
+    sus (r.get("skipped", cap)) {
+        yap "already   " + r["path"]
+        bounce ghost
+    }
+    yap "wrote     " + r["path"] + "  (" + comma(r["final_bytes"]) + " B, " +
+        r["tagged"] + ", via " + r["via"] + ")"
+}
+
+bet printable(record) {
+    yo out = {}
+    grind key in ["id", "title", "artist", "handle", "tags", "created", "model", "duration",
+                  "audio_url", "audio_kind", "image_url", "via", "id_via", "source_url"] {
+        sus (record.has(key)) { out[key] = record[key] }
+    }
+    yo kinds = []
+    grind r in record["renditions"] { kinds.yeet_in(r["kind"]) }
+    out["renditions"] = kinds
+    bounce out
+}
+
+bet manifest_of(results, elapsed) {
+    yo rows = []
+    grind r in results {
+        yo row = {"url": r["url"], "ok": r["ok"]}
+        grind key in ["path", "title", "artist", "id", "kind", "via", "tagged", "final_bytes",
+                      "resumed", "error"] {
+            sus (r.has(key)) { row[key] = r[key] }
+        }
+        rows.yeet_in(row)
+    }
+    bounce {"tool": "suno_grab", "seconds": round_to(elapsed, 3), "songs": rows}
+}
+
+// -- small things ---------------------------------------------------------------------------
+
+bet pad(label) {
+    bounce yapper.pad_right(label, 12)
+}
+
+bet comma(n) {
+    yo digits = to_yap(n)
+    yo out = ""
+    yo count = 0
+    grind i from how_thicc(digits) - 1 to -1 step -1 {
+        out = digits.at(i) + out
+        count += 1
+        sus (count % 3 == 0 && i > 0) { out = "," + out }
+    }
+    bounce out
+}
+
+bet round_to(x, places) {
+    bounce x.round(places)
+}
+
+bet to_int(text) {
+    sus (!yapper.is_numba(text)) { bounce 0 }
+    bounce text.to_numba()
+}
+
+dip(main(the_args()))

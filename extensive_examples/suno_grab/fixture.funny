@@ -298,24 +298,30 @@ bet serve(conn, req) {
         bounce ghost
     }
 
-    // The Suno-shaped routes: a share page, the clip API, and the media.
-    sus (path == "/s/shortcode" || path == "/song/" + job["id"]) {
-        send_sized(conn, 200, page_blob(), "text/html; charset=utf-8")
-        bounce ghost
-    }
-    sus (path == "/api/clip/" + job["id"]) {
-        send_sized(conn, 200, clip_blob(), "application/json; charset=utf-8")
-        bounce ghost
-    }
+    // The Suno-shaped routes. Any UUID-shaped id is served, not just the
+    // golden's own, so that a pool of workers has four distinguishable songs
+    // to get muddled between -- a pool that reports the right *number* of
+    // files and the wrong titles is a pool that passes a weaker test.
+    // The all-zero id is the one that does not exist.
     sus (path == "/api/clip/00000000-0000-0000-0000-000000000000") {
         send_sized(conn, 404, blob.from_yap("{\"detail\":\"Not found.\"}"),
                    "application/json; charset=utf-8")
         bounce ghost
     }
+    sus (path == "/s/shortcode" || yapper.starts_with(path, "/song/")) {
+        send_sized(conn, 200, page_blob(id_in(path)), "text/html; charset=utf-8")
+        bounce ghost
+    }
+    sus (yapper.starts_with(path, "/api/clip/")) {
+        send_sized(conn, 200, clip_blob(id_in(path)), "application/json; charset=utf-8")
+        bounce ghost
+    }
+
     // Rung four's pattern: `<cdn>/<id>.mp4`, the video Suno also publishes.
     // Served from the same bytes, because what rung four has to prove is that
     // it found *something* and confirmed it with a one-byte GET.
-    sus (path == "/" + job["id"] + ".mp4") {
+    sus (yapper.ends_with(path, ".mp4") && id_in(path) != ghost &&
+         path == "/" + id_in(path) + ".mp4") {
         yo from_at = range_start(headers.get("range", ghost))
         yo whole = audio_blob()
         sus (from_at > 0 || headers.has("range")) {
@@ -334,20 +340,21 @@ bet serve(conn, req) {
         bounce ghost
     }
 
-    sus (path == "/1/clip/" + job["id"] + ".m4a") {
+    sus (yapper.starts_with(path, "/1/clip/") && yapper.ends_with(path, ".m4a")) {
         yo from_at = range_start(headers.get("range", ghost))
+        yo whole_audio = audio_for(id_in(path))
         sus (from_at > 0) {
-            yo slice = audio_blob()[from_at:how_thicc(audio_blob())]
+            yo slice = whole_audio[from_at:how_thicc(whole_audio)]
             internet.holler_back(conn, head_lines(206, {
                 "Content-Type": "audio/mp4",
                 "Content-Length": how_thicc(slice),
                 "Accept-Ranges": "bytes",
                 "Content-Range": "bytes " + to_yap(from_at) + "-" +
-                                 to_yap(how_thicc(audio_blob()) - 1) + "/" +
-                                 to_yap(how_thicc(audio_blob()))}))
+                                 to_yap(how_thicc(whole_audio) - 1) + "/" +
+                                 to_yap(how_thicc(whole_audio))}))
             internet.holler_back(conn, slice)
         } nah {
-            send_sized(conn, 200, audio_blob(), "audio/mp4")
+            send_sized(conn, 200, whole_audio, "audio/mp4")
         }
         bounce ghost
     }
@@ -375,14 +382,62 @@ bet range_start(header) {
 // recorded from the real site on 2026-09-18; the content is invented, and
 // there is not a line of anybody's song in it.
 
-bet page_blob() {
-    yo html = filez.slurp(filez.join_path(HERE, "fixtures", "song_page.html"))
-    bounce blob.from_yap(yapper.replace(yapper.replace(html, "{{ID}}", job["id"]), "{{BASE}}", BASE))
+// The 36-character UUID in a path, or ghost. A short link has none, and falls
+// back to the golden's own id -- which is what makes `/s/shortcode` a link
+// whose page has to be read before anything else can happen.
+bet id_in(path) {
+    yo at = 0
+    bruh (at + 36 <= how_thicc(path)) {
+        yo maybe = yapper.slice(path, at, at + 36)
+        sus (looks_like_uuid(maybe)) { bounce maybe }
+        at += 1
+    }
+    bounce ghost
 }
 
-bet clip_blob() {
+bet looks_like_uuid(text) {
+    grind i from 0 to 36 {
+        yo c = text.at(i)
+        sus (i == 8 || i == 13 || i == 18 || i == 23) {
+            sus (c != "-") { bounce cap }
+        } nah {
+            sus (!((c >= "0" && c <= "9") || (c >= "a" && c <= "f"))) { bounce cap }
+        }
+    }
+    bounce fax
+}
+
+// A title per song, from the id itself, so four songs in a pool have four
+// different names and a muddled result is visible rather than plausible.
+bet title_for(id) {
+    sus (id == ghost || id == job["id"]) { bounce "Loopback Lullaby" }
+    bounce "Fixture Song " + yapper.SCREAM(yapper.slice(id, 0, 4))
+}
+
+bet page_blob(id) {
+    yo real = id == ghost ? job["id"] : id
+    yo html = filez.slurp(filez.join_path(HERE, "fixtures", "song_page.html"))
+    bounce blob.from_yap(fill(html, real))
+}
+
+bet clip_blob(id) {
+    yo real = id == ghost ? job["id"] : id
     yo text = filez.slurp(filez.join_path(HERE, "fixtures", "clip.json"))
-    bounce blob.from_yap(yapper.replace(yapper.replace(text, "{{ID}}", job["id"]), "{{BASE}}", BASE))
+    bounce blob.from_yap(fill(text, real))
+}
+
+bet fill(text, id) {
+    yo out = yapper.replace(text, "{{ID}}", id)
+    out = yapper.replace(out, "{{BASE}}", BASE)
+    bounce yapper.replace(out, "{{TITLE}}", title_for(id))
+}
+
+// A different length per song, so the golden can tell whose bytes ended up in
+// whose file rather than only counting them.
+bet audio_for(id) {
+    sus (id == ghost) { bounce make_m4a_of(4) }
+    yo nibble = yapper.index_of("0123456789abcdef", yapper.slice(id, 0, 1))
+    bounce make_m4a_of(2 + (nibble % 4))
 }
 
 // The "audio": an MP4 box tree with a real `ilst` slot to tag, rather than an
@@ -407,6 +462,10 @@ bet audio_blob() {
 // used the code under test to build what that code then parses would prove
 // only that it agrees with itself.
 flex bet make_m4a() {
+    bounce make_m4a_of(4)
+}
+
+flex bet make_m4a_of(frames) {
     yo ftyp = box("ftyp", blob.from_yap("M4A ") + be32(512) + blob.from_yap("M4A isomiso2"))
     yo ilst = box("ilst", box_b(blob.of([0xA9]) + blob.from_yap("nam"),
                                 box("data", be32(1) + be32(0) + blob.from_yap("the old title"))))
@@ -416,7 +475,7 @@ flex bet make_m4a() {
     // Built twice: once to find out how big `moov` is, and once with the chunk
     // offsets that size implies. A fixture whose offsets were wrong to begin
     // with could not tell a tagger that fixes them from one that does not.
-    yo audio = mp3_of(4)
+    yo audio = mp3_of(frames)
     yo half = how_thicc(audio) \ 2
     yo shape = moov_with(meta, [0, 0])
     yo mdat_at = how_thicc(ftyp) + how_thicc(shape)

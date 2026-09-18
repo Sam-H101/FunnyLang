@@ -31,6 +31,7 @@ gimme json
 gimme { parse_url, resolve_url, get, probe, get_to_file, request, USER_AGENT } from "fetch.funny"
 // Whole modules rather than named imports: `write_tags` and `read_tags` exist
 // in both taggers, and which one runs is the point of part five.
+gimme "pipeline.funny"
 gimme "suno.funny"
 gimme "id3.funny"
 gimme "mp4tags.funny"
@@ -112,12 +113,14 @@ report("a 503 that recovers", fetch_text("/flaky", ghost))
 report("a 404 is an answer, not an error", fetch_text("/notfound", ghost))
 
 yap "  -- and the ones that must fail --"
+// The fixture's port is whatever the OS handed out, so any message that quotes
+// a URL has to have it masked or the golden could never match itself twice.
 bet must_fail(label, f) {
     sketchy {
         f()
         yap "  " + label + ": NO ERROR, which is wrong"
     } my_bad (e) {
-        yap "  " + label + ": " + e.flavor + " -- " + e.message
+        yap "  " + label + ": " + e.flavor + " -- " + yapper.replace(e.message, BASE, "<base>")
     }
 }
 must_fail("a redirect loop", lowkey () => fetch_text("/redirect/loop", {"max_redirects": 3}))
@@ -142,13 +145,16 @@ yap "-- downloads --"
 yo TMP = filez.temp_file("sunograb") + "_dir"
 filez.mkdir(TMP)
 
+// Recursive, because the pipeline parts below make a directory per run. A
+// golden that leaves a tree of songs in the temp directory every time CI runs
+// is a golden that eventually fills a disk.
 bet wipe(dir) {
-    sus (filez.is_dir(dir)) {
-        grind name in filez.list_dir(dir) {
-            yo p = filez.join_path(dir, name)
-            sus (filez.is_file(p)) { filez.obliterate(p) }
-        }
+    sus (!filez.is_dir(dir)) { bounce ghost }
+    grind name in filez.list_dir(dir) {
+        yo p = filez.join_path(dir, name)
+        sus (filez.is_dir(p)) { wipe(p) } nah { filez.obliterate(p) }
     }
+    filez.obliterate(dir)
 }
 
 yo whole_path = filez.join_path(TMP, "whole.mp3")
@@ -411,10 +417,171 @@ yo taken = {"/d/song.m4a": fax, "/d/song (2).m4a": fax}
 yap "  " + namer.unique_path("/d", "song", ".m4a", lowkey (p) => taken.has(p))
 yap "  " + namer.unique_path("/d", "other", ".m4a", lowkey (p) => taken.has(p))
 
+// -- part seven: the whole pipeline ---------------------------------------------------------
+//
+// `grab.funny` itself ends in `dip(main(the_args()))`, so it cannot be
+// imported -- and there are no subprocesses in this language to run it in. So
+// what is driven here is `pipeline.funny`, which is the module `grab.funny`
+// and `worker.funny` both call and the only place the steps exist. What is
+// *not* covered is the argument parsing, and the README says so rather than
+// leaving somebody to assume otherwise.
+
+yap "-- the pipeline --"
+
+yo SONGS = filez.join_path(TMP, "songs")
+filez.mkdir(SONGS)
+
+yo RUN = {"api_base": BASE, "page_base": BASE, "cdn_base": BASE,
+          "allow_hosts": ["127.0.0.1"], "out": SONGS, "format": "m4a"}
+
+yap "  -- one song --"
+yo one = pipeline.grab_one(BASE + "/song/" + ID, RUN)
+yap "  ok: " + to_yap(one["ok"]) + ", via " + one["via"] + ", tagged " + one["tagged"]
+yap "  named: " + filez.base_of(one["path"])
+yap "  downloaded " + to_yap(one["bytes"]) + " bytes, on disk " +
+    to_yap(one["final_bytes"]) + " after tagging"
+yo on_disk = filez.read_blob(one["path"])
+yo read_back = mp4tags.read_tags(on_disk)
+yap "  its title reads back as: " + read_back["tags"]["\u{00A9}nam"]
+yap "  its artist reads back as: " + read_back["tags"]["\u{00A9}ART"]
+yap "  it kept a cover: " + to_yap(read_back["cover"] != ghost)
+yap "  no .part left behind: " + to_yap(!filez.exists(one["path"] + ".part"))
+
+// The audio the tagger wrapped must be the audio that arrived. A tagger that
+// rebuilt the tree wrong would still round-trip its own tags.
+yo original = get(BASE + "/1/clip/" + ID + ".m4a", ghost)["blob"]
+yap "  the mdat still holds the bytes that arrived: " +
+    to_yap(on_disk.contains(original[how_thicc(original) - 200:how_thicc(original)]))
+
+yap "  -- a second grab of the same song does not overwrite it --"
+yo again = pipeline.grab_one(BASE + "/song/" + ID, RUN)
+yap "  named: " + filez.base_of(again["path"]) + ", and the first is still there: " +
+    to_yap(filez.exists(one["path"]))
+
+yap "  -- four songs, three workers --"
+
+yo MANY = ["21111111-2222-3333-4444-555555555555",
+           "41111111-2222-3333-4444-555555555555",
+           "61111111-2222-3333-4444-555555555555",
+           "81111111-2222-3333-4444-555555555555"]
+
+// Serially first, so there is something for the pool's answer to be identical
+// to. Different directories, because the same four songs cannot be written
+// twice to one.
+bet grab_all(urls, dir, opts) {
+    filez.mkdir(dir)
+    yo run = opts.clone()
+    run["out"] = dir
+    yo rows = []
+    grind url in urls {
+        yo r = pipeline.grab_one(url, run)
+        rows.yeet_in(r)
+    }
+    bounce rows
+}
+
+bet summarise(rows) {
+    yo lines = []
+    grind r in rows {
+        sus (r["ok"]) {
+            lines.yeet_in(filez.base_of(r["path"]) + "  " + to_yap(r["final_bytes"]) +
+                          " B  via " + r["via"])
+        } nah {
+            lines.yeet_in("FAILED " + r["error"])
+        }
+    }
+    bounce lines.sort()
+}
+
+yo serial_dir = filez.join_path(TMP, "serial")
+yo serial = grab_all(MANY.glow_up(lowkey (id) => BASE + "/song/" + id), serial_dir, RUN)
+grind line in summarise(serial) {
+    yap "  serial:   " + line
+}
+
+// And now the pool: three workers, four songs, dealt to whoever is free.
+yo pool_dir = filez.join_path(TMP, "pool")
+filez.mkdir(pool_dir)
+yo pool_opts = RUN.clone()
+pool_opts["out"] = pool_dir
+
+yo crew = []
+grind k from 0 to 3 {
+    crew.yeet_in(interns.hire(filez.join_path(HERE, "worker.funny"), pool_opts))
+}
+yo pending = 0
+grind w in crew {
+    sus (pending < how_thicc(MANY)) {
+        interns.dm(w, BASE + "/song/" + MANY[pending])
+        pending += 1
+    }
+}
+yo pool = []
+bruh (how_thicc(pool) < how_thicc(MANY)) {
+    yo note = interns.wait_up(interns.check_dms(60000))
+    sus (note == ghost) { bail }
+    pool.yeet_in(note["msg"])
+    sus (pending < how_thicc(MANY)) {
+        interns.dm(note["from"], BASE + "/song/" + MANY[pending])
+        pending += 1
+    }
+}
+grind w in crew { interns.dm(w, "stop") }
+grind w in crew { interns.wait_up(w) }
+
+grind line in summarise(pool) {
+    yap "  pool:     " + line
+}
+
+// Printed sorted above, and compared sorted here: which worker finished first
+// is exactly the thing that must not show up in the answer.
+yap "  the pool and the serial run agree: " + to_yap(summarise(pool) == summarise(serial))
+
+// And the files themselves, not merely the tallies.
+yo same_bytes = fax
+grind name in filez.list_dir(serial_dir) {
+    yo a = filez.read_blob(filez.join_path(serial_dir, name))
+    yo b_path = filez.join_path(pool_dir, name)
+    sus (!filez.exists(b_path) || filez.read_blob(b_path) != a) { same_bytes = cap }
+}
+yap "  and every file is byte-identical between the two: " + to_yap(same_bytes)
+no_cap(same_bytes, "a song fetched by a pool differs from the same song fetched serially")
+
+yap "  -- one bad link does not end the run --"
+yo mixed = grab_all([BASE + "/song/" + MANY[0],
+                     BASE + "/song/00000000-0000-0000-0000-000000000000",
+                     BASE + "/song/" + MANY[1]],
+                    filez.join_path(TMP, "mixed"), RUN)
+yo good = 0
+grind r in mixed {
+    sus (r["ok"]) { good += 1 }
+}
+yap "  " + to_yap(good) + " of " + to_yap(how_thicc(mixed)) + " arrived, and the failure said: " +
+    mixed[1]["error"]
+
+yap "  -- --print-only downloads nothing --"
+yo printed_dir = filez.join_path(TMP, "printed")
+filez.mkdir(printed_dir)
+yo print_opts = RUN.clone()
+print_opts["out"] = printed_dir
+print_opts["print_only"] = fax
+yo printed = pipeline.grab_one(BASE + "/song/" + ID, print_opts)
+yap "  ok: " + to_yap(printed["ok"]) + ", printed: " + to_yap(printed["printed"]) +
+    ", files written: " + to_yap(how_thicc(filez.list_dir(printed_dir)))
+
+yap "  -- --no-tags leaves the bytes exactly as they arrived --"
+yo raw_dir = filez.join_path(TMP, "raw")
+filez.mkdir(raw_dir)
+yo raw_opts = RUN.clone()
+raw_opts["out"] = raw_dir
+raw_opts["no_tags"] = fax
+yo raw = pipeline.grab_one(BASE + "/song/" + ID, raw_opts)
+yap "  identical to what the server sent: " +
+    to_yap(filez.read_blob(raw["path"]) == original) + ", tagged: " + raw["tagged"]
+
 interns.dm(server, "stop")
 yo tally = interns.wait_up(server)
 yap "  the fixture served " + to_yap(tally["served"]) + " requests"
 
 wipe(TMP)
-filez.obliterate(TMP)
 yap "-- done --"

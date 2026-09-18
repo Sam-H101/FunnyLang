@@ -1,0 +1,107 @@
+// tag.funny — read the tags back out of a file.
+//
+//     funny run extensive_examples/suno_grab/tag.funny -- "./Loopback Lullaby.m4a"
+//
+// It exists so that the readers in `id3.funny` and `mp4tags.funny` are a
+// command somebody uses rather than test helpers with delusions -- a reader
+// that only ever runs inside the golden that wrote the bytes is a reader that
+// agrees with one writer, which is not the same as being right.
+//
+// Which reader to use is decided by what the file *is*: an `ID3` at the front,
+// or an MP4 box tree. Never by the extension, because the extension is chosen
+// by whoever named the file.
+
+gimme filez
+gimme yapper
+
+gimme "id3.funny"
+gimme "mp4tags.funny"
+
+bet main(raw) {
+    yo args = []
+    grind a in raw {
+        sus (a != "--") { args.yeet_in(a) }
+    }
+    sus (how_thicc(args) == 0) {
+        yell("usage: tag.funny FILE...")
+        bounce 1
+    }
+
+    yo status = 0
+    grind path in args {
+        sus (!filez.is_file(path)) {
+            yell("no such file: " + path)
+            status = 1
+            nvm
+        }
+        yap path
+        yo bytes = filez.read_blob(path)
+        sus (how_thicc(bytes) >= 3 && bytes[0] == 73 && bytes[1] == 68 && bytes[2] == 51) {
+            show_id3(bytes)
+        } kinda_sus (looks_like_mp4(bytes)) {
+            show_mp4(bytes)
+        } nah {
+            yap "  no tag this program can read -- neither an ID3 header nor an MP4 box tree"
+            status = 1
+        }
+        yap ""
+    }
+    bounce status
+}
+
+bet looks_like_mp4(bytes) {
+    // The second box-header word of an MP4 is its type, and the first box of
+    // a well-formed one is `ftyp`. Checking the type rather than the size,
+    // since the size is four arbitrary-looking bytes.
+    sus (how_thicc(bytes) < 12) { bounce cap }
+    yo kind = bytes[4:8].to_yap()
+    bounce kind == "ftyp" || kind == "moov" || kind == "mdat" || kind == "free" || kind == "skip"
+}
+
+deadass ID3_NAMES = {"TIT2": "title", "TPE1": "artist", "TALB": "album", "TYER": "year",
+                     "TCON": "genre", "TRCK": "track", "COMM": "comment", "WOAF": "url"}
+
+bet show_id3(bytes) {
+    yo tags = id3.read_tags(bytes)
+    sus (tags == ghost) {
+        yap "  an ID3 header this program could not read"
+        bounce ghost
+    }
+    yap "  ID3v" + tags["version"] + "   audio starts at byte " + to_yap(id3.audio_at(bytes))
+    grind frame in tags["frames"].keys() {
+        yap "  " + label(ID3_NAMES.get(frame, frame)) + tags["frames"][frame]
+    }
+    grind name in tags["extra"].keys() {
+        yap "  " + label(name) + tags["extra"][name]
+    }
+    sus (tags.get("cover", ghost) != ghost) {
+        yap "  " + label("cover") + tags["cover"]["mime"] + ", " +
+            to_yap(how_thicc(tags["cover"]["bytes"])) + " bytes"
+    }
+}
+
+deadass MP4_NAMES = {"\u{00A9}nam": "title", "\u{00A9}ART": "artist", "\u{00A9}alb": "album",
+                     "\u{00A9}day": "year", "\u{00A9}gen": "genre", "\u{00A9}cmt": "comment",
+                     "\u{00A9}too": "url"}
+
+bet show_mp4(bytes) {
+    yo tags = mp4tags.read_tags(bytes)
+    yo offsets = mp4tags.chunk_offsets(bytes)
+    yap "  MP4 ilst   " + to_yap(how_thicc(offsets)) + " chunk offsets"
+    grind atom in tags["tags"].keys() {
+        yap "  " + label(MP4_NAMES.get(atom, atom)) + tags["tags"][atom]
+    }
+    sus (tags["cover"] != ghost) {
+        yap "  " + label("cover") + tags["cover"]["mime"] + ", " +
+            to_yap(how_thicc(tags["cover"]["bytes"])) + " bytes"
+    }
+    sus (how_thicc(tags["tags"]) == 0 && tags["cover"] == ghost) {
+        yap "  no tags in it"
+    }
+}
+
+bet label(name) {
+    bounce yapper.pad_right(name, 10)
+}
+
+dip(main(the_args()))

@@ -1,0 +1,180 @@
+-- urls --
+  https://suno.com/song/abc  ->  https suno.com :443 /song/abc  = https://suno.com/song/abc
+  http://example.com  ->  http example.com :80 /  = http://example.com/
+  https://example.com:8443/a/b?c=d&e=f  ->  https example.com :8443 /a/b ?c=d&e=f  = https://example.com:8443/a/b?c=d&e=f
+  http://127.0.0.1:9/  ->  http 127.0.0.1 :9 /  = http://127.0.0.1:9/
+  https://user:pw@example.com/secret  ->  https example.com :443 /secret  = https://example.com/secret
+  https://[::1]:8080/v6  ->  https ::1 :8080 /v6  = https://[::1]:8080/v6
+  https://[::1]/v6  ->  https ::1 :443 /v6  = https://[::1]/v6
+  https://example.com/path#fragment  ->  https example.com :443 /path  = https://example.com/path
+  https://example.com/?only=query  ->  https example.com :443 / ?only=query  = https://example.com/?only=query
+  -- and the ones that are not urls --
+    ->  not a url
+  suno.com/song/abc  ->  not a url
+  ftp://example.com/x  ->  not a url
+  https://  ->  not a url
+  ://nope  ->  not a url
+  https://example.com:99999/  ->  not a url
+  https://example.com:0/  ->  not a url
+  42 (a numba)  ->  not a url
+  -- relative Locations --
+  /root  ->  https://example.com/root
+  sibling  ->  https://example.com/a/b/sibling
+  ../up  ->  https://example.com/a/b/../up
+  https://other.example/abs  ->  https://other.example/abs
+  //other.example/scheme  ->  https://other.example/scheme
+  ?just=query  ->  https://example.com/a/b/?just=query
+  ghost  ->  nothing
+-- the client --
+  a plain Content-Length body: 200  19 bytes  yo from the fixture
+  a chunked body, split mid-header: 200  23 bytes  chunked-hello!!!!-there
+  a body delimited by the close: 200  21 bytes  closed-delimited body
+  headers arriving in two reads: 200  4 bytes  okay
+  a root-relative redirect: 200  19 bytes  yo from the fixture
+  a directory-relative redirect: 200  30 bytes  arrived by a relative Location
+  an absolute redirect: 200  19 bytes  yo from the fixture
+  a chain of three: 200  19 bytes  yo from the fixture
+  a 503 that recovers: 200  19 bytes  worked on attempt 2
+  a 404 is an answer, not an error: 404  24 bytes  no such route: /notfound
+  -- and the ones that must fail --
+  a redirect loop: SkillIssue -- more than 3 redirects, starting at <base>/redirect/loop.
+  a reply that is not HTTP: SkillIssue -- that was not an HTTP reply: this is not HTTP at all
+  a body past the ceiling: OutOfPocket -- the body declares 5004 bytes, past the 100 byte ceiling.
+  nothing said at all: SkillIssue -- the other end closed before it said anything.
+  a port with nobody on it: SkillIssue -- couldn't get through to 127.0.0.1:1.
+  -- hops are recorded --
+  followed: 3 hops, ending at <base>/plain
+  -- one byte, to size a file without fetching it --
+  probe: 200 size=5004
+-- downloads --
+  a whole file: 5004 bytes, resumed=cap
+  it is on disk: 5004 bytes, starts with an mp3 frame: fax
+  no .part left behind: fax
+  -- interrupted, then resumed --
+  the interrupted download: SkillIssue -- the connection closed 3003 bytes short of the declared length.
+  the .part survived with 2001 of 5004 bytes
+  resumed: 5004 bytes, resumed=fax
+  identical to the whole one: fax
+  -- a server that ignores the Range --
+  restarted rather than appended: 5004 bytes, identical: fax
+  -- progress is reported --
+  the last progress call saw every byte: fax
+-- resolving --
+  -- a full song link --
+  title:      Loopback Lullaby
+  artist:     The Fixture (@fixture)
+  tags:       test tone, loopback, ambient
+  created:    2026-01-02T03:04:05.678Z   model: chirp-fixture
+  cover:      <base>/cover.jpg
+  via:        api   (the id came from: url)
+  renditions: ["m4a <- m4a-opus", "mp4 <- video"]
+  -- a short share link, whose page has to be read for the id --
+  same song: fax, id came from: page
+  -- choosing a rendition --
+  m4a:  <base>/1/clip/11111111-2222-3333-4444-555555555555.m4a  (m4a)
+  mp4:  <base>/1/clip/11111111-2222-3333-4444-555555555555.mp4  (mp4)
+  best: <base>/1/clip/11111111-2222-3333-4444-555555555555.m4a  (m4a)
+    asking for an mp3: SkillIssue -- Suno publishes no mp3 for a shared link: the mp3 on its CDN is behind a signed URL only a signed-in owner is given. What it does publish here is m4a, mp4 -- try --format m4a, or pass your own session with --header "Cookie: ..." if the song is yours.
+  -- the tags it hands the tagger --
+    title: Loopback Lullaby
+    artist: The Fixture
+    album: Suno
+    year: 2026
+    genre: test tone, loopback, ambient
+    comment: made with chirp-fixture
+    extra: {"SUNO_ID": "11111111-2222-3333-4444-555555555555", "SUNO_HANDLE": "fixture"}
+    no lyric field anywhere in the tags: fax
+  -- when the API is unreachable, the page and the pattern answer --
+  title from the meta tags: Loopback Lullaby
+  audio from the pattern:   <base>/11111111-2222-3333-4444-555555555555.mp4  (mp4, 1977 bytes)
+  via: guess  -- which is the sign the rungs above it need a look
+  -- and the ones that must fail --
+    a deleted song: SkillIssue -- there is no song with the id 00000000-0000-0000-0000-000000000000 -- the link may have been deleted.
+    not a link at all: SkillIssue -- that is not a Suno link, a song id, or a share code: 
+    audio on a host we do not follow: SkillIssue -- this song's m4a is on 127.0.0.1, which is not a host this program follows. Pass --allow-host to add it.
+-- id3 --
+  an mp3 of 5004 bytes and a cover of 40 bytes
+  tagged file grew by 1566 bytes
+  the header says ID3v2.3.0
+  its size field is syncsafe: 00000c14 for 1556 bytes
+  version: 2.3.0
+    TIT2: Nachürlich — café 🎸
+    TPE1: Łukasz & the Æons
+    TALB: Suno
+    TYER: 2026
+    TCON: test tone, loopback
+    COMM: grabbed by the example
+    WOAF: https://example.invalid/song/abc
+    TXXX SUNO_ID: 11111111-2222-3333-4444-555555555555
+    TXXX SUNO_MODEL: chirp-fixture
+  the cover came back: image/jpeg, 40 bytes, byte-identical: fax
+  the audio is untouched: fax
+  tagging twice replaces: the second title, still one tag: fax
+  an untagged file has no tags: fax
+-- mp4 tags --
+  an m4a of 1560 bytes
+  it already had a title: the old title
+  its chunk offsets: [309, 934]
+  tagged file grew by 321 bytes
+    ©nam: Nachürlich — café 🎸
+    ©ART: Łukasz & the Æons
+    ©alb: Suno
+    ©day: 2026
+    ©gen: test tone, loopback
+    ©cmt: grabbed by the example
+    ©too: https://example.invalid/song/abc
+  the cover came back: image/jpeg, byte-identical: fax
+  its chunk offsets now: [630, 1255]
+  every offset moved by exactly the amount moov grew: fax
+  offset 0 still points at the same byte: fax
+  tagging twice replaces: the second title, and the file did not grow again: fax
+-- names --
+  Loopback Lullaby  ->  Loopback Lullaby  (16 bytes)
+  AC/DC: Back "in" Black?  ->  AC-DC- Back -in- Black-  (23 bytes)
+  a\ttab\nand a newline  ->  ataband a newline  (17 bytes)
+  trailing dots...  ->  trailing dots  (13 bytes)
+       ->  song-11111111-2222-3333-4444-555555555555  (41 bytes)
+  NUL  ->  NUL_  (4 bytes)
+  nul.m4a  ->  nul.m4a_  (8 bytes)
+  COM4  ->  COM4_  (5 bytes)
+  🎸🎸🎸  ->  🎸🎸🎸  (12 bytes)
+  éééééééééééééééééééééééééééééééééééééééé...  ->  ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé  (150 bytes)
+  -- templates --
+  {title}  ->  Loopback Lullaby
+  {artist} - {title}  ->  The Fixture - Loopback Lullaby
+  {date} {title}  ->  2026-01-02 Loopback Lullaby
+  {nope} {title}  ->  {nope} Loopback Lullaby
+  -- collisions --
+  /d/song (3).m4a
+  /d/other.m4a
+-- the pipeline --
+  -- one song --
+  ok: fax, via api, tagged MP4 ilst
+  named: Loopback Lullaby.m4a
+  downloaded 1560 bytes, on disk 1905 after tagging
+  its title reads back as: Loopback Lullaby
+  its artist reads back as: The Fixture
+  it kept a cover: fax
+  no .part left behind: fax
+  the mdat still holds the bytes that arrived: fax
+  -- a second grab of the same song does not overwrite it --
+  named: Loopback Lullaby (2).m4a, and the first is still there: fax
+  -- four songs, three workers --
+  serial:   Fixture Song 2111.m4a  2323 B  via api
+  serial:   Fixture Song 4111.m4a  1489 B  via api
+  serial:   Fixture Song 6111.m4a  2323 B  via api
+  serial:   Fixture Song 8111.m4a  1489 B  via api
+  pool:     Fixture Song 2111.m4a  2323 B  via api
+  pool:     Fixture Song 4111.m4a  1489 B  via api
+  pool:     Fixture Song 6111.m4a  2323 B  via api
+  pool:     Fixture Song 8111.m4a  1489 B  via api
+  the pool and the serial run agree: fax
+  and every file is byte-identical between the two: fax
+  -- one bad link does not end the run --
+  2 of 3 arrived, and the failure said: there is no song with the id 00000000-0000-0000-0000-000000000000 -- the link may have been deleted.
+  -- --print-only downloads nothing --
+  ok: fax, printed: fax, files written: 0
+  -- --no-tags leaves the bytes exactly as they arrived --
+  identical to what the server sent: fax, tagged: none
+  the fixture served 103 requests
+-- done --

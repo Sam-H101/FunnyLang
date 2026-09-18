@@ -1,0 +1,162 @@
+// pipeline.funny — one link, start to finish.
+//
+// Resolve, fetch, tag, name. It lives in its own module because two very
+// different callers run it: `grab.funny` on the main thread when there is one
+// link, and `worker.funny` inside an `interns` thread when there are several.
+// If the pool ran a second implementation, the thing the golden proves about
+// one song would say nothing about four.
+//
+// Everything it does to the filesystem happens through a `.part` file that is
+// moved into place at the very end, so an interrupted run never leaves
+// something that looks like a finished song.
+
+gimme filez
+gimme yapper
+gimme blob
+
+gimme { get, get_to_file } from "fetch.funny"
+gimme "suno.funny"
+gimme "id3.funny"
+gimme "mp4tags.funny"
+gimme "namer.funny"
+
+bet opt(opts, key, fallback) {
+    sus (opts == ghost) { bounce fallback }
+    yo v = opts.get(key, ghost)
+    bounce v == ghost ? fallback : v
+}
+
+// Which tagger a file needs is decided by what the file *is*, not by what the
+// URL ended in. An `.m4a` and an `.mp4` are the same container.
+flex bet tagger_for(kind) {
+    sus (kind == "mp3") { bounce "id3" }
+    sus (kind == "m4a" || kind == "mp4" || kind == "m4b") { bounce "mp4" }
+    bounce "none"
+}
+
+// The whole thing for one link. Never raises: it returns an outcome, because
+// the pool needs one failure not to end the other three.
+flex bet grab_one(url, opts) {
+    sketchy {
+        bounce run(url, opts)
+    } my_bad (e) {
+        bounce {"ok": cap, "url": url, "error": e.message, "flavor": e.flavor}
+    }
+}
+
+bet run(url, opts) {
+    yo say = opt(opts, "say", ghost)
+    yo out_dir = opt(opts, "out", ".")
+    yo want = opt(opts, "format", "m4a")
+
+    note(say, "resolving", short_url(url))
+    yo record = suno.resolve(url, opts)
+    record = suno.choose(record, want, opts)
+    note(say, "  title", record["title"])
+    sus (record["artist"] != "") { note(say, "  artist", record["artist"]) }
+    note(say, "  audio", short_url(record["audio_url"]) + "  (" + record["audio_kind"] + ")")
+
+    sus (opt(opts, "print_only", cap)) {
+        bounce {"ok": fax, "printed": fax, "url": url, "record": record,
+                "title": record["title"], "via": record["via"], "kind": record["audio_kind"]}
+    }
+
+    // The name is chosen before the download so that a collision is settled by
+    // creating the `.part` file, not by racing another worker at the end.
+    yo template = opt(opts, "name_template", namer.DEFAULT_TEMPLATE)
+    yo fields = {"title": record["title"], "artist": record["artist"],
+                 "handle": record["handle"], "id": record["id"],
+                 "date": yapper.slice(record["created"], 0, 10)}
+    yo base = namer.safe_name(namer.render(template, fields), "song-" + record["id"])
+    yo ext = "." + record["audio_kind"]
+    yo path = namer.unique_path(out_dir, base, ext, lowkey (p) => filez.exists(p) ||
+                                                                 filez.exists(p + ".part"))
+
+    sus (opt(opts, "skip_existing", cap) && filez.exists(joined(out_dir, base + ext))) {
+        bounce {"ok": fax, "skipped": fax, "url": url, "path": joined(out_dir, base + ext),
+                "title": record["title"], "via": record["via"], "kind": record["audio_kind"]}
+    }
+
+    yo progress = opt(opts, "on_progress", ghost)
+    yo got = get_to_file(record["audio_url"], path,
+                         with_keys(opts, {"resume": opt(opts, "resume", cap),
+                                          "on_progress": progress}))
+
+    // The cover is a nice-to-have: a song that arrived without its artwork is
+    // still the song, so a failure here is a note rather than the end of the
+    // run.
+    yo cover = ghost
+    yo cover_mime = "image/jpeg"
+    sus (!opt(opts, "no_cover", cap) && record["image_url"] != ghost) {
+        sketchy {
+            yo answer = get(record["image_url"], with_keys(opts, {}))
+            sus (answer["status"] == 200) {
+                cover = answer["blob"]
+                cover_mime = content_type_of(answer)
+            }
+        } my_bad (e) {
+            note(say, "  cover", "could not be fetched (" + e.message + ") -- carrying on")
+        }
+    }
+
+    yo tagged_with = "none"
+    sus (!opt(opts, "no_tags", cap)) {
+        yo tags = suno.tags_for(record)
+        sus (cover != ghost) {
+            tags["cover"] = cover
+            tags["cover_mime"] = cover_mime
+        }
+        yo which = tagger_for(record["audio_kind"])
+        yo bytes = filez.read_blob(path)
+        sus (which == "id3") {
+            filez.write_blob_atomic(path, id3.write_tags(bytes, tags))
+            tagged_with = "ID3v2.3"
+        } kinda_sus (which == "mp4") {
+            filez.write_blob_atomic(path, mp4tags.write_tags(bytes, tags))
+            tagged_with = "MP4 ilst"
+        }
+        sus (tagged_with != "none") {
+            note(say, "  tagged", tagged_with + (cover == ghost ? ", no cover" :
+                 ", cover " + to_yap(how_thicc(cover)) + " bytes"))
+        }
+    }
+
+    bounce {"ok": fax, "url": url, "path": path, "bytes": got["bytes"],
+            "final_bytes": how_thicc(filez.read_blob(path)),
+            "title": record["title"], "artist": record["artist"], "via": record["via"],
+            "id": record["id"], "kind": record["audio_kind"], "tagged": tagged_with,
+            "resumed": got["resumed"]}
+}
+
+bet content_type_of(answer) {
+    yo ct = answer["headers"].get("content-type", "image/jpeg")
+    yo semi = yapper.index_of(ct, ";")
+    bounce yapper.trim(semi >= 0 ? yapper.slice(ct, 0, semi) : ct)
+}
+
+bet with_keys(opts, extra) {
+    yo out = {}
+    grind key in ["headers", "ca", "timeout_ms", "retries", "max_redirects", "max_bytes"] {
+        yo v = opt(opts, key, ghost)
+        sus (v != ghost) { out[key] = v }
+    }
+    grind key in extra.keys() {
+        sus (extra[key] != ghost) { out[key] = extra[key] }
+    }
+    bounce out
+}
+
+bet joined(dir, name) {
+    sus (dir == "") { bounce name }
+    bounce filez.join_path(dir, name)
+}
+
+bet note(say, label, value) {
+    sus (say != ghost) { say(label, value) }
+}
+
+flex bet short_url(url) {
+    sus (url == ghost) { bounce "<nothing>" }
+    yo out = yapper.replace(yapper.replace(url, "https://", ""), "http://", "")
+    bounce how_thicc(out) > 62 ? yapper.slice(out, 0, 62) + "..." : out
+}
