@@ -2,12 +2,52 @@
 
 All notable changes to FunnyLang are documented here.
 
-## [Unreleased] — battleship
+## [Unreleased] — battleship, suno_grab
 
-One worked example, and no runtime, standard library or syntax changes at all: everything new is
-under `extensive_examples/battleship/`. Whether this becomes a version number, and which, is a
-separate decision — the three files holding the version constant are untouched, so the embedded
-toolchain has not been regenerated either.
+Two worked examples, and no runtime, standard library or syntax changes at all: everything new is
+under `extensive_examples/battleship/` and `extensive_examples/suno_grab/`. Whether this becomes a
+version number, and which, is a separate decision — the three files holding the version constant
+are untouched, so the embedded toolchain has not been regenerated either.
+
+### Added: `extensive_examples/suno_grab/`
+
+A downloader for publicly shared Suno links: it finds the audio the song actually publishes,
+streams it to disk with a progress bar, writes the title, artist, year, style and cover art into
+it, and gives it a filename that is still legal after being copied to another computer.
+
+- **The first example in this tree that dials out.** Every other one waits to be called, so there
+  was nothing to copy: `web_server/http.funny` and its descendants parse a request and write a
+  response, which is the mirror of what a client does. `fetch.funny` is HTTP/1.1 the other way
+  round — request framing, `Content-Length` and chunked bodies, redirect chains including the
+  **relative** `Location` that `internet.go_brrrr` cannot follow, `Range` with resume, retry with
+  backoff and `Retry-After`, and a verified TLS connection — all over `internet.slide_into`.
+- **CI is why it is FunnyLang rather than `go_brrrr`.** `funny test extensive_examples` runs with
+  `FUNNY_NO_NET=1`, which makes `go_brrrr` raise before it sends a packet, while `slide_into` to
+  loopback stays allowed. A client built on the latter is one the golden can actually drive, so
+  the code that runs against the real internet is the code CI proved.
+- **It writes an `.m4a`, and the README's longest section is why.** Probing a real share link
+  found no `og:audio`, an embedded clip record that hands a signed-out reader
+  `audio_url: .../api/forbidden` on purpose, and an mp3 on the CDN that is 403 behind CloudFront
+  signed URLs. What the public clip API does publish is one rendition: Opus in an MP4 container.
+  Transcoding it would need an Opus decoder and an MP3 encoder in FunnyLang, and `computer` makes
+  no subprocess calls, so `--format mp3` fails with a sentence that explains itself instead of
+  writing Opus frames into a file called `.mp3`.
+- **Two taggers, because a container is not a file extension.** `id3.funny` writes ID3v2.3 with
+  UTF-16 text frames and a syncsafe size whose being wrong makes a file that plays perfectly and
+  whose tag is invisible. `mp4tags.funny` rebuilds the `moov/udta/meta/ilst` tree and every
+  ancestor's size field — and then moves every `stco`/`co64` chunk offset by the number of bytes
+  `moov` grew, without which a tagger passes its own round-trip test and corrupts every real file.
+- **A golden that never touches the network.** Seven parts against a fixture server on loopback
+  that writes its responses by hand: ten response shapes, a chunk-size line split across two
+  writes, an interrupted download resumed to a byte-identical file, both tag formats round-tripped,
+  filenames that survive Windows, and four songs through three workers asserted byte-identical to
+  the same four fetched serially.
+- **Three bugs the golden caught** and one measurement thrown away: a `200` answering a `Range`
+  being appended to the partial file rather than replacing it; a fixture worker that only stopped
+  when told, which hung the process whenever its boss raised instead of telling it; a `©nam` atom
+  built from a `yapstring`, which is five bytes rather than four and threw off every box after it;
+  and a worker table that reported two workers as 27× faster than one, which was the first intern
+  in the process compiling the module graph and the later ones finding it warm.
 
 ### Added: `extensive_examples/battleship/`
 

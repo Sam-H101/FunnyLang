@@ -528,7 +528,7 @@ yo served = 0
 yo stopping = cap
 yo last_seen = clock.now_ms()
 bruh (!stopping) {
-    yo customer = internet.next_customer(listener, 200)
+    yo customer = internet.next_customer(listener, 20)
     sus (customer != ghost) {
         last_seen = clock.now_ms()
         yo conn = customer["conn"]
@@ -544,7 +544,7 @@ bruh (!stopping) {
         internet.kick_out(conn)
     }
     // A message is the only way this stops, apart from the safety net below.
-    yo note = interns.wait_up(interns.check_dms(1))
+    yo note = interns.wait_up(interns.check_dms(0))
     sus (note != ghost && note["msg"] == "stop") { stopping = fax }
     sus (served > 500) { stopping = fax }
     sus (clock.now_ms() - last_seen > IDLE_GIVE_UP_MS) { stopping = fax }

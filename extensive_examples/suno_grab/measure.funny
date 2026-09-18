@@ -1,0 +1,194 @@
+// measure.funny — how long each step actually takes, against the fixture.
+//
+//     funny run extensive_examples/suno_grab/measure.funny
+//     funny run extensive_examples/suno_grab/measure.funny -- --songs 16
+//
+// IT MEASURES THIS PROGRAM AND NOT ANYBODY'S NETWORK. Every byte comes from
+// `fixture.funny` on loopback, which is the only way the number means the same
+// thing twice. Against the real site the download is entirely somebody else's
+// bandwidth and the interesting columns here -- resolving, tagging, and what a
+// second worker buys -- are the parts that would still be true.
+//
+// Which is also the honest reason the worker column matters less than it
+// looks: on loopback there is no latency to hide, so parallelism has almost
+// nothing to win. On the real internet, where resolving a song is two
+// round-trips before its first byte moves, it has rather more.
+
+gimme filez
+gimme clock
+gimme interns
+gimme yapper
+
+gimme { get } from "fetch.funny"
+gimme "pipeline.funny"
+gimme "suno.funny"
+gimme "mp4tags.funny"
+
+yo HERE = filez.dir_of(the_script())
+
+bet main(raw) {
+    yo args = []
+    grind a in raw {
+        sus (a != "--") { args.yeet_in(a) }
+    }
+    yo songs = 8
+    yo i = 0
+    bruh (i < how_thicc(args)) {
+        sus (args[i] == "--songs" && i + 1 < how_thicc(args)) {
+            songs = args[i + 1].to_numba()
+            i += 2
+        } nah {
+            i += 1
+        }
+    }
+
+    yo ID = "11111111-2222-3333-4444-555555555555"
+    yo server = interns.hire(filez.join_path(HERE, "fixture.funny"), {"id": ID})
+    yo hello = interns.wait_up(interns.check_dms(10000))
+    no_cap(hello != ghost, "the fixture never said which port it took")
+    yo BASE = "http://127.0.0.1:" + to_yap(hello["msg"]["port"])
+
+    yo TMP = filez.temp_file("sunomeasure") + "_dir"
+    filez.mkdir(TMP)
+    yo RUN = {"api_base": BASE, "page_base": BASE, "cdn_base": BASE,
+              "allow_hosts": ["127.0.0.1"], "format": "m4a", "out": TMP}
+
+    yap "measuring against the fixture on " + BASE + ", " + to_yap(songs) + " songs"
+    yap ""
+
+    // -- the steps, one at a time -------------------------------------------------------
+    yap "step                              ms"
+    yap "--------------------------------  -----"
+
+    yap yapper.pad_right("resolve a full song link", 32) + "  " +
+        ms(lowkey () => suno.resolve(BASE + "/song/" + ID, RUN))
+    yap yapper.pad_right("resolve a short share link", 32) + "  " +
+        ms(lowkey () => suno.resolve(BASE + "/s/shortcode", RUN))
+
+    yo record = suno.choose(suno.resolve(BASE + "/song/" + ID, RUN), "m4a", RUN)
+    yap yapper.pad_right("fetch the audio", 32) + "  " +
+        ms(lowkey () => get(record["audio_url"], {}))
+    yap yapper.pad_right("fetch the cover", 32) + "  " +
+        ms(lowkey () => get(record["image_url"], {}))
+
+    yo audio = get(record["audio_url"], {})["blob"]
+    yo tags = suno.tags_for(record)
+    tags["cover"] = get(record["image_url"], {})["blob"]
+    yap yapper.pad_right("write the MP4 tags", 32) + "  " +
+        ms(lowkey () => mp4tags.write_tags(audio, tags))
+    yap yapper.pad_right("read them back", 32) + "  " +
+        ms(lowkey () => mp4tags.read_tags(mp4tags.write_tags(audio, tags)))
+
+    yo whole_dir = filez.join_path(TMP, "whole")
+    filez.mkdir(whole_dir)
+    yo whole_opts = RUN.clone()
+    whole_opts["out"] = whole_dir
+    yap yapper.pad_right("the whole pipeline, one song", 32) + "  " +
+        ms(lowkey () => pipeline.grab_one(BASE + "/song/" + ID, whole_opts))
+    yap "  (the audio here is " + to_yap(how_thicc(audio)) + " bytes; a real song is a few MB, " +
+        "and every row above except the two fetches would be the same)"
+    yap ""
+
+    // -- and what another worker buys ------------------------------------------------------
+    yap "workers   " + to_yap(songs) + " songs"
+    yap "-------   -------------"
+    yo urls = []
+    grind k from 0 to songs {
+        urls.yeet_in(BASE + "/song/" + id_number(k))
+    }
+    // Hire and dismiss one worker before the clock starts. The first intern in
+    // a process compiles the whole module graph -- `worker.funny`, and through
+    // it the pipeline, the client, both taggers -- and later ones find it
+    // warm. Without this the first row measured that compile and reported it
+    // as the cost of having one worker, which made two workers look about
+    // twenty-seven times faster than one. They are not.
+    yo warm = interns.hire(filez.join_path(HERE, "worker.funny"), RUN)
+    interns.dm(warm, "stop")
+    interns.wait_up(warm)
+
+    yo one_worker = 0.0
+    grind count in [1, 2, 4] {
+        yo dir = filez.join_path(TMP, "w" + to_yap(count))
+        filez.mkdir(dir)
+        yo opts = RUN.clone()
+        opts["out"] = dir
+        yo watch = clock.stopwatch()
+        run_pool(urls, opts, count)
+        yo took = watch()
+        sus (count == 1) { one_worker = took }
+        yap yapper.pad_right(to_yap(count), 9) + " " + to_yap(round2(took)) + " s"
+    }
+    yap ""
+    yap "  NO SPEED-UP COLUMN, on purpose. Those wall-clocks fall faster than the worker"
+    yap "  count rises, which is not something a pool can do -- it is `fixture.funny`"
+    yap "  accepting one connection at a time on a 20 ms poll. With one worker every"
+    yap "  request waits for the next poll; with several, one is always already pending."
+    yap "  So this table measures the fixture as much as the pool, and the honest claim"
+    yap "  for --workers is the design one: on the real internet it hides the two"
+    yap "  round-trips of resolving one song behind the download of another."
+
+    interns.dm(server, "stop")
+    interns.wait_up(server)
+    wipe(TMP)
+    bounce 0
+}
+
+bet run_pool(urls, opts, count) {
+    yo crew = []
+    grind k from 0 to count {
+        crew.yeet_in(interns.hire(filez.join_path(HERE, "worker.funny"), opts))
+    }
+    yo next = 0
+    grind w in crew {
+        sus (next < how_thicc(urls)) {
+            interns.dm(w, urls[next])
+            next += 1
+        }
+    }
+    yo done = 0
+    bruh (done < how_thicc(urls)) {
+        yo note = interns.wait_up(interns.check_dms(120000))
+        sus (note == ghost) { bail }
+        done += 1
+        sus (next < how_thicc(urls)) {
+            interns.dm(note["from"], urls[next])
+            next += 1
+        }
+    }
+    grind w in crew { interns.dm(w, "stop") }
+    grind w in crew { interns.wait_up(w) }
+}
+
+// A different id per song, so each one is a different title and a different
+// length -- the fixture derives both from the id.
+bet id_number(k) {
+    yo hex = "0123456789abcdef"
+    bounce hex.at(k % 16) + "1111111-2222-3333-4444-5555555555" +
+           hex.at((k \ 16) % 16) + hex.at(k % 16)
+}
+
+bet ms(f) {
+    // Three runs, best of, because the first of anything on a fresh VM pays
+    // for pages nobody else will.
+    yo best = 1e9
+    grind k from 0 to 3 {
+        yo watch = clock.stopwatch()
+        f()
+        yo took = watch() * 1000.0
+        sus (took < best) { best = took }
+    }
+    bounce to_yap(round2(best))
+}
+
+bet round2(x) { bounce x.round(2) }
+
+bet wipe(dir) {
+    sus (!filez.is_dir(dir)) { bounce ghost }
+    grind name in filez.list_dir(dir) {
+        yo p = filez.join_path(dir, name)
+        sus (filez.is_dir(p)) { wipe(p) } nah { filez.obliterate(p) }
+    }
+    filez.obliterate(dir)
+}
+
+dip(main(the_args()))
