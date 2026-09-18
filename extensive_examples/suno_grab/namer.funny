@@ -1,0 +1,136 @@
+// namer.funny — a title, and a filename that survives being copied somewhere else.
+//
+// A song is named by whoever made it, which means it can contain a slash, a
+// colon, a newline, four hundred characters, an emoji, or nothing at all. A
+// filename cannot. The rules here are the *union* of what Windows, macOS and
+// Linux refuse, applied everywhere -- because the machine that downloads a
+// file is often not the machine that ends up holding it, and a name that is
+// only legal on the one it was made on is a name that breaks on the way to a
+// phone.
+//
+// What that union comes to:
+//
+//   - `< > : " / \ | ? *` are illegal on Windows and `/` is illegal on POSIX.
+//   - bytes 0-31 are illegal everywhere and invisible when they are not.
+//   - a trailing dot or space is silently dropped by Windows, so `song.` and
+//     `song` become the same file and one of them overwrites the other.
+//   - `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9` are device
+//     names on Windows *with or without an extension*, so `NUL.m4a` is not a
+//     file, it is the bit bucket.
+//   - a filename is limited in **bytes** on most filesystems, not characters,
+//     and cutting a UTF-8 sequence in half makes a name that is not text.
+
+gimme yapper
+
+flex deadass MAX_NAME_BYTES = 150
+flex deadass DEFAULT_TEMPLATE = "{title}"
+
+deadass ILLEGAL = ["<", ">", ":", "\"", "/", "\\", "|", "?", "*"]
+deadass DEVICES = ["CON", "PRN", "AUX", "NUL",
+                   "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+                   "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]
+
+// `{title}`, `{artist}`, `{id}`, `{date}`, and anything else the caller puts
+// in `fields`. An unknown `{whatever}` is left exactly as it was written
+// rather than replaced with emptiness, so a typo in a template is visible in
+// the filename instead of silently removing part of it.
+flex bet render(template, fields) {
+    yo out = template
+    grind key in fields.keys() {
+        out = yapper.replace(out, "{" + key + "}", to_yap(fields[key]))
+    }
+    bounce out
+}
+
+flex bet safe_name(name, fallback) {
+    yo out = ""
+    grind c in yapper.chars(name) {
+        yo cp = yapper.ord_of(c)
+        sus (cp < 32 || cp == 127) {
+            // A control character becomes nothing rather than a placeholder:
+            // a newline in a title is an accident, not a character somebody
+            // wanted in their filename.
+            nvm
+        }
+        sus (ILLEGAL.contains(c)) {
+            out = out + "-"
+            nvm
+        }
+        out = out + c
+    }
+
+    // Collapse the runs of spaces and dashes that the substitutions above
+    // leave behind, so `A / B` becomes `A - B` rather than `A - - B`.
+    bruh (yapper.contains(out, "  ")) { out = yapper.replace(out, "  ", " ") }
+    bruh (yapper.contains(out, "- -")) { out = yapper.replace(out, "- -", "-") }
+    bruh (yapper.contains(out, "--")) { out = yapper.replace(out, "--", "-") }
+
+    out = trim_dots_and_spaces(out)
+    out = cut_to_bytes(out, MAX_NAME_BYTES)
+    // Cutting can leave a trailing space or dot that was fine before.
+    out = trim_dots_and_spaces(out)
+
+    sus (out == "") { bounce fallback }
+    // A device name is still a device name with an extension on it: `NUL.m4a`
+    // on Windows is not a file, it is the bit bucket, and writing a song to it
+    // succeeds and leaves nothing behind. So the test is against the part
+    // before the first dot, not the whole name.
+    yo stem = out
+    yo dot = yapper.index_of(stem, ".")
+    sus (dot >= 0) { stem = yapper.slice(stem, 0, dot) }
+    sus (DEVICES.contains(yapper.SCREAM(stem))) { bounce out + "_" }
+    bounce out
+}
+
+bet trim_dots_and_spaces(s) {
+    yo out = yapper.trim(s)
+    bruh (out != "" && (yapper.ends_with(out, ".") || yapper.ends_with(out, " "))) {
+        out = yapper.slice(out, 0, how_thicc(out) - 1)
+    }
+    bruh (out != "" && yapper.starts_with(out, ".")) {
+        out = yapper.slice(out, 1, how_thicc(out))
+    }
+    bounce yapper.trim(out)
+}
+
+// Cut to a byte budget without splitting a codepoint. `how_thicc` counts
+// codepoints and the filesystem counts bytes, and for anything outside ASCII
+// those are different numbers -- which is the whole reason `yapper.byte_len`
+// exists.
+flex bet cut_to_bytes(s, budget) {
+    sus (yapper.byte_len(s) <= budget) { bounce s }
+    yo out = ""
+    yo used = 0
+    grind c in yapper.chars(s) {
+        yo size = yapper.byte_len(c)
+        sus (used + size > budget) { bail }
+        out = out + c
+        used += size
+    }
+    bounce out
+}
+
+// A path nothing is using yet. `exists` is passed in rather than imported so
+// that this module touches no filesystem and the golden can drive the
+// collision logic without creating a single file.
+//
+// The check and the claim are one step in `grab.funny` (it creates the `.part`
+// file straight away), because two workers asking "is this free?" at the same
+// moment both get told yes.
+flex bet unique_path(dir, base, ext, exists) {
+    yo joined = join_name(dir, base, ext)
+    sus (!exists(joined)) { bounce joined }
+    yo n = 2
+    bruh (n < 1000) {
+        yo candidate = join_name(dir, base + " (" + to_yap(n) + ")", ext)
+        sus (!exists(candidate)) { bounce candidate }
+        n += 1
+    }
+    chuck oops("SkillIssue", "a thousand files are already called '" + base + "'.")
+}
+
+bet join_name(dir, base, ext) {
+    yo sep = yapper.ends_with(dir, "/") || yapper.ends_with(dir, "\\") ? "" : "/"
+    sus (dir == "") { bounce base + ext }
+    bounce dir + sep + base + ext
+}

@@ -1,0 +1,370 @@
+// mp4tags.funny — iTunes-style metadata, written into an MP4 box tree.
+//
+// This is what tags the default download. PLAN.md §10 D2: what Suno publishes
+// for a share link is Opus in an MP4 container, so the file that lands is
+// `.m4a` and ID3 has nothing to attach to. The tags go where every player
+// looks for them in an MP4: `moov/udta/meta/ilst`.
+//
+// AN MP4 IS A TREE, WHICH MAKES THIS HARDER THAN ID3 AND MORE INTERESTING.
+// ID3 is a header you put in front of a file. Here the tags live four levels
+// down, and every box on the way to them carries its own byte count -- so
+// changing one string at the bottom means every ancestor's size field is now
+// wrong and has to be rewritten on the way back up.
+//
+// AND THEN THE PART THAT ACTUALLY BREAKS FILES. A `stco` box holds the
+// absolute file offset of every chunk of audio. If `moov` sits before `mdat`
+// -- which it does in anything meant to be streamed, and in what Suno serves
+// -- then growing `moov` by the size of a title pushes `mdat` down the file
+// and every one of those offsets now points at the wrong byte. The file still
+// parses. Players seek to the wrong place, or refuse it. So every offset gets
+// the same delta added to it, and `co64` is the same thing 64 bits wide.
+//
+// A tagger that skipped that step would pass a round-trip test and corrupt
+// every real file it touched, which is exactly why the golden asserts on the
+// offsets rather than only on the tags.
+
+gimme blob
+gimme yapper
+
+// The boxes that hold other boxes. Anything not in here is a leaf and is
+// copied through untouched -- which is the conservative way round: an unknown
+// box keeps its bytes rather than being descended into and rebuilt wrong.
+deadass CONTAINERS = ["moov", "trak", "mdia", "minf", "stbl", "udta", "edts",
+                      "mvex", "moof", "traf", "dinf", "mfra"]
+
+// `meta` is a container with four bytes of version-and-flags in front of its
+// children. Treating it as a plain container reads those four bytes as the
+// start of a box and finds nonsense.
+deadass FULL_CONTAINERS = ["meta"]
+
+// The data box's type indicator.
+deadass TYPE_UTF8 = 1
+deadass TYPE_JPEG = 13
+deadass TYPE_PNG = 14
+
+// -- bytes ---------------------------------------------------------------------------------
+
+flex bet be32(n) {
+    bounce blob.of([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255])
+}
+
+bet be64(n) {
+    bounce be32((n >> 32) & 0xFFFFFFFF) + be32(n & 0xFFFFFFFF)
+}
+
+bet read_be32(b, at) {
+    bounce (b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]
+}
+
+bet read_be64(b, at) {
+    bounce (read_be32(b, at) << 32) | read_be32(b, at + 4)
+}
+
+// The `©` in `©nam` is the single byte 0xA9, not the two bytes UTF-8 spells it
+// with. Building these from a yapstring is a bug that produces five-character
+// box types and a file nothing will read.
+flex bet atom(name) {
+    bounce blob.of([0xA9]) + blob.from_yap(name)
+}
+
+flex bet box(kind, payload) {
+    bounce be32(how_thicc(payload) + 8) + kind + payload
+}
+
+bet named(kind) { bounce blob.from_yap(kind) }
+
+// -- walking ---------------------------------------------------------------------------------
+
+// Every box at this level, as {"kind", "at", "size", "header", "payload"}.
+// A size of 0 means "to the end", and a size of 1 means the real size is the
+// next eight bytes -- both legal, both rare, both handled so that a file
+// carrying one is copied through rather than silently truncated.
+flex bet boxes_in(b, from_at, to_at) {
+    yo out = []
+    yo at = from_at
+    bruh (at + 8 <= to_at) {
+        yo size = read_be32(b, at)
+        yo kind = b[at + 4:at + 8].to_yap()
+        yo header = 8
+        sus (size == 1) {
+            sus (at + 16 > to_at) { bail }
+            size = read_be64(b, at + 8)
+            header = 16
+        } kinda_sus (size == 0) {
+            size = to_at - at
+        }
+        sus (size < header || at + size > to_at) { bail }
+        out.yeet_in({"kind": kind, "at": at, "size": size, "header": header,
+                     "payload_at": at + header, "payload_end": at + size})
+        at += size
+    }
+    bounce out
+}
+
+// -- reading -------------------------------------------------------------------------------
+
+flex bet read_tags(mp4) {
+    yo found = {"tags": {}, "cover": ghost}
+    yo top = boxes_in(mp4, 0, how_thicc(mp4))
+    grind t in top {
+        sus (t["kind"] == "moov") {
+            yo ilst = find_ilst(mp4, t)
+            sus (ilst != ghost) { read_ilst(mp4, ilst, found) }
+        }
+    }
+    bounce found
+}
+
+bet find_ilst(mp4, moov) {
+    yo udta = child(mp4, moov, "udta", cap)
+    sus (udta == ghost) { bounce ghost }
+    yo meta = child(mp4, udta, "meta", cap)
+    sus (meta == ghost) { bounce ghost }
+    bounce child(mp4, meta, "ilst", fax)
+}
+
+// `full` says the parent keeps four bytes of version-and-flags before its
+// children start.
+bet child(mp4, parent, kind, full) {
+    yo start = parent["payload_at"] + (full ? 4 : 0)
+    grind c in boxes_in(mp4, start, parent["payload_end"]) {
+        sus (c["kind"] == kind) { bounce c }
+    }
+    bounce ghost
+}
+
+bet read_ilst(mp4, ilst, found) {
+    grind item in boxes_in(mp4, ilst["payload_at"], ilst["payload_end"]) {
+        yo kind = mp4[item["at"] + 4:item["at"] + 8]
+        grind d in boxes_in(mp4, item["payload_at"], item["payload_end"]) {
+            sus (d["kind"] != "data") { nvm }
+            sus (d["payload_end"] - d["payload_at"] < 8) { nvm }
+            yo indicator = read_be32(mp4, d["payload_at"])
+            yo value = mp4[d["payload_at"] + 8:d["payload_end"]]
+            yo name = label_of(kind)
+            sus (indicator == TYPE_JPEG || indicator == TYPE_PNG) {
+                found["cover"] = {"bytes": value,
+                                  "mime": indicator == TYPE_JPEG ? "image/jpeg" : "image/png"}
+            } nah {
+                found["tags"][name] = value.to_yap()
+            }
+        }
+    }
+}
+
+// The four bytes of a box type, shown the way a person writes them: `©nam`
+// becomes "©nam" rather than a byte nobody can type.
+bet label_of(kind) {
+    sus (kind[0] == 0xA9) {
+        bounce "\u{00A9}" + kind[1:4].to_yap()
+    }
+    bounce kind.to_yap()
+}
+
+// -- writing -------------------------------------------------------------------------------
+
+bet data_box(indicator, payload) {
+    bounce box(named("data"), be32(indicator) + be32(0) + payload)
+}
+
+bet text_item(kind, text) {
+    bounce box(kind, data_box(TYPE_UTF8, blob.from_yap(text)))
+}
+
+// `tags` takes the same keys `id3.write_tags` does, so the pipeline can hand
+// the same groupchat to whichever tagger the file needs.
+flex bet build_ilst(tags) {
+    yo items = []
+    sus (tags.get("title", "") != "") { items.yeet_in(text_item(atom("nam"), tags["title"])) }
+    sus (tags.get("artist", "") != "") { items.yeet_in(text_item(atom("ART"), tags["artist"])) }
+    sus (tags.get("album", "") != "") { items.yeet_in(text_item(atom("alb"), tags["album"])) }
+    sus (tags.get("year", "") != "") { items.yeet_in(text_item(atom("day"), tags["year"])) }
+    sus (tags.get("genre", "") != "") { items.yeet_in(text_item(atom("gen"), tags["genre"])) }
+    sus (tags.get("comment", "") != "") { items.yeet_in(text_item(atom("cmt"), tags["comment"])) }
+    // `©too` -- the "encoder" atom -- is where the source URL goes, and it is
+    // built with `atom` like every other one: spelling the `©` as a yapstring
+    // makes a five-byte box type, and every box after it in the tree is then
+    // read from the wrong offset.
+    sus (tags.get("url", "") != "") { items.yeet_in(text_item(atom("too"), tags["url"])) }
+    yo cover = tags.get("cover", ghost)
+    sus (cover != ghost && how_thicc(cover) > 0) {
+        yo png = how_thicc(cover) > 8 && cover[0] == 0x89 && cover[1] == 0x50
+        items.yeet_in(box(named("covr"), data_box(png ? TYPE_PNG : TYPE_JPEG, cover)))
+    }
+    bounce box(named("ilst"), blob.of([]).join(items))
+}
+
+bet hdlr_box() {
+    // `mdirappl`: the handler an ilst lives under. Written fresh when the file
+    // has no metadata at all, because a `meta` with no `hdlr` is one several
+    // players quietly skip.
+    bounce box(named("hdlr"), be32(0) + be32(0) + blob.from_yap("mdirappl") +
+               be32(0) + be32(0) + be32(0))
+}
+
+// The whole point. Returns the file with its tags replaced, every ancestor's
+// size corrected, and -- if `moov` moved -- every chunk offset moved with it.
+flex bet write_tags(mp4, tags) {
+    yo top = boxes_in(mp4, 0, how_thicc(mp4))
+    sus (how_thicc(top) == 0) {
+        chuck oops("SkillIssue", "that file is not an MP4: it has no boxes at all.")
+    }
+    yo moov = ghost
+    yo moov_index = -1
+    grind i from 0 to how_thicc(top) {
+        sus (top[i]["kind"] == "moov") { moov = top[i]; moov_index = i; bail }
+    }
+    sus (moov == ghost) {
+        chuck oops("SkillIssue", "that MP4 has no 'moov' box, so there is nowhere to put a tag.")
+    }
+
+    yo new_moov = rebuild_moov(mp4, moov, tags)
+    yo delta = how_thicc(new_moov) - moov["size"]
+
+    // Does anything that stores absolute offsets live *after* moov? If so its
+    // offsets all shift by `delta`. Comparing positions rather than assuming
+    // the usual order, because both orders are legal and both exist.
+    sus (delta != 0) {
+        yo shifted = cap
+        grind i from 0 to how_thicc(top) {
+            sus (i != moov_index && top[i]["at"] > moov["at"]) { shifted = fax }
+        }
+        sus (shifted) {
+            new_moov = shift_offsets(new_moov, delta)
+        }
+    }
+
+    yo parts = []
+    grind i from 0 to how_thicc(top) {
+        sus (i == moov_index) {
+            parts.yeet_in(new_moov)
+        } nah {
+            parts.yeet_in(mp4[top[i]["at"]:top[i]["at"] + top[i]["size"]])
+        }
+    }
+    bounce blob.of([]).join(parts)
+}
+
+// moov with its udta/meta/ilst replaced, and every size on the way back up
+// recomputed from what is actually below it rather than from what was there
+// before.
+bet rebuild_moov(mp4, moov, tags) {
+    yo ilst = build_ilst(tags)
+    yo kept = []
+    yo udta_old = ghost
+    grind c in boxes_in(mp4, moov["payload_at"], moov["payload_end"]) {
+        sus (c["kind"] == "udta") { udta_old = c } nah {
+            kept.yeet_in(mp4[c["at"]:c["at"] + c["size"]])
+        }
+    }
+
+    // Everything the old udta held apart from its meta, so a file that keeps
+    // something else in there does not lose it.
+    yo udta_kept = []
+    yo meta_old = ghost
+    sus (udta_old != ghost) {
+        grind c in boxes_in(mp4, udta_old["payload_at"], udta_old["payload_end"]) {
+            sus (c["kind"] == "meta") { meta_old = c } nah {
+                udta_kept.yeet_in(mp4[c["at"]:c["at"] + c["size"]])
+            }
+        }
+    }
+
+    // And everything the old meta held apart from its ilst: the hdlr is reused
+    // when there is one, because rewriting somebody's handler is not this
+    // program's business.
+    yo meta_kept = []
+    sus (meta_old != ghost) {
+        grind c in boxes_in(mp4, meta_old["payload_at"] + 4, meta_old["payload_end"]) {
+            sus (c["kind"] != "ilst") {
+                meta_kept.yeet_in(mp4[c["at"]:c["at"] + c["size"]])
+            }
+        }
+    }
+    sus (how_thicc(meta_kept) == 0) { meta_kept.yeet_in(hdlr_box()) }
+
+    yo meta = box(named("meta"), be32(0) + blob.of([]).join(meta_kept) + ilst)
+    udta_kept.yeet_in(meta)
+    yo udta = box(named("udta"), blob.of([]).join(udta_kept))
+    kept.yeet_in(udta)
+    bounce box(named("moov"), blob.of([]).join(kept))
+}
+
+// Every `stco` and `co64` under this box, with `delta` added to each entry.
+// The tree is walked rather than scanned for the four letters, because those
+// four bytes occur inside audio data often enough to matter.
+bet shift_offsets(tree, delta) {
+    bounce shift_in(tree, 0, how_thicc(tree), delta)
+}
+
+bet shift_in(b, from_at, to_at, delta) {
+    yo parts = []
+    grind box_here in boxes_in(b, from_at, to_at) {
+        yo kind = box_here["kind"]
+        yo head = b[box_here["at"]:box_here["payload_at"]]
+        sus (kind == "stco" || kind == "co64") {
+            parts.yeet_in(head + shifted_table(b, box_here, delta, kind == "co64"))
+        } kinda_sus (CONTAINERS.contains(kind)) {
+            parts.yeet_in(head + shift_in(b, box_here["payload_at"], box_here["payload_end"], delta))
+        } kinda_sus (FULL_CONTAINERS.contains(kind)) {
+            parts.yeet_in(head + b[box_here["payload_at"]:box_here["payload_at"] + 4] +
+                          shift_in(b, box_here["payload_at"] + 4, box_here["payload_end"], delta))
+        } nah {
+            parts.yeet_in(b[box_here["at"]:box_here["at"] + box_here["size"]])
+        }
+    }
+    bounce blob.of([]).join(parts)
+}
+
+bet shifted_table(b, box_here, delta, wide) {
+    yo at = box_here["payload_at"]
+    yo version_flags = b[at:at + 4]
+    yo count = read_be32(b, at + 4)
+    yo out = [version_flags, be32(count)]
+    yo each = wide ? 8 : 4
+    yo first = at + 8
+    // A count the box is not big enough to hold is a file this program does
+    // not understand, and the safe answer is to leave it exactly as it was.
+    sus (first + count * each > box_here["payload_end"]) {
+        bounce b[box_here["payload_at"]:box_here["payload_end"]]
+    }
+    grind i from 0 to count {
+        yo here = first + i * each
+        sus (wide) {
+            out.yeet_in(be64(read_be64(b, here) + delta))
+        } nah {
+            out.yeet_in(be32(read_be32(b, here) + delta))
+        }
+    }
+    // Anything after the table (there should be nothing) is kept.
+    out.yeet_in(b[first + count * each:box_here["payload_end"]])
+    bounce blob.of([]).join(out)
+}
+
+// Every chunk offset in the file, for the golden to assert on.
+flex bet chunk_offsets(mp4) {
+    yo out = []
+    collect_offsets(mp4, 0, how_thicc(mp4), out)
+    bounce out
+}
+
+bet collect_offsets(b, from_at, to_at, out) {
+    grind box_here in boxes_in(b, from_at, to_at) {
+        yo kind = box_here["kind"]
+        sus (kind == "stco" || kind == "co64") {
+            yo at = box_here["payload_at"]
+            yo count = read_be32(b, at + 4)
+            yo each = kind == "co64" ? 8 : 4
+            sus (at + 8 + count * each <= box_here["payload_end"]) {
+                grind i from 0 to count {
+                    yo here = at + 8 + i * each
+                    out.yeet_in(each == 8 ? read_be64(b, here) : read_be32(b, here))
+                }
+            }
+        } kinda_sus (CONTAINERS.contains(kind)) {
+            collect_offsets(b, box_here["payload_at"], box_here["payload_end"], out)
+        } kinda_sus (FULL_CONTAINERS.contains(kind)) {
+            collect_offsets(b, box_here["payload_at"] + 4, box_here["payload_end"], out)
+        }
+    }
+}

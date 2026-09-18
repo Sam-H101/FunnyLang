@@ -29,6 +29,11 @@ gimme interns
 gimme json
 
 gimme { parse_url, resolve_url, get, probe, get_to_file, request, USER_AGENT } from "fetch.funny"
+// Whole modules rather than named imports: `write_tags` and `read_tags` exist
+// in both taggers, and which one runs is the point of part five.
+gimme "id3.funny"
+gimme "mp4tags.funny"
+gimme "namer.funny"
 
 yo HERE = filez.dir_of(the_script())
 yo ID = "11111111-2222-3333-4444-555555555555"
@@ -180,6 +185,151 @@ yo ticks = []
 get_to_file(BASE + "/ranged", filez.join_path(TMP, "progress.mp3"),
             {"on_progress": lowkey (done, total) => ticks.yeet_in(done)})
 yap "  the last progress call saw every byte: " + to_yap(ticks[how_thicc(ticks) - 1] == how_thicc(whole_bytes))
+
+// -- part four: ID3v2.3 ------------------------------------------------------------------
+
+yap "-- id3 --"
+
+yo mp3 = get(BASE + "/song.mp3", ghost)["blob"]
+yo cover = get(BASE + "/cover.jpg", ghost)["blob"]
+yap "  an mp3 of " + to_yap(how_thicc(mp3)) + " bytes and a cover of " +
+    to_yap(how_thicc(cover)) + " bytes"
+
+// A title and an artist that ISO-8859-1 could not hold, which is why the text
+// frames are UTF-16 and not Latin-1.
+yo TAGS = {"title": "Nach\u{00FC}rlich \u{2014} caf\u{00E9} \u{1F3B8}",
+           "artist": "\u{0141}ukasz & the \u{00C6}ons",
+           "album": "Suno", "year": "2026", "genre": "test tone, loopback",
+           "comment": "grabbed by the example", "url": "https://example.invalid/song/abc",
+           "cover": cover, "cover_mime": "image/jpeg",
+           "extra": {"SUNO_ID": ID, "SUNO_MODEL": "chirp-fixture"}}
+
+yo tagged = id3.write_tags(mp3, TAGS)
+yap "  tagged file grew by " + to_yap(how_thicc(tagged) - how_thicc(mp3)) + " bytes"
+
+// The four header bytes, asserted against what they must be rather than
+// against the reader in the same file. A syncsafe size is the one field whose
+// being wrong breaks nothing loudly.
+yo tag_size = how_thicc(tagged) - how_thicc(mp3) - 10
+yap "  the header says ID3v2." + to_yap(tagged[3]) + "." + to_yap(tagged[4])
+yap "  its size field is syncsafe: " + to_yap(tagged[6:10].to_hex()) +
+    " for " + to_yap(tag_size) + " bytes"
+no_cap(tagged[6] < 128 && tagged[7] < 128 && tagged[8] < 128 && tagged[9] < 128,
+       "a syncsafe size must have the top bit of every byte clear")
+no_cap(((tagged[6] & 0x7F) << 21) | ((tagged[7] & 0x7F) << 14) |
+       ((tagged[8] & 0x7F) << 7) | (tagged[9] & 0x7F) == tag_size,
+       "the syncsafe size does not decode to the tag's real length")
+
+yo back = id3.read_tags(tagged)
+yap "  version: " + back["version"]
+grind name in ["TIT2", "TPE1", "TALB", "TYER", "TCON", "COMM", "WOAF"] {
+    yap "    " + name + ": " + to_yap(back["frames"].get(name, "<missing>"))
+}
+grind name in back["extra"].keys() {
+    yap "    TXXX " + name + ": " + back["extra"][name]
+}
+yap "  the cover came back: " + to_yap(back["cover"]["mime"]) + ", " +
+    to_yap(how_thicc(back["cover"]["bytes"])) + " bytes, byte-identical: " +
+    to_yap(back["cover"]["bytes"] == cover)
+
+yap "  the audio is untouched: " + to_yap(id3.strip_tags(tagged) == mp3)
+
+// Writing twice must replace, not stack. A tagger that prepends leaves the
+// first tag in place and the file keeps its old title forever.
+yo twice = id3.write_tags(tagged, {"title": "the second title"})
+yap "  tagging twice replaces: " + to_yap(id3.read_tags(twice)["frames"]["TIT2"]) +
+    ", still one tag: " + to_yap(id3.strip_tags(twice) == mp3)
+
+yap "  an untagged file has no tags: " + to_yap(id3.read_tags(mp3) == ghost)
+
+// -- part five: the MP4 box tree ---------------------------------------------------------
+
+yap "-- mp4 tags --"
+
+yo m4a = get(BASE + "/1/clip/" + ID + ".m4a", ghost)["blob"]
+yap "  an m4a of " + to_yap(how_thicc(m4a)) + " bytes"
+yo before = mp4tags.read_tags(m4a)
+yap "  it already had a title: " + to_yap(before["tags"].get("\u{00A9}nam", "<none>"))
+yo offsets_before = mp4tags.chunk_offsets(m4a)
+yap "  its chunk offsets: " + to_yap(offsets_before)
+
+yo m4a_tagged = mp4tags.write_tags(m4a, TAGS)
+yo grew = how_thicc(m4a_tagged) - how_thicc(m4a)
+yap "  tagged file grew by " + to_yap(grew) + " bytes"
+
+yo after = mp4tags.read_tags(m4a_tagged)
+grind name in after["tags"].keys() {
+    yap "    " + name + ": " + after["tags"][name]
+}
+yap "  the cover came back: " + to_yap(after["cover"]["mime"]) + ", byte-identical: " +
+    to_yap(after["cover"]["bytes"] == cover)
+
+// THE ASSERTION THAT MATTERS. `moov` grew, so `mdat` moved down the file by
+// exactly that much, so every chunk offset must have moved with it. A tagger
+// that skips this passes every round-trip test and corrupts every real file.
+yo offsets_after = mp4tags.chunk_offsets(m4a_tagged)
+yap "  its chunk offsets now: " + to_yap(offsets_after)
+yo all_moved = fax
+grind i from 0 to how_thicc(offsets_before) {
+    sus (offsets_after[i] - offsets_before[i] != grew) { all_moved = cap }
+}
+yap "  every offset moved by exactly the amount moov grew: " + to_yap(all_moved)
+no_cap(all_moved, "a chunk offset did not move with the mdat it points into")
+
+// And the offsets must still point at the same bytes they did before.
+yap "  offset 0 still points at the same byte: " +
+    to_yap(m4a[offsets_before[0]] == m4a_tagged[offsets_after[0]])
+
+yo m4a_twice = mp4tags.write_tags(m4a_tagged, {"title": "the second title"})
+yap "  tagging twice replaces: " + to_yap(mp4tags.read_tags(m4a_twice)["tags"]["\u{00A9}nam"]) +
+    ", and the file did not grow again: " +
+    to_yap(how_thicc(m4a_twice) < how_thicc(m4a_tagged))
+
+// -- part six: filenames -------------------------------------------------------------------
+
+// A title with a tab or a newline in it cannot be printed as itself: the
+// golden's own output would gain a line break and stop matching.
+bet shown_title(t) {
+    yo out = ""
+    grind c in yapper.chars(t) {
+        yo cp = yapper.ord_of(c)
+        sus (cp == 9) { out = out + "\\t" }
+        kinda_sus (cp == 10) { out = out + "\\n" }
+        kinda_sus (cp < 32) { out = out + "\\x" + to_yap(cp) }
+        nah { out = out + c }
+    }
+    bounce how_thicc(out) > 40 ? yapper.slice(out, 0, 40) + "..." : out
+}
+
+yap "-- names --"
+
+grind title in ["Loopback Lullaby",
+                "AC/DC: Back \"in\" Black?",
+                "a\ttab\nand a newline",
+                "trailing dots...",
+                "   ",
+                "NUL",
+                "nul.m4a",
+                "COM4",
+                "\u{1F3B8}\u{1F3B8}\u{1F3B8}",
+                "\u{00E9}" * 200] {
+    yo safe = namer.safe_name(title, "song-" + ID)
+    yap "  " + to_yap(shown_title(title)) + "  ->  " + to_yap(safe) +
+        "  (" + to_yap(yapper.byte_len(safe)) + " bytes)"
+    no_cap(yapper.byte_len(safe) <= 150, "a name went past the byte budget")
+}
+
+yap "  -- templates --"
+yo fields = {"title": "Loopback Lullaby", "artist": "The Fixture", "id": ID,
+             "date": "2026-01-02"}
+grind template in ["{title}", "{artist} - {title}", "{date} {title}", "{nope} {title}"] {
+    yap "  " + template + "  ->  " + namer.render(template, fields)
+}
+
+yap "  -- collisions --"
+yo taken = {"/d/song.m4a": fax, "/d/song (2).m4a": fax}
+yap "  " + namer.unique_path("/d", "song", ".m4a", lowkey (p) => taken.has(p))
+yap "  " + namer.unique_path("/d", "other", ".m4a", lowkey (p) => taken.has(p))
 
 interns.dm(server, "stop")
 yo tally = interns.wait_up(server)

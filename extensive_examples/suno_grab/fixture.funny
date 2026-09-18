@@ -370,21 +370,59 @@ bet audio_blob() {
     bounce make_m4a()
 }
 
-// A minimal but structurally honest MP4: ftyp, then moov (with a udta/meta/
-// ilst holding one tag), then mdat with the "audio" in it. `mp4tags.funny`
-// rewrites the tree, so the tree has to really be a tree.
+// A minimal but structurally honest MP4: ftyp, then moov, then mdat with the
+// "audio" in it. `mp4tags.funny` rewrites the tree, so the tree has to really
+// be a tree -- and it has to contain the thing that makes rewriting it hard:
+//
+//   - a `trak/mdia/minf/stbl/stco` whose two entries are the *real* file
+//     offsets of the chunks inside `mdat`. Because `moov` sits before `mdat`,
+//     growing it moves those chunks, and a tagger that does not move the
+//     offsets with them leaves a file that parses and does not play.
+//   - a `udta/meta/ilst` that already holds a title, so that writing a tag is
+//     a *replacement* and the golden can catch a tagger that stacks instead.
+//
+// Built here by hand rather than imported from `mp4tags.funny`: a fixture that
+// used the code under test to build what that code then parses would prove
+// only that it agrees with itself.
 flex bet make_m4a() {
     yo ftyp = box("ftyp", blob.from_yap("M4A ") + be32(512) + blob.from_yap("M4A isomiso2"))
-    yo ilst = box("ilst", box("\u{00A9}nam", box("data", be32(1) + be32(0) + blob.from_yap("fixture song"))))
+    yo ilst = box("ilst", box_b(blob.of([0xA9]) + blob.from_yap("nam"),
+                                box("data", be32(1) + be32(0) + blob.from_yap("the old title"))))
     yo meta = box("meta", be32(0) + box("hdlr", be32(0) + be32(0) + blob.from_yap("mdirappl") +
                                         be32(0) + be32(0) + be32(0)) + ilst)
-    yo moov = box("moov", box("mvhd", be32(0) + zeros(96)) + box("udta", meta))
-    yo mdat = box("mdat", mp3_of(4))
+
+    // Built twice: once to find out how big `moov` is, and once with the chunk
+    // offsets that size implies. A fixture whose offsets were wrong to begin
+    // with could not tell a tagger that fixes them from one that does not.
+    yo audio = mp3_of(4)
+    yo half = how_thicc(audio) \ 2
+    yo shape = moov_with(meta, [0, 0])
+    yo mdat_at = how_thicc(ftyp) + how_thicc(shape)
+    yo first = mdat_at + 8
+    yo moov = moov_with(meta, [first, first + half])
+    yo mdat = box("mdat", audio)
     bounce ftyp + moov + mdat
 }
 
+bet moov_with(meta, offsets) {
+    yo entries = [be32(0), be32(how_thicc(offsets))]
+    grind off in offsets { entries.yeet_in(be32(off)) }
+    yo stco = box("stco", blob.of([]).join(entries))
+    yo stbl = box("stbl", stco)
+    yo minf = box("minf", stbl)
+    yo mdia = box("mdia", minf)
+    yo trak = box("trak", mdia)
+    bounce box("moov", box("mvhd", be32(0) + zeros(96)) + trak + box("udta", meta))
+}
+
 flex bet box(kind, payload) {
-    bounce be32(how_thicc(payload) + 8) + blob.from_yap(kind) + payload
+    bounce box_b(blob.from_yap(kind), payload)
+}
+
+// The box type as bytes, for the atoms whose first byte is 0xA9 -- `©nam` is
+// four bytes, and spelling the `©` as a yapstring makes it five.
+flex bet box_b(kind, payload) {
+    bounce be32(how_thicc(payload) + 8) + kind + payload
 }
 
 flex bet be32(n) {

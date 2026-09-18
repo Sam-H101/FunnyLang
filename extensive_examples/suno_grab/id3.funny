@@ -1,0 +1,328 @@
+// id3.funny — ID3v2.3, written and read, over `blob`.
+//
+// This is the part of the example with no network in it at all: bytes in,
+// bytes out, and a specification to be wrong about. It is also the part that
+// PLAN.md §10 D2 says is not on the default path any more -- what Suno
+// publishes for a share link is Opus in an MP4 container, so `mp4tags.funny`
+// is what usually runs. This module stays, is built, and is tested, because
+// the moment anything hands the pipeline a URL that really is an mp3 -- an
+// authenticated fetch, another backend, a file somebody already had -- this is
+// what tags it, and a tagger that has never been run is not a tagger.
+//
+// ID3v2.3 rather than 2.4, because 2.3 is what every player reads and 2.4's
+// improvements (syncsafe frame sizes, UTF-8 text) buy nothing here.
+//
+// THE THING TO GET RIGHT IS THE SIZE FIELDS, and there are two different ones:
+//
+//   - the *tag* size, in the 10-byte header, is **syncsafe**: 28 bits spread
+//     over four bytes with the top bit of each one clear, so that no part of
+//     the header can be mistaken for an MPEG frame sync (11 bits of 1s). Get
+//     this wrong and you get a file that plays perfectly and whose tag is
+//     invisible, which is the worst kind of wrong: nothing errors.
+//   - a *frame* size, in each 10-byte frame header, is an ordinary
+//     big-endian 32-bit integer. In 2.4 it became syncsafe too. Using the
+//     same encoder for both is the classic bug and the golden checks the
+//     header's four bytes against their own expected values rather than
+//     against whatever the reader in this same file believes.
+
+gimme blob
+gimme yapper
+
+flex deadass PADDING = 1024
+
+// Picture type 3 is "cover (front)" in the APIC table.
+flex deadass COVER_FRONT = 3
+
+// -- integers ---------------------------------------------------------------------------
+
+flex bet syncsafe(n) {
+    sus (n < 0 || n >= (1 << 28)) {
+        chuck oops("OutOfPocket", "a tag of " + to_yap(n) + " bytes does not fit a syncsafe size.")
+    }
+    bounce blob.of([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+}
+
+flex bet unsyncsafe(b, at) {
+    bounce ((b[at] & 0x7F) << 21) | ((b[at + 1] & 0x7F) << 14) |
+           ((b[at + 2] & 0x7F) << 7) | (b[at + 3] & 0x7F)
+}
+
+bet be32(n) {
+    bounce blob.of([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255])
+}
+
+bet read_be32(b, at) {
+    bounce (b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]
+}
+
+// -- text -------------------------------------------------------------------------------
+
+// Encoding 1: UTF-16 with a byte order mark. A title with an accent in it is
+// the common case rather than the exotic one, and ISO-8859-1 cannot hold one.
+// Little-endian, because the BOM says which and every reader honours it.
+bet utf16(text) {
+    yo out = [0xFF, 0xFE]
+    grind c in yapper.chars(text) {
+        yo cp = yapper.ord_of(c)
+        sus (cp > 0xFFFF) {
+            // Outside the basic plane: a surrogate pair. An emoji in a song
+            // title is not a hypothetical.
+            yo v = cp - 0x10000
+            yo hi = 0xD800 + ((v >> 10) & 0x3FF)
+            yo lo = 0xDC00 + (v & 0x3FF)
+            out.yeet_in(hi & 255)
+            out.yeet_in((hi >> 8) & 255)
+            out.yeet_in(lo & 255)
+            out.yeet_in((lo >> 8) & 255)
+        } nah {
+            out.yeet_in(cp & 255)
+            out.yeet_in((cp >> 8) & 255)
+        }
+    }
+    bounce blob.of(out)
+}
+
+bet from_utf16(b) {
+    sus (how_thicc(b) < 2) { bounce "" }
+    yo little = fax
+    yo at = 0
+    sus (b[0] == 0xFF && b[1] == 0xFE) { at = 2 }
+    kinda_sus (b[0] == 0xFE && b[1] == 0xFF) { at = 2; little = cap }
+    yo out = ""
+    bruh (at + 1 < how_thicc(b)) {
+        yo unit = little ? (b[at] | (b[at + 1] << 8)) : ((b[at] << 8) | b[at + 1])
+        at += 2
+        sus (unit >= 0xD800 && unit <= 0xDBFF && at + 1 < how_thicc(b)) {
+            yo low = little ? (b[at] | (b[at + 1] << 8)) : ((b[at] << 8) | b[at + 1])
+            sus (low >= 0xDC00 && low <= 0xDFFF) {
+                at += 2
+                out = out + yapper.chr_of(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00))
+                nvm
+            }
+        }
+        sus (unit == 0) { nvm }
+        out = out + yapper.chr_of(unit)
+    }
+    bounce out
+}
+
+// Latin-1, for the places the specification insists on it: a MIME type, a URL.
+bet latin1(text) {
+    yo out = []
+    grind c in yapper.chars(text) {
+        yo cp = yapper.ord_of(c)
+        out.yeet_in(cp > 255 ? 63 : cp)
+    }
+    bounce blob.of(out)
+}
+
+bet from_latin1(b) {
+    yo out = ""
+    grind byte in b {
+        sus (byte != 0) { out = out + yapper.chr_of(byte) }
+    }
+    bounce out
+}
+
+// -- frames ------------------------------------------------------------------------------
+
+bet frame(id, payload) {
+    bounce blob.from_yap(id) + be32(how_thicc(payload)) + blob.of([0, 0]) + payload
+}
+
+// A text frame: one encoding byte, then the text. No terminator is required
+// and none is written -- the frame's own size says where it ends.
+bet text_frame(id, text) {
+    bounce frame(id, blob.of([1]) + utf16(text))
+}
+
+// A URL frame is the one text-ish frame with no encoding byte at all: the
+// specification says a URL is always ISO-8859-1.
+bet url_frame(id, url) {
+    bounce frame(id, latin1(url))
+}
+
+bet comment_frame(language, description, text) {
+    bounce frame("COMM", blob.of([1]) + blob.from_yap(language) +
+                 utf16(description) + blob.of([0, 0]) + utf16(text))
+}
+
+bet txxx_frame(description, value) {
+    bounce frame("TXXX", blob.of([1]) + utf16(description) + blob.of([0, 0]) + utf16(value))
+}
+
+bet apic_frame(mime, kind, description, picture) {
+    bounce frame("APIC", blob.of([1]) + latin1(mime) + blob.of([0, kind]) +
+                 utf16(description) + blob.of([0, 0]) + picture)
+}
+
+// -- what is already there -----------------------------------------------------------------
+
+// Where the audio starts: past an existing tag, or at zero if there is none.
+// A second `write_tags` must *replace* the first, not stack a tag on a tag --
+// which is what naive prepending does, and what leaves a file whose title is
+// whatever it was the first time.
+flex bet audio_at(mp3) {
+    sus (how_thicc(mp3) < 10) { bounce 0 }
+    sus (!(mp3[0] == 73 && mp3[1] == 68 && mp3[2] == 51)) { bounce 0 }
+    yo size = unsyncsafe(mp3, 6)
+    yo footer = (mp3[5] & 0x10) != 0 ? 10 : 0
+    yo at = 10 + size + footer
+    bounce at > how_thicc(mp3) ? how_thicc(mp3) : at
+}
+
+flex bet strip_tags(mp3) {
+    bounce mp3[audio_at(mp3):how_thicc(mp3)]
+}
+
+// -- writing ---------------------------------------------------------------------------
+
+// `tags` is a groupchat; every key is optional:
+//   title, artist, album, year, genre, comment, url, cover, cover_mime,
+//   and `extra`, a groupchat of TXXX description -> value.
+flex bet write_tags(mp3, tags) {
+    yo frames = []
+    sus (tags.get("title", "") != "") { frames.yeet_in(text_frame("TIT2", tags["title"])) }
+    sus (tags.get("artist", "") != "") { frames.yeet_in(text_frame("TPE1", tags["artist"])) }
+    sus (tags.get("album", "") != "") { frames.yeet_in(text_frame("TALB", tags["album"])) }
+    sus (tags.get("year", "") != "") { frames.yeet_in(text_frame("TYER", tags["year"])) }
+    sus (tags.get("genre", "") != "") { frames.yeet_in(text_frame("TCON", tags["genre"])) }
+    sus (tags.get("track", "") != "") { frames.yeet_in(text_frame("TRCK", tags["track"])) }
+    sus (tags.get("comment", "") != "") {
+        frames.yeet_in(comment_frame("eng", "", tags["comment"]))
+    }
+    sus (tags.get("url", "") != "") { frames.yeet_in(url_frame("WOAF", tags["url"])) }
+    yo extra = tags.get("extra", ghost)
+    sus (extra != ghost) {
+        grind name in extra.keys() {
+            sus (to_yap(extra[name]) != "") {
+                frames.yeet_in(txxx_frame(name, to_yap(extra[name])))
+            }
+        }
+    }
+    yo cover = tags.get("cover", ghost)
+    sus (cover != ghost && how_thicc(cover) > 0) {
+        frames.yeet_in(apic_frame(tags.get("cover_mime", "image/jpeg"), COVER_FRONT, "", cover))
+    }
+
+    yo body = blob.of([]).join(frames)
+    // Padding so that a later edit can grow the tag without rewriting the
+    // whole file. Counted inside the tag size, which is what makes it padding
+    // rather than garbage between the tag and the audio.
+    yo pad = []
+    grind i from 0 to PADDING { pad.yeet_in(0) }
+    body = body + blob.of(pad)
+
+    yo header = blob.from_yap("ID3") + blob.of([3, 0, 0]) + syncsafe(how_thicc(body))
+    bounce header + body + strip_tags(mp3)
+}
+
+// -- reading ------------------------------------------------------------------------------
+
+// The reader exists so the golden can round-trip every frame the writer emits,
+// and so `tag.funny` is a real command rather than a test helper with
+// delusions. It reads what this writer writes and the common cases of what
+// other writers write; it is not a conformant ID3 implementation and the
+// README says so.
+flex bet read_tags(mp3) {
+    sus (how_thicc(mp3) < 10) { bounce ghost }
+    sus (!(mp3[0] == 73 && mp3[1] == 68 && mp3[2] == 51)) { bounce ghost }
+    yo major = mp3[3]
+    yo size = unsyncsafe(mp3, 6)
+    yo stop = 10 + size
+    sus (stop > how_thicc(mp3)) { stop = how_thicc(mp3) }
+
+    yo out = {"version": "2." + to_yap(major) + "." + to_yap(mp3[4]), "frames": {}, "extra": {}}
+    yo at = 10
+    bruh (at + 10 <= stop) {
+        yo id = mp3[at:at + 4].to_yap()
+        // Padding: the first byte of a frame id is never zero.
+        sus (mp3[at] == 0) { bail }
+        // 2.4 made frame sizes syncsafe as well; reading a 2.4 frame with a
+        // 2.3 reader would give a size four times too small on any frame past
+        // 128 bytes, so it is worth the one line.
+        yo len = major >= 4 ? unsyncsafe(mp3, at + 4) : read_be32(mp3, at + 4)
+        at += 10
+        sus (len < 0 || at + len > stop) { bail }
+        yo payload = mp3[at:at + len]
+        at += len
+
+        sus (id == "APIC") {
+            out["cover"] = read_apic(payload)
+        } kinda_sus (id == "TXXX") {
+            yo pair = read_two(payload)
+            out["extra"][pair[0]] = pair[1]
+        } kinda_sus (id == "COMM") {
+            sus (how_thicc(payload) > 4) {
+                yo pair = read_two(blob.of([payload[0]]) + payload[4:how_thicc(payload)])
+                out["frames"]["COMM"] = pair[1]
+            }
+        } kinda_sus (yapper.starts_with(id, "W")) {
+            out["frames"][id] = from_latin1(payload)
+        } kinda_sus (yapper.starts_with(id, "T")) {
+            out["frames"][id] = decode_text(payload)
+        }
+    }
+    bounce out
+}
+
+bet decode_text(payload) {
+    sus (how_thicc(payload) < 1) { bounce "" }
+    yo encoding = payload[0]
+    yo rest = payload[1:how_thicc(payload)]
+    sus (encoding == 1 || encoding == 2) { bounce from_utf16(rest) }
+    sus (encoding == 3) { bounce rest.to_yap() }
+    bounce from_latin1(rest)
+}
+
+// An encoding byte, an encoded string, its terminator, then the rest: the
+// shape TXXX and COMM share.
+bet read_two(payload) {
+    sus (how_thicc(payload) < 1) { bounce ["", ""] }
+    yo encoding = payload[0]
+    yo rest = payload[1:how_thicc(payload)]
+    yo wide = encoding == 1 || encoding == 2
+    yo cut = terminator_at(rest, wide)
+    sus (cut < 0) { bounce ["", ""] }
+    yo first = rest[0:cut]
+    yo second = rest[cut + (wide ? 2 : 1):how_thicc(rest)]
+    sus (wide) { bounce [from_utf16(first), from_utf16(second)] }
+    bounce [from_latin1(first), from_latin1(second)]
+}
+
+bet terminator_at(b, wide) {
+    sus (wide) {
+        yo i = 0
+        // A UTF-16 terminator is two zero bytes *on an even boundary* -- the
+        // low byte of an ASCII character is zero, so scanning for one zero
+        // finds the middle of the first letter.
+        bruh (i + 1 < how_thicc(b)) {
+            sus (b[i] == 0 && b[i + 1] == 0) { bounce i }
+            i += 2
+        }
+        bounce -1
+    }
+    grind i from 0 to how_thicc(b) {
+        sus (b[i] == 0) { bounce i }
+    }
+    bounce -1
+}
+
+bet read_apic(payload) {
+    sus (how_thicc(payload) < 4) { bounce ghost }
+    yo encoding = payload[0]
+    yo at = 1
+    yo mime_end = at
+    bruh (mime_end < how_thicc(payload) && payload[mime_end] != 0) { mime_end += 1 }
+    yo mime = from_latin1(payload[at:mime_end])
+    at = mime_end + 1
+    sus (at >= how_thicc(payload)) { bounce ghost }
+    yo kind = payload[at]
+    at += 1
+    yo wide = encoding == 1 || encoding == 2
+    yo rest = payload[at:how_thicc(payload)]
+    yo cut = terminator_at(rest, wide)
+    sus (cut < 0) { bounce ghost }
+    yo picture = rest[cut + (wide ? 2 : 1):how_thicc(rest)]
+    bounce {"mime": mime, "kind": kind, "bytes": picture}
+}
