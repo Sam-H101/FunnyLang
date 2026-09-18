@@ -1,0 +1,364 @@
+// suno.funny — a share link, and what is actually behind it.
+//
+// This is the fragile module, and it is fragile because the page belongs to
+// somebody else. PLAN.md §10 D1 records what one real share link answered on
+// 2026-09-18, probe by probe; §10 D3 is the ladder that follows from it. The
+// short version, because it is the surprising part:
+//
+//   - the share page carries **no** audio URL. There is no `og:audio`, and the
+//     clip record embedded in the page hands a signed-out reader
+//     `audio_url: .../api/forbidden` on purpose.
+//   - the mp3 on the CDN is 403 behind CloudFront signed URLs, and a browser
+//     User-Agent, Referer and Origin change nothing.
+//   - the clip API answers **unauthenticated** with everything: title, tags,
+//     the creator's handle, the cover, the video, and `media_urls`.
+//   - and what `media_urls` lists is one entry, `m4a-opus`. That is the one
+//     audio rendition Suno publishes for a share link, which is why the file
+//     this program writes is an `.m4a` and not the mp3 the name suggests.
+//
+// So the rung that normally answers is the API, not the page. `via` says which
+// rung did, on every result and in the manifest, because the day that changes
+// is a day somebody needs to be able to see from the output.
+
+gimme yapper
+gimme json
+
+gimme { get, probe, parse_url, shorten } from "fetch.funny"
+gimme "htmlbits.funny"
+
+flex deadass API_BASE = "https://studio-api.prod.suno.com"
+flex deadass PAGE_BASE = "https://suno.com"
+flex deadass CDN_BASE = "https://cdn1.suno.ai"
+
+// An audio URL is only followed if it is on one of these. A resolver that
+// follows a page to any host at all is a request forgery gadget wearing a
+// downloader's coat -- this one runs on a person's own machine, where that
+// matters less, and the check is four lines.
+flex deadass AUDIO_HOSTS = ["suno.ai", "suno.com", "cloudfront.net"]
+
+// The marker the page and the API both use for "you may not have this".
+deadass FORBIDDEN = "/api/forbidden"
+
+bet opt(opts, key, fallback) {
+    sus (opts == ghost) { bounce fallback }
+    yo v = opts.get(key, ghost)
+    bounce v == ghost ? fallback : v
+}
+
+// -- rung one: the URL ---------------------------------------------------------------------
+
+// `https://suno.com/song/<uuid>` carries the id; `https://suno.com/s/<code>`
+// does not, and the page has to be read for it. A bare uuid or a bare share
+// code is accepted too, because somebody will paste one.
+flex bet clip_id_of(url) {
+    yo direct = htmlbits.first_uuid(url)
+    sus (direct != ghost) { bounce direct }
+    bounce ghost
+}
+
+flex bet page_url_for(url, opts) {
+    yo parsed = parse_url(url)
+    sus (parsed != ghost) { bounce parsed["url"] }
+    yo base = opt(opts, "page_base", PAGE_BASE)
+    yo id = clip_id_of(url)
+    sus (id != ghost) { bounce base + "/song/" + id }
+    // A bare share code.
+    sus (url != "" && !yapper.contains(url, "/")) { bounce base + "/s/" + url }
+    bounce ghost
+}
+
+// -- the whole ladder ------------------------------------------------------------------------
+
+// Returns a record, or raises one sentence saying which rung failed and why.
+flex bet resolve(url, opts) {
+    yo page = page_url_for(url, opts)
+    sus (page == ghost) {
+        chuck oops("SkillIssue", "that is not a Suno link, a song id, or a share code: " +
+                   shorten(to_yap(url), 60))
+    }
+
+    yo id = clip_id_of(page)
+    yo via = "url"
+    yo html = ghost
+    sus (id == ghost) {
+        // A short link: fetch the page and read the canonical id out of it.
+        html = fetch_page(page, opts)
+        id = htmlbits.first_uuid(html["body"])
+        via = "page"
+        sus (id == ghost) {
+            chuck oops("SkillIssue", "that share page carried no song id. " + expired(page))
+        }
+    }
+
+    // Rung two: the clip API, which is the one that normally answers.
+    yo record = ghost
+    yo api = opt(opts, "api_base", API_BASE) + "/api/clip/" + id
+    sketchy {
+        yo answer = get(api, request_opts(opts))
+        sus (answer["status"] == 200) {
+            record = from_api(json.parse(answer["body"]), id, page)
+            record["via"] = "api"
+        } kinda_sus (answer["status"] == 404) {
+            chuck oops("SkillIssue", "there is no song with the id " + id +
+                       " -- the link may have been deleted.")
+        }
+    } my_bad (e) {
+        // A 404 above is the caller's answer and must not be swallowed as
+        // "the API was unreachable"; anything else falls through to the page.
+        sus (yapper.contains(e.message, "there is no song")) { chuck e }
+        record = ghost
+    }
+
+    // Rung three: the page's own meta tags. Enough for a title and a cover,
+    // never enough for the audio, so this can only complete a `--print-only`.
+    sus (record == ghost) {
+        sus (html == ghost) { html = fetch_page(page, opts) }
+        record = from_meta(html["body"], id, page)
+        record["via"] = "meta"
+    }
+
+    // Rung four: the pattern, and only when the rungs above named nothing at
+    // all. Picking *which* rendition to fetch is `choose`'s job and happens
+    // later, so testing `audio_url` here would fire the guess on every song
+    // and report `via: "guess"` for a resolve the API answered perfectly.
+    sus (how_thicc(record["renditions"]) == 0) {
+        yo guess = opt(opts, "cdn_base", CDN_BASE) + "/" + id + ".mp4"
+        // Confirmed with a GET of one byte, never a HEAD: §10 D1's last row is
+        // a CDN that answers 403 to a HEAD and 200 to the GET of the same URL.
+        sketchy {
+            yo seen = probe(guess, request_opts(opts))
+            sus (seen["status"] == 200 || seen["status"] == 206) {
+                record["audio_url"] = guess
+                record["audio_kind"] = "mp4"
+                record["size"] = seen["size"]
+                record["via"] = "guess"
+            }
+        } my_bad (e) {
+            record["audio_url"] = ghost
+        }
+    }
+
+    record["source_url"] = page
+    record["id"] = id
+    // Which rung produced the *id*, kept apart from which rung produced the
+    // audio: a short link always needs the page for one and the API for the
+    // other, and a single `via` would hide half of that.
+    record["id_via"] = via
+    bounce record
+}
+
+bet request_opts(opts) {
+    yo out = {}
+    grind key in ["headers", "ca", "timeout_ms", "retries", "max_redirects"] {
+        yo v = opt(opts, key, ghost)
+        sus (v != ghost) { out[key] = v }
+    }
+    bounce out
+}
+
+bet fetch_page(page, opts) {
+    yo answer = get(page, request_opts(opts))
+    sus (answer["status"] == 404) {
+        chuck oops("SkillIssue", "that share link is a 404 -- deleted, or never existed.")
+    }
+    sus (answer["status"] >= 400) {
+        chuck oops("SkillIssue", "the share page answered " + to_yap(answer["status"]) + ". " +
+                   expired(page))
+    }
+    bounce answer
+}
+
+bet expired(page) {
+    bounce "This example scrapes somebody else's page, and PLAN.md §10 D1 records what it " +
+           "looked like on 2026-09-18; if the site has changed, that is the thing to re-check."
+}
+
+// -- rung two's reading ----------------------------------------------------------------------
+
+bet from_api(doc, id, page) {
+    yo metadata = doc.get("metadata", {})
+    yo record = {
+        "title": text_or(doc.get("title", ghost), "untitled"),
+        "artist": text_or(doc.get("display_name", ghost), ""),
+        "handle": text_or(doc.get("handle", ghost), ""),
+        "image_url": pick_url(doc, ["image_large_url", "image_url"]),
+        "tags": text_or(metadata.get("tags", ghost), ""),
+        "created": text_or(doc.get("created_at", ghost), ""),
+        "model": text_or(doc.get("model_name", ghost), ""),
+        "duration": metadata.get("duration", ghost),
+        "audio_url": ghost,
+        "audio_kind": ghost,
+        "size": ghost,
+        "renditions": [],
+    }
+
+    // Every rendition the API names, in the order it named them, each with the
+    // extension its URL actually ends in rather than the one its content_type
+    // claims -- `m4a-opus` is not a file extension.
+    yo media = doc.get("media_urls", [])
+    sus (what_is_it(media) == "stash") {
+        grind entry in media {
+            sus (what_is_it(entry) != "groupchat") { nvm }
+            yo u = entry.get("url", ghost)
+            sus (!usable(u)) { nvm }
+            record["renditions"].yeet_in({"url": u, "kind": extension_of(u),
+                                          "content_type": text_or(entry.get("content_type", ghost), "")})
+        }
+    }
+    yo video = doc.get("video_url", ghost)
+    sus (usable(video)) {
+        record["renditions"].yeet_in({"url": video, "kind": extension_of(video),
+                                      "content_type": "video"})
+    }
+    // `audio_url` is last on purpose: on a share link it is the forbidden
+    // marker, and when it is not, it is the mp3 and `usable` lets it through.
+    yo audio = doc.get("audio_url", ghost)
+    sus (usable(audio)) {
+        record["renditions"].yeet_in({"url": audio, "kind": extension_of(audio),
+                                      "content_type": "audio"})
+    }
+    bounce record
+}
+
+// A URL that is present, absolute, and not the "you may not have this" marker.
+bet usable(u) {
+    sus (u == ghost || what_is_it(u) != "yapstring" || u == "") { bounce cap }
+    sus (yapper.contains(u, FORBIDDEN)) { bounce cap }
+    bounce parse_url(u) != ghost
+}
+
+bet extension_of(u) {
+    yo parsed = parse_url(u)
+    sus (parsed == ghost) { bounce "bin" }
+    yo path = parsed["path"]
+    yo dot = -1
+    grind i from 0 to how_thicc(path) {
+        sus (path.at(i) == ".") { dot = i }
+    }
+    sus (dot < 0 || dot == how_thicc(path) - 1) { bounce "bin" }
+    bounce yapper.whisper(yapper.slice(path, dot + 1, how_thicc(path)))
+}
+
+bet text_or(v, fallback) {
+    sus (v == ghost) { bounce fallback }
+    sus (what_is_it(v) != "yapstring") { bounce to_yap(v) }
+    bounce v == "" ? fallback : v
+}
+
+bet pick_url(doc, keys) {
+    grind key in keys {
+        yo v = doc.get(key, ghost)
+        sus (usable(v)) { bounce v }
+    }
+    bounce ghost
+}
+
+// -- rung three's reading ---------------------------------------------------------------------
+
+bet from_meta(html, id, page) {
+    bounce {
+        "title": text_or(htmlbits.meta_content(html, "og:title"), "untitled"),
+        "artist": "",
+        "handle": "",
+        "image_url": htmlbits.meta_content(html, "og:image"),
+        "tags": "",
+        "created": "",
+        "model": "",
+        "duration": ghost,
+        "audio_url": ghost,
+        "audio_kind": ghost,
+        "size": ghost,
+        "renditions": [],
+    }
+}
+
+// -- choosing which rendition to actually fetch -------------------------------------------------
+
+// `want` is "m4a", "mp4", "mp3", or "best". Returns the record with
+// `audio_url` and `audio_kind` filled in, or raises a sentence saying what
+// exists instead -- which for "mp3" is the sentence that matters, because
+// there usually is not one.
+flex bet choose(record, want, opts) {
+    yo order = want == "best" ? ["m4a", "mp3", "mp4"] : [want]
+    yo refused = []
+    grind kind in order {
+        grind r in record["renditions"] {
+            sus (r["kind"] != kind) { nvm }
+            sus (!allowed(r["url"], opts)) {
+                // Found, and deliberately not followed. Saying "there is no
+                // m4a" here would be a lie about somebody else's server, and
+                // the next person would go looking for the wrong bug.
+                refused.yeet_in(host_of(r["url"]))
+                nvm
+            }
+            record["audio_url"] = r["url"]
+            record["audio_kind"] = kind
+            bounce record
+        }
+    }
+    sus (how_thicc(refused) > 0) {
+        chuck oops("SkillIssue", "this song's " + want + " is on " +
+                   yapper.join(", ", stash_unique(refused)) +
+                   ", which is not a host this program follows. Pass --allow-host to add it.")
+    }
+    // Rung four already filled this in, if it could.
+    sus (record["audio_url"] != ghost && (want == "best" || want == record["audio_kind"])) {
+        bounce record
+    }
+
+    yo have = []
+    grind r in record["renditions"] { have.yeet_in(r["kind"]) }
+    sus (want == "mp3") {
+        chuck oops("SkillIssue",
+            "Suno publishes no mp3 for a shared link: the mp3 on its CDN is behind a signed " +
+            "URL only a signed-in owner is given. What it does publish here is " +
+            (how_thicc(have) == 0 ? "nothing" : yapper.join(", ", have)) +
+            " -- try --format m4a, or pass your own session with --header \"Cookie: ...\" if " +
+            "the song is yours.")
+    }
+    chuck oops("SkillIssue", "no " + want + " rendition for this song; it publishes " +
+               (how_thicc(have) == 0 ? "nothing this program can fetch" : yapper.join(", ", have)) + ".")
+}
+
+bet host_of(url) {
+    yo parsed = parse_url(url)
+    bounce parsed == ghost ? "somewhere unparseable" : parsed["host"]
+}
+
+bet stash_unique(items) {
+    yo out = []
+    grind item in items {
+        sus (!out.contains(item)) { out.yeet_in(item) }
+    }
+    bounce out
+}
+
+bet allowed(url, opts) {
+    yo hosts = opt(opts, "allow_hosts", AUDIO_HOSTS)
+    yo parsed = parse_url(url)
+    sus (parsed == ghost) { bounce cap }
+    grind suffix in hosts {
+        sus (parsed["host"] == suffix || yapper.ends_with(parsed["host"], "." + suffix)) { bounce fax }
+    }
+    bounce cap
+}
+
+// -- what the tagger is handed ------------------------------------------------------------------
+
+// The record, as the groupchat both taggers take. The song's `prompt` is
+// deliberately **not** here: on a real clip that field holds the whole lyric,
+// and a downloader's job is to save the file, not to copy somebody's words
+// into a comment frame they did not ask for. The style tags go in the genre,
+// which is what a genre is.
+flex bet tags_for(record) {
+    bounce {
+        "title": record["title"],
+        "artist": record["artist"] == "" ? "Suno" : record["artist"],
+        "album": "Suno",
+        "year": yapper.slice(record["created"], 0, 4),
+        "genre": record["tags"],
+        "comment": record["model"] == "" ? "" : "made with " + record["model"],
+        "url": record["source_url"],
+        "extra": {"SUNO_ID": record["id"], "SUNO_HANDLE": record["handle"]},
+    }
+}

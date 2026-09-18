@@ -312,6 +312,28 @@ bet serve(conn, req) {
                    "application/json; charset=utf-8")
         bounce ghost
     }
+    // Rung four's pattern: `<cdn>/<id>.mp4`, the video Suno also publishes.
+    // Served from the same bytes, because what rung four has to prove is that
+    // it found *something* and confirmed it with a one-byte GET.
+    sus (path == "/" + job["id"] + ".mp4") {
+        yo from_at = range_start(headers.get("range", ghost))
+        yo whole = audio_blob()
+        sus (from_at > 0 || headers.has("range")) {
+            yo stop = how_thicc(whole) - 1
+            yo slice = whole[from_at:how_thicc(whole)]
+            internet.holler_back(conn, head_lines(206, {
+                "Content-Type": "video/mp4",
+                "Content-Length": how_thicc(slice),
+                "Accept-Ranges": "bytes",
+                "Content-Range": "bytes " + to_yap(from_at) + "-" + to_yap(stop) + "/" +
+                                 to_yap(how_thicc(whole))}))
+            internet.holler_back(conn, slice)
+        } nah {
+            send_sized(conn, 200, whole, "video/mp4")
+        }
+        bounce ghost
+    }
+
     sus (path == "/1/clip/" + job["id"] + ".m4a") {
         yo from_at = range_start(headers.get("range", ghost))
         sus (from_at > 0) {

@@ -31,6 +31,7 @@ gimme json
 gimme { parse_url, resolve_url, get, probe, get_to_file, request, USER_AGENT } from "fetch.funny"
 // Whole modules rather than named imports: `write_tags` and `read_tags` exist
 // in both taggers, and which one runs is the point of part five.
+gimme "suno.funny"
 gimme "id3.funny"
 gimme "mp4tags.funny"
 gimme "namer.funny"
@@ -185,6 +186,85 @@ yo ticks = []
 get_to_file(BASE + "/ranged", filez.join_path(TMP, "progress.mp3"),
             {"on_progress": lowkey (done, total) => ticks.yeet_in(done)})
 yap "  the last progress call saw every byte: " + to_yap(ticks[how_thicc(ticks) - 1] == how_thicc(whole_bytes))
+
+// -- part three: resolving a share link -------------------------------------------------
+//
+// Every host the resolver would reach is pointed at the fixture, which serves
+// the *shapes* §10 D1 measured: a page with no `og:audio`, an embedded record
+// whose `audio_url` is the forbidden marker, and a clip API that answers
+// unauthenticated with `media_urls`.
+
+yap "-- resolving --"
+
+yo AT_FIXTURE = {"api_base": BASE, "page_base": BASE, "cdn_base": BASE,
+                 "allow_hosts": ["127.0.0.1"]}
+
+bet describe(record) {
+    yap "  title:      " + record["title"]
+    yap "  artist:     " + record["artist"] + " (@" + record["handle"] + ")"
+    yap "  tags:       " + record["tags"]
+    yap "  created:    " + record["created"] + "   model: " + record["model"]
+    yap "  cover:      " + to_yap(at_base(record["image_url"]))
+    yap "  via:        " + record["via"] + "   (the id came from: " + record["id_via"] + ")"
+    yo kinds = []
+    grind r in record["renditions"] { kinds.yeet_in(r["kind"] + " <- " + r["content_type"]) }
+    yap "  renditions: " + to_yap(kinds)
+}
+
+bet at_base(url) {
+    sus (url == ghost) { bounce ghost }
+    bounce yapper.replace(url, BASE, "<base>")
+}
+
+yap "  -- a full song link --"
+yo record = suno.resolve(BASE + "/song/" + ID, AT_FIXTURE)
+describe(record)
+
+yap "  -- a short share link, whose page has to be read for the id --"
+yo short = suno.resolve(BASE + "/s/shortcode", AT_FIXTURE)
+yap "  same song: " + to_yap(short["id"] == ID) + ", id came from: " + short["id_via"]
+
+yap "  -- choosing a rendition --"
+yo chosen = suno.choose(record.clone(), "m4a", AT_FIXTURE)
+yap "  m4a:  " + at_base(chosen["audio_url"]) + "  (" + chosen["audio_kind"] + ")"
+yo as_video = suno.choose(record.clone(), "mp4", AT_FIXTURE)
+yap "  mp4:  " + at_base(as_video["audio_url"]) + "  (" + as_video["audio_kind"] + ")"
+yo best = suno.choose(record.clone(), "best", AT_FIXTURE)
+yap "  best: " + at_base(best["audio_url"]) + "  (" + best["audio_kind"] + ")"
+
+// The sentence that matters most in this whole example: there is no public
+// mp3, and the program says so plainly rather than writing an Opus stream
+// into a file called .mp3.
+must_fail("  asking for an mp3", lowkey () => suno.choose(record.clone(), "mp3", AT_FIXTURE))
+
+yap "  -- the tags it hands the tagger --"
+yo song_tags = suno.tags_for(record)
+grind key in ["title", "artist", "album", "year", "genre", "comment"] {
+    yap "    " + key + ": " + to_yap(song_tags[key])
+}
+yap "    extra: " + to_yap(song_tags["extra"])
+// The clip record's `prompt` field holds the whole lyric on a real song. A
+// downloader saves the file; it does not copy somebody's words into a comment
+// frame they never asked for.
+yap "    no lyric field anywhere in the tags: " +
+    to_yap(!song_tags.has("prompt") && !yapper.contains(to_yap(song_tags), "prompt"))
+
+yap "  -- when the API is unreachable, the page and the pattern answer --"
+yo no_api = AT_FIXTURE.clone()
+no_api["api_base"] = "http://127.0.0.1:1"
+no_api["retries"] = 0
+yo degraded = suno.resolve(BASE + "/song/" + ID, no_api)
+yap "  title from the meta tags: " + degraded["title"]
+yap "  audio from the pattern:   " + at_base(degraded["audio_url"]) + "  (" +
+    to_yap(degraded["audio_kind"]) + ", " + to_yap(degraded["size"]) + " bytes)"
+yap "  via: " + degraded["via"] + "  -- which is the sign the rungs above it need a look"
+
+yap "  -- and the ones that must fail --"
+must_fail("  a deleted song", lowkey () =>
+    suno.resolve(BASE + "/song/00000000-0000-0000-0000-000000000000", AT_FIXTURE))
+must_fail("  not a link at all", lowkey () => suno.resolve("", AT_FIXTURE))
+must_fail("  audio on a host we do not follow", lowkey () =>
+    suno.choose(record.clone(), "m4a", {"allow_hosts": ["suno.ai"]}))
 
 // -- part four: ID3v2.3 ------------------------------------------------------------------
 

@@ -1,0 +1,177 @@
+// htmlbits.funny — deliberately not an HTML parser.
+//
+// Four shapes are needed from somebody else's page and no more: the content of
+// a meta tag, a UUID, the text between two markers, and the entities HTML
+// spells with an `&`. Writing a conformant HTML5 tokenizer to get them would
+// be a bigger program than the rest of this example put together, and it is
+// `site_gen/`'s kind of job rather than this one's.
+//
+// So this is a scraper, it says so, and the README says so. What it does do
+// is cope with the ways the same tag is legally written -- attributes in
+// either order, single or double quotes, upper or lower case, whitespace
+// anywhere -- because those vary between deploys of the same site and a
+// scraper that breaks on `content=` before `property=` breaks on a Tuesday.
+
+gimme yapper
+
+// `<meta property="og:title" content="..."/>` and its variations, including
+// `name=` instead of `property=` (which is what Twitter's tags use) and the
+// two attributes the other way round.
+flex bet meta_content(html, key) {
+    yo lower = yapper.whisper(html)
+    yo at = 0
+    bruh (at < how_thicc(lower)) {
+        yo tag_at = yapper.index_of(yapper.slice(lower, at, how_thicc(lower)), "<meta")
+        sus (tag_at < 0) { bail }
+        yo start = at + tag_at
+        yo end = yapper.index_of(yapper.slice(lower, start, how_thicc(lower)), ">")
+        sus (end < 0) { bail }
+        yo tag = yapper.slice(html, start, start + end + 1)
+        yo tag_lower = yapper.whisper(tag)
+        sus (has_attr(tag_lower, "property", key) || has_attr(tag_lower, "name", key)) {
+            yo value = attr_of(tag, "content")
+            sus (value != ghost) { bounce unescape(value) }
+        }
+        at = start + end + 1
+    }
+    bounce ghost
+}
+
+bet has_attr(tag_lower, name, wanted) {
+    yo got = attr_of(tag_lower, name)
+    bounce got != ghost && got == yapper.whisper(wanted)
+}
+
+// One attribute's value. Quoted with either quote, or unquoted and ended by
+// whitespace or the tag's own close.
+flex bet attr_of(tag, name) {
+    yo lower = yapper.whisper(tag)
+    yo at = 0
+    bruh (at < how_thicc(lower)) {
+        yo found = yapper.index_of(yapper.slice(lower, at, how_thicc(lower)), name)
+        sus (found < 0) { bounce ghost }
+        yo start = at + found
+        // It has to be a whole attribute name: `name` must not match the tail
+        // of `data-name`, and what follows must be `=` after any spaces.
+        yo before = start == 0 ? " " : yapper.slice(lower, start - 1, start)
+        yo after_at = start + how_thicc(name)
+        yo rest = yapper.slice(tag, after_at, how_thicc(tag))
+        yo trimmed = yapper.ltrim(rest)
+        sus ((before == " " || before == "\t" || before == "\n") &&
+             yapper.starts_with(trimmed, "=")) {
+            yo value = yapper.ltrim(yapper.slice(trimmed, 1, how_thicc(trimmed)))
+            sus (value == "") { bounce ghost }
+            yo quote = yapper.slice(value, 0, 1)
+            sus (quote == "\"" || quote == "'") {
+                yo body = yapper.slice(value, 1, how_thicc(value))
+                yo close_at = yapper.index_of(body, quote)
+                sus (close_at < 0) { bounce ghost }
+                bounce yapper.slice(body, 0, close_at)
+            }
+            // Unquoted: ends at the first space or at the tag's `>`.
+            yo stop = how_thicc(value)
+            grind i from 0 to how_thicc(value) {
+                yo c = value.at(i)
+                sus (c == " " || c == ">" || c == "/" || c == "\t" || c == "\n") { stop = i; bail }
+            }
+            bounce yapper.slice(value, 0, stop)
+        }
+        at = start + how_thicc(name)
+    }
+    bounce ghost
+}
+
+// The first `8-4-4-4-12` hexadecimal run in the page. A share page mentions
+// its own clip id many times -- in the cover URL, in the embedded state, in
+// the player -- and the *shape* is what stays put between deploys, while
+// every key path that holds it moves.
+flex bet first_uuid(text) {
+    yo shape = [8, 4, 4, 4, 12]
+    yo at = 0
+    bruh (at + 36 <= how_thicc(text)) {
+        sus (uuid_at(text, at, shape)) {
+            bounce yapper.whisper(yapper.slice(text, at, at + 36))
+        }
+        at += 1
+    }
+    bounce ghost
+}
+
+bet uuid_at(text, at, shape) {
+    yo here = at
+    grind i from 0 to how_thicc(shape) {
+        sus (i > 0) {
+            sus (text.at(here) != "-") { bounce cap }
+            here += 1
+        }
+        grind k from 0 to shape[i] {
+            sus (!is_hex(text.at(here))) { bounce cap }
+            here += 1
+        }
+    }
+    // A run of hex that goes on past the shape is not a UUID, it is the middle
+    // of a longer hash.
+    sus (here < how_thicc(text) && (is_hex(text.at(here)) || text.at(here) == "-")) { bounce cap }
+    bounce fax
+}
+
+bet is_hex(c) {
+    bounce (c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F")
+}
+
+flex bet text_between(text, opener, closer) {
+    yo start = yapper.index_of(text, opener)
+    sus (start < 0) { bounce ghost }
+    yo from_at = start + how_thicc(opener)
+    yo rest = yapper.slice(text, from_at, how_thicc(text))
+    yo stop = yapper.index_of(rest, closer)
+    sus (stop < 0) { bounce ghost }
+    bounce yapper.slice(rest, 0, stop)
+}
+
+// The five named entities plus numeric ones. `&amp;` is last, because
+// unescaping it first would turn `&amp;lt;` into `<` instead of `&lt;`.
+flex bet unescape(text) {
+    yo out = text
+    grind pair in [["&quot;", "\""], ["&#39;", "'"], ["&apos;", "'"],
+                   ["&lt;", "<"], ["&gt;", ">"], ["&nbsp;", " "]] {
+        out = yapper.replace(out, pair[0], pair[1])
+    }
+    out = numeric_entities(out)
+    bounce yapper.replace(out, "&amp;", "&")
+}
+
+bet numeric_entities(text) {
+    sus (!yapper.contains(text, "&#")) { bounce text }
+    yo out = ""
+    yo at = 0
+    bruh (at < how_thicc(text)) {
+        yo c = text.at(at)
+        sus (c != "&") { out = out + c; at += 1; nvm }
+        yo rest = yapper.slice(text, at, how_thicc(text))
+        sus (!yapper.starts_with(rest, "&#")) { out = out + c; at += 1; nvm }
+        yo semi = yapper.index_of(rest, ";")
+        sus (semi < 3 || semi > 10) { out = out + c; at += 1; nvm }
+        yo digits = yapper.slice(rest, 2, semi)
+        yo hex = yapper.starts_with(yapper.whisper(digits), "x")
+        sus (hex) { digits = yapper.slice(digits, 1, how_thicc(digits)) }
+        yo value = hex ? hex_value(digits) : (yapper.is_numba(digits) ? digits.to_numba() : ghost)
+        sus (value == ghost || value < 1 || value > 0x10FFFF) { out = out + c; at += 1; nvm }
+        out = out + yapper.chr_of(value)
+        at += semi + 1
+    }
+    bounce out
+}
+
+bet hex_value(digits) {
+    sus (digits == "") { bounce ghost }
+    yo n = 0
+    grind c in yapper.chars(digits) {
+        sus (!is_hex(c)) { bounce ghost }
+        yo d = 0
+        sus (c >= "0" && c <= "9") { d = c.to_numba() }
+        nah { d = 10 + yapper.ord_of(yapper.whisper(c)) - yapper.ord_of("a") }
+        n = n * 16 + d
+    }
+    bounce n
+}
