@@ -1,0 +1,749 @@
+// fetch.funny — HTTP/1.1, the other way round.
+//
+// Every other example in this tree is the thing being *called*. This one dials
+// out, and there was nothing in the tree to copy: `web_server/http.funny` and
+// its descendants parse a request and write a response, which is the mirror of
+// what a client does.
+//
+// `internet.go_brrrr` exists and is written in C, so why this? Two reasons,
+// and the first is the one that decided it:
+//
+//   1. CI runs `funny test extensive_examples` with FUNNY_NO_NET=1, which
+//      makes `go_brrrr` raise before it sends a packet. `slide_into` to
+//      loopback is deliberately *not* blocked (STDLIB.md says why: a test
+//      runner must still be able to test a server). So a client built on
+//      `slide_into` is a client CI can actually run, against a fixture server
+//      on 127.0.0.1 -- and the code a person runs against the real internet is
+//      then the same code the golden proved.
+//   2. `go_brrrr` buffers the whole body in memory and follows only absolute
+//      redirects. A downloader wants a progress bar, a resumable `Range`, and
+//      a relative `Location`, and none of those can be bolted on from outside.
+//
+// BLOCKING READS, ON PURPOSE. Every read here has a timeout and stops the
+// thread until it settles -- no `hold_up`, no event loop. A server must never
+// do that, because one slow caller would freeze every other; a client has
+// exactly one conversation and nothing else to get on with. It also means this
+// module works unchanged inside an `interns` worker, which is where the
+// download pool puts it, and a worker has no event loop worth yielding to.
+//
+// Nothing in here knows what Suno is.
+
+gimme blob
+gimme yapper
+gimme internet
+gimme clock
+gimme rizz
+gimme filez
+
+flex deadass VERSION = "1.0"
+flex deadass USER_AGENT = "suno_grab/" + VERSION + " (+FunnyLang example; one song at a time)"
+
+// A header line longer than this is a server that is confused or hostile.
+flex deadass MAX_LINE = 16384
+flex deadass MAX_HEADERS = 100
+// Per read, not per request: a download of many megabytes is many reads.
+flex deadass DEFAULT_TIMEOUT_MS = 20000
+flex deadass DEFAULT_REDIRECTS = 5
+flex deadass DEFAULT_RETRIES = 3
+// A client with no ceiling is a client that can be handed a stream that never
+// ends. 256 MB is far past any song and far short of a disk.
+flex deadass DEFAULT_MAX_BYTES = 256 * 1024 * 1024
+flex deadass READ_CHUNK = 65536
+
+// -- urls ------------------------------------------------------------------------------
+
+// scheme://[userinfo@]host[:port][/path][?query][#fragment]
+//
+// Returns ghost rather than raising for anything malformed: a URL comes from
+// somebody else's HTML as often as from the command line, and "this is not a
+// URL" is an ordinary answer rather than an exceptional one.
+flex bet parse_url(url) {
+    sus (what_is_it(url) != "yapstring") { bounce ghost }
+    yo mark = yapper.index_of(url, "://")
+    sus (mark < 1) { bounce ghost }
+    yo scheme = yapper.whisper(yapper.slice(url, 0, mark))
+    sus (scheme != "http" && scheme != "https") { bounce ghost }
+
+    yo rest = yapper.slice(url, mark + 3, how_thicc(url))
+    yo hash_at = yapper.index_of(rest, "#")
+    sus (hash_at >= 0) { rest = yapper.slice(rest, 0, hash_at) }
+    sus (rest == "") { bounce ghost }
+
+    // The authority ends at the first `/` or `?`, and neither may appear
+    // inside it -- so this needs no escaping rules.
+    yo cut = how_thicc(rest)
+    grind i from 0 to how_thicc(rest) {
+        yo c = rest.at(i)
+        sus (c == "/" || c == "?") { cut = i; bail }
+    }
+    yo authority = yapper.slice(rest, 0, cut)
+    yo tail = yapper.slice(rest, cut, how_thicc(rest))
+
+    // Userinfo is parsed so that it can be *dropped*: this client never sends
+    // credentials it found in a URL somebody else wrote.
+    yo at_sign = last_index_of(authority, "@")
+    sus (at_sign >= 0) { authority = yapper.slice(authority, at_sign + 1, how_thicc(authority)) }
+    sus (authority == "") { bounce ghost }
+
+    yo host = authority
+    yo port = scheme == "https" ? 443 : 80
+    sus (authority.at(0) == "[") {
+        // An IPv6 literal: the colons inside the brackets are part of the
+        // address, and only a colon after the `]` is a port.
+        yo close_at = yapper.index_of(authority, "]")
+        sus (close_at < 0) { bounce ghost }
+        host = yapper.slice(authority, 1, close_at)
+        yo after = yapper.slice(authority, close_at + 1, how_thicc(authority))
+        sus (after != "") {
+            sus (after.at(0) != ":") { bounce ghost }
+            yo p = port_of(yapper.slice(after, 1, how_thicc(after)))
+            sus (p == ghost) { bounce ghost }
+            port = p
+        }
+    } nah {
+        yo colon = last_index_of(authority, ":")
+        sus (colon >= 0) {
+            yo p = port_of(yapper.slice(authority, colon + 1, how_thicc(authority)))
+            sus (p == ghost) { bounce ghost }
+            port = p
+            host = yapper.slice(authority, 0, colon)
+        }
+    }
+    sus (host == "") { bounce ghost }
+
+    yo path = "/"
+    yo query = ""
+    sus (tail != "") {
+        yo q = yapper.index_of(tail, "?")
+        sus (q >= 0) {
+            path = yapper.slice(tail, 0, q)
+            query = yapper.slice(tail, q + 1, how_thicc(tail))
+        } nah {
+            path = tail
+        }
+        sus (path == "") { path = "/" }
+    }
+
+    bounce {"scheme": scheme, "host": host, "port": port, "path": path,
+            "query": query, "url": rebuild(scheme, host, port, path, query)}
+}
+
+bet port_of(text) {
+    sus (text == "" || how_thicc(text) > 5) { bounce ghost }
+    grind c in yapper.chars(text) {
+        sus (c < "0" || c > "9") { bounce ghost }
+    }
+    yo n = text.to_numba()
+    sus (n < 1 || n > 65535) { bounce ghost }
+    bounce n
+}
+
+bet last_index_of(s, sub) {
+    yo found = -1
+    yo from_at = 0
+    bruh (from_at < how_thicc(s)) {
+        yo hit = yapper.index_of(yapper.slice(s, from_at, how_thicc(s)), sub)
+        sus (hit < 0) { bail }
+        found = from_at + hit
+        from_at = found + 1
+    }
+    bounce found
+}
+
+bet rebuild(scheme, host, port, path, query) {
+    yo shown = host
+    sus (yapper.contains(host, ":")) { shown = "[" + host + "]" }
+    yo standard = (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
+    sus (!standard) { shown = shown + ":" + to_yap(port) }
+    bounce scheme + "://" + shown + path + (query == "" ? "" : "?" + query)
+}
+
+// A `Location` may be absolute, root-relative, or relative to the directory of
+// the path it came from. `go_brrrr` handles only the first (native/platform.c
+// says so in its own §9 note), and handling all three is most of why a
+// redirect chain works here and does not there.
+flex bet resolve_url(base, location) {
+    sus (location == ghost || location == "") { bounce ghost }
+    sus (yapper.contains(location, "://")) { bounce parse_url(location) }
+    sus (yapper.starts_with(location, "//")) {
+        bounce parse_url(base["scheme"] + ":" + location)
+    }
+    yo path = location
+    yo query = ""
+    yo q = yapper.index_of(path, "?")
+    sus (q >= 0) {
+        query = yapper.slice(path, q + 1, how_thicc(path))
+        path = yapper.slice(path, 0, q)
+    }
+    yo hash_at = yapper.index_of(path, "#")
+    sus (hash_at >= 0) { path = yapper.slice(path, 0, hash_at) }
+
+    sus (!yapper.starts_with(path, "/")) {
+        yo dir = base["path"]
+        yo slash = last_index_of(dir, "/")
+        dir = slash >= 0 ? yapper.slice(dir, 0, slash + 1) : "/"
+        path = dir + path
+    }
+    sus (path == "") { path = "/" }
+    bounce parse_url(rebuild(base["scheme"], base["host"], base["port"], path, query))
+}
+
+// -- the reader ------------------------------------------------------------------------
+//
+// The same shape `kv/protocol.funny` uses, for the same reason: a `want` that
+// pulls until it has enough, so no caller ever assumes a read came back whole.
+// That assumption is the single most common way a hand-written HTTP client
+// breaks -- a chunk-size line split across two reads is not rare, it is
+// Tuesday.
+
+bet new_reader(conn, timeout_ms) {
+    bounce {"conn": conn, "buf": blob.of([]), "at": 0, "closed": cap,
+            "timeout": timeout_ms, "got": 0}
+}
+
+bet pull(r) {
+    sus (r["closed"]) { bounce cap }
+    yo chunk = internet.hear_them_out(r["conn"], READ_CHUNK, r["timeout"], {"raw": fax})
+    // ghost is a timeout, "" is a close. On TLS a `ghost` can also mean "what
+    // arrived was part of a record" -- but with a blocking timeout that has
+    // already been waited out, so it is a real timeout here.
+    sus (chunk == ghost) {
+        chuck oops("SkillIssue", "the other end went quiet for " + to_yap(r["timeout"]) +
+                   " ms while a reply was still owed.")
+    }
+    sus (chunk == "" || how_thicc(chunk) == 0) {
+        r["closed"] = fax
+        bounce cap
+    }
+    r["buf"] = r["buf"] + chunk
+    r["got"] += how_thicc(chunk)
+    bounce fax
+}
+
+bet compact(r) {
+    sus (r["at"] > 262144) {
+        r["buf"] = r["buf"][r["at"]:how_thicc(r["buf"])]
+        r["at"] = 0
+    }
+}
+
+bet available(r) { bounce how_thicc(r["buf"]) - r["at"] }
+
+// At least `n` bytes past the cursor, or cap if the connection ended first.
+bet want(r, n) {
+    bruh (available(r) < n) {
+        sus (!pull(r)) { bounce cap }
+    }
+    bounce fax
+}
+
+// One CRLF-terminated line, as text, or ghost at a clean end of stream.
+bet read_line(r) {
+    yo scan = r["at"]
+    bruh (fax) {
+        yo nl = -1
+        grind i from scan to how_thicc(r["buf"]) {
+            sus (r["buf"][i] == 10) { nl = i; bail }
+        }
+        sus (nl >= 0) {
+            yo stop = nl
+            sus (stop > r["at"] && r["buf"][stop - 1] == 13) { stop -= 1 }
+            yo line = r["buf"][r["at"]:stop].to_yap()
+            r["at"] = nl + 1
+            compact(r)
+            bounce line
+        }
+        sus (available(r) > MAX_LINE) {
+            chuck oops("OutOfPocket", "a header line longer than " + to_yap(MAX_LINE) +
+                       " bytes arrived with no end in sight.")
+        }
+        scan = how_thicc(r["buf"])
+        sus (!pull(r)) {
+            bounce available(r) == 0 ? ghost : ""
+        }
+    }
+}
+
+// Exactly `n` bytes, or everything left if the connection ends first.
+bet read_exactly(r, n) {
+    want(r, n)
+    yo take = available(r) < n ? available(r) : n
+    yo out = r["buf"][r["at"]:r["at"] + take]
+    r["at"] += take
+    compact(r)
+    bounce out
+}
+
+// -- requests --------------------------------------------------------------------------
+
+bet opt(opts, key, fallback) {
+    sus (opts == ghost) { bounce fallback }
+    yo v = opts.get(key, ghost)
+    bounce v == ghost ? fallback : v
+}
+
+bet dial(u, opts) {
+    yo timeout = opt(opts, "timeout_ms", DEFAULT_TIMEOUT_MS)
+    sus (u["scheme"] == "https") {
+        yo tls = {"tls": fax, "server_name": u["host"], "timeout_ms": timeout}
+        yo ca = opt(opts, "ca", ghost)
+        // There is no way to turn verification off and this example does not
+        // add one. `ca` narrows trust to exactly one certificate -- which is
+        // what the golden uses against its own test CA -- it never widens it.
+        sus (ca != ghost) { tls["ca"] = ca }
+        bounce internet.slide_into(u["host"], u["port"], tls)
+    }
+    bounce internet.slide_into(u["host"], u["port"], {"timeout_ms": timeout})
+}
+
+bet host_header(u) {
+    yo shown = yapper.contains(u["host"], ":") ? "[" + u["host"] + "]" : u["host"]
+    yo standard = (u["scheme"] == "https" && u["port"] == 443) ||
+                  (u["scheme"] == "http" && u["port"] == 80)
+    bounce standard ? shown : shown + ":" + to_yap(u["port"])
+}
+
+bet send_request(conn, method, u, opts, range_from) {
+    yo target = u["path"] + (u["query"] == "" ? "" : "?" + u["query"])
+    yo lines = [method + " " + target + " HTTP/1.1"]
+    lines.yeet_in("Host: " + host_header(u))
+    lines.yeet_in("User-Agent: " + opt(opts, "user_agent", USER_AGENT))
+    // A client that cannot inflate gzip has to say so, rather than receive it
+    // and guess. §6.2 of PLAN.md: no keep-alive either, one request per
+    // connection, which costs a handshake and saves a state machine.
+    lines.yeet_in("Accept-Encoding: identity")
+    lines.yeet_in("Connection: close")
+    sus (range_from != ghost && range_from > 0) {
+        lines.yeet_in("Range: bytes=" + to_yap(range_from) + "-")
+    }
+    yo extra = opt(opts, "headers", ghost)
+    sus (extra != ghost) {
+        grind name in extra.keys() {
+            // A caller-supplied header wins over the defaults above, so
+            // `--header "User-Agent: ..."` does what it looks like.
+            yo lower = yapper.whisper(name)
+            yo kept = []
+            grind line in lines {
+                yo colon = yapper.index_of(line, ":")
+                yo existing = colon > 0 ? yapper.whisper(yapper.slice(line, 0, colon)) : ""
+                sus (existing != lower) { kept.yeet_in(line) }
+            }
+            lines = kept
+            lines.yeet_in(name + ": " + to_yap(extra[name]))
+        }
+    }
+    internet.holler_back(conn, yapper.join("\r\n", lines) + "\r\n\r\n")
+}
+
+// Status line and headers. Header names are folded to lowercase, because a
+// caller that has to guess the case of `Content-Length` will guess wrong.
+bet read_head(r) {
+    yo status_line = read_line(r)
+    sus (status_line == ghost || status_line == "") {
+        chuck oops("SkillIssue", "the other end closed before it said anything.")
+    }
+    yo bits = yapper.split(status_line, " ")
+    sus (how_thicc(bits) < 2 || !yapper.starts_with(yapper.SCREAM(bits[0]), "HTTP/")) {
+        chuck oops("SkillIssue", "that was not an HTTP reply: " + shorten(status_line, 60))
+    }
+    yo status = bits[1].to_numba()
+
+    yo headers = {}
+    yo order = []
+    yo count = 0
+    bruh (fax) {
+        yo line = read_line(r)
+        sus (line == ghost) {
+            chuck oops("SkillIssue", "the headers stopped halfway through.")
+        }
+        sus (line == "") { bail }
+        count += 1
+        sus (count > MAX_HEADERS) {
+            chuck oops("OutOfPocket", "more than " + to_yap(MAX_HEADERS) + " headers arrived.")
+        }
+        // Obsolete line folding is rejected rather than half-supported: a
+        // continuation line can only be read correctly by a parser that also
+        // reassembles it, and nothing this talks to emits one.
+        sus (yapper.starts_with(line, " ") || yapper.starts_with(line, "\t")) {
+            chuck oops("SkillIssue", "a folded header line arrived, which this client does not read.")
+        }
+        yo colon = yapper.index_of(line, ":")
+        sus (colon < 1) { nvm }
+        yo name = yapper.whisper(yapper.trim(yapper.slice(line, 0, colon)))
+        yo value = yapper.trim(yapper.slice(line, colon + 1, how_thicc(line)))
+        sus (headers.has(name)) {
+            headers[name] = headers[name] + ", " + value
+        } nah {
+            headers[name] = value
+            order.yeet_in(name)
+        }
+    }
+    bounce {"status": status, "headers": headers, "order": order}
+}
+
+flex bet shorten(text, n) {
+    sus (how_thicc(text) <= n) { bounce text }
+    bounce yapper.slice(text, 0, n) + "..."
+}
+
+// The body, as a sequence of chunks handed to `sink`. Three framings, and the
+// third is only legal when neither of the first two is present.
+bet read_body(r, head, sink, max_bytes) {
+    yo headers = head["headers"]
+    yo encoding = yapper.whisper(headers.get("transfer-encoding", ""))
+    yo total = 0
+
+    sus (yapper.contains(encoding, "chunked")) {
+        bruh (fax) {
+            yo size_line = read_line(r)
+            sus (size_line == ghost) {
+                chuck oops("SkillIssue", "the chunked body ended in the middle of a chunk.")
+            }
+            // Extensions after a `;` are legal and ignored.
+            yo semi = yapper.index_of(size_line, ";")
+            sus (semi >= 0) { size_line = yapper.slice(size_line, 0, semi) }
+            yo size = hex_of(yapper.trim(size_line))
+            sus (size == ghost) {
+                chuck oops("SkillIssue", "a chunk size that is not hexadecimal: " +
+                           shorten(size_line, 20))
+            }
+            sus (size == 0) {
+                // Trailers, then the blank line that ends them.
+                bruh (fax) {
+                    yo trailer = read_line(r)
+                    sus (trailer == ghost || trailer == "") { bail }
+                }
+                bail
+            }
+            total += size
+            sus (total > max_bytes) {
+                chuck oops("OutOfPocket", "the body went past " + to_yap(max_bytes) + " bytes.")
+            }
+            yo part = read_exactly(r, size)
+            sus (how_thicc(part) < size) {
+                chuck oops("SkillIssue", "a chunk was short by " +
+                           to_yap(size - how_thicc(part)) + " bytes.")
+            }
+            sink(part)
+            // The CRLF after the chunk's bytes.
+            read_line(r)
+        }
+        bounce total
+    }
+
+    sus (headers.has("content-length")) {
+        yo declared = length_of(headers["content-length"])
+        sus (declared == ghost) {
+            chuck oops("SkillIssue", "a Content-Length that is not a number: " +
+                       shorten(headers["content-length"], 20))
+        }
+        sus (declared > max_bytes) {
+            chuck oops("OutOfPocket", "the body declares " + to_yap(declared) +
+                       " bytes, past the " + to_yap(max_bytes) + " byte ceiling.")
+        }
+        bruh (total < declared) {
+            yo take = declared - total
+            sus (take > READ_CHUNK) { take = READ_CHUNK }
+            yo part = read_exactly(r, take)
+            sus (how_thicc(part) == 0) {
+                chuck oops("SkillIssue", "the connection closed " + to_yap(declared - total) +
+                           " bytes short of the declared length.")
+            }
+            total += how_thicc(part)
+            sink(part)
+        }
+        bounce total
+    }
+
+    // Neither: the body is whatever arrives until the connection closes.
+    bruh (fax) {
+        sus (available(r) == 0 && !pull(r)) { bail }
+        yo part = read_exactly(r, available(r))
+        sus (how_thicc(part) == 0) { bail }
+        total += how_thicc(part)
+        sus (total > max_bytes) {
+            chuck oops("OutOfPocket", "the body went past " + to_yap(max_bytes) + " bytes.")
+        }
+        sink(part)
+    }
+    bounce total
+}
+
+bet hex_of(text) {
+    sus (text == "" ) { bounce ghost }
+    yo n = 0
+    grind c in yapper.chars(text) {
+        yo d = -1
+        sus (c >= "0" && c <= "9") { d = c.to_numba() }
+        kinda_sus (c >= "a" && c <= "f") { d = 10 + yapper.ord_of(c) - yapper.ord_of("a") }
+        kinda_sus (c >= "A" && c <= "F") { d = 10 + yapper.ord_of(c) - yapper.ord_of("A") }
+        nah { bounce ghost }
+        n = n * 16 + d
+    }
+    bounce n
+}
+
+bet length_of(text) {
+    yo t = yapper.trim(text)
+    sus (t == "") { bounce ghost }
+    grind c in yapper.chars(t) {
+        sus (c < "0" || c > "9") { bounce ghost }
+    }
+    bounce t.to_numba()
+}
+
+// -- one exchange ----------------------------------------------------------------------
+
+deadass REDIRECT_CODES = [301, 302, 303, 307, 308]
+
+// One request, one connection, no redirect following. `sink` receives the body
+// a chunk at a time; pass ghost to collect it.
+bet exchange(method, u, opts, sink, range_from) {
+    yo conn = dial(u, opts)
+    yo head = ghost
+    yo count = 0
+    sketchy {
+        send_request(conn, method, u, opts, range_from)
+        yo r = new_reader(conn, opt(opts, "timeout_ms", DEFAULT_TIMEOUT_MS))
+        head = read_head(r)
+        // Between the head and the body is the only place a caller can still
+        // act on the status before a single byte has been sunk -- which is
+        // exactly what a 200 answering a `Range` needs (see `get_to_file`).
+        yo on_head = opt(opts, "on_head", ghost)
+        sus (on_head != ghost) { on_head(head) }
+        sus (method == "HEAD" || head["status"] == 204 || head["status"] == 304) {
+            count = 0
+        } nah {
+            count = read_body(r, head, sink, opt(opts, "max_bytes", DEFAULT_MAX_BYTES))
+        }
+    } regardless {
+        internet.kick_out(conn)
+    }
+    head["bytes"] = count
+    bounce head
+}
+
+// Whether this failure is worth trying again. A 404 will be a 404 next time;
+// a 503 and a dropped connection very often will not.
+bet worth_retrying(status) {
+    bounce status == 429 || status == 408 || (status >= 500 && status <= 599)
+}
+
+bet backoff_ms(attempt, retry_after) {
+    sus (retry_after != ghost) {
+        yo secs = length_of(retry_after)
+        // A `Retry-After` of half an hour is honoured by not honouring it.
+        sus (secs != ghost && secs >= 0 && secs <= 60) { bounce secs * 1000 }
+    }
+    yo base = 500 * (2 ** attempt)
+    sus (base > 8000) { base = 8000 }
+    bounce base + rizz.roll(0, 250)
+}
+
+// The whole thing: retries around redirects around one exchange.
+//
+// `sink` is called with each body chunk. It may be called more than once for
+// the same request across a retry, so a caller writing to a file gets told
+// where to restart via `on_restart`.
+flex bet request(method, url, opts, sink) {
+    yo u = parse_url(url)
+    sus (u == ghost) {
+        chuck oops("SkillIssue", "that is not an http or https URL: " + shorten(to_yap(url), 80))
+    }
+    yo retries = opt(opts, "retries", DEFAULT_RETRIES)
+    yo max_redirects = opt(opts, "max_redirects", DEFAULT_REDIRECTS)
+    yo on_restart = opt(opts, "on_restart", ghost)
+    yo range_from = opt(opts, "range_from", ghost)
+
+    yo attempt = 0
+    bruh (fax) {
+        yo hops = []
+        yo here = u
+        yo last_error = ghost
+        sketchy {
+            yo hop = 0
+            bruh (fax) {
+                yo head = exchange(method, here, opts, sink == ghost ? lowkey (c) => ghost : sink,
+                                   range_from)
+                head["url"] = here["url"]
+                head["hops"] = hops
+                sus (!REDIRECT_CODES.contains(head["status"])) {
+                    sus (worth_retrying(head["status"]) && attempt < retries) {
+                        last_error = "the server answered " + to_yap(head["status"])
+                        chuck oops("SkillIssue", last_error)
+                    }
+                    bounce head
+                }
+                hop += 1
+                sus (hop > max_redirects) {
+                    chuck oops("SkillIssue", "more than " + to_yap(max_redirects) +
+                               " redirects, starting at " + shorten(url, 60) + ".")
+                }
+                yo next = resolve_url(here, head["headers"].get("location", ghost))
+                sus (next == ghost) {
+                    chuck oops("SkillIssue", "a " + to_yap(head["status"]) +
+                               " with no Location this client could follow.")
+                }
+                // Downgrading to plaintext on somebody else's say-so is how a
+                // verified connection becomes an unverified one.
+                sus (here["scheme"] == "https" && next["scheme"] == "http") {
+                    chuck oops("SkillIssue", "a redirect from https to http, which this client refuses.")
+                }
+                hops.yeet_in(next["url"])
+                // 303 always becomes a GET; 301 and 302 do in practice, and
+                // this client only ever sends GET and HEAD anyway.
+                here = next
+                // A redirect restarts the body, so a partial file must be
+                // rewound rather than appended to.
+                sus (on_restart != ghost) { on_restart() }
+                range_from = ghost
+            }
+        } my_bad (e) {
+            attempt += 1
+            sus (attempt > retries) { chuck e }
+            yo wait = backoff_ms(attempt, ghost)
+            clock.touch_grass(wait / 1000.0)
+            sus (on_restart != ghost) { on_restart() }
+        }
+    }
+}
+
+// -- what callers actually use -----------------------------------------------------------
+
+// The whole body in memory, as a blob. For a page, an API answer or a cover.
+flex bet get(url, opts) {
+    yo parts = []
+    yo head = request("GET", url, opts, lowkey (chunk) => parts.yeet_in(chunk))
+    head["blob"] = blob.of([]).join(parts)
+    head["body"] = head["blob"].to_yap()
+    bounce head
+}
+
+// `HEAD` is here because it is part of HTTP, and is used by nothing in this
+// example on purpose: PLAN.md §10 D4 records a CDN that answers 403 to a HEAD
+// and 200 to the GET of the same URL. Ask for one byte instead.
+flex bet head(url, opts) {
+    bounce request("HEAD", url, opts, ghost)
+}
+
+// One byte, to find out whether a URL is really there and how big it is,
+// without fetching it. The answer is in `Content-Range`, which a 206 must
+// carry: `bytes 0-0/6331654`.
+flex bet probe(url, opts) {
+    yo probe_opts = opts == ghost ? {} : opts.clone()
+    probe_opts["range_from"] = ghost
+    probe_opts["headers"] = probe_opts.get("headers", {}).clone()
+    probe_opts["headers"]["Range"] = "bytes=0-0"
+    yo head = request("GET", url, probe_opts, lowkey (chunk) => ghost)
+    head["size"] = ghost
+    yo cr = head["headers"].get("content-range", ghost)
+    sus (cr != ghost) {
+        yo slash = yapper.index_of(cr, "/")
+        sus (slash >= 0) {
+            head["size"] = length_of(yapper.slice(cr, slash + 1, how_thicc(cr)))
+        }
+    }
+    sus (head["size"] == ghost) {
+        head["size"] = length_of(head["headers"].get("content-length", ""))
+    }
+    bounce head
+}
+
+// Streamed to disk. Returns {"status","bytes","path","url","resumed","size"}.
+//
+// The file is built at `path + ".part"` and moved into place only once the
+// whole body has arrived, so a half-written file is never mistaken for a song.
+flex bet get_to_file(url, path, opts) {
+    yo part_path = path + ".part"
+    yo resume = opt(opts, "resume", cap)
+    yo on_progress = opt(opts, "on_progress", ghost)
+
+    yo start_at = 0
+    sus (resume && filez_size(part_path) > 0) {
+        start_at = filez_size(part_path)
+    } nah {
+        sus (file_there(part_path)) { obliterate_quietly(part_path) }
+        write_empty(part_path)
+    }
+
+    yo state = {"written": start_at, "resumed": start_at > 0, "total": ghost, "last": 0}
+    yo run_opts = opts == ghost ? {} : opts.clone()
+    sus (start_at > 0) { run_opts["range_from"] = start_at }
+    // A redirect or a retry restarts the body from zero. The partial file has
+    // to be thrown away with it, or the two halves are welded together into a
+    // file that is the right length and the wrong bytes.
+    run_opts["on_restart"] = lowkey () {
+        obliterate_quietly(part_path)
+        write_empty(part_path)
+        state["written"] = 0
+        state["resumed"] = cap
+        run_opts["range_from"] = ghost
+    }
+    // A `200` in answer to a `Range` means the server ignored it and is about
+    // to send the whole body. Appending that to what is already on disk makes
+    // a file of very nearly the right length and entirely the wrong bytes --
+    // and nothing downstream would notice, because the bytes that got welded
+    // on are real bytes from the same file. So the partial file is thrown away
+    // here, before the first chunk of the new body arrives.
+    run_opts["on_head"] = lowkey (head) {
+        sus (state["resumed"] && head["status"] == 200) {
+            obliterate_quietly(part_path)
+            write_empty(part_path)
+            state["written"] = 0
+            state["resumed"] = cap
+        }
+    }
+
+    yo head = request("GET", url, run_opts, lowkey (chunk) {
+        append_blob(part_path, chunk)
+        state["written"] += how_thicc(chunk)
+        sus (on_progress != ghost) {
+            yo now = clock.now_ms()
+            sus (now - state["last"] >= 100) {
+                state["last"] = now
+                on_progress(state["written"], state["total"])
+            }
+        }
+    })
+
+    // A 200 answering a `Range` means the server ignored it and sent the whole
+    // thing. `on_restart` has already rewound the file, so nothing is welded.
+    sus (start_at > 0 && head["status"] == 200 && state["resumed"]) {
+        state["resumed"] = cap
+    }
+    sus (head["status"] >= 400) {
+        chuck oops("SkillIssue", "the server answered " + to_yap(head["status"]) + " for " +
+                   shorten(head["url"], 70) + ".")
+    }
+    sus (on_progress != ghost) { on_progress(state["written"], state["written"]) }
+
+    replace_file(part_path, path)
+    bounce {"status": head["status"], "bytes": state["written"], "path": path,
+            "url": head["url"], "resumed": state["resumed"], "headers": head["headers"],
+            "hops": head["hops"]}
+}
+
+// -- the four file calls, in one place ---------------------------------------------------
+//
+// Wrapped so that a reader can see every file this module touches by reading
+// one screen, rather than finding `filez` sprinkled through the download loop.
+
+bet file_there(path) { bounce filez.exists(path) }
+bet filez_size(path) {
+    sus (!filez.is_file(path)) { bounce 0 }
+    bounce how_thicc(filez.read_blob(path))
+}
+bet write_empty(path) { filez.write_blob(path, blob.of([])) }
+bet append_blob(path, b) { filez.append_blob(path, b) }
+bet replace_file(from_path, to_path) {
+    sus (filez.exists(to_path)) { filez.obliterate(to_path) }
+    filez.replace(from_path, to_path)
+}
+bet obliterate_quietly(path) {
+    sketchy {
+        sus (filez.exists(path)) { filez.obliterate(path) }
+    } my_bad (e) {
+        computer_nothing(e)
+    }
+}
+bet computer_nothing(e) { bounce ghost }

@@ -1,0 +1,434 @@
+// fixture.funny — the other end of the golden, in a worker.
+//
+// It has to be a separate thread: a client parked in a blocking read and a
+// server parked in `accept` cannot be the same one. `kv/test_client.funny`
+// does this the other way round -- server on the main thread, client in the
+// worker -- and this file swaps them, because here it is the *client* that is
+// under test and the assertions belong where the reading is easy.
+//
+// Every response is written to the socket by hand rather than through an HTTP
+// library, which is the whole point: a fixture that frames its bodies with the
+// same code the client parses them with would prove only that the two agree.
+// So the chunked route really does split a chunk-size line across two writes,
+// the truncating route really does close early, and the route that ignores a
+// `Range` really does answer 200 with the whole body.
+//
+// The port is chosen by the OS (`open_shop(0)`) and posted back with
+// `interns.dm("boss", ...)` before the first accept, so the golden never
+// gambles on a fixed number being free.
+
+gimme internet
+gimme interns
+gimme clock
+gimme blob
+gimme yapper
+gimme filez
+
+yo job = interns.assignment()
+yo HERE = filez.dir_of(the_script())
+
+// -- the bodies the routes serve -----------------------------------------------------------
+//
+// Generated, never committed: an expected byte count is then arithmetic rather
+// than something somebody once measured. `word_count/`'s corpus is the model.
+
+deadass HELLO = "yo from the fixture"
+
+// A real MPEG-1 Layer III frame: FF FB is the sync word and MPEG-1 Layer III,
+// 0x90 is 128 kbit/s at 44.1 kHz, and the frame is 417 bytes at that rate.
+// Filled with zeroes, so it is silence -- but it is silence a decoder accepts,
+// and `id3.funny`'s golden needs a file that is really an mp3.
+deadass MP3_FRAME_BYTES = 417
+flex bet mp3_of(frames) {
+    yo parts = []
+    grind i from 0 to frames {
+        yo head = blob.of([0xFF, 0xFB, 0x90, 0x64])
+        yo rest = []
+        grind k from 0 to MP3_FRAME_BYTES - 4 { rest.yeet_in(0) }
+        parts.yeet_in(head + blob.of(rest))
+    }
+    bounce blob.of([]).join(parts)
+}
+
+// A minimal but structurally valid JPEG: SOI, a JFIF APP0, a comment, EOI.
+// Nothing decodes it to pixels; everything that reads cover art reads its
+// bytes, and those are what round-trips through a tag.
+flex bet jpeg_of() {
+    yo b = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]
+    grind c in yapper.chars("JFIF") { b.yeet_in(yapper.ord_of(c)) }
+    b.yeet_in(0)
+    grind n in [0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00] { b.yeet_in(n) }
+    b.yeet_in(0xFF)
+    b.yeet_in(0xFE)
+    b.yeet_in(0x00)
+    b.yeet_in(0x10)
+    grind c in yapper.chars("fixture cover ") { b.yeet_in(yapper.ord_of(c)) }
+    b.yeet_in(0xFF)
+    b.yeet_in(0xD9)
+    bounce blob.of(b)
+}
+
+deadass SONG = mp3_of(12)
+deadass COVER = jpeg_of()
+
+// -- the listener ---------------------------------------------------------------------------
+
+yo listener = internet.open_shop(0, "127.0.0.1")
+yo port = internet.shop_port(listener)
+yo BASE = "http://127.0.0.1:" + to_yap(port)
+interns.dm("boss", {"port": port})
+
+// How many times each route has been asked, so a route can answer differently
+// the second time -- which is what "retries after a 503" needs to be a test
+// rather than a hope.
+yo seen = {}
+
+bet bump(path) {
+    seen[path] = seen.get(path, 0) + 1
+    bounce seen[path]
+}
+
+// -- reading a request (only as much as the fixture needs) -------------------------------
+
+bet read_request(conn) {
+    yo buf = blob.of([])
+    yo guard = 0
+    bruh (guard < 400) {
+        guard += 1
+        yo marker = buf.index_of(blob.from_yap("\r\n\r\n"))
+        sus (marker >= 0) { bail }
+        yo part = internet.hear_them_out(conn, 8192, 5000, {"raw": fax})
+        sus (part == ghost || part == "" || how_thicc(part) == 0) { bail }
+        buf = buf + part
+    }
+    yo text = buf.to_yap()
+    yo lines = yapper.split(text, "\r\n")
+    sus (how_thicc(lines) == 0) { bounce ghost }
+    yo bits = yapper.split(lines[0], " ")
+    sus (how_thicc(bits) < 2) { bounce ghost }
+    yo headers = {}
+    grind i from 1 to how_thicc(lines) {
+        yo line = lines[i]
+        sus (line == "") { bail }
+        yo colon = yapper.index_of(line, ":")
+        sus (colon > 0) {
+            headers[yapper.whisper(yapper.trim(yapper.slice(line, 0, colon)))] =
+                yapper.trim(yapper.slice(line, colon + 1, how_thicc(line)))
+        }
+    }
+    bounce {"method": bits[0], "path": bits[1], "headers": headers}
+}
+
+// -- writing responses, by hand ----------------------------------------------------------
+
+bet status_text(code) {
+    yo names = {200: "OK", 206: "Partial Content", 302: "Found", 301: "Moved Permanently",
+                307: "Temporary Redirect", 404: "Not Found", 429: "Too Many Requests",
+                503: "Service Unavailable", 500: "Internal Server Error"}
+    bounce names.get(code, "Whatever")
+}
+
+bet head_lines(code, extra) {
+    yo lines = ["HTTP/1.1 " + to_yap(code) + " " + status_text(code)]
+    grind name in extra.keys() {
+        lines.yeet_in(name + ": " + to_yap(extra[name]))
+    }
+    lines.yeet_in("Connection: close")
+    bounce yapper.join("\r\n", lines) + "\r\n\r\n"
+}
+
+bet send_sized(conn, code, body, content_type) {
+    internet.holler_back(conn, head_lines(code, {"Content-Type": content_type,
+                                                 "Content-Length": how_thicc(body)}))
+    internet.holler_back(conn, body)
+}
+
+bet send_text(conn, code, text) {
+    send_sized(conn, code, blob.from_yap(text), "text/plain; charset=utf-8")
+}
+
+// -- the routes -------------------------------------------------------------------------
+
+bet serve(conn, req) {
+    yo path = req["path"]
+    yo q = yapper.index_of(path, "?")
+    sus (q >= 0) { path = yapper.slice(path, 0, q) }
+    yo headers = req["headers"]
+
+    sus (path == "/plain") {
+        send_text(conn, 200, HELLO)
+        bounce ghost
+    }
+
+    // Three writes, and the second one begins in the middle of the first
+    // chunk's size line. A client that assumes a read comes back whole breaks
+    // exactly here.
+    sus (path == "/chunked") {
+        internet.holler_back(conn, head_lines(200, {"Content-Type": "text/plain",
+                                                    "Transfer-Encoding": "chunked"}))
+        // "11" is 0x11 -- seventeen bytes -- and the first write ends in the
+        // middle of it. A client that assumes a read comes back whole reads a
+        // chunk size of 1 here and is never right again.
+        internet.holler_back(conn, "1")
+        internet.holler_back(conn, "1\r\nchunked-hello!!!!\r\n6;ext=1\r\n-there\r\n")
+        internet.holler_back(conn, "0\r\nX-Trailer: yes\r\n\r\n")
+        bounce ghost
+    }
+
+    // No Content-Length, no chunked: the body is what arrives until the close.
+    sus (path == "/until-close") {
+        internet.holler_back(conn, head_lines(200, {"Content-Type": "text/plain"}))
+        internet.holler_back(conn, "closed-delimited body")
+        bounce ghost
+    }
+
+    sus (path == "/redirect/root") {
+        internet.holler_back(conn, head_lines(302, {"Location": "/plain", "Content-Length": 0}))
+        bounce ghost
+    }
+    // Relative to the *directory* of the current path -- the case `go_brrrr`
+    // cannot follow at all.
+    sus (path == "/redirect/dir") {
+        internet.holler_back(conn, head_lines(302, {"Location": "sibling", "Content-Length": 0}))
+        bounce ghost
+    }
+    sus (path == "/redirect/sibling") {
+        send_text(conn, 200, "arrived by a relative Location")
+        bounce ghost
+    }
+    sus (path == "/redirect/absolute") {
+        internet.holler_back(conn, head_lines(301, {"Location": BASE + "/plain",
+                                                    "Content-Length": 0}))
+        bounce ghost
+    }
+    // A chain of three, then the destination.
+    sus (yapper.starts_with(path, "/redirect/chain/")) {
+        yo left = yapper.slice(path, how_thicc("/redirect/chain/"), how_thicc(path)).to_numba()
+        sus (left <= 1) {
+            internet.holler_back(conn, head_lines(307, {"Location": "/plain", "Content-Length": 0}))
+        } nah {
+            internet.holler_back(conn, head_lines(302,
+                {"Location": "/redirect/chain/" + to_yap(left - 1), "Content-Length": 0}))
+        }
+        bounce ghost
+    }
+    sus (path == "/redirect/loop") {
+        internet.holler_back(conn, head_lines(302, {"Location": "/redirect/loop",
+                                                    "Content-Length": 0}))
+        bounce ghost
+    }
+
+    // 503 the first time, 200 after that.
+    sus (path == "/flaky") {
+        sus (bump("/flaky") == 1) {
+            internet.holler_back(conn, head_lines(503, {"Retry-After": "0", "Content-Length": 0}))
+        } nah {
+            send_text(conn, 200, "worked on attempt " + to_yap(seen["/flaky"]))
+        }
+        bounce ghost
+    }
+
+    // Honours Range: 206 with a Content-Range.
+    sus (path == "/ranged") {
+        yo from_at = range_start(headers.get("range", ghost))
+        sus (from_at > 0) {
+            yo slice = SONG[from_at:how_thicc(SONG)]
+            internet.holler_back(conn, head_lines(206, {
+                "Content-Type": "audio/mpeg",
+                "Content-Length": how_thicc(slice),
+                "Accept-Ranges": "bytes",
+                "Content-Range": "bytes " + to_yap(from_at) + "-" +
+                                 to_yap(how_thicc(SONG) - 1) + "/" + to_yap(how_thicc(SONG))}))
+            internet.holler_back(conn, slice)
+        } nah {
+            internet.holler_back(conn, head_lines(200, {"Content-Type": "audio/mpeg",
+                                                        "Content-Length": how_thicc(SONG),
+                                                        "Accept-Ranges": "bytes"}))
+            internet.holler_back(conn, SONG)
+        }
+        bounce ghost
+    }
+
+    // Ignores Range and sends the whole thing with a 200. A client that
+    // appends this to a partial file welds two halves together.
+    sus (path == "/ignores-range") {
+        send_sized(conn, 200, SONG, "audio/mpeg")
+        bounce ghost
+    }
+
+    // Promises the whole body and closes at about 40% of it. The first ask
+    // truncates, the second is honest, so `--resume` has something to resume.
+    sus (path == "/truncates") {
+        yo from_at = range_start(headers.get("range", ghost))
+        yo whole = SONG
+        sus (bump("/truncates") == 1) {
+            internet.holler_back(conn, head_lines(200, {"Content-Type": "audio/mpeg",
+                                                        "Content-Length": how_thicc(whole),
+                                                        "Accept-Ranges": "bytes"}))
+            internet.holler_back(conn, whole[0:(how_thicc(whole) * 2) \ 5])
+            bounce "close now"
+        }
+        sus (from_at > 0) {
+            yo slice = whole[from_at:how_thicc(whole)]
+            internet.holler_back(conn, head_lines(206, {
+                "Content-Type": "audio/mpeg",
+                "Content-Length": how_thicc(slice),
+                "Accept-Ranges": "bytes",
+                "Content-Range": "bytes " + to_yap(from_at) + "-" +
+                                 to_yap(how_thicc(whole) - 1) + "/" + to_yap(how_thicc(whole))}))
+            internet.holler_back(conn, slice)
+        } nah {
+            send_sized(conn, 200, whole, "audio/mpeg")
+        }
+        bounce ghost
+    }
+
+    sus (path == "/song.mp3") { send_sized(conn, 200, SONG, "audio/mpeg"); bounce ghost }
+    sus (path == "/cover.jpg") { send_sized(conn, 200, COVER, "image/jpeg"); bounce ghost }
+    sus (path == "/slow-headers") {
+        // The status line, then a pause, then the rest -- so `read_head` is
+        // made to pull more than once for one set of headers.
+        internet.holler_back(conn, "HTTP/1.1 200 OK\r\nContent-Ty")
+        internet.holler_back(conn, "pe: text/plain\r\nContent-Length: 4\r\nConnection: close\r\n\r\nokay")
+        bounce ghost
+    }
+    sus (path == "/no-reply") { bounce "close now" }
+    sus (path == "/teapot-headers") {
+        internet.holler_back(conn, "this is not HTTP at all\r\n\r\n")
+        bounce ghost
+    }
+
+    // The Suno-shaped routes: a share page, the clip API, and the media.
+    sus (path == "/s/shortcode" || path == "/song/" + job["id"]) {
+        send_sized(conn, 200, page_blob(), "text/html; charset=utf-8")
+        bounce ghost
+    }
+    sus (path == "/api/clip/" + job["id"]) {
+        send_sized(conn, 200, clip_blob(), "application/json; charset=utf-8")
+        bounce ghost
+    }
+    sus (path == "/api/clip/00000000-0000-0000-0000-000000000000") {
+        send_sized(conn, 404, blob.from_yap("{\"detail\":\"Not found.\"}"),
+                   "application/json; charset=utf-8")
+        bounce ghost
+    }
+    sus (path == "/1/clip/" + job["id"] + ".m4a") {
+        yo from_at = range_start(headers.get("range", ghost))
+        sus (from_at > 0) {
+            yo slice = audio_blob()[from_at:how_thicc(audio_blob())]
+            internet.holler_back(conn, head_lines(206, {
+                "Content-Type": "audio/mp4",
+                "Content-Length": how_thicc(slice),
+                "Accept-Ranges": "bytes",
+                "Content-Range": "bytes " + to_yap(from_at) + "-" +
+                                 to_yap(how_thicc(audio_blob()) - 1) + "/" +
+                                 to_yap(how_thicc(audio_blob()))}))
+            internet.holler_back(conn, slice)
+        } nah {
+            send_sized(conn, 200, audio_blob(), "audio/mp4")
+        }
+        bounce ghost
+    }
+
+    send_text(conn, 404, "no such route: " + path)
+    bounce ghost
+}
+
+bet range_start(header) {
+    sus (header == ghost) { bounce 0 }
+    yo eq = yapper.index_of(header, "=")
+    sus (eq < 0) { bounce 0 }
+    yo spec = yapper.slice(header, eq + 1, how_thicc(header))
+    yo dash = yapper.index_of(spec, "-")
+    sus (dash < 0) { bounce 0 }
+    yo first = yapper.trim(yapper.slice(spec, 0, dash))
+    sus (first == "" || !yapper.is_numba(first)) { bounce 0 }
+    bounce first.to_numba()
+}
+
+// -- the fixture's idea of Suno ------------------------------------------------------------
+//
+// Built here rather than committed as a captured page, with the audio URL
+// pointed back at this very listener. The shapes are the ones PLAN.md §10 D1
+// recorded from the real site on 2026-09-18; the content is invented, and
+// there is not a line of anybody's song in it.
+
+bet page_blob() {
+    yo html = filez.slurp(filez.join_path(HERE, "fixtures", "song_page.html"))
+    bounce blob.from_yap(yapper.replace(yapper.replace(html, "{{ID}}", job["id"]), "{{BASE}}", BASE))
+}
+
+bet clip_blob() {
+    yo text = filez.slurp(filez.join_path(HERE, "fixtures", "clip.json"))
+    bounce blob.from_yap(yapper.replace(yapper.replace(text, "{{ID}}", job["id"]), "{{BASE}}", BASE))
+}
+
+// The "audio": an MP4 box tree with a real `ilst` slot to tag, rather than an
+// mp3. What Suno publishes is Opus in an MP4 container (§10 D2), so the
+// fixture publishes the same shape.
+bet audio_blob() {
+    bounce make_m4a()
+}
+
+// A minimal but structurally honest MP4: ftyp, then moov (with a udta/meta/
+// ilst holding one tag), then mdat with the "audio" in it. `mp4tags.funny`
+// rewrites the tree, so the tree has to really be a tree.
+flex bet make_m4a() {
+    yo ftyp = box("ftyp", blob.from_yap("M4A ") + be32(512) + blob.from_yap("M4A isomiso2"))
+    yo ilst = box("ilst", box("\u{00A9}nam", box("data", be32(1) + be32(0) + blob.from_yap("fixture song"))))
+    yo meta = box("meta", be32(0) + box("hdlr", be32(0) + be32(0) + blob.from_yap("mdirappl") +
+                                        be32(0) + be32(0) + be32(0)) + ilst)
+    yo moov = box("moov", box("mvhd", be32(0) + zeros(96)) + box("udta", meta))
+    yo mdat = box("mdat", mp3_of(4))
+    bounce ftyp + moov + mdat
+}
+
+flex bet box(kind, payload) {
+    bounce be32(how_thicc(payload) + 8) + blob.from_yap(kind) + payload
+}
+
+flex bet be32(n) {
+    bounce blob.of([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255])
+}
+
+bet zeros(n) {
+    yo b = []
+    grind i from 0 to n { b.yeet_in(0) }
+    bounce blob.of(b)
+}
+
+// -- the accept loop --------------------------------------------------------------------
+
+// A worker that only stops when it is told to is a worker that hangs the whole
+// process the moment its boss raises instead of telling it (EXAMPLES_PLAN.md
+// §0 rule 5). So it also stops on its own after a spell of silence: nothing in
+// the golden leaves it idle for thirty seconds, and a golden that died leaves
+// it idle forever.
+deadass IDLE_GIVE_UP_MS = 30000
+yo served = 0
+yo stopping = cap
+yo last_seen = clock.now_ms()
+bruh (!stopping) {
+    yo customer = internet.next_customer(listener, 200)
+    sus (customer != ghost) {
+        last_seen = clock.now_ms()
+        yo conn = customer["conn"]
+        sketchy {
+            yo req = read_request(conn)
+            sus (req != ghost) {
+                serve(conn, req)
+                served += 1
+            }
+        } my_bad (e) {
+            vibe
+        }
+        internet.kick_out(conn)
+    }
+    // A message is the only way this stops, apart from the safety net below.
+    yo note = interns.wait_up(interns.check_dms(1))
+    sus (note != ghost && note["msg"] == "stop") { stopping = fax }
+    sus (served > 500) { stopping = fax }
+    sus (clock.now_ms() - last_seen > IDLE_GIVE_UP_MS) { stopping = fax }
+}
+internet.close_shop(listener)
+interns.deliver({"served": served})

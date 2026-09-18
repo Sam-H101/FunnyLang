@@ -1,0 +1,38 @@
+{
+  "status": "complete",
+  "title": "Loopback Lullaby",
+  "play_count": 3,
+  "upvote_count": 0,
+  "allow_comments": true,
+  "is_verified": false,
+  "id": "{{ID}}",
+  "entity_type": "song_schema",
+  "video_url": "{{BASE}}/1/clip/{{ID}}.mp4",
+  "audio_url": "{{BASE}}/api/forbidden",
+  "media_urls": [
+    {
+      "url": "{{BASE}}/1/clip/{{ID}}.m4a",
+      "content_type": "m4a-opus",
+      "delivery": "progressive",
+      "encoding": "1.0.0"
+    }
+  ],
+  "image_url": "{{BASE}}/image_{{ID}}.jpeg",
+  "image_large_url": "{{BASE}}/cover.jpg",
+  "major_model_version": "v5.5",
+  "model_name": "chirp-fixture",
+  "metadata": {
+    "tags": "test tone, loopback, ambient",
+    "negative_tags": "loud",
+    "prompt": "[Instrumental]\n[a placeholder, so this fixture carries nobody's words]\n",
+    "type": "gen",
+    "duration": 12.5,
+    "has_vocal": false
+  },
+  "display_name": "The Fixture",
+  "handle": "fixture",
+  "avatar_image_url": "{{BASE}}/avatar.jpeg",
+  "created_at": "2026-01-02T03:04:05.678Z",
+  "is_public": false,
+  "explicit": false
+}
