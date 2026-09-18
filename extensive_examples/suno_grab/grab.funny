@@ -32,7 +32,9 @@ bet usage() {
     yell("usage: grab.funny [options] URL...")
     yell("")
     yell("  --out DIR           where the files go (default: .)")
-    yell("  --format KIND       m4a (default), mp4, mp3, or best")
+    yell("  --format KIND       mp4 (default), m4a, mp3, or best")
+    yell("                      mp4 is the default because it is the only rendition")
+    yell("                      a share link publishes that is not encrypted")
     yell("  --workers N         parallel downloads, 1-8 (default 2)")
     yell("  --name TEMPLATE     {title}, {artist}, {handle}, {id}, {date}")
     yell("                      (default: \"{title}\")")
@@ -52,7 +54,7 @@ bet usage() {
 
 bet main(raw) {
     yo urls = []
-    yo opts = {"out": ".", "format": "m4a", "workers": 2, "headers": {},
+    yo opts = {"out": ".", "format": "mp4", "workers": 2, "headers": {},
                "name_template": namer.DEFAULT_TEMPLATE}
     yo manifest_path = ghost
     yo quiet = cap
@@ -122,9 +124,15 @@ bet main(raw) {
     }
 
     yo started = clock.stopwatch()
-    yo results = how_thicc(urls) == 1 || opts["workers"] == 1 || opts.get("print_only", cap)
-        ? one_at_a_time(urls, opts, quiet)
-        : in_parallel(urls, opts, quiet)
+    // One link, one worker, or --print-only: nothing to gain from a pool, and
+    // a progress bar is only readable when one thing is drawing it.
+    yo alone = how_thicc(urls) == 1 || opts["workers"] == 1 || opts.get("print_only", cap)
+    yo results = []
+    sus (alone) {
+        results = one_at_a_time(urls, opts, quiet)
+    } nah {
+        results = in_parallel(urls, opts, quiet)
+    }
     yo elapsed = started()
 
     yo good = 0
@@ -158,8 +166,10 @@ bet one_at_a_time(urls, opts, quiet) {
     grind url in urls {
         yo run_opts = opts.clone()
         sus (!quiet) {
-            run_opts["say"] = lowkey (label, value) => yap pad(label) + value
-            run_opts["on_progress"] = lowkey (done, total) => draw_bar(done, total)
+            // Block bodies: `yap` is a statement, so it cannot be the
+            // expression half of a `=>` lambda.
+            run_opts["say"] = lowkey (label, value) { yap pad(label) + value }
+            run_opts["on_progress"] = lowkey (done, total) { draw_bar(done, total) }
         }
         yo r = pipeline.grab_one(url, run_opts)
         sus (!quiet && !r.get("printed", cap)) { mumble "\r" + " " * 72 + "\r" }
@@ -251,6 +261,7 @@ bet announce(r, quiet) {
     }
     yap "wrote     " + r["path"] + "  (" + comma(r["final_bytes"]) + " B, " +
         r["tagged"] + ", via " + r["via"] + ")"
+    sus (r.has("warning")) { yell("warning   " + r["warning"]) }
 }
 
 bet printable(record) {

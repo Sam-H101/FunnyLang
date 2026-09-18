@@ -541,6 +541,49 @@ order is now:
 4. **The pattern** — `cdn1.suno.ai/<id>.mp4` for the video, confirmed with a **`GET` of one byte
    via `Range`, never a `HEAD`**, because D1's last row proves `HEAD` lies on this CDN.
 
+### D5 — the `.m4a` is encrypted, so the default is the video (measured 2026-09-18)
+
+Running the finished program against the same real link, which is the evidence §7's S3 demands:
+
+- `--print-only` resolved it correctly: short link → page → id → clip API → `m4a` and `mp4`
+  renditions, `via: "api"`, `id_via: "page"`.
+- the `.m4a` downloaded exactly, 6,331,654 bytes, matching its `Content-Length` — **and its first
+  bytes are `41 5f ac a9 2f 62 29 59`. There is no `ftyp`, and no box structure at all.** The
+  runtime's own C client (`internet.download`) fetches byte-identical bytes, so this is the
+  content and not this program: **Suno serves that rendition encrypted.**
+- `https://cdn1.suno.ai/<id>.mp4` begins `00 00 00 20 66 74 79 70 69 73 6f 6d` — a plain
+  `ftyp isom` MP4, 15,608,030 bytes, and it contains the audio.
+
+So D2's conclusion needs one more turn of the screw. There is no public mp3 **and** the one thing
+`media_urls` advertises cannot be played either. The only rendition a share link publishes in the
+clear is the video.
+
+- **`--format` now defaults to `mp4`.** It is the only thing that works.
+- **The pipeline sniffs what actually arrived** before tagging it, and a rendition whose bytes are
+  not the container its kind implies is kept as it arrived, left untagged, and reported with a
+  sentence saying it is encrypted and which format does play. Tagging it would otherwise fail with
+  "that file is not an MP4: it has no boxes at all", which tells nobody anything.
+- `best` now prefers `mp3`, then `mp4`, then `m4a`.
+
+The end-to-end run on the real song: 15,608,030 bytes down, tagged to 15,693,534, title, artist,
+year, style, source URL and an 84,932-byte cover read back out by `tag.funny`.
+
+**And the real file vindicated one design choice.** Its layout is `ftyp, free, mdat, moov` — with
+`moov` *last*. So `mdat` does not move when the tag grows, the 7,654 chunk offsets correctly stay
+exactly where they were (48 → 48, 15,423,186 → 15,423,186), and every one still points at the same
+audio bytes. `mp4tags.funny` compares box *positions* rather than assuming the usual
+`moov`-before-`mdat` order, which is why it did the right thing on a layout the fixture does not
+have. A tagger that had hard-coded "shift the offsets" would have corrupted this file.
+
+### D6 — the CLI was the one thing the golden could not reach, and it was broken
+
+The golden drives `pipeline.funny`, because `grab.funny` ends in `dip(main(...))` and this
+language has no subprocesses. The first time `grab.funny` was actually run — against the real link
+— it did not parse, twice: a ternary whose `?` and `:` were on their own lines, and a
+`lowkey (...) => yap ...` where `yap` is a statement and cannot be an expression. Both were in
+code the golden had never executed a line of. The README's "what it is not" already named this
+gap; it turns out to have been worth naming.
+
 ### D4 — two things the client must handle that §4.1 did not know about
 
 - The share page is `Transfer-Encoding: chunked` with `Connection: keep-alive` from Cloudflare, so

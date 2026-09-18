@@ -47,7 +47,7 @@ flex bet grab_one(url, opts) {
 bet run(url, opts) {
     yo say = opt(opts, "say", ghost)
     yo out_dir = opt(opts, "out", ".")
-    yo want = opt(opts, "format", "m4a")
+    yo want = opt(opts, "format", "mp4")
 
     note(say, "resolving", short_url(url))
     yo record = suno.resolve(url, opts)
@@ -99,14 +99,32 @@ bet run(url, opts) {
         }
     }
 
+    // What actually arrived, before anything tries to tag it. PLAN.md §10 D5:
+    // the `.m4a` CloudFront serves for a share link is **not** an MP4 -- it
+    // has no `ftyp` and no box structure at all, and the runtime's own C
+    // client fetches byte-identical bytes, so it is the content and not this
+    // program. Tagging it would fail with "no boxes at all", which tells
+    // nobody anything. So the bytes are sniffed and the file is kept untagged
+    // with a sentence saying what it is.
     yo tagged_with = "none"
-    sus (!opt(opts, "no_tags", cap)) {
+    yo warning = ghost
+    yo container = container_of(path)
+    yo wanted = tagger_for(record["audio_kind"])
+    sus (wanted != "none" && container != wanted) {
+        warning = "the bytes served for this " + record["audio_kind"] +
+                  " are not " + (wanted == "mp4" ? "an MP4 container" : "an mp3") +
+                  " -- Suno serves this rendition encrypted. The file was kept as it " +
+                  "arrived and left untagged; --format mp4 is the rendition that plays."
+        wanted = "none"
+    }
+
+    sus (!opt(opts, "no_tags", cap) && wanted != "none") {
         yo tags = suno.tags_for(record)
         sus (cover != ghost) {
             tags["cover"] = cover
             tags["cover_mime"] = cover_mime
         }
-        yo which = tagger_for(record["audio_kind"])
+        yo which = wanted
         yo bytes = filez.read_blob(path)
         sus (which == "id3") {
             filez.write_blob_atomic(path, id3.write_tags(bytes, tags))
@@ -121,11 +139,30 @@ bet run(url, opts) {
         }
     }
 
-    bounce {"ok": fax, "url": url, "path": path, "bytes": got["bytes"],
-            "final_bytes": how_thicc(filez.read_blob(path)),
-            "title": record["title"], "artist": record["artist"], "via": record["via"],
-            "id": record["id"], "kind": record["audio_kind"], "tagged": tagged_with,
-            "resumed": got["resumed"]}
+    yo outcome = {"ok": fax, "url": url, "path": path, "bytes": got["bytes"],
+                  "final_bytes": how_thicc(filez.read_blob(path)),
+                  "title": record["title"], "artist": record["artist"], "via": record["via"],
+                  "id": record["id"], "kind": record["audio_kind"], "tagged": tagged_with,
+                  "resumed": got["resumed"]}
+    sus (warning != ghost) { outcome["warning"] = warning }
+    bounce outcome
+}
+
+// What the first bytes of a file say it is, rather than what its name or its
+// URL claimed. `ftyp` is the usual first box; `moov`, `mdat`, `free` and
+// `skip` are all legal first boxes too and appear in the wild.
+bet container_of(path) {
+    yo head = filez.read_blob(path)
+    sus (how_thicc(head) < 12) { bounce "unknown" }
+    sus (head[0] == 73 && head[1] == 68 && head[2] == 51) { bounce "id3" }
+    // A bare mp3 with no tag starts with a frame sync: eleven bits of 1s.
+    sus (head[0] == 0xFF && (head[1] & 0xE0) == 0xE0) { bounce "id3" }
+    yo kind = head[4:8].to_yap()
+    sus (kind == "ftyp" || kind == "moov" || kind == "mdat" || kind == "free" ||
+         kind == "skip" || kind == "styp") {
+        bounce "mp4"
+    }
+    bounce "unknown"
 }
 
 bet content_type_of(answer) {

@@ -12,9 +12,15 @@
 //     User-Agent, Referer and Origin change nothing.
 //   - the clip API answers **unauthenticated** with everything: title, tags,
 //     the creator's handle, the cover, the video, and `media_urls`.
-//   - and what `media_urls` lists is one entry, `m4a-opus`. That is the one
-//     audio rendition Suno publishes for a share link, which is why the file
-//     this program writes is an `.m4a` and not the mp3 the name suggests.
+//   - and what `media_urls` lists is one entry, `m4a-opus` -- which downloads
+//     exactly and turns out to have no `ftyp` and no box structure at all,
+//     because Suno serves that rendition **encrypted** (§10 D5). The runtime's
+//     own C client fetches byte-identical bytes, so it is the content and not
+//     this program.
+//
+// So the only rendition of a shared song that is served in the clear is the
+// video, and that is what `--format` defaults to. The mp3 the name suggests
+// does not exist publicly at all.
 //
 // So the rung that normally answers is the API, not the page. `via` says which
 // rung did, on every result and in the manifest, because the day that changes
@@ -279,7 +285,7 @@ bet from_meta(html, id, page) {
 // exists instead -- which for "mp3" is the sentence that matters, because
 // there usually is not one.
 flex bet choose(record, want, opts) {
-    yo order = want == "best" ? ["m4a", "mp3", "mp4"] : [want]
+    yo order = want == "best" ? ["mp3", "mp4", "m4a"] : [want]
     yo refused = []
     grind kind in order {
         grind r in record["renditions"] {

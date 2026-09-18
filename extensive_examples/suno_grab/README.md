@@ -9,15 +9,15 @@ is copied to a phone.
 ```console
 $ funny run extensive_examples/suno_grab/grab.funny -- https://suno.com/s/<code>
 resolving   suno.com/s/<code>
-  title     The Hacker Went Down to Prod
-  artist    The Jamming
-  audio     d2lwuy8qc234o3.cloudfront.net/1/clip/57c1ce7d-....m4a  (m4a)
-downloading  ##############################  6,331,654 / 6,331,654 B
+  title     <the song's title>
+  artist    <the creator's display name>
+  audio     cdn1.suno.ai/57c1ce7d-....mp4  (mp4)
+downloading  ##############################  15,608,030 / 15,608,030 B
   tagged    MP4 ilst, cover 84932 bytes
-wrote     ./The Hacker Went Down to Prod.m4a  (6,333,012 B, MP4 ilst, via api)
+wrote     ./<the song's title>.mp4  (15,693,534 B, MP4 ilst, via api)
 ```
 
-**It writes an `.m4a`, not an `.mp3`, and that is not a shortcut.** See
+**It writes an `.mp4`, not an `.mp3`, and that is not a shortcut.** See
 [why there is no mp3](#why-there-is-no-mp3) — it is the most interesting thing this example found
 out, and it is the reason the example is shaped the way it is.
 
@@ -71,13 +71,33 @@ It does not. Probing one real share link on 2026-09-18 — every probe and its a
   returns the title, the style tags, the creator's handle, the cover, the video, and `media_urls`.
 - and `media_urls` lists exactly one entry: a CloudFront `.m4a`, `"content_type": "m4a-opus"`.
 
-So the one audio rendition Suno publishes for a share link is **Opus in an MP4 container**. Turning
+So the one *audio* rendition Suno publishes for a share link is Opus in an MP4 container. Turning
 that into an mp3 would need an Opus decoder and an MP3 encoder written in FunnyLang — tens of
 thousands of lines of signal processing — and shelling out to `ffmpeg` is not available either:
 `computer` makes no subprocess calls, by design, and that is not being relaxed for one example.
 
-A program that wrote those Opus frames into a file called `.mp3` would be lying, and every player
-would catch it. So this one writes what it was given, calls it what it is, and says so here.
+**And then running the finished program found the rest of it.** That `.m4a` downloads exactly —
+6,331,654 bytes, matching its own `Content-Length` — and its first bytes are `41 5f ac a9 2f 62
+29 59`. There is no `ftyp`. There is no box structure at all. The runtime's own C client fetches
+byte-identical bytes, so it is not this program mangling them: **Suno serves that rendition
+encrypted.** It is not a playable file and no tagger can touch it.
+
+What *is* served in the clear is the video, `cdn1.suno.ai/<id>.mp4`, which begins
+`00 00 00 20 66 74 79 70 69 73 6f 6d` — a plain `ftyp isom` MP4 — and which carries the audio.
+
+So **`--format` defaults to `mp4`**, because it is the only rendition of a shared song that
+actually plays. `--format m4a` still fetches the encrypted bytes if you want them, keeps them
+exactly as they arrived, and says so instead of failing somewhere confusing:
+
+```console
+$ funny run extensive_examples/suno_grab/grab.funny -- <url> --format m4a
+warning   the bytes served for this m4a are not an MP4 container -- Suno serves this rendition
+encrypted. The file was kept as it arrived and left untagged; --format mp4 is the rendition that
+plays.
+```
+
+A program that wrote encrypted Opus frames into a file called `.mp3` would be lying, and every
+player would catch it. So this one writes what it was given, calls it what it is, and says so here.
 
 `--format mp3` still exists, and fails with the sentence that explains itself:
 
@@ -208,8 +228,13 @@ clock starts.
 - **The song belongs to whoever made it.** What this does is save a copy of a file that is already
   being served; what anybody then does with that copy is between them, the person who made it, and
   Suno's terms, and it is not this example's to answer.
-- **It is not an mp3 downloader**, for the reasons above. It writes `.m4a` by default and `.mp4`
-  with `--format mp4`.
+- **It is not an mp3 downloader**, for the reasons above. It writes `.mp4` by default, because that
+  is the only rendition of a shared song that is served unencrypted. The `.m4a` that the API
+  advertises is encrypted and is fetched only if you ask for it by name.
+- **It does not decrypt anything, and there is no code here that tries.** Where Suno withholds
+  something — the mp3 behind a signed URL, the encrypted `m4a` — this program reports that and
+  stops. "Suno serves this rendition encrypted" is the end of the sentence, not the start of a
+  workaround.
 - **It does not transcode.** No format conversion of any kind. The bytes written are the bytes
   served, plus a tag.
 - **`suno.funny` scrapes somebody else's site and will break.** The ladder makes that a sentence

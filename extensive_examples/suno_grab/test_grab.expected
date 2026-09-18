@@ -73,7 +73,7 @@
   -- choosing a rendition --
   m4a:  <base>/1/clip/11111111-2222-3333-4444-555555555555.m4a  (m4a)
   mp4:  <base>/1/clip/11111111-2222-3333-4444-555555555555.mp4  (mp4)
-  best: <base>/1/clip/11111111-2222-3333-4444-555555555555.m4a  (m4a)
+  best: <base>/1/clip/11111111-2222-3333-4444-555555555555.mp4  (mp4)
     asking for an mp3: SkillIssue -- Suno publishes no mp3 for a shared link: the mp3 on its CDN is behind a signed URL only a signed-in owner is given. What it does publish here is m4a, mp4 -- try --format m4a, or pass your own session with --header "Cookie: ..." if the song is yours.
   -- the tags it hands the tagger --
     title: Loopback Lullaby
