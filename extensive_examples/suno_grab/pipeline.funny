@@ -141,10 +141,8 @@ bet run(url, opts) {
             yo shifted = disguise.disguise(before_disguise, opts)
             filez.write_blob_atomic(path, shifted)
             yo pct = opt(opts, "disguise_pct", disguise.DEFAULT_SHIFT)
-            yo trim_sec = opt(opts, "disguise_trim", disguise.DEFAULT_TRIM)
-            disguised = {"pct": pct, "trim": trim_sec}
+            disguised = {"pct": pct}
             note(say, "  disguised", to_yap(pct) + "% pitch shift, " +
-                 to_yap(trim_sec) + " s trimmed, " +
                  to_yap(how_thicc(shifted)) + " bytes")
         } my_bad (e) {
             note(say, "  disguised", "could not disguise (" + e.message + ") -- keeping as-is")
