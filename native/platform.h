@@ -153,6 +153,15 @@ bool platform_make_executable(const char *path);
    by a silent lie. False only if the file is not there. */
 bool platform_make_private(const char *path);
 
+/* -- subprocess (computer.run) ---------------------------------------- */
+
+/* Runs `command` through the system shell (popen), captures stdout into
+   a malloc'd buffer (*out_stdout, caller frees), and writes the process
+   exit code into *out_exit_code. False with a reason in errbuf if the
+   shell itself cannot be started. */
+bool platform_run_command(const char *command, char **out_stdout, size_t *out_len,
+                          int *out_exit_code, char *errbuf, size_t errbuf_len);
+
 /* -- console (NATIVE_PLAN.md N6, diagnostics) ------------------------ */
 
 /* True when *stdout* is a terminal. Deliberately stdout and not stderr,

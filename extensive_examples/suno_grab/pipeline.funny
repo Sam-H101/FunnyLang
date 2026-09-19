@@ -20,6 +20,7 @@ gimme "id3.funny"
 gimme "mp4tags.funny"
 gimme "remux.funny"
 gimme "edit.funny"
+gimme "disguise.funny"
 gimme "namer.funny"
 
 bet opt(opts, key, fallback) {
@@ -56,7 +57,7 @@ bet run(url, opts) {
     // "audio" is not a rendition Suno has -- it is the video, with the video
     // taken back out here. So the fetch asks for the mp4 and the extension
     // says m4a, because that is what an audio-only MP4 is called.
-    yo strip_video = want == "audio"
+    yo strip_video = want == "audio" || opt(opts, "disguise", cap)
     record = suno.choose(record, strip_video ? "mp4" : want, opts)
     note(say, "  title", record["title"])
     sus (record["artist"] != "") { note(say, "  artist", record["artist"]) }
@@ -133,6 +134,23 @@ bet run(url, opts) {
         }
     }
 
+    yo disguised = ghost
+    sus (opt(opts, "disguise", cap)) {
+        yo before_disguise = filez.read_blob(path)
+        sketchy {
+            yo shifted = disguise.disguise(before_disguise, opts)
+            filez.write_blob_atomic(path, shifted)
+            yo pct = opt(opts, "disguise_pct", disguise.DEFAULT_SHIFT)
+            yo trim_sec = opt(opts, "disguise_trim", disguise.DEFAULT_TRIM)
+            disguised = {"pct": pct, "trim": trim_sec}
+            note(say, "  disguised", to_yap(pct) + "% pitch shift, " +
+                 to_yap(trim_sec) + " s trimmed, " +
+                 to_yap(how_thicc(shifted)) + " bytes")
+        } my_bad (e) {
+            note(say, "  disguised", "could not disguise (" + e.message + ") -- keeping as-is")
+        }
+    }
+
     // The cover is a nice-to-have: a song that arrived without its artwork is
     // still the song, so a failure here is a note rather than the end of the
     // run.
@@ -202,6 +220,10 @@ bet run(url, opts) {
     }
     sus (trimmed != ghost) {
         outcome["trimmed"] = trimmed
+        outcome["kind"] = "m4a"
+    }
+    sus (disguised != ghost) {
+        outcome["disguised"] = disguised
         outcome["kind"] = "m4a"
     }
     bounce outcome

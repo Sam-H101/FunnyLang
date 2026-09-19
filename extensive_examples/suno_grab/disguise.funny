@@ -1,0 +1,54 @@
+gimme filez
+gimme computer
+gimme clock
+
+flex deadass DEFAULT_SHIFT = 3.0
+flex deadass DEFAULT_TRIM = 2.0
+
+flex bet disguise(mp4, opts) {
+    yo pct = opt(opts, "disguise_pct", DEFAULT_SHIFT)
+    yo trim_sec = opt(opts, "disguise_trim", DEFAULT_TRIM)
+
+    yo tag = to_yap(clock.now().round(0))
+    yo tmp_in = tmp_path(tag, "_in.m4a")
+    yo tmp_out = tmp_path(tag, "_out.m4a")
+    filez.write_blob(tmp_in, mp4)
+
+    yo rate = (44100.0 * (100.0 + pct) / 100.0).round(0)
+    yo af = "asetrate=" + to_yap(rate) + ",aresample=44100"
+
+    yo cmd = "ffmpeg -y -loglevel error"
+    sus (trim_sec > 0) {
+        cmd = cmd + " -ss " + to_yap(trim_sec)
+    }
+    cmd = cmd + " -i " + tmp_in
+    cmd = cmd + " -af " + af
+    cmd = cmd + " -c:a aac -b:a 256k"
+    cmd = cmd + " " + tmp_out
+
+    yo result = computer.run(cmd)
+
+    sketchy { filez.obliterate(tmp_in) } my_bad (e) { vibe }
+
+    sus (result["status"] != 0) {
+        sketchy { filez.obliterate(tmp_out) } my_bad (e) { vibe }
+        chuck oops("SkillIssue",
+            "ffmpeg failed (exit " + to_yap(result["status"]) + "): " +
+            result["output"])
+    }
+
+    yo out = filez.read_blob(tmp_out)
+    sketchy { filez.obliterate(tmp_out) } my_bad (e) { vibe }
+    bounce out
+}
+
+bet tmp_path(tag, suffix) {
+    yo dir = computer.env("TMPDIR", computer.env("TEMP", "/tmp"))
+    bounce filez.join_path(dir, "disguise_" + tag + suffix)
+}
+
+bet opt(opts, key, fallback) {
+    sus (opts == ghost) { bounce fallback }
+    yo v = opts.get(key, ghost)
+    bounce v == ghost ? fallback : v
+}

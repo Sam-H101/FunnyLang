@@ -79,6 +79,7 @@ typedef SOCKET SockFd;
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <unistd.h>
 typedef int SockFd;
 #define SOCK_INVALID (-1)
@@ -939,6 +940,52 @@ bool platform_stdout_is_tty(void) { return isatty(STDOUT_FILENO) != 0; }
 void platform_console_init(void) { /* UTF-8 and ANSI both already work */ }
 
 #endif
+
+/* -- subprocess (computer.run) -------------------------------------------
+   Runs a shell command via popen, captures stdout, and returns the exit
+   code.  The first real-world caller is suno_grab's disguise module,
+   which shells out to ffmpeg for audio transforms that cannot be done
+   inside the container alone. */
+
+bool platform_run_command(const char *command, char **out_stdout, size_t *out_len,
+                          int *out_exit_code, char *errbuf, size_t errbuf_len) {
+    FILE *pipe;
+#ifdef _WIN32
+    pipe = _popen(command, "r");
+#else
+    pipe = popen(command, "r");
+#endif
+    if (!pipe) {
+        snprintf(errbuf, errbuf_len, "could not start the command");
+        return false;
+    }
+
+    size_t cap = 4096, len = 0;
+    char *buf = (char *)malloc(cap);
+    for (;;) {
+        size_t n = fread(buf + len, 1, cap - len, pipe);
+        if (n == 0) break;
+        len += n;
+        if (len == cap) {
+            cap *= 2;
+            buf = (char *)realloc(buf, cap);
+        }
+    }
+
+    int status;
+#ifdef _WIN32
+    status = _pclose(pipe);
+#else
+    status = pclose(pipe);
+    if (WIFEXITED(status)) status = WEXITSTATUS(status);
+    else status = -1;
+#endif
+
+    *out_stdout = buf;
+    *out_len = len;
+    *out_exit_code = status;
+    return true;
+}
 
 /* -- networking ---------------------------------------------------------
    The socket primitives just below (ensure_winsock/sock_*) are the only

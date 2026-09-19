@@ -183,6 +183,42 @@ static Value m_blue_screen(VM *vm, Value *a, int argc) {
     return GHOST_VAL;
 }
 
+static Value m_run(VM *vm, Value *a, int argc) {
+    (void)argc;
+    if (!IS_STRING(a[0])) {
+        vm_throw_native(vm, "TypeVibeMismatch",
+                        "'run' needs a yapstring command, not a %s.",
+                        vm_type_name(a[0]));
+        return GHOST_VAL;
+    }
+
+    char *stdout_data;
+    size_t stdout_len;
+    int exit_code;
+    char errbuf[256];
+
+    if (!platform_run_command(AS_STRING(a[0])->chars, &stdout_data, &stdout_len,
+                              &exit_code, errbuf, sizeof(errbuf))) {
+        vm_throw_native(vm, "SkillIssue", "%s", errbuf);
+        return GHOST_VAL;
+    }
+
+    ObjGroupChat *result = groupchat_new(&vm->gc, NULL, 0);
+    gc_push_temp(&vm->gc, OBJ_VAL(result));
+
+    ObjString *status_key = string_new(&vm->gc, "status", 6);
+    groupchat_set(&vm->gc, result, OBJ_VAL(status_key), INT_VAL(exit_code));
+
+    ObjString *output_key = string_new(&vm->gc, "output", 6);
+    ObjString *output_val = string_new(&vm->gc, stdout_data,
+                                       (uint32_t)(stdout_len > UINT32_MAX ? UINT32_MAX : stdout_len));
+    groupchat_set(&vm->gc, result, OBJ_VAL(output_key), OBJ_VAL(output_val));
+
+    free(stdout_data);
+    gc_pop_temp(&vm->gc);
+    return OBJ_VAL(result);
+}
+
 typedef struct {
     const char *name;
     NativeMethodFn fn;
@@ -226,6 +262,7 @@ static const ComputerEntry COMPUTER_FUNCTIONS[] = {
     {"uptime", m_uptime, 0, 0},
     {"blue_screen", m_blue_screen, 0, 0},
     {"until_ctrl_c", m_until_ctrl_c, 0, 0},
+    {"run", m_run, 1, 1},
 };
 #define COMPUTER_FUNCTIONS_COUNT (int)(sizeof(COMPUTER_FUNCTIONS) / sizeof(COMPUTER_FUNCTIONS[0]))
 

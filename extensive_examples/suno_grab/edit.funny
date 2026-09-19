@@ -258,6 +258,76 @@ flex bet trim(mp4, from_sec, to_sec) {
     bounce head + mdat + new_moov
 }
 
+// Drop every Nth frame throughout the song. Each dropped frame is ~23 ms
+// of audio — imperceptible on its own — but it shifts every subsequent
+// analysis window by that much, so a fingerprinter that hashes over time
+// windows sees different content at every position after the first drop.
+// Twelve drops spread through a three-minute song move the tail frames by
+// ~280 ms, which is more than a typical fingerprint window.
+flex bet drop_every(mp4, n) {
+    yo audio = ghost
+    grind t in remux.tracks_in(mp4) {
+        sus (t["handler"] == "soun" && audio == ghost) { audio = t }
+    }
+    sus (audio == ghost) {
+        chuck oops("SkillIssue", "there is no sound track to thin.")
+    }
+    sus (how_thicc(remux.tracks_in(mp4)) > 1) {
+        chuck oops("SkillIssue", "drop the video first — this works on an audio-only file.")
+    }
+
+    yo trak = audio["trak"]
+    yo scale = media_timescale(mp4, trak)
+    sus (scale == ghost || scale == 0) {
+        chuck oops("SkillIssue", "that track does not say what its timescale is.")
+    }
+    yo samples = samples_of(mp4, trak)
+    sus (samples == ghost || how_thicc(samples) == 0) {
+        chuck oops("SkillIssue", "that track has no samples to thin.")
+    }
+    sus (n < 2) {
+        chuck oops("SkillIssue", "n must be at least 2 — cannot drop every frame.")
+    }
+
+    yo kept = []
+    grind i from 0 to how_thicc(samples) {
+        sus ((i + 1) % n != 0) { kept.yeet_in(samples[i]) }
+    }
+    sus (how_thicc(kept) == 0) {
+        chuck oops("SkillIssue", "thinning left no frames — n is too small for this song.")
+    }
+
+    yo bytes = []
+    yo ticks = 0
+    grind s in kept {
+        bytes.yeet_in(mp4[s["at"]:s["at"] + s["size"]])
+        ticks += s["delta"]
+    }
+    yo payload = blob.of([]).join(bytes)
+
+    yo ftyp = ghost
+    yo moov = ghost
+    grind bx in mp4tags.boxes_in(mp4, 0, how_thicc(mp4)) {
+        sus (bx["kind"] == "ftyp" && ftyp == ghost) { ftyp = bx }
+        sus (bx["kind"] == "moov" && moov == ghost) { moov = bx }
+    }
+    yo head = ftyp == ghost ? blob.of([]) : mp4[ftyp["at"]:ftyp["at"] + ftyp["size"]]
+    yo mdat_payload_at = how_thicc(head) + 8
+    yo mdat = mp4tags.box(mp4tags.named("mdat"), payload)
+
+    yo stbl = remux.stbl_of(mp4, trak)
+    yo stsd = mp4tags.child(mp4, stbl, "stsd", cap)
+    yo new_stbl = mp4tags.box(mp4tags.named("stbl"),
+        (stsd == ghost ? blob.of([]) : mp4[stsd["at"]:stsd["at"] + stsd["size"]]) +
+        stts_for(kept) + stsz_for(kept) + stsc_one_chunk(how_thicc(kept)) +
+        stco_for(mdat_payload_at))
+
+    yo movie_scale_val = movie_timescale(mp4, moov)
+    yo track_ticks = movie_scale_val == ghost ? ghost : (ticks * movie_scale_val) \ scale
+    yo new_moov = rebuilt_moov(mp4, moov, trak, new_stbl, ticks, track_ticks)
+    bounce head + mdat + new_moov
+}
+
 bet movie_timescale(mp4, moov) {
     yo mvhd = mp4tags.child(mp4, moov, "mvhd", cap)
     sus (mvhd == ghost) { bounce ghost }

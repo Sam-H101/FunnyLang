@@ -14,7 +14,7 @@ const els = {
     title: $("title"), by: $("by"), style: $("style"),
     via: $("via"), length: $("length"), model: $("model"),
     format: $("format"), grab: $("grab"), note: $("note"),
-    from: $("from"), to: $("to"), cuthint: $("cuthint"),
+    from: $("from"), to: $("to"), cuthint: $("cuthint"), disguise: $("disguise"),
     work: $("work"), fill: $("fill"), progress: $("progress"),
     save: $("save"), warning: $("warning"),
 };
@@ -229,6 +229,7 @@ els.grab.addEventListener("click", async () => {
         const to = asSeconds(els.to.value);
         if (from !== null) ask.trim_from = from;
         if (to !== null) ask.trim_to = to;
+        if (els.disguise.checked) ask.disguise = true;
         const { job } = await post("/api/grab", ask);
         watch(job);
     } catch (e) {

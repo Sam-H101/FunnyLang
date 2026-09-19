@@ -119,11 +119,11 @@ bet number_or_ghost(v) {
     bounce v
 }
 
-bet start_job(url, want, cut_from, cut_to) {
+bet start_job(url, want, cut_from, cut_to, do_disguise) {
     yo id = NEXT_JOB
     NEXT_JOB += 1
     JOBS[id] = {"job": id, "url": url, "format": want, "state": "waiting",
-                "trim_from": cut_from, "trim_to": cut_to,
+                "trim_from": cut_from, "trim_to": cut_to, "disguise": do_disguise,
                 "done": 0, "total": ghost, "started": clock.now(),
                 "title": ghost, "path": ghost, "name": ghost, "bytes": ghost,
                 "error": ghost, "warning": ghost, "kind": want}
@@ -151,6 +151,7 @@ bet pump_queue() {
     yo order = {"url": job["url"], "format": job["format"]}
     sus (job["trim_from"] != ghost) { order["trim_from"] = job["trim_from"] }
     sus (job["trim_to"] != ghost) { order["trim_to"] = job["trim_to"] }
+    sus (job["disguise"]) { order["disguise"] = fax }
     interns.dm(CREW, order)
 }
 
@@ -275,7 +276,8 @@ bet route(req) {
         sus (cut_from != ghost && cut_to != ghost && cut_to <= cut_from) {
             bounce refuse(400, "the end of the cut has to be after its start")
         }
-        bounce json_response(200, json.spill({"job": start_job(doc["url"], want, cut_from, cut_to)}))
+        yo do_disguise = doc.get("disguise", cap) == fax
+        bounce json_response(200, json.spill({"job": start_job(doc["url"], want, cut_from, cut_to, do_disguise)}))
     }
 
     sus (method == "GET" && path == "/api/status") {
