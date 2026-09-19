@@ -21,6 +21,32 @@ wrote     ./<the song's title>.mp4  (15,693,534 B, MP4 ilst, via api)
 [why there is no mp3](#why-there-is-no-mp3) — it is the most interesting thing this example found
 out, and it is the reason the example is shaped the way it is.
 
+## Or as a page
+
+```console
+$ funny run extensive_examples/suno_grab/serve.funny
+suno_grab at https://localhost:8443 — ctrl-c to stop
+(a test certificate, so your browser will warn about the issuer -- that is correct)
+
+$ funny run extensive_examples/suno_grab/serve.funny -- 8099 --no-tls    # no warning, loopback only
+```
+
+Paste a link, and the page shows the cover, the title, the creator and how long it is, then offers
+the renditions that exist — marking the encrypted `m4a` as one that will not play. Pick one, watch
+a real progress bar, and save the tagged file.
+
+**One thread for the server and an intern for the download.** This is the one example here that
+needs both shapes at once, and for opposite reasons. The server is an event loop, like
+`battleship/serve.funny`, because a page asking "how far along is it?" four times a second must
+not queue behind anything. But `fetch.funny` *blocks* by design — a client has one conversation
+and nothing else to get on with — so running the download on that thread would freeze the loop for
+the whole six megabytes and the progress bar would only move once it was already finished. So the
+download is hired out to the same `worker.funny` the CLI's pool uses, and it reports back by `dm`;
+a `pump_workers` task does nothing but drain that mailbox.
+
+The page loads nothing from anywhere: the cover art comes down inline as a `data:` URL rather than
+through a proxy route, and the policy is `default-src 'self'; img-src 'self' data:`.
+
 ```console
 $ funny run extensive_examples/suno_grab/grab.funny -- <url> <url> --workers 3 --out ./songs
 $ funny run extensive_examples/suno_grab/grab.funny -- --from-file links.txt --manifest run.json
@@ -47,6 +73,9 @@ did not — so a script can tell "the network is down" from "one of these forty 
 | `namer.funny` | a title → a filename that survives being copied to another computer |
 | `pipeline.funny` | resolve, fetch, tag, name: the one place the steps exist |
 | `grab.funny` | the command line |
+| `serve.funny` | the page's server: six routes, an event loop, and a download hired out |
+| `web/` | the page — paste a link, pick a rendition, watch it arrive. No framework |
+| `http.funny`, `static.funny` | request parsing and the `web/` path guard, copied from `battleship/` |
 | `worker.funny` | one intern, for `--workers` |
 | `tag.funny` | read the tags back out of a file |
 | `measure.funny` | how long each step takes, against the fixture |

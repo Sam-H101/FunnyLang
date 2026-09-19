@@ -686,6 +686,20 @@ flex bet get_to_file(url, path, opts) {
     // on are real bytes from the same file. So the partial file is thrown away
     // here, before the first chunk of the new body arrives.
     run_opts["on_head"] = lowkey (head) {
+        // How big the whole thing is, so a progress bar has a denominator. A
+        // 206 says it in `Content-Range` (`bytes 100-999/1000`, and the total
+        // is past the slash); a 200 says it in `Content-Length`. Without this
+        // a caller can only ever report bytes-so-far.
+        yo range = head["headers"].get("content-range", ghost)
+        sus (range != ghost) {
+            yo slash = yapper.index_of(range, "/")
+            sus (slash >= 0) {
+                state["total"] = length_of(yapper.slice(range, slash + 1, how_thicc(range)))
+            }
+        } nah {
+            yo declared = length_of(head["headers"].get("content-length", ""))
+            sus (declared != ghost) { state["total"] = declared + state["written"] }
+        }
         sus (state["resumed"] && head["status"] == 200) {
             obliterate_quietly(part_path)
             write_empty(part_path)

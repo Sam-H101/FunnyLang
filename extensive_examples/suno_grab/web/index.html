@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>suno_grab</title>
+<link rel="stylesheet" href="/style.css"/>
+</head>
+<body>
+
+<main>
+  <header>
+    <h1>suno_grab</h1>
+    <p class="sub">Paste a Suno share link. FunnyLang does the rest.</p>
+  </header>
+
+  <form id="find" autocomplete="off">
+    <input id="url" type="text" name="url" spellcheck="false"
+           placeholder="https://suno.com/s/… or https://suno.com/song/…"
+           aria-label="Suno share link"/>
+    <button id="look" type="submit">Look it up</button>
+  </form>
+
+  <p id="problem" class="problem" hidden></p>
+
+  <section id="song" class="song" hidden>
+    <img id="cover" class="cover" alt="" hidden/>
+    <div class="about">
+      <h2 id="title"></h2>
+      <p id="by" class="by"></p>
+      <p id="style" class="style"></p>
+      <dl class="facts">
+        <div><dt>found via</dt><dd id="via"></dd></div>
+        <div><dt>length</dt><dd id="length"></dd></div>
+        <div><dt>model</dt><dd id="model"></dd></div>
+      </dl>
+
+      <div class="choose">
+        <label for="format">format</label>
+        <select id="format" name="format"></select>
+        <button id="grab" type="button">Download</button>
+      </div>
+      <p id="note" class="note"></p>
+    </div>
+  </section>
+
+  <section id="work" class="work" hidden>
+    <div class="bar"><div id="fill" class="fill"></div></div>
+    <p id="progress" class="progress">starting…</p>
+    <a id="save" class="save" hidden>Save the file</a>
+    <p id="warning" class="warning" hidden></p>
+  </section>
+
+  <section class="told">
+    <h3>What this does, and does not</h3>
+    <ul>
+      <li>It downloads songs their owners <strong>chose to share publicly</strong>, using the URL
+        the song's own public API advertises. It does not sign in and it carries no key.</li>
+      <li><strong>There is no mp3.</strong> Suno serves the mp3 only to a signed-in owner, and the
+        <code>m4a</code> it advertises publicly is encrypted. The <code>mp4</code> is the one
+        rendition that plays, so it is the default.</li>
+      <li>The song belongs to whoever made it. This saves a copy of a file that is already being
+        served; what you do with it is between you, them, and Suno's terms.</li>
+      <li>Nothing here decrypts anything, and there is no code in it that tries.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>an <code>extensive_examples/</code> program — the server, the HTTP client, the MP4 tagger
+       and this page's backend are all FunnyLang</p>
+  </footer>
+</main>
+
+<script src="/js/grab.js"></script>
+</body>
+</html>

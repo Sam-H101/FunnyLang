@@ -1,0 +1,471 @@
+// serve.funny — the same downloader, as a page you paste a link into.
+//
+//     funny run extensive_examples/suno_grab/serve.funny
+//     funny run extensive_examples/suno_grab/serve.funny -- 8080 --no-tls
+//
+//   PORT              the port (default 8443; 0 picks a free one)
+//   --host H          where to listen (default 127.0.0.1 -- loopback only)
+//   --seconds N       stop after N seconds
+//   --no-tls          plain HTTP
+//   --pfx FILE        a real server identity instead of the test one
+//   --keep DIR        where finished files are kept (default: a temp directory)
+//
+// ONE THREAD FOR THE SERVER, AND AN INTERN PER DOWNLOAD. This is the one
+// example in the tree where both shapes are needed at once and for opposite
+// reasons. The server is an event loop, exactly as `battleship/serve.funny` is,
+// because a page asking "how far along is it?" four times a second must not
+// queue behind anything. But `fetch.funny` blocks by design -- a client has one
+// conversation and nothing else to get on with -- so a download run on this
+// thread would freeze the loop for the entire six megabytes, and the progress
+// bar would be a lie that only moved when it finished.
+//
+// So a download is hired out to `worker.funny`, the same worker `grab.funny`'s
+// pool uses, and it reports back by `dm`. `pump_workers` is a task that does
+// nothing but drain that mailbox into `JOBS`. The page polls, the loop stays
+// free, and the progress bar is real.
+//
+// Six routes:
+//
+//   GET  /                     the page
+//   POST /api/resolve          {"url"} -> the song, and its cover inline
+//   POST /api/grab             {"url","format"} -> {"job": n}
+//   GET  /api/status?job=n     how far along, or what went wrong
+//   GET  /api/file?job=n       the finished file, as a download
+//   GET  /api/jobs             everything this server has fetched
+
+gimme internet
+gimme clock
+gimme yapper
+gimme json
+gimme filez
+gimme computer
+gimme interns
+gimme blob
+
+gimme { get } from "fetch.funny"
+gimme "suno.funny"
+gimme "namer.funny"
+gimme { read_request, build_response, json_response, STATUS_TEXT,
+        SECURITY_HEADERS } from "http.funny"
+gimme { static_target, read_static } from "static.funny"
+
+flex deadass DEFAULT_PORT = 8443
+flex deadass READ_TIMEOUT_MS = 10000
+flex deadass HANDSHAKE_MS = 10000
+deadass PFX_PASSWORD = "funnylang"
+
+yo WEB_DIR = ghost
+yo KEEP_DIR = ghost
+yo STOPPING = cap
+yo SERVED = 0
+
+// Every download this server has been asked for, by number. A job is a
+// groupchat rather than a squad because it crosses nothing and is read by
+// `json.spill` as it stands.
+yo JOBS = {}
+yo NEXT_JOB = 1
+// The intern currently working, if any, and the job it is working on. One at a
+// time on purpose: this is a page one person has open, and two downloads at
+// once would fight over the same stranger's server for no gain.
+yo CREW = ghost
+yo BUSY = ghost
+yo QUEUE = []
+
+// -- resolving, for the page ------------------------------------------------------------------
+
+// The cover comes back inline as a data: URL. The alternative is a proxy route
+// and a wider CSP, and this page's whole security posture is "it loads nothing
+// from anywhere". 85 KB of JPEG is 113 KB of base64, once per song.
+bet resolve_for_page(url) {
+    yo record = suno.resolve(url, ghost)
+    yo out = {"id": record["id"], "title": record["title"], "artist": record["artist"],
+              "handle": record["handle"], "tags": record["tags"], "created": record["created"],
+              "model": record["model"], "duration": record["duration"],
+              "via": record["via"], "id_via": record["id_via"],
+              "source_url": record["source_url"], "cover": ghost, "renditions": []}
+    grind r in record["renditions"] {
+        out["renditions"].yeet_in({"kind": r["kind"], "content_type": r["content_type"],
+                                   "plays": r["kind"] != "m4a"})
+    }
+    sus (record["image_url"] != ghost) {
+        sketchy {
+            yo answer = get(record["image_url"], {"timeout_ms": 8000})
+            sus (answer["status"] == 200) {
+                out["cover"] = "data:image/jpeg;base64," + answer["blob"].to_base64()
+            }
+        } my_bad (e) {
+            out["cover"] = ghost
+        }
+    }
+    bounce out
+}
+
+// -- jobs ------------------------------------------------------------------------------------
+
+bet start_job(url, want) {
+    yo id = NEXT_JOB
+    NEXT_JOB += 1
+    JOBS[id] = {"job": id, "url": url, "format": want, "state": "waiting",
+                "done": 0, "total": ghost, "started": clock.now(),
+                "title": ghost, "path": ghost, "name": ghost, "bytes": ghost,
+                "error": ghost, "warning": ghost, "kind": want}
+    QUEUE.yeet_in(id)
+    pump_queue()
+    bounce id
+}
+
+// One at a time. `CREW` is hired once and kept: an intern costs a whole VM and
+// a compile of this example's module graph, and paying that per download would
+// show up as a second of nothing happening before every progress bar moved.
+bet pump_queue() {
+    sus (BUSY != ghost || how_thicc(QUEUE) == 0) { bounce ghost }
+    sus (CREW == ghost) {
+        CREW = interns.hire(filez.join_path(filez.dir_of(the_script()), "worker.funny"),
+                            {"out": KEEP_DIR, "report_progress": fax})
+    }
+    yo id = QUEUE.yoink_at(0)
+    BUSY = id
+    JOBS[id]["state"] = "working"
+    yo job = JOBS[id]
+    // The worker takes one URL per message and the run's options came with its
+    // assignment, so the format has to travel in the URL's place. A groupchat
+    // is a portable value, so it does.
+    interns.dm(CREW, {"url": job["url"], "format": job["format"]})
+}
+
+// Nothing but draining the worker's mailbox into JOBS. A task, not a loop in
+// `main`, so it waits on the event loop like everything else here.
+// Drained with a zero timeout in a tight loop, then a short sleep when the
+// mailbox is empty. A worker sending ten progress reports a second fills that
+// mailbox faster than one-message-per-wait can empty it, and the bar then only
+// moves when the download has already finished -- which is not a progress bar,
+// it is an animation of a completed fact.
+async_ngl bet pump_workers() {
+    bruh (!STOPPING) {
+        yo note = ghost
+        sketchy {
+            note = await_fr interns.check_dms(0)
+        } my_bad (e) {
+            note = ghost
+        }
+        sus (note == ghost) {
+            await_fr clock.chill(40)
+            nvm
+        }
+        yo msg = note["msg"]
+        sus (BUSY == ghost) { nvm }
+        yo job = JOBS[BUSY]
+        sus (what_is_it(msg) == "groupchat" && msg.has("progress")) {
+            job["done"] = msg["progress"]
+            job["total"] = msg["total"]
+            nvm
+        }
+        // Anything else is the outcome, and the job is over either way.
+        sus (what_is_it(msg) == "groupchat" && msg.get("ok", cap)) {
+            job["state"] = "done"
+            job["path"] = msg["path"]
+            job["name"] = filez.base_of(msg["path"])
+            job["bytes"] = msg.get("final_bytes", msg.get("bytes", 0))
+            job["title"] = msg.get("title", ghost)
+            job["kind"] = msg.get("kind", job["format"])
+            job["tagged"] = msg.get("tagged", "none")
+            job["via"] = msg.get("via", ghost)
+            sus (msg.has("warning")) { job["warning"] = msg["warning"] }
+        } nah {
+            job["state"] = "failed"
+            sus (what_is_it(msg) == "groupchat") {
+                job["error"] = msg.get("error", "it did not say why")
+            } nah {
+                job["error"] = to_yap(msg)
+            }
+        }
+        BUSY = ghost
+        pump_queue()
+    }
+}
+
+// -- routes ------------------------------------------------------------------------------------
+
+bet refuse(status, why) {
+    bounce json_response(status, json.spill({"error": why}))
+}
+
+bet body_json(req) {
+    sketchy {
+        yo doc = json.parse(req["body"])
+        sus (what_is_it(doc) != "groupchat") { bounce ghost }
+        bounce doc
+    } my_bad (e) {
+        bounce ghost
+    }
+}
+
+// `read_request` hands back the query already split off the path, so this
+// parses `req["query"]` and never goes looking for a `?` that is not there.
+bet query_of(query) {
+    yo out = {}
+    sus (query == ghost || query == "") { bounce out }
+    grind pair in yapper.split(query, "&") {
+        yo eq = yapper.index_of(pair, "=")
+        sus (eq > 0) {
+            out[yapper.slice(pair, 0, eq)] = yapper.slice(pair, eq + 1, how_thicc(pair))
+        }
+    }
+    bounce out
+}
+
+bet job_of(req) {
+    yo q = query_of(req.get("query", ""))
+    sus (!q.has("job") || !yapper.is_numba(q["job"])) { bounce ghost }
+    yo id = q["job"].to_numba()
+    bounce JOBS.has(id) ? JOBS[id] : ghost
+}
+
+bet route(req) {
+    yo path = req["path"]
+    yo method = req["method"]
+
+    sus (method == "POST" && path == "/api/resolve") {
+        yo doc = body_json(req)
+        sus (doc == ghost || !doc.has("url")) { bounce refuse(400, "send {\"url\": \"...\"}") }
+        sketchy {
+            bounce json_response(200, json.spill(resolve_for_page(doc["url"])))
+        } my_bad (e) {
+            bounce refuse(502, e.message)
+        }
+    }
+
+    sus (method == "POST" && path == "/api/grab") {
+        yo doc = body_json(req)
+        sus (doc == ghost || !doc.has("url")) { bounce refuse(400, "send {\"url\": \"...\"}") }
+        yo want = doc.get("format", "mp4")
+        sus (!["mp4", "m4a", "mp3", "best"].contains(want)) {
+            bounce refuse(400, "format is mp4, m4a, mp3 or best -- not " + to_yap(want))
+        }
+        bounce json_response(200, json.spill({"job": start_job(doc["url"], want)}))
+    }
+
+    sus (method == "GET" && path == "/api/status") {
+        yo job = job_of(req)
+        sus (job == ghost) { bounce refuse(404, "no such job") }
+        bounce json_response(200, json.spill(job_view(job)))
+    }
+
+    sus (method == "GET" && path == "/api/jobs") {
+        yo rows = []
+        grind id in JOBS.keys() { rows.yeet_in(job_view(JOBS[id])) }
+        bounce json_response(200, json.spill({"jobs": rows}))
+    }
+
+    // The finished file, as a download. The filename is re-sanitised on the
+    // way out even though `namer.funny` already made it: this header is parsed
+    // by the browser, and a quote or a newline in it is a header injection.
+    sus (method == "GET" && path == "/api/file") {
+        yo job = job_of(req)
+        sus (job == ghost) { bounce refuse(404, "no such job") }
+        sus (job["state"] != "done") { bounce refuse(409, "that one is " + job["state"]) }
+        sus (!filez.is_file(job["path"])) { bounce refuse(410, "that file is not here any more") }
+        yo bytes = filez.read_blob(job["path"])
+        yo safe = namer.safe_name(yapper.replace(job["name"], "\"", "'"), "song")
+        yo headers = {"Content-Type": content_type_for(job["kind"]),
+                      "Content-Disposition": "attachment; filename=\"" + safe + "\"",
+                      "Cache-Control": "no-store"}
+        headers.merge(SECURITY_HEADERS)
+        bounce build_response(200, bytes, headers, req["method"] == "HEAD")
+    }
+
+    sus (method == "GET" || method == "HEAD") {
+        // `static_target` decides whether a path names a file under `web/` at
+        // all -- it is the path guard, not a convenience -- and `read_static`
+        // hands back the body, with the content type on the target.
+        yo target = static_target(WEB_DIR, path == "/" ? "/index.html" : path)
+        sus (target != ghost) {
+            yo body = read_static(target)
+            sus (body != ghost) {
+                yo headers = {"Content-Type": target["type"], "Cache-Control": "no-store"}
+                headers.merge(SECURITY_HEADERS)
+                // The cover arrives inline as a `data:` URL, and the inherited
+                // policy is `default-src 'self'`, which forbids exactly that.
+                // Widened for images only: everything else still loads from
+                // this server or not at all.
+                headers["Content-Security-Policy"] =
+                    "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; " +
+                    "base-uri 'none'; object-src 'none'"
+                bounce build_response(200, body, headers, method == "HEAD")
+            }
+        }
+        bounce refuse(404, "no such page")
+    }
+
+    bounce refuse(405, "not a method this serves")
+}
+
+bet job_view(job) {
+    yo out = {}
+    grind key in ["job", "url", "format", "state", "done", "total", "title", "name",
+                  "bytes", "error", "warning", "kind", "tagged", "via"] {
+        sus (job.has(key)) { out[key] = job[key] }
+    }
+    out["seconds"] = (clock.now() - job["started"]).round(1)
+    bounce out
+}
+
+bet content_type_for(kind) {
+    sus (kind == "mp3") { bounce "audio/mpeg" }
+    sus (kind == "m4a") { bounce "audio/mp4" }
+    bounce "video/mp4"
+}
+
+// -- the connection, exactly as the other servers here do it ---------------------------------
+
+async_ngl bet finish_handshake(conn) {
+    yo deadline = clock.now() + HANDSHAKE_MS / 1000.0
+    bruh (!internet.handshake(conn)) {
+        yo left = to_int((deadline - clock.now()) * 1000.0)
+        sus (left <= 0) { bounce cap }
+        sus (!await_fr internet.hold_up(conn, left)) { bounce cap }
+    }
+    bounce fax
+}
+
+async_ngl bet read_more(conn, ms) {
+    sus (!await_fr internet.hold_up(conn, ms)) { bounce ghost }
+    bounce internet.hear_them_out(conn, 65536, 0)
+}
+
+async_ngl bet handle(customer) {
+    yo conn = customer["conn"]
+    sketchy {
+        sus (!await_fr finish_handshake(conn)) {
+            internet.kick_out(conn)
+            bounce ghost
+        }
+        yo req = await_fr read_request(lowkey (ms) => read_more(conn, ms))
+        sus (!req["ok"]) {
+            sus (req["status"] != ghost) {
+                internet.holler_back(conn,
+                    build_response(req["status"], STATUS_TEXT.get(req["status"], "no") + "\n",
+                                   {"Content-Type": "text/plain; charset=utf-8"}))
+            }
+        } nah {
+            SERVED += 1
+            yo answer = ghost
+            sketchy {
+                answer = route(req)
+            } my_bad (e) {
+                yell("500 on " + req["method"] + " " + req["path"] + ": " + e.flavor + ": " + e.message)
+                answer = refuse(500, e.flavor + ": " + e.message)
+            }
+            internet.holler_back(conn, answer)
+        }
+    } my_bad (e) {
+        vibe
+    }
+    internet.kick_out(conn)
+}
+
+async_ngl bet watch_for_ctrl_c() {
+    sketchy {
+        await_fr computer.until_ctrl_c()
+        yell("")
+        yell("ctrl-c — closing up.")
+        STOPPING = fax
+    } my_bad (e) {
+        vibe
+    }
+}
+
+bet usage() {
+    yell("usage: serve.funny [PORT] [--host H] [--seconds N] [--no-tls] [--pfx FILE]")
+    yell("                   [--keep DIR]")
+}
+
+bet to_int(x) { bounce x.floor() }
+
+bet main(raw) {
+    yo args = []
+    grind a in raw {
+        sus (a != "--") { args.yeet_in(a) }
+    }
+
+    yo port = DEFAULT_PORT
+    yo host = "127.0.0.1"
+    yo seconds = ghost
+    yo no_tls = cap
+    yo pfx = ghost
+
+    yo i = 0
+    bruh (i < how_thicc(args)) {
+        yo a = args[i]
+        yo next = i + 1 < how_thicc(args) ? args[i + 1] : ghost
+        sus (a == "-h" || a == "--help") { usage(); bounce 0 }
+        kinda_sus (a == "--host" && next != ghost) { host = next; i += 2 }
+        kinda_sus (a == "--seconds" && next != ghost) { seconds = next.to_numba(); i += 2 }
+        kinda_sus (a == "--pfx" && next != ghost) { pfx = next; i += 2 }
+        kinda_sus (a == "--keep" && next != ghost) { KEEP_DIR = next; i += 2 }
+        kinda_sus (a == "--no-tls") { no_tls = fax; i += 1 }
+        kinda_sus (yapper.is_numba(a)) { port = a.to_numba(); i += 1 }
+        nah {
+            yell("no such option: " + a)
+            usage()
+            bounce 1
+        }
+    }
+
+    WEB_DIR = filez.join_path(filez.dir_of(the_script()), "web")
+    sus (KEEP_DIR == ghost) {
+        KEEP_DIR = filez.temp_file("sunograb") + "_downloads"
+    }
+    sus (!filez.is_dir(KEEP_DIR)) { filez.mkdir(KEEP_DIR) }
+
+    sus (pfx == ghost && !no_tls) {
+        yo beside = filez.join_path(filez.dir_of(the_script()), "certs/site.p12")
+        sus (filez.is_file(beside)) { pfx = beside }
+    }
+
+    yo listener = ghost
+    yo secure = pfx != ghost && !no_tls
+    sketchy {
+        sus (secure) {
+            listener = internet.open_secure_shop(port, host, {"pfx": pfx, "password": PFX_PASSWORD})
+        } nah {
+            listener = internet.open_shop(port, host)
+        }
+    } my_bad (e) {
+        yell("couldn't start: " + e.message)
+        bounce 1
+    }
+    yo bound = internet.shop_port(listener)
+    yo scheme = secure ? "https" : "http"
+    yell("suno_grab at " + scheme + "://" +
+         (host == "0.0.0.0" ? "<this machine>" : "localhost") + ":" + to_yap(bound) +
+         " — ctrl-c to stop")
+    sus (secure) {
+        yell("(a test certificate, so your browser will warn about the issuer -- that is correct)")
+    } nah {
+        yell("(plain http: fine on loopback, and not on a network)")
+    }
+    yell("paste a suno share link into the page. files are kept in " + KEEP_DIR)
+
+    watch_for_ctrl_c()
+    pump_workers()
+
+    yo deadline = seconds == ghost ? ghost : clock.now() + seconds
+    bruh (!STOPPING) {
+        sus (deadline != ghost && clock.now() >= deadline) { bail }
+        sus (!await_fr internet.hold_up(listener, 250)) { nvm }
+        yo customer = internet.next_customer(listener, 0)
+        sus (customer == ghost) { nvm }
+        handle(customer)
+    }
+
+    internet.close_shop(listener)
+    sus (CREW != ghost) {
+        interns.dm(CREW, "stop")
+        sketchy { interns.wait_up(CREW) } my_bad (e) { vibe }
+    }
+    yell("served " + to_yap(SERVED) + " requests. closing up.")
+    bounce 0
+}
+
+dip(main(the_args()))

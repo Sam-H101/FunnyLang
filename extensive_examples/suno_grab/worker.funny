@@ -20,11 +20,32 @@ gimme { grab_one } from "pipeline.funny"
 
 yo opts = interns.assignment()
 
+// A function cannot cross between VMs, so a progress callback cannot be handed
+// in -- it has to be built here, on this side. `serve.funny` asks for one so
+// its page can draw a real progress bar; `grab.funny`'s pool does not, and so
+// still receives exactly one message per song and nothing else.
+sus (opts != ghost && opts.get("report_progress", cap)) {
+    opts["on_progress"] = lowkey (done, total) {
+        interns.dm("boss", {"progress": done, "total": total})
+    }
+}
+
 bruh (fax) {
     yo note = interns.wait_up(interns.check_dms(120000))
     sus (note == ghost) { bail }
     yo msg = note["msg"]
     sus (msg == "stop") { bail }
+    // A bare URL from `grab.funny`'s pool, or `{url, format}` from
+    // `serve.funny`, where the person chose the format in the page after the
+    // worker was already hired.
+    sus (what_is_it(msg) == "groupchat") {
+        yo run = opts == ghost ? {} : opts.clone()
+        grind key in msg.keys() {
+            sus (key != "url") { run[key] = msg[key] }
+        }
+        interns.dm("boss", grab_one(msg["url"], run))
+        nvm
+    }
     interns.dm("boss", grab_one(msg, opts))
 }
 
