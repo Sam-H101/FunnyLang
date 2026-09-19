@@ -19,6 +19,7 @@ gimme "suno.funny"
 gimme "id3.funny"
 gimme "mp4tags.funny"
 gimme "remux.funny"
+gimme "edit.funny"
 gimme "namer.funny"
 
 bet opt(opts, key, fallback) {
@@ -107,6 +108,31 @@ bet run(url, opts) {
         }
     }
 
+    // A cut, if one was asked for. It has to happen after the video is out --
+    // `edit.trim` refuses a file with two tracks, because cutting one track of
+    // a pair leaves the other describing a song that is no longer that length
+    // -- so asking for a cut implies dropping the video, and says so rather
+    // than quietly doing half of it.
+    yo trimmed = ghost
+    yo cut_from = opt(opts, "trim_from", ghost)
+    yo cut_to = opt(opts, "trim_to", ghost)
+    sus (cut_from != ghost || cut_to != ghost) {
+        yo before_cut = filez.read_blob(path)
+        sketchy {
+            sus (how_thicc(remux.tracks_in(before_cut)) > 1) {
+                before_cut = remux.audio_only(before_cut)
+            }
+            yo shorter = edit.trim(before_cut, cut_from, cut_to)
+            filez.write_blob_atomic(path, shorter)
+            trimmed = {"from": cut_from, "to": cut_to,
+                       "seconds": edit.duration_of(shorter)}
+            note(say, "  cut", to_yap(trimmed["seconds"].round(2)) + " s kept, " +
+                 to_yap(how_thicc(shorter)) + " bytes")
+        } my_bad (e) {
+            note(say, "  cut", "could not cut it (" + e.message + ") -- keeping the whole song")
+        }
+    }
+
     // The cover is a nice-to-have: a song that arrived without its artwork is
     // still the song, so a failure here is a note rather than the end of the
     // run.
@@ -172,6 +198,10 @@ bet run(url, opts) {
     sus (warning != ghost) { outcome["warning"] = warning }
     sus (remuxed != ghost) {
         outcome["remuxed"] = remuxed
+        outcome["kind"] = "m4a"
+    }
+    sus (trimmed != ghost) {
+        outcome["trimmed"] = trimmed
         outcome["kind"] = "m4a"
     }
     bounce outcome

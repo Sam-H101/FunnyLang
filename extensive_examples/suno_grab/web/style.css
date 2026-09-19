@@ -152,6 +152,19 @@ select {
 
 .note { margin: 10px 0 0; font-size: 13.5px; color: var(--muted); }
 
+.trim { margin-top: 10px; }
+.trim input {
+    width: 5.5em;
+    padding: 7px 9px;
+    font: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+.hint { font-size: 13px; color: var(--muted); }
+
 /* -- the download ------------------------------------------------------ */
 
 .work {

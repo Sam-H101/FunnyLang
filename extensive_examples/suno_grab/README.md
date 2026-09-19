@@ -55,6 +55,7 @@ $ funny run extensive_examples/suno_grab/grab.funny -- --from-file links.txt --m
 $ funny run extensive_examples/suno_grab/grab.funny -- <url> --print-only
 $ funny run extensive_examples/suno_grab/grab.funny -- <url> --name "{artist} - {title}"
 $ funny run extensive_examples/suno_grab/grab.funny -- <url> --format audio  # the song, no video
+$ funny run extensive_examples/suno_grab/grab.funny -- <url> --trim 0:30:1:30  # keep that minute
 $ funny run extensive_examples/suno_grab/grab.funny -- <url> --format mp4    # the video
 $ funny run extensive_examples/suno_grab/tag.funny  -- "./The Hacker Went Down to Prod.m4a"
 $ funny run extensive_examples/suno_grab/measure.funny
@@ -75,6 +76,7 @@ did not — so a script can tell "the network is down" from "one of these forty 
 | `mp4tags.funny` | iTunes-style tags written into an MP4 box tree — what usually runs |
 | `namer.funny` | a title → a filename that survives being copied to another computer |
 | `remux.funny` | the sound track lifted out of the video, without decoding a sample |
+| `edit.funny` | cutting to a range, on frame boundaries, without decoding a sample |
 | `pipeline.funny` | resolve, fetch, tag, name: the one place the steps exist |
 | `grab.funny` | the command line |
 | `serve.funny` | the page's server: six routes, an event loop, and a download hired out |
@@ -84,7 +86,7 @@ did not — so a script can tell "the network is down" from "one of these forty 
 | `tag.funny` | read the tags back out of a file |
 | `measure.funny` | how long each step takes, against the fixture |
 | `fixture.funny`, `fixtures/` | the golden's other end: ten response shapes and a Suno-shaped API |
-| `test_grab.funny`, `.expected` | the golden — eight parts, no internet |
+| `test_grab.funny`, `.expected` | the golden — nine parts, no internet |
 
 ## Why there is no mp3
 
@@ -218,6 +220,42 @@ and the test asserts that the audio samples are byte-identical either side of th
 byte carries an *audio* chunk's stamp rather than a video one, and that every rebuilt offset lands
 on a chunk.
 
+## Cutting it down
+
+`--trim START:END` on the command line, and two boxes on the page. Either side may be left out, and
+times are `m:ss` or plain seconds:
+
+```console
+$ funny run extensive_examples/suno_grab/grab.funny -- <url> --format audio --trim 0:30:1:30
+  cut       60.01 s kept, 1,561,068 bytes
+```
+
+An AAC frame is a self-contained 1024 samples, so a file can be cut at frame boundaries and the
+frames either side are still exactly the frames the encoder produced. **Nothing is re-encoded and
+nothing is approximated** — the cut lands on the frame at or before your start and the one at or
+after your end, and the golden asserts the kept bytes appear unchanged inside the original.
+
+The cost is that almost every table has to be rebuilt rather than patched, because the sample count
+changed: `stts` (how long each sample lasts), `stsz` (how big each one is), `stsc` and `stco` (which
+chunk they are in and where it is), and then `mdhd`, `tkhd` and `mvhd`, which all carry durations. A
+cut that updates the samples and forgets the durations gives you a file that plays the right audio
+and then sits in silence for the rest of the length it still claims.
+
+Cutting needs an audio-only file, so it implies dropping the video; asking for both does them in
+that order.
+
+## What it cannot do to the audio
+
+Gain, fades, pitch, speed, equalisation, normalisation — anything that changes how a sample
+*sounds* — needs the audio as numbers, which means decoding AAC and encoding it again. There is no
+decoder here, and writing one is a real project rather than an afternoon: Huffman codebooks,
+scalefactors, inverse quantisation, TNS, window switching, the stereo tools, and an IMDCT that
+needs an FFT underneath it or a six-minute song takes hours in a bytecode VM.
+
+So the alterations in this example are the exact ones — which samples go, and which container they
+go in. Everything it does to audio is reversible and provable, and the golden proves it by
+comparing bytes rather than by listening.
+
 ## Two taggers, because a container is not a file extension
 
 `id3.funny` writes ID3v2.3: UTF-16 text frames, so an accented title or an emoji survives where
@@ -295,6 +333,8 @@ clock starts.
   something — the mp3 behind a signed URL, the encrypted `m4a` — this program reports that and
   stops. "Suno serves this rendition encrypted" is the end of the sentence, not the start of a
   workaround.
+- **It cannot change how the audio sounds.** No gain, fades, pitch, speed or EQ — those need a
+  decoder, and there isn't one. `--trim` chooses which frames to keep; it does not touch them.
 - **It does not transcode.** No format conversion of any kind, and no codec anywhere in it. The
   audio bytes written are the audio bytes served, plus a tag. `--format audio` is a *remux*: it
   drops the video track and rewrites the tables, and the golden proves not one sample byte

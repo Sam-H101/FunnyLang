@@ -14,6 +14,7 @@ const els = {
     title: $("title"), by: $("by"), style: $("style"),
     via: $("via"), length: $("length"), model: $("model"),
     format: $("format"), grab: $("grab"), note: $("note"),
+    from: $("from"), to: $("to"), cuthint: $("cuthint"),
     work: $("work"), fill: $("fill"), progress: $("progress"),
     save: $("save"), warning: $("warning"),
 };
@@ -103,7 +104,53 @@ function showSong(song) {
     els.grab.disabled = plays.length === 0;
 
     els.song.hidden = false;
+    checkCut();
 }
+
+// "90", "1:30" or "1:02:03" into seconds; null for empty, NaN for nonsense.
+// Kept here as well as on the server because the page can say "that is not a
+// time" without a round trip, and the server still checks for itself.
+function asSeconds(text) {
+    const t = text.trim();
+    if (!t) return null;
+    let total = 0;
+    for (const part of t.split(":")) {
+        if (!/^\d+(\.\d+)?$/.test(part)) return NaN;
+        total = total * 60 + parseFloat(part);
+    }
+    return total;
+}
+
+function clock(seconds) {
+    const whole = Math.round(seconds);
+    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+function checkCut() {
+    const a = asSeconds(els.from.value);
+    const b = asSeconds(els.to.value);
+    if (Number.isNaN(a) || Number.isNaN(b)) {
+        els.cuthint.textContent = "that is not a time — try 1:30, or 90";
+        return false;
+    }
+    if (a !== null && b !== null && b <= a) {
+        els.cuthint.textContent = "the end has to come after the start";
+        return false;
+    }
+    if (a === null && b === null) {
+        els.cuthint.textContent = "optional — m:ss or seconds";
+        return true;
+    }
+    const length = current && current.duration ? current.duration : null;
+    const to = b === null ? length : b;
+    els.cuthint.textContent = to === null
+        ? `keeping from ${clock(a || 0)}`
+        : `keeping ${clock(to - (a || 0))} of the song`;
+    return true;
+}
+
+els.from.addEventListener("input", checkCut);
+els.to.addEventListener("input", checkCut);
 
 function showProgress(job) {
     const known = job.total !== null && job.total !== undefined && job.total > 0;
@@ -121,8 +168,9 @@ function showProgress(job) {
 
 function showDone(job) {
     els.fill.style.width = "100%";
+    const kept = job.seconds_kept ? `, ${clock(job.seconds_kept)} kept` : "";
     els.progress.textContent =
-        `${job.name} — ${bytes(job.bytes)}, tagged ${job.tagged}, in ${job.seconds}s`;
+        `${job.name} — ${bytes(job.bytes)}${kept}, tagged ${job.tagged}, in ${job.seconds}s`;
     els.save.href = `/api/file?job=${job.job}`;
     els.save.setAttribute("download", job.name);
     els.save.hidden = false;
@@ -165,11 +213,23 @@ els.grab.addEventListener("click", async () => {
     els.progress.textContent = "starting…";
     els.work.hidden = false;
 
+    if (!checkCut()) {
+        complain("the range to keep does not make sense");
+        els.grab.disabled = false;
+        els.work.hidden = true;
+        return;
+    }
+
     try {
-        const { job } = await post("/api/grab", {
+        const ask = {
             url: current.source_url || els.url.value.trim(),
             format: els.format.value,
-        });
+        };
+        const from = asSeconds(els.from.value);
+        const to = asSeconds(els.to.value);
+        if (from !== null) ask.trim_from = from;
+        if (to !== null) ask.trim_to = to;
+        const { job } = await post("/api/grab", ask);
         watch(job);
     } catch (e) {
         complain(e.message);

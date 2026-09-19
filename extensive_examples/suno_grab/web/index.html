@@ -40,6 +40,17 @@
         <select id="format" name="format"></select>
         <button id="grab" type="button">Download</button>
       </div>
+
+      <div class="choose trim">
+        <label for="from">keep from</label>
+        <input id="from" type="text" size="6" spellcheck="false" placeholder="0:00"
+               aria-label="start of the range to keep"/>
+        <label for="to">to</label>
+        <input id="to" type="text" size="6" spellcheck="false" placeholder="end"
+               aria-label="end of the range to keep"/>
+        <span id="cuthint" class="hint">optional — <code>m:ss</code> or seconds</span>
+      </div>
+
       <p id="note" class="note"></p>
     </div>
   </section>

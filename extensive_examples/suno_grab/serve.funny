@@ -112,10 +112,18 @@ bet resolve_for_page(url) {
 
 // -- jobs ------------------------------------------------------------------------------------
 
-bet start_job(url, want) {
+bet number_or_ghost(v) {
+    sus (v == ghost) { bounce ghost }
+    sus (what_is_it(v) != "numba") { bounce "bad" }
+    sus (v < 0) { bounce "bad" }
+    bounce v
+}
+
+bet start_job(url, want, cut_from, cut_to) {
     yo id = NEXT_JOB
     NEXT_JOB += 1
     JOBS[id] = {"job": id, "url": url, "format": want, "state": "waiting",
+                "trim_from": cut_from, "trim_to": cut_to,
                 "done": 0, "total": ghost, "started": clock.now(),
                 "title": ghost, "path": ghost, "name": ghost, "bytes": ghost,
                 "error": ghost, "warning": ghost, "kind": want}
@@ -140,7 +148,10 @@ bet pump_queue() {
     // The worker takes one URL per message and the run's options came with its
     // assignment, so the format has to travel in the URL's place. A groupchat
     // is a portable value, so it does.
-    interns.dm(CREW, {"url": job["url"], "format": job["format"]})
+    yo order = {"url": job["url"], "format": job["format"]}
+    sus (job["trim_from"] != ghost) { order["trim_from"] = job["trim_from"] }
+    sus (job["trim_to"] != ghost) { order["trim_to"] = job["trim_to"] }
+    interns.dm(CREW, order)
 }
 
 // Nothing but draining the worker's mailbox into JOBS. A task, not a loop in
@@ -180,6 +191,7 @@ async_ngl bet pump_workers() {
             job["kind"] = msg.get("kind", job["format"])
             job["tagged"] = msg.get("tagged", "none")
             job["via"] = msg.get("via", ghost)
+            sus (msg.has("trimmed")) { job["seconds_kept"] = msg["trimmed"]["seconds"] }
             sus (msg.has("warning")) { job["warning"] = msg["warning"] }
         } nah {
             job["state"] = "failed"
@@ -252,7 +264,18 @@ bet route(req) {
         sus (!["mp4", "audio", "m4a", "mp3", "best"].contains(want)) {
             bounce refuse(400, "format is mp4, m4a, mp3 or best -- not " + to_yap(want))
         }
-        bounce json_response(200, json.spill({"job": start_job(doc["url"], want)}))
+        // Times come from the page as seconds, already parsed there, or as
+        // ghost for "not set". Anything else is refused rather than rounded
+        // into something that silently cuts the wrong part of the song.
+        yo cut_from = number_or_ghost(doc.get("trim_from", ghost))
+        yo cut_to = number_or_ghost(doc.get("trim_to", ghost))
+        sus (cut_from == "bad" || cut_to == "bad") {
+            bounce refuse(400, "trim_from and trim_to have to be numbers of seconds")
+        }
+        sus (cut_from != ghost && cut_to != ghost && cut_to <= cut_from) {
+            bounce refuse(400, "the end of the cut has to be after its start")
+        }
+        bounce json_response(200, json.spill({"job": start_job(doc["url"], want, cut_from, cut_to)}))
     }
 
     sus (method == "GET" && path == "/api/status") {
@@ -313,7 +336,8 @@ bet route(req) {
 bet job_view(job) {
     yo out = {}
     grind key in ["job", "url", "format", "state", "done", "total", "title", "name",
-                  "bytes", "error", "warning", "kind", "tagged", "via"] {
+                  "bytes", "error", "warning", "kind", "tagged", "via", "seconds_kept",
+                  "trim_from", "trim_to"] {
         sus (job.has(key)) { out[key] = job[key] }
     }
     out["seconds"] = (clock.now() - job["started"]).round(1)

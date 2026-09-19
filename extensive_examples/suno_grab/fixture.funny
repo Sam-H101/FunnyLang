@@ -509,6 +509,12 @@ bet moov_with(meta, offsets) {
 // Every byte is stamped with which chunk it came from, so the golden can prove
 // the remux moved the right bytes rather than merely the right number of them.
 
+// A tick is a millisecond here and every sample lasts half a second, so the
+// fixture's four audio chunks of two samples come to four seconds exactly --
+// arithmetic the golden can assert rather than a number somebody measured.
+deadass TIMESCALE = 1000
+deadass SAMPLE_TICKS = 500
+
 deadass AUDIO_SAMPLE = 40
 deadass AUDIO_PER_CHUNK = 2
 deadass AUDIO_CHUNKS = 4
@@ -532,10 +538,18 @@ bet one_trak(handler, codec, offsets, per_chunk, sample_size) {
     yo stsz = box("stsz", be32(0) + be32(sample_size) +
                           be32(how_thicc(offsets) * per_chunk))
     yo stsd = box("stsd", be32(0) + be32(1) + box(codec, zeros(20)))
-    yo stbl = box("stbl", stsd + stsz + stsc + stco)
+    // Every sample lasts the same number of ticks, so stts is one entry --
+    // which is what a real AAC track's looks like too.
+    yo stts = box("stts", be32(0) + be32(1) +
+                          be32(how_thicc(offsets) * per_chunk) + be32(SAMPLE_TICKS))
+    yo stbl = box("stbl", stsd + stts + stsz + stsc + stco)
     yo minf = box("minf", stbl)
     yo hdlr = box("hdlr", be32(0) + be32(0) + blob.from_yap(handler) + zeros(12))
-    yo mdia = box("mdia", hdlr + minf)
+    // mdhd: the media's own timescale and duration. Without it nothing can say
+    // how long a sample lasts in seconds, and a cut has nothing to cut on.
+    yo mdhd = box("mdhd", be32(0) + be32(0) + be32(0) + be32(TIMESCALE) +
+                          be32(how_thicc(offsets) * per_chunk * SAMPLE_TICKS) + be32(0))
+    yo mdia = box("mdia", mdhd + hdlr + minf)
     // tkhd version 0, with a duration this fixture can assert on.
     yo tkhd = box("tkhd", blob.of([0, 0, 0, 7]) + be32(0) + be32(0) + be32(1) + be32(0) +
                           be32(1000) + zeros(60))

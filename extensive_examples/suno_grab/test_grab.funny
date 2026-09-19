@@ -6,7 +6,7 @@
 // serves the *shapes* PLAN.md §10 D1 measured from the real site, with
 // invented content.
 //
-// Eight parts, each able to fail on its own:
+// Nine parts, each able to fail on its own:
 //
 //   1. URLs, with no socket in sight
 //   2. the HTTP client against ten response shapes
@@ -16,6 +16,7 @@
 //   6. filenames that survive being copied to another computer
 //   7. the whole pipeline, one song and then four at once
 //   8. taking the video track back out, without touching a sample
+//   9. cutting to a range, still without touching a sample
 //
 // WHY THE FIXTURE IS THE WORKER AND THE CLIENT IS THE MAIN THREAD. The client
 // blocks on its reads by design (`fetch.funny` says why), so it cannot share a
@@ -37,6 +38,7 @@ gimme "suno.funny"
 gimme "id3.funny"
 gimme "mp4tags.funny"
 gimme "remux.funny"
+gimme "edit.funny"
 gimme "namer.funny"
 
 yo HERE = filez.dir_of(the_script())
@@ -668,6 +670,75 @@ yap "  the file on disk holds one track: " +
     to_yap(how_thicc(remux.tracks_in(filez.read_blob(audio_run["path"]))) == 1)
 yap "  and the same audio as the source: " +
     to_yap(remux.audio_sample_bytes(filez.read_blob(audio_run["path"])) == before_samples)
+
+// -- part nine: cutting, still without a codec --------------------------------------------------
+//
+// The fixture's sound track is eight samples of half a second each, at a
+// timescale of a thousand ticks to the second -- so every number below is
+// arithmetic rather than something measured. A cut keeps whole samples,
+// because a sample is the smallest thing that can be kept without decoding it.
+
+yap "-- cutting --"
+
+yo just_audio = remux.audio_only(two_track)
+yap "  the whole thing: " + to_yap(edit.duration_of(just_audio)) + " s, " +
+    to_yap(how_thicc(remux.audio_sample_bytes(just_audio))) + " bytes of samples"
+
+yo middle = edit.trim(just_audio, 0.5, 2.0)
+yap "  keeping 0.5s to 2.0s: " + to_yap(edit.duration_of(middle)) + " s, " +
+    to_yap(how_thicc(remux.audio_sample_bytes(middle))) + " bytes of samples"
+
+// The kept samples must be a contiguous run of the originals, unaltered --
+// which is what says no codec touched them.
+yo whole_samples = remux.audio_sample_bytes(just_audio)
+yo kept_samples = remux.audio_sample_bytes(middle)
+yap "  and those bytes appear, unchanged, inside the original: " +
+    to_yap(whole_samples.contains(kept_samples))
+no_cap(whole_samples.contains(kept_samples), "the cut altered the audio")
+
+// Each fixture chunk is stamped with its own byte, so which part of the song
+// survived is visible rather than inferred.
+yo stamps = []
+grind b in kept_samples {
+    sus (!stamps.contains(b)) { stamps.yeet_in(b) }
+}
+yap "  the chunks it kept, by stamp: " + to_yap(stamps)
+
+yap "  -- the ends --"
+yo from_only = edit.trim(just_audio, 2.0, ghost)
+yap "  from 2.0s to the end: " + to_yap(edit.duration_of(from_only)) + " s"
+yo to_only = edit.trim(just_audio, ghost, 1.0)
+yap "  from the start to 1.0s: " + to_yap(edit.duration_of(to_only)) + " s"
+yo everything = edit.trim(just_audio, ghost, ghost)
+yap "  no bounds at all keeps it whole: " +
+    to_yap(edit.duration_of(everything) == edit.duration_of(just_audio))
+
+yap "  -- and the ones that must fail --"
+must_fail("  an end before its start", lowkey () => edit.trim(just_audio, 3.0, 1.0))
+must_fail("  a range past the song", lowkey () => edit.trim(just_audio, 90.0, 95.0))
+must_fail("  cutting a file that still has video", lowkey () => edit.trim(two_track, 0.5, 2.0))
+must_fail("  cutting something that is not an MP4", lowkey () => edit.trim(mp3, 0.5, 2.0))
+
+// Still a taggable file afterwards, which is what the pipeline does next.
+yo cut_tagged = mp4tags.write_tags(middle, {"title": "the cut"})
+yap "  still taggable after a cut: " +
+    to_yap(mp4tags.read_tags(cut_tagged)["tags"]["\u{00A9}nam"]) +
+    ", audio still intact: " +
+    to_yap(remux.audio_sample_bytes(cut_tagged) == kept_samples)
+
+yap "  -- through the pipeline --"
+yo cut_dir = filez.join_path(TMP, "cut")
+filez.mkdir(cut_dir)
+yo cut_opts = RUN.clone()
+cut_opts["out"] = cut_dir
+cut_opts["format"] = "audio"
+cut_opts["trim_from"] = 0.5
+cut_opts["trim_to"] = 2.0
+yo cut_run = pipeline.grab_one(BASE + "/song/" + ID, cut_opts)
+yap "  named: " + filez.base_of(cut_run["path"]) + ", kept " +
+    to_yap(cut_run["trimmed"]["seconds"]) + " s, tagged " + cut_run["tagged"]
+yap "  and the file on disk holds the same samples: " +
+    to_yap(remux.audio_sample_bytes(filez.read_blob(cut_run["path"])) == kept_samples)
 
 interns.dm(server, "stop")
 yo tally = interns.wait_up(server)

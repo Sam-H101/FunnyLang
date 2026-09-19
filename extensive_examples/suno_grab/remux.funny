@@ -48,7 +48,7 @@ deadass CONTAINERS = ["moov", "trak", "mdia", "minf", "stbl", "udta", "edts", "d
 // A track's kind is in `mdia/hdlr`: `soun` for audio, `vide` for video, and
 // several others nobody here wants. It is at a fixed place in the box -- four
 // bytes of version and flags, four of pre-defined, then the four that say.
-bet handler_of(mp4, trak) {
+flex bet handler_of(mp4, trak) {
     yo mdia = mp4tags.child(mp4, trak, "mdia", cap)
     sus (mdia == ghost) { bounce ghost }
     yo hdlr = mp4tags.child(mp4, mdia, "hdlr", cap)
@@ -57,7 +57,7 @@ bet handler_of(mp4, trak) {
     bounce mp4[hdlr["payload_at"] + 8:hdlr["payload_at"] + 12].to_yap()
 }
 
-bet stbl_of(mp4, trak) {
+flex bet stbl_of(mp4, trak) {
     yo mdia = mp4tags.child(mp4, trak, "mdia", cap)
     sus (mdia == ghost) { bounce ghost }
     yo minf = mp4tags.child(mp4, mdia, "minf", cap)
@@ -96,7 +96,7 @@ flex bet tracks_in(mp4) {
 
 // `stsz`: a single size for every sample when the first field is non-zero,
 // which is how a constant-bitrate track says so, or one entry per sample.
-bet sample_sizes(mp4, stsz) {
+flex bet sample_sizes(mp4, stsz) {
     yo at = stsz["payload_at"]
     yo uniform = mp4tags.read_be32(mp4, at + 4)
     yo count = mp4tags.read_be32(mp4, at + 8)
@@ -114,7 +114,7 @@ bet sample_sizes(mp4, stsz) {
 // `stsc` is run-length encoded: an entry says "from this chunk onwards, until
 // the next entry says otherwise, there are this many samples per chunk". So it
 // has three entries for a file with three thousand chunks.
-bet stsc_runs(mp4, stsc) {
+flex bet stsc_runs(mp4, stsc) {
     yo at = stsc["payload_at"]
     yo count = mp4tags.read_be32(mp4, at + 4)
     yo out = []
@@ -126,7 +126,7 @@ bet stsc_runs(mp4, stsc) {
     bounce out
 }
 
-bet offsets_in(mp4, co) {
+flex bet offsets_in(mp4, co) {
     yo wide = co["kind"] == "co64"
     yo at = co["payload_at"]
     yo count = mp4tags.read_be32(mp4, at + 4)
@@ -146,7 +146,7 @@ bet offsets_in(mp4, co) {
 // and so on. Chunks are numbered from one in the specification, and keeping
 // that numbering here rather than translating it is what makes the comparison
 // against `first` read correctly.
-bet samples_per_chunk(runs, chunk_count) {
+flex bet samples_per_chunk(runs, chunk_count) {
     yo out = []
     grind c from 1 to chunk_count + 1 {
         yo per = 0

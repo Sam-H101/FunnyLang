@@ -48,6 +48,9 @@ bet usage() {
     yell("  --no-tags           write the file exactly as it arrived")
     yell("  --no-cover          tag it, but do not fetch the artwork")
     yell("  --header \"K: V\"     an extra request header; repeatable")
+    yell("  --trim START:END    keep only that range; seconds or mm:ss, either")
+    yell("                      side may be empty. Cuts on frame boundaries and")
+    yell("                      re-encodes nothing. Implies dropping the video.")
     yell("  --allow-host HOST   another host the audio may come from; repeatable")
     yell("  --quiet             only the final line per song")
     yell("")
@@ -92,6 +95,22 @@ bet main(raw) {
             }
             opts["headers"][yapper.trim(yapper.slice(next, 0, colon))] =
                 yapper.trim(yapper.slice(next, colon + 1, how_thicc(next)))
+            i += 2
+        }
+        kinda_sus (a == "--trim" && next != ghost) {
+            // START:END, either side optional -- "30:60", "30:", ":60". Times
+            // are seconds or mm:ss.
+            yo halves = yapper.split(next, ":")
+            sus (how_thicc(halves) == 2) {
+                opts["trim_from"] = seconds_of(halves[0])
+                opts["trim_to"] = seconds_of(halves[1])
+            } kinda_sus (how_thicc(halves) == 4) {
+                opts["trim_from"] = seconds_of(halves[0] + ":" + halves[1])
+                opts["trim_to"] = seconds_of(halves[2] + ":" + halves[3])
+            } nah {
+                yell("--trim wants START:END, like 30:90 or 0:30 or 1:05:2:30")
+                bounce 1
+            }
             i += 2
         }
         kinda_sus (a == "--allow-host" && next != ghost) { allow.yeet_in(next); i += 2 }
@@ -239,6 +258,7 @@ bet in_parallel(urls, opts, quiet) {
 bet portable(opts) {
     yo out = {}
     grind key in ["out", "format", "name_template", "headers", "resume", "skip_existing",
+                  "trim_from", "trim_to",
                   "no_tags", "no_cover", "api_base", "page_base", "cdn_base", "allow_hosts",
                   "timeout_ms", "retries", "max_redirects", "ca"] {
         sus (opts.has(key)) { out[key] = opts[key] }
@@ -311,6 +331,19 @@ bet comma(n) {
 
 bet round_to(x, places) {
     bounce x.round(places)
+}
+
+// "90", "1:30" or "1:02:03" -- ghost for an empty side of a --trim.
+bet seconds_of(text) {
+    yo t = yapper.trim(text)
+    sus (t == "") { bounce ghost }
+    yo parts = yapper.split(t, ":")
+    yo total = 0.0
+    grind part in parts {
+        sus (!yapper.is_numba(part)) { bounce ghost }
+        total = total * 60.0 + part.to_numba()
+    }
+    bounce total
 }
 
 bet to_int(text) {

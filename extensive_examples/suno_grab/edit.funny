@@ -1,0 +1,340 @@
+// edit.funny — altering the song, without a codec under it.
+//
+// `remux.funny` moves samples between containers. This chooses *which* samples
+// go, which is the other thing you can do to encoded audio honestly: an AAC
+// frame is a self-contained 1024 samples, so a file can be cut at frame
+// boundaries and the frames either side are still exactly the frames the
+// encoder produced.
+//
+// WHAT THIS CANNOT DO, AND WHY. Gain, fades, pitch, speed, equalisation --
+// anything that changes how a sample *sounds* -- needs the audio as numbers,
+// which means decoding AAC and encoding it again. That is a pair of codecs and
+// several thousand lines of signal processing, and it is not here. So the
+// alterations in this module are the ones that are exact: keep this range,
+// drop that one. Nothing is approximated and nothing is re-encoded.
+//
+// THE COST OF CUTTING is that almost every table has to be rebuilt rather than
+// patched, because the sample count changes:
+//
+//   stts   how long each sample lasts -- rebuilt from the kept ones
+//   stsz   how big each sample is    -- rebuilt from the kept ones
+//   stsc   which samples are in which chunk -- rewritten as one chunk
+//   stco   where that chunk is       -- one offset now
+//   mdhd   the media's duration      -- the sum of the kept durations
+//   tkhd   the track's duration      -- the same, in the movie's timescale
+//   mvhd   the movie's duration      -- likewise
+//
+// A cut that updates the samples and forgets the durations produces a file
+// that plays the right audio and then sits in silence for the remainder of the
+// length it still claims, which is the kind of bug nobody notices until it is
+// in a playlist.
+
+gimme blob
+gimme "mp4tags.funny"
+gimme "remux.funny"
+
+// -- reading the time tables ---------------------------------------------------------------
+
+// `stts` is run-length encoded like `stsc`: "this many samples, each lasting
+// this long". For AAC every sample lasts 1024 ticks, so a whole song is
+// usually one entry.
+bet sample_deltas(mp4, stts, expected) {
+    yo at = stts["payload_at"]
+    yo count = mp4tags.read_be32(mp4, at + 4)
+    yo out = []
+    grind i from 0 to count {
+        yo here = at + 8 + i * 8
+        yo runs = mp4tags.read_be32(mp4, here)
+        yo delta = mp4tags.read_be32(mp4, here + 4)
+        grind k from 0 to runs { out.yeet_in(delta) }
+    }
+    // A track whose stts is short is one this does not understand well enough
+    // to cut; the last delta is repeated rather than guessed at differently.
+    bruh (how_thicc(out) < expected) {
+        out.yeet_in(how_thicc(out) == 0 ? 1024 : out[how_thicc(out) - 1])
+    }
+    bounce out
+}
+
+// The media timescale -- ticks per second -- and the media duration, from
+// `mdhd`. Version 1 widens the times to 64 bits and moves everything after.
+flex bet media_timescale(mp4, trak) {
+    yo mdia = mp4tags.child(mp4, trak, "mdia", cap)
+    sus (mdia == ghost) { bounce ghost }
+    yo mdhd = mp4tags.child(mp4, mdia, "mdhd", cap)
+    sus (mdhd == ghost) { bounce ghost }
+    yo at = mdhd["payload_at"]
+    sus (mp4[at] == 1) { bounce mp4tags.read_be32(mp4, at + 20) }
+    bounce mp4tags.read_be32(mp4, at + 12)
+}
+
+// Every sample in the sound track: where its bytes are, how many, and how long
+// it lasts. This is the join across three tables that an MP4 makes you do by
+// hand, and everything below is expressed in terms of it.
+flex bet samples_of(mp4, trak) {
+    yo stbl = remux.stbl_of(mp4, trak)
+    sus (stbl == ghost) { bounce ghost }
+    yo stsz = mp4tags.child(mp4, stbl, "stsz", cap)
+    yo stsc = mp4tags.child(mp4, stbl, "stsc", cap)
+    yo stts = mp4tags.child(mp4, stbl, "stts", cap)
+    yo co = mp4tags.child(mp4, stbl, "stco", cap)
+    sus (co == ghost) { co = mp4tags.child(mp4, stbl, "co64", cap) }
+    sus (stsz == ghost || stsc == ghost || co == ghost) { bounce ghost }
+
+    yo sizes = remux.sample_sizes(mp4, stsz)
+    yo offsets = remux.offsets_in(mp4, co)
+    yo per = remux.samples_per_chunk(remux.stsc_runs(mp4, stsc), how_thicc(offsets))
+    yo deltas = stts == ghost ? ghost : sample_deltas(mp4, stts, how_thicc(sizes))
+
+    yo out = []
+    yo at = 0
+    grind c from 0 to how_thicc(offsets) {
+        yo here = offsets[c]
+        grind k from 0 to per[c] {
+            sus (at >= how_thicc(sizes)) { bail }
+            out.yeet_in({"at": here, "size": sizes[at],
+                         "delta": deltas == ghost ? 1024 : deltas[at]})
+            here += sizes[at]
+            at += 1
+        }
+    }
+    bounce out
+}
+
+flex bet duration_of(mp4) {
+    grind t in remux.tracks_in(mp4) {
+        sus (t["handler"] != "soun") { nvm }
+        yo scale = media_timescale(mp4, t["trak"])
+        yo samples = samples_of(mp4, t["trak"])
+        sus (scale == ghost || samples == ghost || scale == 0) { bounce ghost }
+        yo ticks = 0
+        grind s in samples { ticks += s["delta"] }
+        bounce ticks / scale
+    }
+    bounce ghost
+}
+
+// -- writing the tables back out ----------------------------------------------------------
+
+bet full_box(kind, payload) {
+    bounce mp4tags.box(mp4tags.named(kind), mp4tags.be32(0) + payload)
+}
+
+// Run-length encoded again on the way out, so a cut of a normal track is still
+// one entry rather than seventeen thousand.
+bet stts_for(samples) {
+    yo runs = []
+    grind s in samples {
+        yo last = how_thicc(runs) == 0 ? ghost : runs[how_thicc(runs) - 1]
+        sus (last != ghost && last["delta"] == s["delta"]) {
+            last["count"] += 1
+        } nah {
+            runs.yeet_in({"count": 1, "delta": s["delta"]})
+        }
+    }
+    yo parts = [mp4tags.be32(how_thicc(runs))]
+    grind r in runs {
+        parts.yeet_in(mp4tags.be32(r["count"]))
+        parts.yeet_in(mp4tags.be32(r["delta"]))
+    }
+    bounce full_box("stts", blob.of([]).join(parts))
+}
+
+bet stsz_for(samples) {
+    yo same = fax
+    grind s in samples {
+        sus (s["size"] != samples[0]["size"]) { same = cap }
+    }
+    sus (how_thicc(samples) > 0 && same) {
+        bounce full_box("stsz", mp4tags.be32(samples[0]["size"]) +
+                                mp4tags.be32(how_thicc(samples)))
+    }
+    yo parts = [mp4tags.be32(0), mp4tags.be32(how_thicc(samples))]
+    grind s in samples { parts.yeet_in(mp4tags.be32(s["size"])) }
+    bounce full_box("stsz", blob.of([]).join(parts))
+}
+
+// One chunk holding everything. Legal, simplest to be right about, and it is
+// what a cut produces anyway -- the kept samples are written out contiguously,
+// so there is nothing to be gained by pretending they are in several chunks.
+bet stsc_one_chunk(count) {
+    bounce full_box("stsc", mp4tags.be32(1) + mp4tags.be32(1) +
+                            mp4tags.be32(count) + mp4tags.be32(1))
+}
+
+bet stco_for(offset) {
+    bounce full_box("stco", mp4tags.be32(1) + mp4tags.be32(offset))
+}
+
+// A time field patched in place, whichever width its box's version says.
+bet with_duration(whole, head, version, wide_at, narrow_at, value) {
+    sus (version == 1) {
+        bounce whole[0:head + wide_at] + mp4tags.be64(value) +
+               whole[head + wide_at + 8:how_thicc(whole)]
+    }
+    sus (value > 0xFFFFFFFF) { bounce whole }
+    bounce whole[0:head + narrow_at] + mp4tags.be32(value) +
+           whole[head + narrow_at + 4:how_thicc(whole)]
+}
+
+// -- the cut --------------------------------------------------------------------------------
+
+// `from_sec` and `to_sec` in seconds; `to_sec` of ghost means "to the end".
+// The cut lands on the nearest frame boundary at or before `from_sec` and at
+// or after `to_sec`, because a frame is the smallest thing that can be kept
+// without decoding one.
+flex bet trim(mp4, from_sec, to_sec) {
+    yo audio = ghost
+    grind t in remux.tracks_in(mp4) {
+        sus (t["handler"] == "soun" && audio == ghost) { audio = t }
+    }
+    sus (audio == ghost) {
+        chuck oops("SkillIssue", "there is no sound track in that file to cut.")
+    }
+    sus (how_thicc(remux.tracks_in(mp4)) > 1) {
+        chuck oops("SkillIssue", "cut the video out first -- this works on an audio-only file.")
+    }
+
+    yo trak = audio["trak"]
+    yo scale = media_timescale(mp4, trak)
+    sus (scale == ghost || scale == 0) {
+        chuck oops("SkillIssue", "that track does not say what its timescale is.")
+    }
+    yo samples = samples_of(mp4, trak)
+    sus (samples == ghost || how_thicc(samples) == 0) {
+        chuck oops("SkillIssue", "that track has no samples this can read.")
+    }
+
+    yo from_ticks = from_sec == ghost ? 0 : from_sec * scale
+    yo to_ticks = to_sec == ghost ? ghost : to_sec * scale
+    sus (to_ticks != ghost && to_ticks <= from_ticks) {
+        chuck oops("SkillIssue", "the end of the cut is not after its start.")
+    }
+
+    yo kept = []
+    yo clock_at = 0
+    grind s in samples {
+        yo starts = clock_at
+        clock_at += s["delta"]
+        sus (starts + s["delta"] <= from_ticks) { nvm }
+        sus (to_ticks != ghost && starts >= to_ticks) { bail }
+        kept.yeet_in(s)
+    }
+    sus (how_thicc(kept) == 0) {
+        chuck oops("SkillIssue", "that range does not cover a single frame of the song.")
+    }
+
+    // The samples' bytes, in order, and the durations they add up to.
+    yo bytes = []
+    yo ticks = 0
+    grind s in kept {
+        bytes.yeet_in(mp4[s["at"]:s["at"] + s["size"]])
+        ticks += s["delta"]
+    }
+    yo payload = blob.of([]).join(bytes)
+
+    // Built in the same order `remux` uses and for the same reason: mdat's
+    // position has to be known before the offset that points at it is written.
+    yo ftyp = ghost
+    yo moov = ghost
+    grind bx in mp4tags.boxes_in(mp4, 0, how_thicc(mp4)) {
+        sus (bx["kind"] == "ftyp" && ftyp == ghost) { ftyp = bx }
+        sus (bx["kind"] == "moov" && moov == ghost) { moov = bx }
+    }
+    yo head = ftyp == ghost ? blob.of([]) : mp4[ftyp["at"]:ftyp["at"] + ftyp["size"]]
+    yo mdat_payload_at = how_thicc(head) + 8
+    yo mdat = mp4tags.box(mp4tags.named("mdat"), payload)
+
+    yo stbl = remux.stbl_of(mp4, trak)
+    yo stsd = mp4tags.child(mp4, stbl, "stsd", cap)
+    yo new_stbl = mp4tags.box(mp4tags.named("stbl"),
+        (stsd == ghost ? blob.of([]) : mp4[stsd["at"]:stsd["at"] + stsd["size"]]) +
+        stts_for(kept) + stsz_for(kept) + stsc_one_chunk(how_thicc(kept)) +
+        stco_for(mdat_payload_at))
+
+    yo movie_scale = movie_timescale(mp4, moov)
+    yo track_ticks = movie_scale == ghost ? ghost : (ticks * movie_scale) \ scale
+    yo new_moov = rebuilt_moov(mp4, moov, trak, new_stbl, ticks, track_ticks)
+    bounce head + mdat + new_moov
+}
+
+bet movie_timescale(mp4, moov) {
+    yo mvhd = mp4tags.child(mp4, moov, "mvhd", cap)
+    sus (mvhd == ghost) { bounce ghost }
+    yo at = mvhd["payload_at"]
+    sus (mp4[at] == 1) { bounce mp4tags.read_be32(mp4, at + 20) }
+    bounce mp4tags.read_be32(mp4, at + 12)
+}
+
+bet rebuilt_moov(mp4, moov, trak, new_stbl, media_ticks, track_ticks) {
+    yo parts = []
+    grind bx in mp4tags.boxes_in(mp4, moov["payload_at"], moov["payload_end"]) {
+        yo whole = mp4[bx["at"]:bx["at"] + bx["size"]]
+        yo head = bx["payload_at"] - bx["at"]
+        sus (bx["kind"] == "mvhd") {
+            yo version = mp4[bx["payload_at"]]
+            parts.yeet_in(track_ticks == ghost ? whole
+                          : with_duration(whole, head, version, 24, 16, track_ticks))
+        } kinda_sus (bx["kind"] == "trak") {
+            sus (bx["at"] == trak["at"]) {
+                parts.yeet_in(rebuilt_trak(mp4, bx, new_stbl, media_ticks, track_ticks))
+            }
+        } nah {
+            parts.yeet_in(whole)
+        }
+    }
+    bounce mp4tags.box(mp4tags.named("moov"), blob.of([]).join(parts))
+}
+
+bet rebuilt_trak(mp4, trak, new_stbl, media_ticks, track_ticks) {
+    yo parts = []
+    grind bx in mp4tags.boxes_in(mp4, trak["payload_at"], trak["payload_end"]) {
+        yo whole = mp4[bx["at"]:bx["at"] + bx["size"]]
+        yo head = bx["payload_at"] - bx["at"]
+        sus (bx["kind"] == "tkhd") {
+            yo version = mp4[bx["payload_at"]]
+            parts.yeet_in(track_ticks == ghost ? whole
+                          : with_duration(whole, head, version, 28, 20, track_ticks))
+        } kinda_sus (bx["kind"] == "edts") {
+            // An edit list maps movie time onto media time, and the mapping it
+            // describes is of a song that is no longer this length. Dropping it
+            // means the track plays from its own start, which after a cut is
+            // exactly right.
+            vibe
+        } kinda_sus (bx["kind"] == "mdia") {
+            parts.yeet_in(rebuilt_mdia(mp4, bx, new_stbl, media_ticks))
+        } nah {
+            parts.yeet_in(whole)
+        }
+    }
+    bounce mp4tags.box(mp4tags.named("trak"), blob.of([]).join(parts))
+}
+
+bet rebuilt_mdia(mp4, mdia, new_stbl, media_ticks) {
+    yo parts = []
+    grind bx in mp4tags.boxes_in(mp4, mdia["payload_at"], mdia["payload_end"]) {
+        yo whole = mp4[bx["at"]:bx["at"] + bx["size"]]
+        yo head = bx["payload_at"] - bx["at"]
+        sus (bx["kind"] == "mdhd") {
+            yo version = mp4[bx["payload_at"]]
+            parts.yeet_in(with_duration(whole, head, version, 24, 16, media_ticks))
+        } kinda_sus (bx["kind"] == "minf") {
+            parts.yeet_in(rebuilt_minf(mp4, bx, new_stbl))
+        } nah {
+            parts.yeet_in(whole)
+        }
+    }
+    bounce mp4tags.box(mp4tags.named("mdia"), blob.of([]).join(parts))
+}
+
+bet rebuilt_minf(mp4, minf, new_stbl) {
+    yo parts = []
+    grind bx in mp4tags.boxes_in(mp4, minf["payload_at"], minf["payload_end"]) {
+        sus (bx["kind"] == "stbl") {
+            parts.yeet_in(new_stbl)
+        } nah {
+            parts.yeet_in(mp4[bx["at"]:bx["at"] + bx["size"]])
+        }
+    }
+    bounce mp4tags.box(mp4tags.named("minf"), blob.of([]).join(parts))
+}
