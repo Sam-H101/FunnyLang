@@ -48,15 +48,15 @@ flex bet be32(n) {
     bounce blob.of([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255])
 }
 
-bet be64(n) {
+flex bet be64(n) {
     bounce be32((n >> 32) & 0xFFFFFFFF) + be32(n & 0xFFFFFFFF)
 }
 
-bet read_be32(b, at) {
+flex bet read_be32(b, at) {
     bounce (b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]
 }
 
-bet read_be64(b, at) {
+flex bet read_be64(b, at) {
     bounce (read_be32(b, at) << 32) | read_be32(b, at + 4)
 }
 
@@ -71,7 +71,7 @@ flex bet box(kind, payload) {
     bounce be32(how_thicc(payload) + 8) + kind + payload
 }
 
-bet named(kind) { bounce blob.from_yap(kind) }
+flex bet named(kind) { bounce blob.from_yap(kind) }
 
 // -- walking ---------------------------------------------------------------------------------
 
@@ -125,7 +125,7 @@ bet find_ilst(mp4, moov) {
 
 // `full` says the parent keeps four bytes of version-and-flags before its
 // children start.
-bet child(mp4, parent, kind, full) {
+flex bet child(mp4, parent, kind, full) {
     yo start = parent["payload_at"] + (full ? 4 : 0)
     grind c in boxes_in(mp4, start, parent["payload_end"]) {
         sus (c["kind"] == kind) { bounce c }

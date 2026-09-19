@@ -18,6 +18,7 @@ gimme { get, get_to_file } from "fetch.funny"
 gimme "suno.funny"
 gimme "id3.funny"
 gimme "mp4tags.funny"
+gimme "remux.funny"
 gimme "namer.funny"
 
 bet opt(opts, key, fallback) {
@@ -51,7 +52,11 @@ bet run(url, opts) {
 
     note(say, "resolving", short_url(url))
     yo record = suno.resolve(url, opts)
-    record = suno.choose(record, want, opts)
+    // "audio" is not a rendition Suno has -- it is the video, with the video
+    // taken back out here. So the fetch asks for the mp4 and the extension
+    // says m4a, because that is what an audio-only MP4 is called.
+    yo strip_video = want == "audio"
+    record = suno.choose(record, strip_video ? "mp4" : want, opts)
     note(say, "  title", record["title"])
     sus (record["artist"] != "") { note(say, "  artist", record["artist"]) }
     note(say, "  audio", short_url(record["audio_url"]) + "  (" + record["audio_kind"] + ")")
@@ -68,7 +73,7 @@ bet run(url, opts) {
                  "handle": record["handle"], "id": record["id"],
                  "date": yapper.slice(record["created"], 0, 10)}
     yo base = namer.safe_name(namer.render(template, fields), "song-" + record["id"])
-    yo ext = "." + record["audio_kind"]
+    yo ext = "." + (strip_video ? "m4a" : record["audio_kind"])
     yo path = namer.unique_path(out_dir, base, ext, lowkey (p) => filez.exists(p) ||
                                                                  filez.exists(p + ".part"))
 
@@ -81,6 +86,26 @@ bet run(url, opts) {
     yo got = get_to_file(record["audio_url"], path,
                          with_keys(opts, {"resume": opt(opts, "resume", cap),
                                           "on_progress": progress}))
+
+    // The video taken back off, if that is what was asked for. Nothing is
+    // decoded: `remux.audio_only` copies the sound track's samples out
+    // untouched and rebuilds the tables that say where they are. The golden
+    // asserts the samples are byte-identical either side of it.
+    yo remuxed = ghost
+    sus (strip_video) {
+        yo whole = filez.read_blob(path)
+        sketchy {
+            yo just_audio = remux.audio_only(whole)
+            filez.write_blob_atomic(path, just_audio)
+            remuxed = {"from": how_thicc(whole), "to": how_thicc(just_audio)}
+            note(say, "  stripped", "video dropped: " + to_yap(how_thicc(whole)) + " -> " +
+                 to_yap(how_thicc(just_audio)) + " bytes")
+        } my_bad (e) {
+            // The download is good even when this is not, so the file stays
+            // and the run says what happened rather than throwing it away.
+            note(say, "  stripped", "could not drop the video (" + e.message + ") -- keeping it")
+        }
+    }
 
     // The cover is a nice-to-have: a song that arrived without its artwork is
     // still the song, so a failure here is a note rather than the end of the
@@ -145,6 +170,10 @@ bet run(url, opts) {
                   "id": record["id"], "kind": record["audio_kind"], "tagged": tagged_with,
                   "resumed": got["resumed"]}
     sus (warning != ghost) { outcome["warning"] = warning }
+    sus (remuxed != ghost) {
+        outcome["remuxed"] = remuxed
+        outcome["kind"] = "m4a"
+    }
     bounce outcome
 }
 

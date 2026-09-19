@@ -584,6 +584,29 @@ language has no subprocesses. The first time `grab.funny` was actually run — a
 code the golden had never executed a line of. The README's "what it is not" already named this
 gap; it turns out to have been worth naming.
 
+### D7 — a page, and then the video taken out of the file (2026-09-18)
+
+Two things the owner asked for after S7, neither of which was in this plan.
+
+**S8, the page.** `serve.funny` and `web/`: paste a link, see the song, pick a rendition, watch a
+real progress bar, save the file. One thread for the server and an intern for the download — the
+one place in this tree that needs both at once, because `fetch.funny` blocks by design and a page
+polling four times a second must not queue behind six megabytes. Three of its four bugs were ones
+only a running browser could find, which is the argument for the golden covering the HTTP surface
+too; it does not yet, and the README says so.
+
+**S9, the remux.** The ask was "convert the mp4 to mp3 server-side". It cannot be done: the video's
+audio track is `mp4a` — AAC — so an mp3 needs an AAC decoder and an MP3 encoder, a pair of codecs
+and tens of thousands of lines of DSP, and `computer` makes no subprocess calls so ffmpeg is not an
+option either. What *is* possible is dropping the video track, which is container work rather than
+codec work, and is most of what was actually wanted: 15,608,030 bytes becomes 9,510,361.
+
+`remux.funny` does that. `--format audio` on the CLI, and the page's first and default option. The
+samples are copied untouched; what is rebuilt is `stco`, because dropping the video moves every
+audio chunk. The golden's part eight is built to catch a remux that copies the wrong bytes rather
+than the wrong number of them: the fixture's two tracks interleave, every chunk is stamped, and the
+test asserts byte-identical audio, audio-only stamps, and every offset landing on a chunk.
+
 ### D4 — two things the client must handle that §4.1 did not know about
 
 - The share page is `Transfer-Encoding: chunked` with `Connection: keep-alive` from Cloudflare, so

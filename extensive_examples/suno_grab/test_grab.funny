@@ -6,7 +6,7 @@
 // serves the *shapes* PLAN.md §10 D1 measured from the real site, with
 // invented content.
 //
-// Seven parts, each able to fail on its own:
+// Eight parts, each able to fail on its own:
 //
 //   1. URLs, with no socket in sight
 //   2. the HTTP client against ten response shapes
@@ -15,6 +15,7 @@
 //   5. MP4 tags, written into a real box tree
 //   6. filenames that survive being copied to another computer
 //   7. the whole pipeline, one song and then four at once
+//   8. taking the video track back out, without touching a sample
 //
 // WHY THE FIXTURE IS THE WORKER AND THE CLIENT IS THE MAIN THREAD. The client
 // blocks on its reads by design (`fetch.funny` says why), so it cannot share a
@@ -35,6 +36,7 @@ gimme "pipeline.funny"
 gimme "suno.funny"
 gimme "id3.funny"
 gimme "mp4tags.funny"
+gimme "remux.funny"
 gimme "namer.funny"
 
 yo HERE = filez.dir_of(the_script())
@@ -578,6 +580,94 @@ raw_opts["no_tags"] = fax
 yo raw = pipeline.grab_one(BASE + "/song/" + ID, raw_opts)
 yap "  identical to what the server sent: " +
     to_yap(filez.read_blob(raw["path"]) == original) + ", tagged: " + raw["tagged"]
+
+// -- part eight: taking the video back out -----------------------------------------------------
+//
+// The fixture's mp4 has two tracks whose chunks are **interleaved**, the way a
+// real muxer writes them, and every chunk is stamped with its own byte value.
+// That is what makes this a test rather than a size comparison: a remux that
+// copied the wrong run of bytes would still produce a smaller file with the
+// right number of chunks in it.
+
+yap "-- taking the video out --"
+
+yo two_track = get(BASE + "/1/clip/" + ID + ".mp4", ghost)["blob"]
+yap "  the file in:  " + to_yap(how_thicc(two_track)) + " bytes"
+grind t in remux.what_is_in(two_track) {
+    yap "    track " + to_yap(t["handler"]) + "  codec " + to_yap(t["codec"]) +
+        "  " + to_yap(t["bytes"]) + " bytes of samples"
+}
+
+yo stripped = remux.audio_only(two_track)
+yap "  the file out: " + to_yap(how_thicc(stripped)) + " bytes"
+grind t in remux.what_is_in(stripped) {
+    yap "    track " + to_yap(t["handler"]) + "  codec " + to_yap(t["codec"]) +
+        "  " + to_yap(t["bytes"]) + " bytes of samples"
+}
+yap "  the video track is gone: " + to_yap(how_thicc(remux.tracks_in(stripped)) == 1)
+yap "  it got smaller: " + to_yap(how_thicc(stripped) < how_thicc(two_track))
+
+// THE ASSERTION THAT MATTERS. Not one byte of audio may differ -- this is a
+// remux, and if the samples changed then something decoded them, which nothing
+// here is allowed to do.
+yo before_samples = remux.audio_sample_bytes(two_track)
+yo after_samples = remux.audio_sample_bytes(stripped)
+yap "  audio samples before: " + to_yap(how_thicc(before_samples)) + " bytes"
+yap "  audio samples after:  " + to_yap(how_thicc(after_samples)) + " bytes"
+yap "  byte-for-byte identical: " + to_yap(before_samples == after_samples)
+no_cap(before_samples == after_samples, "the remux changed the audio")
+
+// And they are the *audio* bytes, not some other run of the same length: every
+// chunk in the fixture is stamped 0xA0 upwards, and no video byte is.
+yo only_audio_stamps = fax
+grind b in after_samples {
+    sus (b < 0xA0 || b > 0xAF) { only_audio_stamps = cap }
+}
+yap "  and every byte carries an audio chunk's stamp: " + to_yap(only_audio_stamps)
+no_cap(only_audio_stamps, "the remux copied bytes belonging to the video track")
+
+// The offsets in the new file have to point at the chunks, wherever they ended
+// up -- which is the whole job, since the audio was scattered between video
+// chunks and is now packed together.
+yo new_offsets = mp4tags.chunk_offsets(stripped)
+yap "  chunk offsets now: " + to_yap(new_offsets)
+yo all_point_right = fax
+grind off in new_offsets {
+    sus (off >= how_thicc(stripped) || stripped[off] < 0xA0 || stripped[off] > 0xAF) {
+        all_point_right = cap
+    }
+}
+yap "  every offset lands on an audio chunk: " + to_yap(all_point_right)
+no_cap(all_point_right, "a chunk offset does not point at its chunk")
+
+// A file that has already had its video removed is handed back as it is.
+yap "  an already audio-only file is left alone: " +
+    to_yap(remux.audio_only(stripped) == stripped)
+
+// And it is still a taggable MP4 afterwards.
+yo stripped_tagged = mp4tags.write_tags(stripped, {"title": "after the remux"})
+yap "  still taggable afterwards: " +
+    to_yap(mp4tags.read_tags(stripped_tagged)["tags"]["\u{00A9}nam"])
+yap "  and the audio still survives the tagging: " +
+    to_yap(remux.audio_sample_bytes(stripped_tagged) == before_samples)
+
+must_fail("  a file with no sound track", lowkey () => remux.audio_only(mp3))
+
+// The whole pipeline with --format audio, which is the page's default choice.
+yap "  -- and through the pipeline --"
+yo audio_dir = filez.join_path(TMP, "audioonly")
+filez.mkdir(audio_dir)
+yo audio_opts = RUN.clone()
+audio_opts["out"] = audio_dir
+audio_opts["format"] = "audio"
+yo audio_run = pipeline.grab_one(BASE + "/song/" + ID, audio_opts)
+yap "  named: " + filez.base_of(audio_run["path"]) + ", tagged " + audio_run["tagged"]
+yap "  video dropped: " + to_yap(audio_run["remuxed"]["from"]) + " -> " +
+    to_yap(audio_run["remuxed"]["to"]) + " bytes"
+yap "  the file on disk holds one track: " +
+    to_yap(how_thicc(remux.tracks_in(filez.read_blob(audio_run["path"]))) == 1)
+yap "  and the same audio as the source: " +
+    to_yap(remux.audio_sample_bytes(filez.read_blob(audio_run["path"])) == before_samples)
 
 interns.dm(server, "stop")
 yo tally = interns.wait_up(server)

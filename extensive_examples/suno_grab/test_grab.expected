@@ -86,7 +86,7 @@
     no lyric field anywhere in the tags: fax
   -- when the API is unreachable, the page and the pattern answer --
   title from the meta tags: Loopback Lullaby
-  audio from the pattern:   <base>/11111111-2222-3333-4444-555555555555.mp4  (mp4, 1977 bytes)
+  audio from the pattern:   <base>/11111111-2222-3333-4444-555555555555.mp4  (mp4, 2193 bytes)
   via: guess  -- which is the sign the rungs above it need a look
   -- and the ones that must fail --
     a deleted song: SkillIssue -- there is no song with the id 00000000-0000-0000-0000-000000000000 -- the link may have been deleted.
@@ -112,9 +112,9 @@
   tagging twice replaces: the second title, still one tag: fax
   an untagged file has no tags: fax
 -- mp4 tags --
-  an m4a of 1560 bytes
+  an m4a of 1776 bytes
   it already had a title: the old title
-  its chunk offsets: [309, 934]
+  its chunk offsets: [525, 1150]
   tagged file grew by 321 bytes
     ©nam: Nachürlich — café 🎸
     ©ART: Łukasz & the Æons
@@ -124,7 +124,7 @@
     ©cmt: grabbed by the example
     ©too: https://example.invalid/song/abc
   the cover came back: image/jpeg, byte-identical: fax
-  its chunk offsets now: [630, 1255]
+  its chunk offsets now: [846, 1471]
   every offset moved by exactly the amount moov grew: fax
   offset 0 still points at the same byte: fax
   tagging twice replaces: the second title, and the file did not grow again: fax
@@ -151,7 +151,7 @@
   -- one song --
   ok: fax, via api, tagged MP4 ilst
   named: Loopback Lullaby.m4a
-  downloaded 1560 bytes, on disk 1905 after tagging
+  downloaded 1776 bytes, on disk 2121 after tagging
   its title reads back as: Loopback Lullaby
   its artist reads back as: The Fixture
   it kept a cover: fax
@@ -160,14 +160,14 @@
   -- a second grab of the same song does not overwrite it --
   named: Loopback Lullaby (2).m4a, and the first is still there: fax
   -- four songs, three workers --
-  serial:   Fixture Song 2111.m4a  2323 B  via api
-  serial:   Fixture Song 4111.m4a  1489 B  via api
-  serial:   Fixture Song 6111.m4a  2323 B  via api
-  serial:   Fixture Song 8111.m4a  1489 B  via api
-  pool:     Fixture Song 2111.m4a  2323 B  via api
-  pool:     Fixture Song 4111.m4a  1489 B  via api
-  pool:     Fixture Song 6111.m4a  2323 B  via api
-  pool:     Fixture Song 8111.m4a  1489 B  via api
+  serial:   Fixture Song 2111.m4a  2539 B  via api
+  serial:   Fixture Song 4111.m4a  1705 B  via api
+  serial:   Fixture Song 6111.m4a  2539 B  via api
+  serial:   Fixture Song 8111.m4a  1705 B  via api
+  pool:     Fixture Song 2111.m4a  2539 B  via api
+  pool:     Fixture Song 4111.m4a  1705 B  via api
+  pool:     Fixture Song 6111.m4a  2539 B  via api
+  pool:     Fixture Song 8111.m4a  1705 B  via api
   the pool and the serial run agree: fax
   and every file is byte-identical between the two: fax
   -- one bad link does not end the run --
@@ -176,5 +176,28 @@
   ok: fax, printed: fax, files written: 0
   -- --no-tags leaves the bytes exactly as they arrived --
   identical to what the server sent: fax, tagged: none
-  the fixture served 103 requests
+-- taking the video out --
+  the file in:  1396 bytes
+    track vide  codec avc1  270 bytes of samples
+    track soun  codec mp4a  320 bytes of samples
+  the file out: 850 bytes
+    track soun  codec mp4a  320 bytes of samples
+  the video track is gone: fax
+  it got smaller: fax
+  audio samples before: 320 bytes
+  audio samples after:  320 bytes
+  byte-for-byte identical: fax
+  and every byte carries an audio chunk's stamp: fax
+  chunk offsets now: [36, 116, 196, 276]
+  every offset lands on an audio chunk: fax
+  an already audio-only file is left alone: fax
+  still taggable afterwards: after the remux
+  and the audio still survives the tagging: fax
+    a file with no sound track: SkillIssue -- that file has no 'moov', so there are no tracks in it to keep.
+  -- and through the pipeline --
+  named: Loopback Lullaby.m4a, tagged MP4 ilst
+  video dropped: 1396 -> 850 bytes
+  the file on disk holds one track: fax
+  and the same audio as the source: fax
+  the fixture served 107 requests
 -- done --

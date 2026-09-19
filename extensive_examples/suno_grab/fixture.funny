@@ -340,6 +340,13 @@ bet serve(conn, req) {
         bounce ghost
     }
 
+    // The video rendition the clip API names -- a real two-track file, so the
+    // remux has a video track to actually take out.
+    sus (yapper.starts_with(path, "/1/clip/") && yapper.ends_with(path, ".mp4")) {
+        send_sized(conn, 200, make_two_track(), "video/mp4")
+        bounce ghost
+    }
+
     sus (yapper.starts_with(path, "/1/clip/") && yapper.ends_with(path, ".m4a")) {
         yo from_at = range_start(headers.get("range", ghost))
         yo whole_audio = audio_for(id_in(path))
@@ -486,14 +493,93 @@ flex bet make_m4a_of(frames) {
 }
 
 bet moov_with(meta, offsets) {
+    bounce box("moov", box("mvhd", be32(0) + zeros(96)) +
+                       one_trak("soun", "mp4a", offsets, AUDIO_PER_CHUNK, AUDIO_SAMPLE) +
+                       box("udta", meta))
+}
+
+// -- a file with two tracks in it, for the remux -------------------------------------------
+//
+// `remux.funny` takes the sound track out of a file that also holds a video,
+// so the fixture has to contain one. The two tracks' chunks are **interleaved**
+// in `mdat`, the way a real muxer writes them and the way that makes a remux
+// non-trivial: the audio is not one contiguous run that could be copied with a
+// single slice.
+//
+// Every byte is stamped with which chunk it came from, so the golden can prove
+// the remux moved the right bytes rather than merely the right number of them.
+
+deadass AUDIO_SAMPLE = 40
+deadass AUDIO_PER_CHUNK = 2
+deadass AUDIO_CHUNKS = 4
+deadass VIDEO_SAMPLE = 90
+deadass VIDEO_PER_CHUNK = 1
+deadass VIDEO_CHUNKS = 3
+
+bet stamped(byte, count) {
+    yo b = []
+    grind i from 0 to count { b.yeet_in(byte) }
+    bounce blob.of(b)
+}
+
+bet one_trak(handler, codec, offsets, per_chunk, sample_size) {
     yo entries = [be32(0), be32(how_thicc(offsets))]
     grind off in offsets { entries.yeet_in(be32(off)) }
     yo stco = box("stco", blob.of([]).join(entries))
-    yo stbl = box("stbl", stco)
+    // One stsc run: every chunk holds the same number of samples.
+    yo stsc = box("stsc", be32(0) + be32(1) + be32(1) + be32(per_chunk) + be32(1))
+    // A uniform sample size, which is the branch of stsz with no table at all.
+    yo stsz = box("stsz", be32(0) + be32(sample_size) +
+                          be32(how_thicc(offsets) * per_chunk))
+    yo stsd = box("stsd", be32(0) + be32(1) + box(codec, zeros(20)))
+    yo stbl = box("stbl", stsd + stsz + stsc + stco)
     yo minf = box("minf", stbl)
-    yo mdia = box("mdia", minf)
-    yo trak = box("trak", mdia)
-    bounce box("moov", box("mvhd", be32(0) + zeros(96)) + trak + box("udta", meta))
+    yo hdlr = box("hdlr", be32(0) + be32(0) + blob.from_yap(handler) + zeros(12))
+    yo mdia = box("mdia", hdlr + minf)
+    // tkhd version 0, with a duration this fixture can assert on.
+    yo tkhd = box("tkhd", blob.of([0, 0, 0, 7]) + be32(0) + be32(0) + be32(1) + be32(0) +
+                          be32(1000) + zeros(60))
+    bounce box("trak", tkhd + mdia)
+}
+
+// ftyp, moov, mdat -- moov first, so the tag writer's offset-shifting is
+// exercised too, and so the offsets have to be worked out in two passes.
+flex bet make_two_track() {
+    yo ilst = box("ilst", box_b(blob.of([0xA9]) + blob.from_yap("nam"),
+                                box("data", be32(1) + be32(0) + blob.from_yap("two tracks"))))
+    yo meta = box("meta", be32(0) + box("hdlr", be32(0) + be32(0) + blob.from_yap("mdirappl") +
+                                        be32(0) + be32(0) + be32(0)) + ilst)
+    yo ftyp = box("ftyp", blob.from_yap("M4A ") + be32(512) + blob.from_yap("M4A isomiso2"))
+
+    bet build(video_offsets, audio_offsets) {
+        bounce box("moov", box("mvhd", be32(0) + zeros(96)) +
+                           one_trak("vide", "avc1", video_offsets, VIDEO_PER_CHUNK, VIDEO_SAMPLE) +
+                           one_trak("soun", "mp4a", audio_offsets, AUDIO_PER_CHUNK, AUDIO_SAMPLE) +
+                           box("udta", meta))
+    }
+
+    yo blank_v = []
+    yo blank_a = []
+    grind i from 0 to VIDEO_CHUNKS { blank_v.yeet_in(0) }
+    grind i from 0 to AUDIO_CHUNKS { blank_a.yeet_in(0) }
+    yo shape = build(blank_v, blank_a)
+    yo mdat_payload_at = how_thicc(ftyp) + how_thicc(shape) + 8
+
+    // Interleaved: v0 a0 v1 a1 v2 a2 a3, each chunk stamped with its own byte.
+    yo order = [["v", 0], ["a", 0], ["v", 1], ["a", 1], ["v", 2], ["a", 2], ["a", 3]]
+    yo parts = []
+    yo video_offsets = []
+    yo audio_offsets = []
+    yo at = mdat_payload_at
+    grind item in order {
+        yo is_audio = item[0] == "a"
+        yo size = is_audio ? AUDIO_SAMPLE * AUDIO_PER_CHUNK : VIDEO_SAMPLE * VIDEO_PER_CHUNK
+        yo stamp = is_audio ? 0xA0 + item[1] : 0x10 + item[1]
+        parts.yeet_in(stamped(stamp, size))
+        sus (is_audio) { audio_offsets.yeet_in(at) } nah { video_offsets.yeet_in(at) }
+        at += size
+    }
+    bounce ftyp + build(video_offsets, audio_offsets) + box("mdat", blob.of([]).join(parts))
 }
 
 flex bet box(kind, payload) {

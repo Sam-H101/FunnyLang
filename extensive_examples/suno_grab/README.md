@@ -32,8 +32,10 @@ $ funny run extensive_examples/suno_grab/serve.funny -- 8099 --no-tls    # no wa
 ```
 
 Paste a link, and the page shows the cover, the title, the creator and how long it is, then offers
-the renditions that exist — marking the encrypted `m4a` as one that will not play. Pick one, watch
-a real progress bar, and save the tagged file.
+what you can have. **`audio` is offered first and is what most people want**: the mp4 with the
+video track taken back out, written as `.m4a` — 15.6 MB becomes 9.5 MB and nothing is decoded.
+The encrypted `m4a` is listed and marked as one that will not play. Pick one, watch a real
+progress bar, and save the tagged file.
 
 **One thread for the server and an intern for the download.** This is the one example here that
 needs both shapes at once, and for opposite reasons. The server is an event loop, like
@@ -52,6 +54,7 @@ $ funny run extensive_examples/suno_grab/grab.funny -- <url> <url> --workers 3 -
 $ funny run extensive_examples/suno_grab/grab.funny -- --from-file links.txt --manifest run.json
 $ funny run extensive_examples/suno_grab/grab.funny -- <url> --print-only
 $ funny run extensive_examples/suno_grab/grab.funny -- <url> --name "{artist} - {title}"
+$ funny run extensive_examples/suno_grab/grab.funny -- <url> --format audio  # the song, no video
 $ funny run extensive_examples/suno_grab/grab.funny -- <url> --format mp4    # the video
 $ funny run extensive_examples/suno_grab/tag.funny  -- "./The Hacker Went Down to Prod.m4a"
 $ funny run extensive_examples/suno_grab/measure.funny
@@ -71,6 +74,7 @@ did not — so a script can tell "the network is down" from "one of these forty 
 | `id3.funny` | ID3v2.3, written and read, for when the file really is an mp3 |
 | `mp4tags.funny` | iTunes-style tags written into an MP4 box tree — what usually runs |
 | `namer.funny` | a title → a filename that survives being copied to another computer |
+| `remux.funny` | the sound track lifted out of the video, without decoding a sample |
 | `pipeline.funny` | resolve, fetch, tag, name: the one place the steps exist |
 | `grab.funny` | the command line |
 | `serve.funny` | the page's server: six routes, an event loop, and a download hired out |
@@ -80,7 +84,7 @@ did not — so a script can tell "the network is down" from "one of these forty 
 | `tag.funny` | read the tags back out of a file |
 | `measure.funny` | how long each step takes, against the fixture |
 | `fixture.funny`, `fixtures/` | the golden's other end: ten response shapes and a Suno-shaped API |
-| `test_grab.funny`, `.expected` | the golden — seven parts, no internet |
+| `test_grab.funny`, `.expected` | the golden — eight parts, no internet |
 
 ## Why there is no mp3
 
@@ -187,6 +191,33 @@ The three places a hand-written client usually breaks, each of which is a test:
   instead of telling it. The fixture also gives up after thirty seconds of silence. The golden
   caught this one too, by hanging.
 
+## Taking the video back out
+
+`--format audio`, and the page's first option. What Suno serves in the clear is an MP4 holding two
+tracks — a video of the cover art, and the song — and the video is most of the file.
+`remux.funny` keeps the sound track and drops the rest.
+
+**It is not a conversion and there is no codec in it.** Not one audio sample is decoded,
+re-encoded or altered; the bytes that come out are the bytes that went in, in the same order, with
+different tables in front of them saying where they are. That is why it is four hundred lines
+rather than forty thousand — the track is AAC, and turning AAC into MP3 means writing a decoder
+and an encoder, which is a pair of codecs and not an example. On the real song: 15,608,030 bytes
+in, 9,510,361 out, in about three quarters of a second.
+
+The work is that an MP4 does not keep samples next to the information about them. The samples are
+one lump in `mdat`; `stsz` says how big each one is, `stsc` says — run-length encoded — how many
+are in each chunk, and `stco` says where each chunk *starts in the file*. Dropping the video means
+the audio chunks move, since they were scattered between video chunks and are now packed together,
+so every `stco` entry has to be recomputed; and to know how many bytes a chunk holds you walk
+`stsc` for its sample count and sum that many `stsz` entries. Get any of it wrong and the file
+still parses, still reports the right duration, and plays noise.
+
+So the golden does not check that the file got smaller. The fixture's two tracks are
+**interleaved** the way a real muxer writes them, every chunk is stamped with its own byte value,
+and the test asserts that the audio samples are byte-identical either side of the remux, that every
+byte carries an *audio* chunk's stamp rather than a video one, and that every rebuilt offset lands
+on a chunk.
+
 ## Two taggers, because a container is not a file extension
 
 `id3.funny` writes ID3v2.3: UTF-16 text frames, so an accented title or an emoji survives where
@@ -264,8 +295,10 @@ clock starts.
   something — the mp3 behind a signed URL, the encrypted `m4a` — this program reports that and
   stops. "Suno serves this rendition encrypted" is the end of the sentence, not the start of a
   workaround.
-- **It does not transcode.** No format conversion of any kind. The bytes written are the bytes
-  served, plus a tag.
+- **It does not transcode.** No format conversion of any kind, and no codec anywhere in it. The
+  audio bytes written are the audio bytes served, plus a tag. `--format audio` is a *remux*: it
+  drops the video track and rewrites the tables, and the golden proves not one sample byte
+  changes.
 - **`suno.funny` scrapes somebody else's site and will break.** The ladder makes that a sentence
   rather than a crash; it does not make it not happen. PLAN.md §10 D1 is dated for exactly this
   reason, and `via` tells you when the rungs have started to slip.

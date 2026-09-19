@@ -83,9 +83,19 @@ bet resolve_for_page(url) {
               "model": record["model"], "duration": record["duration"],
               "via": record["via"], "id_via": record["id_via"],
               "source_url": record["source_url"], "cover": ghost, "renditions": []}
+    yo has_video = cap
     grind r in record["renditions"] {
         out["renditions"].yeet_in({"kind": r["kind"], "content_type": r["content_type"],
                                    "plays": r["kind"] != "m4a"})
+        sus (r["kind"] == "mp4") { has_video = fax }
+    }
+    // Offered first, because it is what almost everybody actually wants: the
+    // song without fifteen megabytes of cover-art video around it. It is not a
+    // rendition Suno serves -- it is the mp4 with the video track taken back
+    // out here, which changes no audio at all.
+    sus (has_video) {
+        out["renditions"].insert(0, {"kind": "audio", "content_type": "audio only, from the mp4",
+                                     "plays": fax})
     }
     sus (record["image_url"] != ghost) {
         sketchy {
@@ -239,7 +249,7 @@ bet route(req) {
         yo doc = body_json(req)
         sus (doc == ghost || !doc.has("url")) { bounce refuse(400, "send {\"url\": \"...\"}") }
         yo want = doc.get("format", "mp4")
-        sus (!["mp4", "m4a", "mp3", "best"].contains(want)) {
+        sus (!["mp4", "audio", "m4a", "mp3", "best"].contains(want)) {
             bounce refuse(400, "format is mp4, m4a, mp3 or best -- not " + to_yap(want))
         }
         bounce json_response(200, json.spill({"job": start_job(doc["url"], want)}))

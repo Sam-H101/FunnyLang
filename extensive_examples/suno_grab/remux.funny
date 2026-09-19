@@ -1,0 +1,381 @@
+// remux.funny — the song, without the video wrapped around it.
+//
+// What a share link publishes in the clear is an MP4 with two tracks in it: a
+// video of the cover art, and the song. The video is most of the file -- 15.6
+// MB where the audio is about 6 -- and nobody wanted a video. This takes the
+// sound track out and writes it as an audio-only MP4, which is what a `.m4a`
+// is.
+//
+// IT IS NOT A CONVERSION AND THERE IS NO CODEC IN HERE. Not one audio sample
+// is decoded, re-encoded or altered; the bytes that come out are bit-for-bit
+// the bytes that went in, in the same order, with a different set of tables in
+// front of them saying where they are. That is the difference between a remux
+// and a transcode, and it is why this is four hundred lines instead of forty
+// thousand: the track is AAC, and turning AAC into MP3 means decoding one and
+// encoding the other, which is a pair of codecs and not an example.
+//
+// WHAT HAS TO BE REBUILT, AND WHY IT IS FIDDLIER THAN IT SOUNDS. An MP4 does
+// not store samples next to the information about them. The samples live in
+// one lump (`mdat`); everything that says which bytes belong to which sample
+// lives in tables under `moov`, and those tables are all indices into each
+// other:
+//
+//   stsz   how big each sample is, one entry per sample
+//   stsc   how many samples are in each chunk, run-length encoded
+//   stco   where each chunk *starts in the file*, as an absolute offset
+//
+// Dropping the video track means the audio chunks move -- they were scattered
+// through the file between video chunks, and now they are packed together at
+// the front. So every `stco` entry has to be recomputed from where its chunk
+// actually landed, and to know how many bytes to copy for a chunk you have to
+// walk `stsc` to find how many samples are in it and then sum that many
+// entries of `stsz`. Get any of that wrong and the file still parses, still
+// reports the right duration, and plays noise.
+//
+// The output is laid out `ftyp`, `mdat`, `moov` -- in that order, and not by
+// accident. `moov` holds the offsets, so writing it first means its own size
+// changes where `mdat` begins, which changes the offsets, which changes `moov`.
+// Putting it last breaks the circle: `mdat` starts at a known place before a
+// single table is built.
+
+gimme blob
+gimme "mp4tags.funny"
+
+deadass CONTAINERS = ["moov", "trak", "mdia", "minf", "stbl", "udta", "edts", "dinf"]
+
+// -- finding the track ---------------------------------------------------------------------
+
+// A track's kind is in `mdia/hdlr`: `soun` for audio, `vide` for video, and
+// several others nobody here wants. It is at a fixed place in the box -- four
+// bytes of version and flags, four of pre-defined, then the four that say.
+bet handler_of(mp4, trak) {
+    yo mdia = mp4tags.child(mp4, trak, "mdia", cap)
+    sus (mdia == ghost) { bounce ghost }
+    yo hdlr = mp4tags.child(mp4, mdia, "hdlr", cap)
+    sus (hdlr == ghost) { bounce ghost }
+    sus (hdlr["payload_end"] - hdlr["payload_at"] < 12) { bounce ghost }
+    bounce mp4[hdlr["payload_at"] + 8:hdlr["payload_at"] + 12].to_yap()
+}
+
+bet stbl_of(mp4, trak) {
+    yo mdia = mp4tags.child(mp4, trak, "mdia", cap)
+    sus (mdia == ghost) { bounce ghost }
+    yo minf = mp4tags.child(mp4, mdia, "minf", cap)
+    sus (minf == ghost) { bounce ghost }
+    bounce mp4tags.child(mp4, minf, "stbl", cap)
+}
+
+// What codec the track holds, from `stsd`'s first entry: `mp4a` for AAC,
+// `Opus` for Opus, `avc1` for H.264. Reported rather than acted on -- this
+// module does not care what the samples are, and saying so in the output is
+// how somebody finds out their file is Opus in an m4a and not AAC.
+flex bet codec_of(mp4, trak) {
+    yo stbl = stbl_of(mp4, trak)
+    sus (stbl == ghost) { bounce ghost }
+    yo stsd = mp4tags.child(mp4, stbl, "stsd", cap)
+    sus (stsd == ghost) { bounce ghost }
+    sus (stsd["payload_end"] - stsd["payload_at"] < 16) { bounce ghost }
+    bounce mp4[stsd["payload_at"] + 12:stsd["payload_at"] + 16].to_yap()
+}
+
+// Every track in the file, with what it is and what is in it.
+flex bet tracks_in(mp4) {
+    yo out = []
+    grind top in mp4tags.boxes_in(mp4, 0, how_thicc(mp4)) {
+        sus (top["kind"] != "moov") { nvm }
+        grind child_box in mp4tags.boxes_in(mp4, top["payload_at"], top["payload_end"]) {
+            sus (child_box["kind"] != "trak") { nvm }
+            out.yeet_in({"trak": child_box, "handler": handler_of(mp4, child_box),
+                         "codec": codec_of(mp4, child_box)})
+        }
+    }
+    bounce out
+}
+
+// -- the tables ------------------------------------------------------------------------------
+
+// `stsz`: a single size for every sample when the first field is non-zero,
+// which is how a constant-bitrate track says so, or one entry per sample.
+bet sample_sizes(mp4, stsz) {
+    yo at = stsz["payload_at"]
+    yo uniform = mp4tags.read_be32(mp4, at + 4)
+    yo count = mp4tags.read_be32(mp4, at + 8)
+    yo out = []
+    sus (uniform != 0) {
+        grind i from 0 to count { out.yeet_in(uniform) }
+        bounce out
+    }
+    grind i from 0 to count {
+        out.yeet_in(mp4tags.read_be32(mp4, at + 12 + i * 4))
+    }
+    bounce out
+}
+
+// `stsc` is run-length encoded: an entry says "from this chunk onwards, until
+// the next entry says otherwise, there are this many samples per chunk". So it
+// has three entries for a file with three thousand chunks.
+bet stsc_runs(mp4, stsc) {
+    yo at = stsc["payload_at"]
+    yo count = mp4tags.read_be32(mp4, at + 4)
+    yo out = []
+    grind i from 0 to count {
+        yo here = at + 8 + i * 12
+        out.yeet_in({"first": mp4tags.read_be32(mp4, here),
+                     "per": mp4tags.read_be32(mp4, here + 4)})
+    }
+    bounce out
+}
+
+bet offsets_in(mp4, co) {
+    yo wide = co["kind"] == "co64"
+    yo at = co["payload_at"]
+    yo count = mp4tags.read_be32(mp4, at + 4)
+    yo out = []
+    grind i from 0 to count {
+        yo here = at + 8 + i * (wide ? 8 : 4)
+        sus (wide) {
+            out.yeet_in(mp4tags.read_be64(mp4, here))
+        } nah {
+            out.yeet_in(mp4tags.read_be32(mp4, here))
+        }
+    }
+    bounce out
+}
+
+// The run-length encoding expanded: how many samples are in chunk 1, chunk 2,
+// and so on. Chunks are numbered from one in the specification, and keeping
+// that numbering here rather than translating it is what makes the comparison
+// against `first` read correctly.
+bet samples_per_chunk(runs, chunk_count) {
+    yo out = []
+    grind c from 1 to chunk_count + 1 {
+        yo per = 0
+        grind run in runs {
+            sus (run["first"] <= c) { per = run["per"] }
+        }
+        out.yeet_in(per)
+    }
+    bounce out
+}
+
+// -- rebuilding -------------------------------------------------------------------------------
+
+// The subtree copied through with `stco`/`co64` replaced. Every box header is
+// reused as it was, which is only correct because the number of entries has not
+// changed -- the same chunks, in the same order, somewhere else. A remux that
+// dropped chunks would have to resize every ancestor as well.
+bet with_new_offsets(b, from_at, to_at, offsets) {
+    yo parts = []
+    grind bx in mp4tags.boxes_in(b, from_at, to_at) {
+        yo kind = bx["kind"]
+        yo head = b[bx["at"]:bx["payload_at"]]
+        sus (kind == "stco" || kind == "co64") {
+            yo wide = kind == "co64"
+            yo entries = [b[bx["payload_at"]:bx["payload_at"] + 4],
+                          mp4tags.be32(how_thicc(offsets))]
+            grind off in offsets {
+                sus (wide) {
+                    entries.yeet_in(mp4tags.be64(off))
+                } nah {
+                    entries.yeet_in(mp4tags.be32(off))
+                }
+            }
+            parts.yeet_in(head + blob.of([]).join(entries))
+        } kinda_sus (CONTAINERS.contains(kind)) {
+            parts.yeet_in(head + with_new_offsets(b, bx["payload_at"], bx["payload_end"], offsets))
+        } nah {
+            parts.yeet_in(b[bx["at"]:bx["at"] + bx["size"]])
+        }
+    }
+    bounce blob.of([]).join(parts)
+}
+
+// A track's own duration, from `tkhd`, in the movie's timescale -- which is
+// exactly the unit `mvhd` wants, so it can be copied across without any
+// arithmetic. Version 1 widens the three time fields from 32 bits to 64.
+bet track_duration(mp4, trak) {
+    yo tkhd = mp4tags.child(mp4, trak, "tkhd", cap)
+    sus (tkhd == ghost) { bounce ghost }
+    yo at = tkhd["payload_at"]
+    yo version = mp4[at]
+    sus (version == 1) {
+        sus (tkhd["payload_end"] - at < 36) { bounce ghost }
+        bounce mp4tags.read_be64(mp4, at + 28)
+    }
+    sus (tkhd["payload_end"] - at < 24) { bounce ghost }
+    bounce mp4tags.read_be32(mp4, at + 20)
+}
+
+// `mvhd` with its duration set to the kept track's. Left exactly as it was if
+// anything about it is unexpected: a wrong duration is a player showing the
+// wrong length, and guessing at a header this program does not understand is
+// how that becomes a file that does not open at all.
+bet mvhd_with_duration(mp4, mvhd, duration) {
+    yo whole = mp4[mvhd["at"]:mvhd["at"] + mvhd["size"]]
+    sus (duration == ghost) { bounce whole }
+    yo at = mvhd["payload_at"]
+    yo version = mp4[at]
+    yo head = mvhd["payload_at"] - mvhd["at"]
+    sus (version == 1) {
+        sus (mvhd["payload_end"] - at < 32) { bounce whole }
+        bounce whole[0:head + 24] + mp4tags.be64(duration) +
+               whole[head + 32:how_thicc(whole)]
+    }
+    sus (mvhd["payload_end"] - at < 20) { bounce whole }
+    sus (duration > 0xFFFFFFFF) { bounce whole }
+    bounce whole[0:head + 16] + mp4tags.be32(duration) + whole[head + 20:how_thicc(whole)]
+}
+
+// -- the whole job -----------------------------------------------------------------------------
+
+// `mp4` in, an audio-only MP4 out. Raises a sentence if there is no sound
+// track or the tables are not ones this understands -- never a half-built file.
+flex bet audio_only(mp4) {
+    yo top = mp4tags.boxes_in(mp4, 0, how_thicc(mp4))
+    yo ftyp = ghost
+    yo moov = ghost
+    grind bx in top {
+        sus (bx["kind"] == "ftyp" && ftyp == ghost) { ftyp = bx }
+        sus (bx["kind"] == "moov" && moov == ghost) { moov = bx }
+    }
+    sus (moov == ghost) {
+        chuck oops("SkillIssue", "that file has no 'moov', so there are no tracks in it to keep.")
+    }
+
+    yo tracks = tracks_in(mp4)
+    yo keep = ghost
+    grind t in tracks {
+        sus (t["handler"] == "soun" && keep == ghost) { keep = t }
+    }
+    sus (keep == ghost) {
+        yo kinds = []
+        grind t in tracks { kinds.yeet_in(to_yap(t["handler"])) }
+        chuck oops("SkillIssue", "there is no sound track in that file -- it holds " +
+                   (how_thicc(kinds) == 0 ? "no tracks at all" : kinds.join(", ")) + ".")
+    }
+    // Already audio-only: nothing to do, and rebuilding it would be a lot of
+    // work to produce the same file with a different byte count.
+    sus (how_thicc(tracks) == 1) { bounce mp4 }
+
+    yo trak = keep["trak"]
+    yo stbl = stbl_of(mp4, trak)
+    sus (stbl == ghost) {
+        chuck oops("SkillIssue", "that sound track has no sample table.")
+    }
+    yo stsz = mp4tags.child(mp4, stbl, "stsz", cap)
+    yo stsc = mp4tags.child(mp4, stbl, "stsc", cap)
+    yo co = mp4tags.child(mp4, stbl, "stco", cap)
+    sus (co == ghost) { co = mp4tags.child(mp4, stbl, "co64", cap) }
+    sus (stsz == ghost || stsc == ghost || co == ghost) {
+        chuck oops("SkillIssue", "that sound track is missing one of stsz, stsc or stco.")
+    }
+
+    yo sizes = sample_sizes(mp4, stsz)
+    yo offsets = offsets_in(mp4, co)
+    yo per = samples_per_chunk(stsc_runs(mp4, stsc), how_thicc(offsets))
+
+    // Every chunk's bytes, copied out in order. The running total is where the
+    // chunk will sit in the new file, which is its new offset.
+    yo chunks = []
+    yo new_offsets = []
+    yo mdat_payload_at = how_thicc(ftyp == ghost ? blob.of([]) : mp4[ftyp["at"]:ftyp["at"] + ftyp["size"]]) + 8
+    yo running = 0
+    yo sample_at = 0
+    grind c from 0 to how_thicc(offsets) {
+        yo bytes_here = 0
+        grind k from 0 to per[c] {
+            sus (sample_at >= how_thicc(sizes)) {
+                chuck oops("SkillIssue", "the sample table says there are more samples than it lists.")
+            }
+            bytes_here += sizes[sample_at]
+            sample_at += 1
+        }
+        yo from_at = offsets[c]
+        sus (from_at + bytes_here > how_thicc(mp4)) {
+            chuck oops("SkillIssue", "a chunk offset points past the end of the file.")
+        }
+        chunks.yeet_in(mp4[from_at:from_at + bytes_here])
+        new_offsets.yeet_in(mdat_payload_at + running)
+        running += bytes_here
+    }
+
+    yo mdat = mp4tags.box(mp4tags.named("mdat"), blob.of([]).join(chunks))
+
+    // moov rebuilt: the movie header with the kept track's duration, that one
+    // track with its offsets pointing into the new mdat, and whatever else was
+    // alongside them -- the tags in `udta`, most of all, which the pipeline
+    // rewrites straight afterwards anyway.
+    yo kept_parts = []
+    yo duration = track_duration(mp4, trak)
+    grind bx in mp4tags.boxes_in(mp4, moov["payload_at"], moov["payload_end"]) {
+        sus (bx["kind"] == "mvhd") {
+            kept_parts.yeet_in(mvhd_with_duration(mp4, bx, duration))
+        } kinda_sus (bx["kind"] == "trak") {
+            sus (bx["at"] == trak["at"]) {
+                kept_parts.yeet_in(mp4[bx["at"]:bx["payload_at"]] +
+                                   with_new_offsets(mp4, bx["payload_at"], bx["payload_end"],
+                                                    new_offsets))
+            }
+        } nah {
+            kept_parts.yeet_in(mp4[bx["at"]:bx["at"] + bx["size"]])
+        }
+    }
+    yo new_moov = mp4tags.box(mp4tags.named("moov"), blob.of([]).join(kept_parts))
+
+    yo head = ftyp == ghost ? blob.of([]) : mp4[ftyp["at"]:ftyp["at"] + ftyp["size"]]
+    bounce head + mdat + new_moov
+}
+
+// Every audio sample in the file, concatenated, found by walking that track's
+// own tables. This is what makes "a remux changes nothing" a test rather than a
+// claim: run it on the file that went in and the file that came out, and the
+// two blobs must be equal. Note it walks the *sound track's* `stco` and not
+// every `stco` in the file -- `mp4tags.chunk_offsets` returns both tracks',
+// and using that here reads video chunks against the audio sample table.
+flex bet audio_sample_bytes(mp4) {
+    grind t in tracks_in(mp4) {
+        sus (t["handler"] != "soun") { nvm }
+        yo stbl = stbl_of(mp4, t["trak"])
+        sus (stbl == ghost) { bounce ghost }
+        yo stsz = mp4tags.child(mp4, stbl, "stsz", cap)
+        yo stsc = mp4tags.child(mp4, stbl, "stsc", cap)
+        yo co = mp4tags.child(mp4, stbl, "stco", cap)
+        sus (co == ghost) { co = mp4tags.child(mp4, stbl, "co64", cap) }
+        sus (stsz == ghost || stsc == ghost || co == ghost) { bounce ghost }
+
+        yo sizes = sample_sizes(mp4, stsz)
+        yo offsets = offsets_in(mp4, co)
+        yo per = samples_per_chunk(stsc_runs(mp4, stsc), how_thicc(offsets))
+        yo parts = []
+        yo sample_at = 0
+        grind c from 0 to how_thicc(offsets) {
+            yo bytes_here = 0
+            grind k from 0 to per[c] {
+                sus (sample_at >= how_thicc(sizes)) { bail }
+                bytes_here += sizes[sample_at]
+                sample_at += 1
+            }
+            parts.yeet_in(mp4[offsets[c]:offsets[c] + bytes_here])
+        }
+        bounce blob.of([]).join(parts)
+    }
+    bounce ghost
+}
+
+// What `audio_only` would do, without doing it -- for `--print-only` and for
+// the page, which says how big the audio is before anybody waits for it.
+flex bet what_is_in(mp4) {
+    yo out = []
+    grind t in tracks_in(mp4) {
+        yo bytes = 0
+        yo stbl = stbl_of(mp4, t["trak"])
+        sus (stbl != ghost) {
+            yo stsz = mp4tags.child(mp4, stbl, "stsz", cap)
+            sus (stsz != ghost) {
+                grind size in sample_sizes(mp4, stsz) { bytes += size }
+            }
+        }
+        out.yeet_in({"handler": t["handler"], "codec": t["codec"], "bytes": bytes})
+    }
+    bounce out
+}
